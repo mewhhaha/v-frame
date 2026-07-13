@@ -1,13 +1,40 @@
 {
   "name": "v-frame",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Render fetched pages in a shadow tree backed by a disposable iframe realm",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "sideEffects": false,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "pnpm typecheck && node esbuild.mjs && tsc --emitDeclarationOnly",
+    "prepack": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && playwright test"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@11.12.0+sha512.820a6fbd0d9f04c226638002aead1e45340a9139dd5dc077c1d83ef44aa2481c8eb6637b4c9aa696a3c7e35ba818e49cf27213e5f2b91138d09b7a3e26e898ba"
+  "license": "MIT",
+  "packageManager": "pnpm@11.12.0+sha512.820a6fbd0d9f04c226638002aead1e45340a9139dd5dc077c1d83ef44aa2481c8eb6637b4c9aa696a3c7e35ba818e49cf27213e5f2b91138d09b7a3e26e898ba",
+  "dependencies": {
+    "css-tree": "3.2.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/css-tree": "2.3.11",
+    "esbuild": "0.28.1",
+    "typescript": "7.0.2"
+  }
 }
