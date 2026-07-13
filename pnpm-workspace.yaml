@@ -1,4 +1,11 @@
+packages:
+  - examples/host
+  - examples/host/microfrontends/*
+
 allowBuilds:
+  '@parcel/watcher': false
   esbuild: true
+  lmdb: false
+  msgpackr-extract: false
 onlyBuiltDependencies:
   - esbuild
