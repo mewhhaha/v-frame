@@ -1,0 +1,57 @@
+:host {
+  display: block;
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 2rem;
+  background: #dd0031;
+  color: #ffffff;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+}
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+h1 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+p {
+  opacity: 0.85;
+}
+
+.counter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+button {
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  font-size: 1.25rem;
+  background: #ffffff;
+  color: #dd0031;
+  cursor: pointer;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+.count {
+  min-width: 2ch;
+  font-size: 1.5rem;
+  font-weight: 600;
+}

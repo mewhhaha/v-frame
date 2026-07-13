@@ -268,3 +268,10 @@ pnpm test
 
 `pnpm build` type-checks, bundles the ESM output, and emits declarations.
 `pnpm test` builds first and runs the Playwright suite.
+
+## Examples
+
+`examples/host` is a React host application that composes Angular, Solid, and
+Qwik microfrontends through `v-frame`, switching between them by changing one
+element's `src`. See `examples/host/README.md` for the layout, ports, and how
+to run it.
