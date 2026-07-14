@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { VFrameStatus } from "v-frame";
 import type {
   VFrameElement,
@@ -18,6 +19,13 @@ interface LastFrameEvent {
   detail: string;
 }
 
+type FrameSlot = "primary" | "secondary";
+
+interface PendingFrameRequest {
+  key: MicrofrontendKey;
+  slot: FrameSlot;
+}
+
 function stringifyEventDetail(detail: unknown): string {
   return JSON.stringify(
     detail,
@@ -29,54 +37,141 @@ function stringifyEventDetail(detail: unknown): string {
 
 export function App() {
   const [activeKey, setActiveKey] = useState<MicrofrontendKey>("angular");
+  const [activeSlot, setActiveSlot] = useState<FrameSlot>("primary");
+  const [pendingKey, setPendingKey] = useState<MicrofrontendKey | null>(null);
   const [status, setStatus] = useState<VFrameStatusValue>(VFrameStatus.Idle);
   const [currentURL, setCurrentURL] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<LastFrameEvent | null>(null);
-  const frameRef = useRef<VFrameElement>(null);
+  const primaryFrameRef = useRef<VFrameElement>(null);
+  const secondaryFrameRef = useRef<VFrameElement>(null);
+  const activeSlotRef = useRef<FrameSlot>("primary");
+  const pendingRequestRef = useRef<PendingFrameRequest | null>(null);
 
   useEffect(() => {
-    const frame = frameRef.current;
-    if (!frame) return;
+    const primaryFrame = primaryFrameRef.current;
+    const secondaryFrame = secondaryFrameRef.current;
+    if (!primaryFrame || !secondaryFrame) return;
 
-    // The element's connectedCallback starts its initial load, and dispatches
-    // v-frame-loadstart, synchronously during React's commit phase, before this
-    // effect can subscribe. Seed the panel from the element's own getters so the
-    // initial "loading" state isn't lost to that race.
-    setStatus(frame.status);
-    setCurrentURL(frame.currentURL);
+    const frameForSlot = (slot: FrameSlot) =>
+      slot === "primary" ? primaryFrame : secondaryFrame;
 
-    const handleLoadStart = (event: CustomEvent<VFrameLoadStartEventDetail>) => {
-      setStatus(VFrameStatus.Loading);
+    const recordEvent = (event: CustomEvent<unknown>) => {
       setLastEvent({ type: event.type, detail: stringifyEventDetail(event.detail) });
     };
-    const handleLoad = (event: CustomEvent<VFrameLoadEventDetail>) => {
+
+    const handleLoadStart = (
+      slot: FrameSlot,
+      event: CustomEvent<VFrameLoadStartEventDetail>,
+    ) => {
+      const pendingRequest = pendingRequestRef.current;
+      if (slot !== activeSlotRef.current && pendingRequest?.slot !== slot) return;
+
+      setStatus(VFrameStatus.Loading);
+      recordEvent(event);
+    };
+    const handleLoad = (slot: FrameSlot, event: CustomEvent<VFrameLoadEventDetail>) => {
+      const pendingRequest = pendingRequestRef.current;
+      if (pendingRequest?.slot === slot) {
+        const commitLoadedFrame = () => {
+          if (pendingRequestRef.current !== pendingRequest) return;
+
+          activeSlotRef.current = slot;
+          pendingRequestRef.current = null;
+          flushSync(() => {
+            setActiveSlot(slot);
+            setActiveKey(pendingRequest.key);
+            setPendingKey(null);
+            setStatus(VFrameStatus.Ready);
+            setCurrentURL(event.detail.url);
+            recordEvent(event);
+          });
+
+          const previousSlot = slot === "primary" ? "secondary" : "primary";
+          frameForSlot(previousSlot).src = "";
+        };
+
+        if (document.startViewTransition) {
+          document.startViewTransition(commitLoadedFrame);
+        } else {
+          commitLoadedFrame();
+        }
+        return;
+      }
+
+      if (slot !== activeSlotRef.current) return;
       setStatus(VFrameStatus.Ready);
       setCurrentURL(event.detail.url);
-      setLastEvent({ type: event.type, detail: stringifyEventDetail(event.detail) });
+      recordEvent(event);
     };
-    const handleError = (event: CustomEvent<VFrameErrorEventDetail>) => {
+    const handleError = (slot: FrameSlot, event: CustomEvent<VFrameErrorEventDetail>) => {
+      const pendingRequest = pendingRequestRef.current;
+      if (pendingRequest?.slot === slot && event.detail.fatal) {
+        pendingRequestRef.current = null;
+        frameForSlot(slot).src = "";
+        setPendingKey(null);
+        setStatus(VFrameStatus.Error);
+        recordEvent(event);
+        return;
+      }
+
+      if (slot !== activeSlotRef.current && pendingRequest?.slot !== slot) return;
       if (event.detail.fatal) setStatus(VFrameStatus.Error);
-      setLastEvent({ type: event.type, detail: stringifyEventDetail(event.detail) });
+      recordEvent(event);
     };
-    const handleNavigate = (event: CustomEvent<VFrameNavigateEventDetail>) => {
+    const handleNavigate = (
+      slot: FrameSlot,
+      event: CustomEvent<VFrameNavigateEventDetail>,
+    ) => {
+      if (slot !== activeSlotRef.current) return;
       setCurrentURL(event.detail.to);
-      setLastEvent({ type: event.type, detail: stringifyEventDetail(event.detail) });
+      recordEvent(event);
     };
 
-    frame.addEventListener("v-frame-loadstart", handleLoadStart);
-    frame.addEventListener("v-frame-load", handleLoad);
-    frame.addEventListener("v-frame-error", handleError);
-    frame.addEventListener("v-frame-navigate", handleNavigate);
+    const attachListeners = (slot: FrameSlot, frame: VFrameElement) => {
+      const onLoadStart = (event: CustomEvent<VFrameLoadStartEventDetail>) =>
+        handleLoadStart(slot, event);
+      const onLoad = (event: CustomEvent<VFrameLoadEventDetail>) => handleLoad(slot, event);
+      const onError = (event: CustomEvent<VFrameErrorEventDetail>) => handleError(slot, event);
+      const onNavigate = (event: CustomEvent<VFrameNavigateEventDetail>) =>
+        handleNavigate(slot, event);
+
+      frame.addEventListener("v-frame-loadstart", onLoadStart);
+      frame.addEventListener("v-frame-load", onLoad);
+      frame.addEventListener("v-frame-error", onError);
+      frame.addEventListener("v-frame-navigate", onNavigate);
+
+      return () => {
+        frame.removeEventListener("v-frame-loadstart", onLoadStart);
+        frame.removeEventListener("v-frame-load", onLoad);
+        frame.removeEventListener("v-frame-error", onError);
+        frame.removeEventListener("v-frame-navigate", onNavigate);
+      };
+    };
+
+    const detachPrimaryListeners = attachListeners("primary", primaryFrame);
+    const detachSecondaryListeners = attachListeners("secondary", secondaryFrame);
+    if (primaryFrame.src === "") {
+      primaryFrame.src = microfrontends.angular.url;
+    }
 
     return () => {
-      frame.removeEventListener("v-frame-loadstart", handleLoadStart);
-      frame.removeEventListener("v-frame-load", handleLoad);
-      frame.removeEventListener("v-frame-error", handleError);
-      frame.removeEventListener("v-frame-navigate", handleNavigate);
+      detachPrimaryListeners();
+      detachSecondaryListeners();
     };
   }, []);
 
   const activeTarget = microfrontends[activeKey];
+  const selectMicrofrontend = (key: MicrofrontendKey) => {
+    if (key === activeKey || pendingRequestRef.current) return;
+
+    const slot = activeSlotRef.current === "primary" ? "secondary" : "primary";
+    const frame = slot === "primary" ? primaryFrameRef.current : secondaryFrameRef.current;
+    if (!frame) return;
+
+    pendingRequestRef.current = { key, slot };
+    setPendingKey(key);
+    frame.src = microfrontends[key].url;
+  };
 
   return (
     <div className="host-app">
@@ -86,9 +181,17 @@ export function App() {
             <button
               key={key}
               type="button"
-              className={key === activeKey ? "tab tab-active" : "tab"}
+              className={
+                key === activeKey
+                  ? "tab tab-active"
+                  : key === pendingKey
+                    ? "tab tab-pending"
+                    : "tab"
+              }
               aria-pressed={key === activeKey}
-              onClick={() => setActiveKey(key)}
+              aria-busy={key === pendingKey}
+              disabled={pendingKey !== null}
+              onClick={() => selectMicrofrontend(key)}
             >
               {microfrontends[key].label}
             </button>
@@ -120,8 +223,31 @@ export function App() {
         </dl>
       </header>
 
-      <section className="frame-viewport" aria-label={`${activeTarget.label} microfrontend`}>
-        <v-frame ref={frameRef} src={activeTarget.url} credentials="omit" />
+      <section
+        className="frame-viewport"
+        aria-label={`${activeTarget.label} microfrontend`}
+        aria-busy={pendingKey !== null}
+      >
+        <v-frame
+          ref={primaryFrameRef}
+          className={
+            activeSlot === "primary"
+              ? "frame-slot frame-slot-active"
+              : "frame-slot frame-slot-inactive"
+          }
+          aria-hidden={activeSlot !== "primary"}
+          credentials="omit"
+        />
+        <v-frame
+          ref={secondaryFrameRef}
+          className={
+            activeSlot === "secondary"
+              ? "frame-slot frame-slot-active"
+              : "frame-slot frame-slot-inactive"
+          }
+          aria-hidden={activeSlot !== "secondary"}
+          credentials="omit"
+        />
       </section>
     </div>
   );

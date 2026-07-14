@@ -1,11 +1,14 @@
 packages:
   - examples/host
   - examples/host/microfrontends/*
+  - examples/workers-composition
 
 allowBuilds:
   '@parcel/watcher': false
   esbuild: true
   lmdb: false
   msgpackr-extract: false
+  sharp: false
+  workerd: true
 onlyBuiltDependencies:
   - esbuild

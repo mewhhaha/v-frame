@@ -22,6 +22,28 @@ function pathname(request: IncomingMessage) {
 
 function pageFor(path: string) {
   switch (path) {
+    case "/documents/adopted-host.html":
+      return html(`<v-frame adopt src="/documents/adopted-entry.html">
+        <template shadowrootmode="open">
+          <v-html lang="en">
+            <v-head>
+              <style>
+                v-html, v-body { display: block; }
+                v-head { display: none; }
+                #adopted-copy { color: rgb(24, 96, 48); }
+              </style>
+            </v-head>
+            <v-body>
+              <p id="adopted-copy">Server-rendered before definition</p>
+              <script type="application/vnd.v-frame" data-v-frame-script>
+                document.querySelector('#adopted-copy').textContent = 'Activated without an entry fetch';
+              </script>
+            </v-body>
+          </v-html>
+        </template>
+      </v-frame>`);
+    case "/documents/adopted-entry.html":
+      return html('<main id="network-reload">Fetched by reload</main>');
     case "/documents/first.html":
       return html('<main id="first">First document <a id="next" href="second.html">next</a></main>');
     case "/documents/second.html":

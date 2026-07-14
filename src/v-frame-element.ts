@@ -29,7 +29,7 @@ function entryFetchError(url: string, response: Response): TypeError {
 }
 
 export class VFrameElement extends HTMLElementBase {
-  static readonly observedAttributes = ["src", "credentials", "nonce"];
+  static readonly observedAttributes = ["src", "credentials", "nonce", "adopt"];
 
   readonly #root: ShadowRoot;
   #status: VFrameStatusValue = VFrameStatus.Idle;
@@ -38,11 +38,15 @@ export class VFrameElement extends HTMLElementBase {
   #controller: AbortController | null = null;
   #generation = 0;
   #connected = false;
+  #adoptionAvailable = false;
+  #adoptionConsumed = false;
   #nonce = "";
 
   constructor() {
     super();
-    this.#root = this.attachShadow({ mode: "open" });
+    const declarativeRoot = this.shadowRoot;
+    this.#root = declarativeRoot ?? this.attachShadow({ mode: "open" });
+    this.#adoptionAvailable = declarativeRoot !== null;
   }
 
   get src(): string {
@@ -51,6 +55,14 @@ export class VFrameElement extends HTMLElementBase {
 
   set src(value: string) {
     this.setAttribute("src", String(value));
+  }
+
+  get adopt(): boolean {
+    return this.hasAttribute("adopt");
+  }
+
+  set adopt(value: boolean) {
+    this.toggleAttribute("adopt", Boolean(value));
   }
 
   get credentials(): VFrameCredentials {
@@ -93,7 +105,7 @@ export class VFrameElement extends HTMLElementBase {
   connectedCallback(): void {
     this.#connected = true;
     if (this.src.trim() !== "") {
-      this.#observeLoad(this.#startLoad());
+      this.#observeLoad(this.#startLoad(this.#consumeAdoptedMarkup()));
     }
   }
 
@@ -112,6 +124,9 @@ export class VFrameElement extends HTMLElementBase {
   ): void {
     if (name === "nonce") {
       this.#nonce = nativeNonceDescriptor?.get?.call(this) ?? newValue ?? "";
+      return;
+    }
+    if (name === "adopt") {
       return;
     }
     if (oldValue === newValue || !this.#connected) {
@@ -166,14 +181,26 @@ export class VFrameElement extends HTMLElementBase {
     void load.catch(() => undefined);
   }
 
-  #startLoad(): Promise<void> {
+  #startLoad(
+    adoptedMarkup: { source: string; previewNodes: readonly Node[] } | null = null,
+  ): Promise<void> {
     const generation = this.#generation + 1;
     this.#generation = generation;
-    this.#destroyRealm();
-    return this.#load(generation);
+    if (adoptedMarkup === null) {
+      this.#destroyRealm();
+    } else {
+      this.#realm?.dispose();
+      this.#realm = null;
+      this.#controller?.abort();
+      this.#controller = null;
+    }
+    return this.#load(generation, adoptedMarkup);
   }
 
-  async #load(generation: number): Promise<void> {
+  async #load(
+    generation: number,
+    adoptedMarkup: { source: string; previewNodes: readonly Node[] } | null,
+  ): Promise<void> {
     const controller = new AbortController();
     this.#controller = controller;
     this.#status = VFrameStatus.Loading;
@@ -202,30 +229,39 @@ export class VFrameElement extends HTMLElementBase {
     });
 
     try {
-      const response = await fetch(requestedURL, {
-        credentials: this.credentials,
-        signal: controller.signal,
-      });
-      if (!response.ok || response.type === "opaque") {
-        throw entryFetchError(requestedURL.href, response);
-      }
+      let source: string;
+      let finalURL: string;
+      if (adoptedMarkup === null) {
+        const response = await fetch(requestedURL, {
+          credentials: this.credentials,
+          signal: controller.signal,
+        });
+        if (!response.ok || response.type === "opaque") {
+          throw entryFetchError(requestedURL.href, response);
+        }
 
-      const source = await response.text();
-      this.#assertCurrentGeneration(generation, controller.signal);
-      const responseURL = parseEntryURL(
-        response.url || requestedURL.href,
-        requestedURL.href,
-      );
-      if (responseURL.hash === "") {
-        responseURL.hash = requestedURL.hash;
+        source = await response.text();
+        this.#assertCurrentGeneration(generation, controller.signal);
+        const responseURL = parseEntryURL(
+          response.url || requestedURL.href,
+          requestedURL.href,
+        );
+        if (responseURL.hash === "") {
+          responseURL.hash = requestedURL.hash;
+        }
+        finalURL = responseURL.href;
+      } else {
+        source = adoptedMarkup.source;
+        finalURL = requestedURL.href;
       }
-      const finalURL = responseURL.href;
       this.#currentURL = finalURL;
 
       const realm = await createRealm({
         host: this,
         shadowRoot: this.#root,
-        source,
+        markup: adoptedMarkup === null
+          ? { kind: "document", source }
+          : { kind: "adopted", source, previewNodes: adoptedMarkup.previewNodes },
         pageURL: finalURL,
         credentials: this.credentials,
         signal: controller.signal,
@@ -345,6 +381,29 @@ export class VFrameElement extends HTMLElementBase {
     for (const child of Array.from(this.#root.children)) {
       child.remove();
     }
+  }
+
+  #consumeAdoptedMarkup(): { source: string; previewNodes: readonly Node[] } | null {
+    if (!this.adopt || !this.#adoptionAvailable || this.#adoptionConsumed) {
+      return null;
+    }
+    this.#adoptionConsumed = true;
+
+    const html = Array.from(this.#root.children).find(
+      (element) => element.localName === "v-html",
+    );
+    if (
+      html === undefined ||
+      html.querySelector(":scope > v-head") === null ||
+      html.querySelector(":scope > v-body") === null
+    ) {
+      return null;
+    }
+
+    return {
+      source: this.#root.innerHTML,
+      previewNodes: Array.from(this.#root.childNodes),
+    };
   }
 
   #dispatchError(detail: VFrameErrorEventDetail): void {

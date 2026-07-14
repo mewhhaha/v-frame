@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "v-frame-example-qwik-widget",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "define": {
+    "import.meta.env.BASE_URL": "\"/\""
+  },
+  "alias": {
+    "@qwik-client-manifest": "v-frame-qwik-client-manifest"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

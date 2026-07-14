@@ -1,9 +1,11 @@
 # v-frame
 
-`v-frame` is a TypeScript ESM custom element that fetches an HTTP(S) document,
+`v-frame` is a TypeScript ESM custom element that loads an HTTP(S) document,
 reconstructs it in an open shadow root, and runs its scripts in a disposable,
-same-origin iframe realm. It is for rendering and running **trusted** remote
-pages in a host application; it is not an isolation or sandboxing mechanism.
+same-origin iframe realm. Documents can be fetched by the browser or adopted
+from server-rendered Declarative Shadow DOM. It is for rendering and running
+**trusted** pages in a host application; it is not an isolation or sandboxing
+mechanism.
 
 ## Install and register
 
@@ -50,6 +52,48 @@ accepted values are `"omit"`, `"same-origin"`, and `"include"`; the default is
 executed scripts and generated styles. Set it before loading when the host CSP
 requires a script or style nonce. Changing it does not itself reload the
 element.
+
+### Adopt server-rendered content
+
+Use `adopt` when a server has already composed a materialized widget into the
+page:
+
+```html
+<v-frame adopt src="/widgets/activity">
+  <template shadowrootmode="open">
+    <v-html lang="en">
+      <v-head>
+        <style>
+          v-html, v-body { display: block; }
+          v-head { display: none; }
+        </style>
+      </v-head>
+      <v-body><p>Server-rendered activity</p></v-body>
+    </v-html>
+  </template>
+</v-frame>
+```
+
+Declarative Shadow DOM displays the widget before registration. On its first
+connection, `v-frame` uses `src` as the virtual document URL and creates the
+realm from the existing `v-html`, `v-head`, and `v-body` content without
+fetching the entry document. The `adopt` property reflects the boolean
+attribute. Adoption is consumed once; `reload()`, reconnection, a later `src`
+change, or a `credentials` change uses the normal network load.
+
+When the browser supports element-scoped View Transitions, `v-frame` keeps a
+snapshot of the server-rendered widget visible while it installs the live tree.
+Frames transition independently, so several widgets can activate together.
+Reduced-motion preferences and browsers without scoped transitions use the
+same direct handoff without animation.
+
+Adopted markup must already use the materialized shell names and scoped CSS.
+URLs should be absolute or resolvable against `src`. Scripts must be inert
+during document parsing: set `type="application/vnd.v-frame"` and
+`data-v-frame-script`. Add `data-v-frame-type="module"` when restoring a module
+script; omit it to restore a classic script. Executable scripts placed directly
+inside Declarative Shadow DOM run in the host realm before `v-frame` upgrades
+and are unsupported.
 
 ```ts
 const frame = document.querySelector<VFrameElement>("v-frame")!;
@@ -271,7 +315,9 @@ pnpm test
 
 ## Examples
 
-`examples/host` is a React host application that composes Angular, Solid, and
-Qwik microfrontends through `v-frame`, switching between them by changing one
-element's `src`. See `examples/host/README.md` for the layout, ports, and how
-to run it.
+`examples/host` is a React host that switches among Angular, Solid, and Qwik
+microfrontends with load-gated View Transitions.
+
+`examples/workers-composition` uses Cloudflare service bindings to compose
+React Router and Qwik SSR widgets into adopted `<v-frame>` elements before the
+host HTML is delivered.

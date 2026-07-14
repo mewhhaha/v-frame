@@ -7,7 +7,7 @@
     "dev": "pnpm run build:mfe && concurrently -n host,mfe \"vite\" \"pnpm run serve:mfe\"",
     "build": "vite build",
     "build:mfe": "pnpm --filter example-mfe-angular --filter example-mfe-solid --filter example-mfe-qwik run build",
-    "serve:mfe": "concurrently -n angular,solid,qwik \"node scripts/serve-static.mjs microfrontends/angular-app/dist/angular-app/browser 5171\" \"node scripts/serve-static.mjs microfrontends/solid-app/dist 5172\" \"node scripts/serve-static.mjs microfrontends/qwik-app/dist 5173\"",
+    "serve:mfe": "concurrently -n angular,solid,qwik \"node scripts/serve-static.mjs microfrontends/angular-app/dist/angular-app/browser 43171\" \"node scripts/serve-static.mjs microfrontends/solid-app/dist 43172\" \"node scripts/serve-static.mjs microfrontends/qwik-app/dist 43173\"",
     "preview": "vite preview"
   },
   "dependencies": {

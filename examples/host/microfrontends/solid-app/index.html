@@ -3,9 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <title>Solid microfrontend</title>
+    <style>
+      body {
+        margin: 0;
+      }
+
+      .solid-app {
+        min-height: 100vh;
+        box-sizing: border-box;
+        padding: 3rem 2rem;
+        background: #1a3b5d;
+        color: #eaf2fb;
+        font-family: system-ui, sans-serif;
+        text-align: center;
+      }
+
+      .solid-app button {
+        border: none;
+        border-radius: 0.5rem;
+        padding: 0.6rem 1.4rem;
+        background: #4da3ff;
+        color: #0a1f33;
+        cursor: pointer;
+        font-size: 1.1rem;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <main class="solid-app">
+      <h1>Solid microfrontend</h1>
+      <p>Rendered by SolidJS, mounted into a v-frame realm.</p>
+      <button id="counter" type="button">Count: <span id="count">0</span></button>
+    </main>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>

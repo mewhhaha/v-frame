@@ -1,9 +1,10 @@
 # v-frame host example
 
 A React host application that composes three independent microfrontends —
-Angular, Solid, and Qwik — through a single `<v-frame>` element. Switching
-tabs changes the element's `src`; `v-frame` fetches the selected app's built
-HTML and runs it in its own realm inside the host page.
+Angular, Solid, and Qwik — through `<v-frame>` elements. When a tab is selected,
+the next app loads in an inactive frame while the current app remains visible.
+After `v-frame-load` fires, the host promotes the ready frame with the browser's
+View Transition API. A failed load leaves the current app in place.
 
 ## Layout
 
@@ -24,13 +25,13 @@ runtime dependency on the host or on each other.
 
 | App | Port | Served from |
 | --- | --- | --- |
-| host | 5170 | `vite` dev server |
-| angular-app | 5171 | `microfrontends/angular-app/dist/angular-app/browser` |
-| solid-app | 5172 | `microfrontends/solid-app/dist` |
-| qwik-app | 5173 | `microfrontends/qwik-app/dist` |
+| host | 43170 | `vite` dev server |
+| angular-app | 43171 | `microfrontends/angular-app/dist/angular-app/browser` |
+| solid-app | 43172 | `microfrontends/solid-app/dist` |
+| qwik-app | 43173 | `microfrontends/qwik-app/dist` |
 
-The host page on 5170 loads each microfrontend from its own origin (5171,
-5172, or 5173) via `fetch`, so every microfrontend's static server must send
+The host page on 43170 loads each microfrontend from its own origin (43171,
+43172, or 43173) via `fetch`, so every microfrontend's static server must send
 `Access-Control-Allow-Origin: *`; without it, the browser blocks the
 cross-origin response before `v-frame` ever sees it. `scripts/serve-static.mjs`
 sets that header on every response it serves.
@@ -49,7 +50,7 @@ pnpm --filter example-host run dev
 ```
 
 `dev` builds all three microfrontends once, then starts the host's `vite` dev
-server and the three static servers together. Open http://localhost:5170.
+server and the three static servers together. Open http://localhost:43170.
 
 Other scripts, run from `examples/host/`:
 

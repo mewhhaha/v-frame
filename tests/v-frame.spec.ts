@@ -73,6 +73,180 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   expect(state.hasContentWindow).toBe(true);
 });
 
+test("adopts server-rendered shadow content without fetching the entry document", async ({ page }) => {
+  await page.goto(`${fixture.origin}/documents/adopted-host.html`);
+  const frame = page.locator("v-frame");
+
+  await expect(frame.locator("#adopted-copy")).toHaveText("Server-rendered before definition");
+  await expect(frame.locator("#adopted-copy")).toHaveCSS("color", "rgb(24, 96, 48)");
+  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(0);
+
+  await page.evaluate(() => {
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    const nativeStart = prototype.startViewTransition;
+    (window as Window & typeof globalThis & { __scopedTransitionStarts?: number })
+      .__scopedTransitionStarts = 0;
+    if (nativeStart === undefined) {
+      return;
+    }
+    prototype.startViewTransition = function startViewTransition(update): ViewTransition {
+      (window as Window & typeof globalThis & { __scopedTransitionStarts: number })
+        .__scopedTransitionStarts += 1;
+      return nativeStart.call(this, update);
+    };
+  });
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+
+  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect(frame.locator("#adopted-copy")).toHaveText("Activated without an entry fetch");
+  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(0);
+  await expect.poll(() => frame.evaluate((element) => (element as any).currentURL)).toBe(
+    `${fixture.origin}/documents/adopted-entry.html`,
+  );
+  const transitionState = await page.evaluate(() => ({
+    supported: typeof (HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: unknown;
+    }).startViewTransition === "function",
+    starts: (window as Window & typeof globalThis & { __scopedTransitionStarts: number })
+      .__scopedTransitionStarts,
+  }));
+  expect(transitionState.starts).toBe(transitionState.supported ? 1 : 0);
+
+  await frame.evaluate((element) => (element as any).reload());
+  await expect(frame.locator("#network-reload")).toHaveText("Fetched by reload");
+  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(1);
+});
+
+test("runs simultaneous adopted handoffs as independent scoped transitions", async ({
+  browserName,
+  page,
+}) => {
+  test.skip(browserName !== "chromium", "element-scoped transitions are not available");
+  await page.goto(fixture.origin);
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = "v-frame::view-transition-group(root) { animation-duration: 2s; }";
+    document.head.append(style);
+
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition(update: () => void): ViewTransition;
+    };
+    const nativeStart = prototype.startViewTransition;
+    const transitionHosts: HTMLElement[] = [];
+    prototype.startViewTransition = function startViewTransition(update): ViewTransition {
+      transitionHosts.push(this);
+      return nativeStart.call(this, update);
+    };
+    (window as Window & typeof globalThis & { __transitionHosts?: HTMLElement[] })
+      .__transitionHosts = transitionHosts;
+
+    for (const name of ["first", "second"]) {
+      const frame = document.createElement("v-frame");
+      frame.id = name;
+      frame.setAttribute("adopt", "");
+      frame.setAttribute("src", `/documents/${name}.html`);
+      frame.attachShadow({ mode: "open" }).innerHTML =
+        `<v-html><v-head></v-head><v-body><p>${name}</p></v-body></v-html>`;
+      document.querySelector("#host")?.append(frame);
+    }
+  });
+
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  const frames = page.locator("v-frame");
+  await expect.poll(() => frames.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLElement & { status: string }).status)
+  )).toEqual(["ready", "ready"]);
+
+  const transitionState = await page.evaluate(() => {
+    const elements = Array.from(document.querySelectorAll("v-frame")) as Array<HTMLElement & {
+      activeViewTransition: ViewTransition | null;
+    }>;
+    const hosts = (window as Window & typeof globalThis & { __transitionHosts: HTMLElement[] })
+      .__transitionHosts;
+    return {
+      starts: hosts.length,
+      uniqueHosts: new Set(hosts).size,
+      active: elements.map((element) => element.activeViewTransition !== null),
+    };
+  });
+  expect(transitionState).toEqual({
+    starts: 2,
+    uniqueHosts: 2,
+    active: [true, true],
+  });
+});
+
+test("does not restore adopted markup after removal during a transition", async ({ page }) => {
+  const entryRequestsBefore = fixture.requests.filter(
+    (path) => path === "/documents/adopted-entry.html",
+  ).length;
+  await page.goto(`${fixture.origin}/documents/adopted-host.html`);
+  await page.evaluate(() => {
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    prototype.startViewTransition = function startViewTransition(update): ViewTransition {
+      let release: (() => void) | null = null;
+      const updateCallbackDone = new Promise<void>((resolve, reject) => {
+        release = () => {
+          Promise.resolve().then(update).then(resolve, reject);
+        };
+      });
+      const transition = {
+        finished: updateCallbackDone,
+        ready: updateCallbackDone,
+        types: new Set<string>(),
+        updateCallbackDone,
+        skipTransition() {
+          release?.();
+          release = null;
+        },
+      } as unknown as ViewTransition;
+      (window as Window & typeof globalThis & { __heldTransitionStarted?: boolean })
+        .__heldTransitionStarted = true;
+      return transition;
+    };
+  });
+  await page.evaluate(async (url) => {
+    const frame = document.querySelector("v-frame") as HTMLElement & {
+      status: string;
+    };
+    (window as Window & typeof globalThis & { __heldFrame?: HTMLElement })
+      .__heldFrame = frame;
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & typeof globalThis & { __heldTransitionStarted?: boolean })
+      .__heldTransitionStarted
+  )).toBe(true);
+
+  await page.evaluate(() => {
+    (window as Window & typeof globalThis & { __heldFrame: HTMLElement })
+      .__heldFrame.remove();
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const frame = (window as Window & typeof globalThis & {
+      __heldFrame: HTMLElement & { status: string };
+    }).__heldFrame;
+    return {
+      status: frame.status,
+      childElements: frame.shadowRoot?.children.length,
+    };
+  })).toEqual({ status: "idle", childElements: 0 });
+  expect(fixture.requests.filter(
+    (path) => path === "/documents/adopted-entry.html",
+  )).toHaveLength(entryRequestsBefore);
+});
+
 test("emits lifecycle errors and ignores stale loads after disconnection", async ({ page }) => {
   await installBundle(page);
   const events = await page.evaluate(async (origin) => {

@@ -1,0 +1,31 @@
+{
+  "name": "example-workers-composition",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm --workspace-root run build",
+    "dev": "concurrently -k -n host,react-router,qwik \"wrangler dev --port 43500 --inspector-port 43600 -c workers/host/wrangler.jsonc\" \"wrangler dev --port 43501 --inspector-port 43601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --port 43502 --inspector-port 43602 -c workers/qwik/wrangler.jsonc\"",
+    "types": "wrangler types worker-configuration.d.ts -c workers/host/wrangler.jsonc -c workers/react-router/wrangler.jsonc -c workers/qwik/wrangler.jsonc",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run types && pnpm run typecheck && pnpm run check:deploy",
+    "check:deploy": "wrangler deploy --dry-run -c workers/react-router/wrangler.jsonc && wrangler deploy --dry-run -c workers/qwik/wrangler.jsonc && wrangler deploy --dry-run -c workers/host/wrangler.jsonc",
+    "predeploy": "pnpm --workspace-root run build",
+    "deploy": "pnpm run deploy:components && wrangler deploy -c workers/host/wrangler.jsonc",
+    "deploy:components": "wrangler deploy -c workers/react-router/wrangler.jsonc && wrangler deploy -c workers/qwik/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "concurrently": "10.0.3",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@builder.io/qwik": "1.20.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router": "7.17.0",
+    "v-frame-qwik-client-manifest": "file:./qwik-client-manifest"
+  }
+}

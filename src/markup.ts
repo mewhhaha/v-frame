@@ -66,6 +66,11 @@ export interface PrepareMarkupOptions {
   onError(error: MarkupError): void;
 }
 
+export interface PrepareAdoptedMarkupOptions
+  extends Omit<PrepareMarkupOptions, "source"> {
+  source: string;
+}
+
 export interface PreparedMarkup {
   html: HTMLElement;
   head: HTMLElement;
@@ -780,6 +785,93 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
   }
 
   await Promise.all(stylesheetJobs);
+  inlineStyleSheet.remove();
+
+  return {
+    html,
+    head,
+    body,
+    baseURL,
+    scripts: Array.from(html.querySelectorAll("script")),
+    authoredURLAttributes,
+    authoredStyleAttributes,
+    inlineStyleSelectorAttribute,
+    inlineStyleSheet,
+    stylesheetContext,
+  };
+}
+
+export async function prepareAdoptedMarkup(
+  options: PrepareAdoptedMarkupOptions,
+): Promise<PreparedMarkup> {
+  const parser = new options.window.DOMParser();
+  const parsed = parser.parseFromString(options.source, "text/html");
+  const html = parsed.body.querySelector(":scope > v-html") as HTMLElement | null;
+  const head = html?.querySelector(":scope > v-head") as HTMLElement | null;
+  const body = html?.querySelector(":scope > v-body") as HTMLElement | null;
+  if (html === null || head === null || body === null) {
+    throw new TypeError(
+      "v-frame adopted content must contain v-html with direct v-head and v-body children",
+    );
+  }
+  html.remove();
+
+  for (const script of html.querySelectorAll<HTMLScriptElement>("script[data-v-frame-script]")) {
+    if (script.getAttribute("type") !== "application/vnd.v-frame") {
+      continue;
+    }
+    const authoredType = script.getAttribute("data-v-frame-type");
+    script.removeAttribute("data-v-frame-script");
+    script.removeAttribute("data-v-frame-type");
+    if (authoredType === null) {
+      script.removeAttribute("type");
+    } else {
+      script.type = authoredType;
+    }
+  }
+
+  const baseURL = resolveMarkupBaseURL(html, options.pageURL);
+  const authoredURLAttributes = collectAuthoredURLAttributes(html);
+  const authoredStyleAttributes = new Map<Element, string>();
+  for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
+    const authoredStyle = element.getAttribute("style");
+    if (authoredStyle !== null) {
+      authoredStyleAttributes.set(element, authoredStyle);
+    }
+  }
+  const inlineStyleSelectorAttribute = findUnusedAttributeName(
+    options.source,
+    "inline-style",
+  );
+  const inlineStyleSheet = lowerStyleAttributes(
+    authoredStyleAttributes,
+    head,
+    baseURL,
+    inlineStyleSelectorAttribute,
+    options.document,
+  );
+
+  for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
+    const attributeBaseURL = element.localName === "base" ? options.pageURL : baseURL;
+    absolutizeElementAttributes(element, attributeBaseURL);
+  }
+
+  const stylesheetContext = createStylesheetContext(
+    options.fetchStylesheet,
+    ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
+  );
+  await Promise.all(
+    Array.from(html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]')).map(
+      (link) =>
+        prepareLinkedStyle(
+          link,
+          options.nonce,
+          stylesheetContext,
+          options.document,
+          options.onError,
+        ),
+    ),
+  );
   inlineStyleSheet.remove();
 
   return {

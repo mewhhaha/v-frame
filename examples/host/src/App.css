@@ -1,5 +1,6 @@
 :root {
   color-scheme: light;
+  view-transition-name: none;
   --chrome-bg: #1f2430;
   --chrome-fg: #eef1f8;
   --chrome-border: #333a4a;
@@ -72,10 +73,28 @@ body {
   border-color: var(--accent);
 }
 
+.tab:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .tab-active {
   background: var(--accent);
   border-color: var(--accent);
   color: #0b1020;
+}
+
+.tab-pending::after {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-left: 0.45rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  vertical-align: -0.08rem;
+  animation: pending-spin 0.7s linear infinite;
 }
 
 .status-panel {
@@ -85,6 +104,8 @@ body {
   row-gap: 0.35rem;
   margin: 0;
   font-size: 0.85rem;
+  min-width: 0;
+  width: min(32rem, 100%);
   max-width: 32rem;
 }
 
@@ -99,6 +120,7 @@ body {
 
 .status-row dd {
   margin: 0;
+  min-width: 0;
   word-break: break-all;
 }
 
@@ -141,7 +163,7 @@ body {
 
 .frame-viewport {
   flex: 1;
-  display: flex;
+  position: relative;
   margin: 1.25rem;
   border: 3px dashed var(--viewport-border);
   border-radius: 0.5rem;
@@ -149,8 +171,62 @@ body {
   overflow: hidden;
 }
 
-v-frame {
+.frame-slot {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.frame-slot-active {
+  view-transition-name: microfrontend;
+}
+
+.frame-slot-inactive {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+::view-transition-group(microfrontend) {
+  animation-duration: 320ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(microfrontend) {
+  animation-name: frame-exit;
+}
+
+::view-transition-new(microfrontend) {
+  animation-name: frame-enter;
+}
+
+@keyframes pending-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes frame-exit {
+  to {
+    opacity: 0;
+    transform: translateX(-1.5rem) scale(0.99);
+  }
+}
+
+@keyframes frame-enter {
+  from {
+    opacity: 0;
+    transform: translateX(1.5rem) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-pending::after {
+    animation: none;
+  }
+
+  ::view-transition-group(microfrontend) {
+    animation-duration: 1ms;
+  }
 }

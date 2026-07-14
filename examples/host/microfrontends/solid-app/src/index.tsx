@@ -1,7 +1,18 @@
-import { render } from "solid-js/web";
-import { App } from "./App";
+import { createEffect, createRoot, createSignal, onCleanup } from "solid-js";
 
-const root = document.getElementById("app");
-if (!root) throw new Error("solid-app: missing #app mount element in index.html");
+const counter = document.getElementById("counter");
+const countOutput = document.getElementById("count");
+if (!counter || !countOutput) {
+  throw new Error("solid-app: missing #counter or #count element in index.html");
+}
 
-render(() => <App />, root);
+createRoot(() => {
+  const [count, setCount] = createSignal(0);
+  const increment = () => setCount((currentCount) => currentCount + 1);
+
+  counter.addEventListener("click", increment);
+  onCleanup(() => counter.removeEventListener("click", increment));
+  createEffect(() => {
+    countOutput.textContent = String(count());
+  });
+});

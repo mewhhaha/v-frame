@@ -1,0 +1,21 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "v-frame-example-composed-host",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [
+    { "binding": "REACT_ROUTER_WIDGET", "service": "v-frame-example-react-router-widget" },
+    { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
+  ],
+  "assets": {
+    "directory": "../../../../dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

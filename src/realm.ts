@@ -16,6 +16,7 @@ import {
 import { VirtualHistory } from "./history.js";
 import {
   absolutizeElementAttributes,
+  prepareAdoptedMarkup,
   prepareMarkup,
   type PreparedMarkup,
 } from "./markup.js";
@@ -31,6 +32,7 @@ import type {
 
 const INTERNAL_CSS = `
 :host {
+  contain: layout;
   display: block;
   position: relative;
   overflow: auto;
@@ -157,7 +159,9 @@ export interface RealmFailure {
 export interface CreateRealmOptions {
   host: HTMLElement;
   shadowRoot: ShadowRoot;
-  source: string;
+  markup:
+    | { kind: "document"; source: string }
+    | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
   pageURL: string;
   credentials: VFrameCredentials;
   signal: AbortSignal;
@@ -535,10 +539,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const nativeWindowOpen = window.open.bind(window);
     const scheduleNavigationDefault = window.setTimeout.bind(window);
 
-    markup = await prepareMarkup({
+    const prepare = options.markup.kind === "adopted"
+      ? prepareAdoptedMarkup
+      : prepareMarkup;
+    markup = await prepare({
       window,
       document,
-      source: options.source,
+      source: options.markup.source,
       pageURL: options.pageURL,
       nonce: options.getNonce(),
       fetchStylesheet: options.fetchStylesheet,
@@ -1241,16 +1248,53 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       },
     });
     bootstrapDisposers.push(() => facade?.dispose());
-    options.shadowRoot.append(markup.html);
-    for (const [style, source] of initialStyleSources) {
-      if (options.getNonce() === "") {
-        style.removeAttribute("nonce");
-      } else {
-        style.nonce = options.getNonce();
+    const liveMarkup = markup.html;
+    const commitMarkup = () => {
+      if (options.signal.aborted) {
+        return;
       }
-      style.textContent = source;
+      if (options.markup.kind === "adopted") {
+        for (const node of options.markup.previewNodes) {
+          node.parentNode?.removeChild(node);
+        }
+      }
+      options.shadowRoot.append(liveMarkup);
+      for (const [style, source] of initialStyleSources) {
+        if (options.getNonce() === "") {
+          style.removeAttribute("nonce");
+        } else {
+          style.nonce = options.getNonce();
+        }
+        style.textContent = source;
+      }
+      installCSSOMStyleSheets([liveMarkup]);
+    };
+    const transitionHost = options.host as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    const reducedMotion = options.host.ownerDocument.defaultView
+      ?.matchMedia("(prefers-reduced-motion: reduce)").matches === true;
+    if (
+      options.markup.kind === "adopted" &&
+      !reducedMotion &&
+      typeof transitionHost.startViewTransition === "function"
+    ) {
+      const transition = transitionHost.startViewTransition(commitMarkup);
+      const transitionReady = transition.ready.catch(() => undefined);
+      const skipTransition = () => transition.skipTransition();
+      options.signal.addEventListener("abort", skipTransition, { once: true });
+      try {
+        await transition.updateCallbackDone;
+        await transitionReady;
+      } finally {
+        options.signal.removeEventListener("abort", skipTransition);
+      }
+    } else {
+      commitMarkup();
     }
-    installCSSOMStyleSheets([markup.html]);
+    if (options.signal.aborted) {
+      throw abortError();
+    }
 
     scriptRunner = new ScriptRunner({
       window,
