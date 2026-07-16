@@ -58,6 +58,8 @@ v-head {
 
 // Initial markup can contain rewritten inline !important rules; staging must
 // outrank them without exposing a private marker attribute to the child app.
+// The shadow host is featureless, so on :host the armor only matches as the
+// functional argument, :host(:not(...)) — a bare :host:not(...) never does.
 const STAGING_SELECTOR_SPECIFICITY = `:not(${Array.from(
   { length: 64 },
   (_value, index) => `#v-frame-staging-${index}`,
@@ -298,7 +300,7 @@ function installAdoptedStagingStyles(shadowRoot: ShadowRoot): () => void {
     `:host > v-html:nth-of-type(${liveMarkupPosition})${STAGING_SELECTOR_SPECIFICITY}`;
   const sheet = new view.CSSStyleSheet();
   sheet.replaceSync(`
-:host${STAGING_SELECTOR_SPECIFICITY} {
+:host(${STAGING_SELECTOR_SPECIFICITY}) {
   display: grid !important;
 }
 :host > v-html${STAGING_SELECTOR_SPECIFICITY} {

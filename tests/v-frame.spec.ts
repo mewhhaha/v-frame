@@ -153,9 +153,14 @@ test("keeps adopted preview visible until its initial module completes", async (
     const markup = Array.from(
       frameElement.shadowRoot?.querySelectorAll("v-html") ?? [],
     );
+    const frameRect = frameElement.getBoundingClientRect();
     return {
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
+      liveOverlaysPreview:
+        markup[1].getBoundingClientRect().top === markup[0].getBoundingClientRect().top,
+      frameHeightMatchesPreview:
+        frameRect.height === markup[0].getBoundingClientRect().height,
       copyPointerEvents: markup.map((html) =>
         getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents
       ),
@@ -177,6 +182,8 @@ test("keeps adopted preview visible until its initial module completes", async (
     copyPointerEvents: ["auto", "none"],
     copyVisibilities: ["visible", "hidden"],
     displays: ["block", "block"],
+    liveOverlaysPreview: true,
+    frameHeightMatchesPreview: true,
     liveHeight: expect.any(Number),
     markupText: [
       "Server-rendered before activation",
