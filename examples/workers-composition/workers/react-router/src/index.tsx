@@ -1,54 +1,83 @@
 import { renderToString } from "react-dom/server";
-import { Route, Routes, StaticRouter, useLocation } from "react-router";
+import { StaticRouter } from "react-router";
 
-function ActivityWidget() {
-  const location = useLocation();
+import {
+  isWidgetRoute,
+  ReleaseActivityWidget,
+  type WidgetRoute,
+  widgetStyle,
+} from "./widget";
 
-  return (
-    <section className="activity-widget" aria-labelledby="activity-title">
-      <span className="widget-kicker">React Router SSR Worker</span>
-      <h2 id="activity-title">Release activity</h2>
-      <p className="widget-copy">Rendered for route <code>{location.pathname}</code>.</p>
-      <ol className="activity-list">
-        <li><strong>Design tokens</strong><span>Published 12 minutes ago</span></li>
-        <li><strong>Checkout shell</strong><span>Promoted to production</span></li>
-        <li><strong>Search widget</strong><span>Preview is ready</span></li>
-      </ol>
-      <button id="activity-refresh" type="button">Acknowledge updates</button>
-      <output id="activity-status">3 updates waiting</output>
-    </section>
-  );
+const clientModulePath = "/assets/react-router-widget-client.js";
+const contentType = "text/html; charset=utf-8";
+
+interface RenderContext {
+  basename: string;
+  route: WidgetRoute;
+  routingFrameId: string;
+  virtualPath: string;
 }
 
-function renderWidget(pathname: string): string {
+function normalizedBasePath(value: string | null): string {
+  if (value === null || !value.startsWith("/")) {
+    return "/";
+  }
+  const normalized = value.replace(/\/+$/, "");
+  return normalized === "" ? "/" : normalized;
+}
+
+function requestedRoute(value: string | null): WidgetRoute {
+  return value !== null && isWidgetRoute(value) ? value : "/activity";
+}
+
+function requestedFrameId(value: string | null): string {
+  return value === null ? "react-router-widget" : value;
+}
+
+function virtualPath(basename: string, route: WidgetRoute): string {
+  return basename === "/" ? route : `${basename}${route}`;
+}
+
+function renderContext(basename: string, route: WidgetRoute, routingFrameId: string): RenderContext {
+  return { basename, route, routingFrameId, virtualPath: virtualPath(basename, route) };
+}
+
+function renderWidget(context: RenderContext): string {
   return renderToString(
-    <StaticRouter location={pathname}>
-      <Routes>
-        <Route path="*" element={<ActivityWidget />} />
-      </Routes>
-    </StaticRouter>,
+    <div
+      id="react-router-widget-root"
+      data-router-basename={context.basename}
+      data-routing-frame-id={context.routingFrameId}
+    >
+      <StaticRouter basename={context.basename} location={context.virtualPath}>
+        <ReleaseActivityWidget routingFrameId={context.routingFrameId} />
+      </StaticRouter>
+    </div>,
   );
 }
 
-const widgetStyle = `
-  .activity-widget { height: 100%; padding: 1.4rem; border-radius: 1rem; background: #172554; color: #eff6ff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-  .widget-kicker { color: #93c5fd; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
-  .activity-widget h2 { margin: 0.45rem 0 0; font-size: 1.55rem; }
-  .widget-copy { margin: 0.35rem 0 1.2rem; color: #bfdbfe; }
-  .widget-copy code { color: #fff; }
-  .activity-list { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
-  .activity-list li { display: flex; justify-content: space-between; gap: 1rem; padding-bottom: 0.7rem; border-bottom: 1px solid #334e83; }
-  .activity-list span { color: #bfdbfe; font-size: 0.82rem; text-align: right; }
-  #activity-refresh { margin-top: 1.2rem; padding: 0.65rem 0.9rem; border: 0; border-radius: 0.65rem; background: #60a5fa; color: #10204c; font: inherit; font-weight: 800; cursor: pointer; }
-  #activity-status { display: block; margin-top: 0.65rem; color: #bfdbfe; font-size: 0.82rem; }
-`;
-
-function materializedDocument(markup: string): string {
-  return `<v-html lang="en"><v-head><style>v-html, v-body { display: block; } v-head { display: none; } ${widgetStyle}</style></v-head><v-body>${markup}<script type="application/vnd.v-frame" data-v-frame-script>document.querySelector('#activity-refresh').addEventListener('click', () => { document.querySelector('#activity-status').textContent = 'All caught up'; });</script></v-body></v-html>`;
+function clientModuleURL(basename: string): string {
+  return basename === "/" ? clientModulePath : `${basename}${clientModulePath}`;
 }
 
-function networkDocument(markup: string): string {
-  return `<!doctype html><html lang="en"><head><style>${widgetStyle}</style></head><body>${markup}</body></html>`;
+function materializedDocument(markup: string, moduleURL: string): string {
+  return `<v-html lang="en"><v-head><style>v-html, v-body { display: block; } v-head { display: none; } ${widgetStyle}</style></v-head><v-body>${markup}<script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module" src="${moduleURL}"></script></v-body></v-html>`;
+}
+
+function networkDocument(markup: string, moduleURL: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${widgetStyle}</style></head><body>${markup}<script type="module" src="${moduleURL}"></script></body></html>`;
+}
+
+function documentResponse(context: RenderContext): Response {
+  return new Response(networkDocument(renderWidget(context), clientModuleURL(context.basename)), {
+    headers: { "Content-Type": contentType },
+  });
+}
+
+function previewResponse(context: RenderContext): Response {
+  return new Response(materializedDocument(renderWidget(context), clientModuleURL(context.basename)), {
+    headers: { "Content-Type": contentType },
+  });
 }
 
 export default {
@@ -58,16 +87,16 @@ export default {
     }
 
     const url = new URL(request.url);
-    const markup = renderWidget(url.searchParams.get("route") ?? "/activity");
-    if (url.pathname === "/preview") {
-      return new Response(materializedDocument(markup), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+    if (isWidgetRoute(url.pathname)) {
+      return documentResponse(renderContext("/", url.pathname, "react-router-widget"));
     }
-    if (url.pathname === "/document") {
-      return new Response(networkDocument(markup), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+    if (url.pathname === "/document" || url.pathname === "/preview") {
+      const context = renderContext(
+        normalizedBasePath(url.searchParams.get("base")),
+        requestedRoute(url.searchParams.get("route")),
+        requestedFrameId(url.searchParams.get("frameId")),
+      );
+      return url.pathname === "/document" ? documentResponse(context) : previewResponse(context);
     }
     return new Response("React Router widget not found", { status: 404 });
   },

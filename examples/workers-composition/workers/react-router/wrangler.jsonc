@@ -2,8 +2,12 @@
   "$schema": "../../../../node_modules/wrangler/config-schema.json",
   "name": "v-frame-example-react-router-widget",
   "main": "src/index.tsx",
-  "compatibility_date": "2026-07-13",
+  "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/activity", "/history", "/document", "/preview"]
+  },
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },

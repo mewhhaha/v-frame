@@ -5,3 +5,6 @@ playwright-report
 test-results
 .angular
 .wrangler
+examples/workers-composition/workers/*/public
+examples/workers-composition/workers/qwik/server
+examples/workers-composition/workers/host/generated

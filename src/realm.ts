@@ -56,6 +56,13 @@ v-head {
 }
 `;
 
+// Initial markup can contain rewritten inline !important rules; staging must
+// outrank them without exposing a private marker attribute to the child app.
+const STAGING_SELECTOR_SPECIFICITY = `:not(${Array.from(
+  { length: 64 },
+  (_value, index) => `#v-frame-staging-${index}`,
+).join("")})`;
+
 interface BridgedWindowListener {
   type: string;
   listener: EventListenerOrEventListenerObject;
@@ -179,6 +186,7 @@ export interface VFrameRealm {
   readonly iframe: HTMLIFrameElement;
   readonly markup: PreparedMarkup;
   executeInitialScripts(): Promise<void>;
+  reveal(): Promise<void> | void;
   dispose(): void;
 }
 
@@ -273,6 +281,45 @@ function installInternalStyles(shadowRoot: ShadowRoot): () => void {
   } catch {
     return () => undefined;
   }
+}
+
+function installAdoptedStagingStyles(shadowRoot: ShadowRoot): () => void {
+  const view = shadowRoot.ownerDocument.defaultView;
+  if (view === null || typeof view.CSSStyleSheet !== "function") {
+    throw new Error(
+      "Cannot stage adopted v-frame markup without constructed stylesheet support",
+    );
+  }
+
+  const liveMarkupPosition = Array.from(shadowRoot.children).filter(
+    (element) => element.localName === "v-html",
+  ).length + 1;
+  const liveMarkupSelector =
+    `:host > v-html:nth-of-type(${liveMarkupPosition})${STAGING_SELECTOR_SPECIFICITY}`;
+  const sheet = new view.CSSStyleSheet();
+  sheet.replaceSync(`
+:host${STAGING_SELECTOR_SPECIFICITY} {
+  display: grid !important;
+}
+:host > v-html${STAGING_SELECTOR_SPECIFICITY} {
+  grid-area: 1 / 1 !important;
+  min-width: 0 !important;
+}
+${liveMarkupSelector},
+${liveMarkupSelector} * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+${liveMarkupSelector} {
+  opacity: 0 !important;
+}
+`);
+  shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
+  return () => {
+    shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
+      (candidate) => candidate !== sheet,
+    );
+  };
 }
 
 function installWindowEventBridge(
@@ -521,6 +568,7 @@ function installViewportPatches(
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
   const restoreInternalStyles = installInternalStyles(options.shadowRoot);
   const bootstrapDisposers: Array<() => void> = [];
+  let restoreAdoptedStagingStyles: () => void = () => undefined;
   let iframe: HTMLIFrameElement | null = null;
   let markup: PreparedMarkup | null = null;
 
@@ -1249,15 +1297,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
     bootstrapDisposers.push(() => facade?.dispose());
     const liveMarkup = markup.html;
-    const commitMarkup = () => {
-      if (options.signal.aborted) {
-        return;
-      }
-      if (options.markup.kind === "adopted") {
-        for (const node of options.markup.previewNodes) {
-          node.parentNode?.removeChild(node);
-        }
-      }
+    if (options.markup.kind === "adopted") {
+      restoreAdoptedStagingStyles = installAdoptedStagingStyles(
+        options.shadowRoot,
+      );
+    }
+    if (!options.signal.aborted) {
       options.shadowRoot.append(liveMarkup);
       for (const [style, source] of initialStyleSources) {
         if (options.getNonce() === "") {
@@ -1268,29 +1313,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         style.textContent = source;
       }
       installCSSOMStyleSheets([liveMarkup]);
-    };
-    const transitionHost = options.host as HTMLElement & {
-      startViewTransition?: (update: () => void) => ViewTransition;
-    };
-    const reducedMotion = options.host.ownerDocument.defaultView
-      ?.matchMedia("(prefers-reduced-motion: reduce)").matches === true;
-    if (
-      options.markup.kind === "adopted" &&
-      !reducedMotion &&
-      typeof transitionHost.startViewTransition === "function"
-    ) {
-      const transition = transitionHost.startViewTransition(commitMarkup);
-      const transitionReady = transition.ready.catch(() => undefined);
-      const skipTransition = () => transition.skipTransition();
-      options.signal.addEventListener("abort", skipTransition, { once: true });
-      try {
-        await transition.updateCallbackDone;
-        await transitionReady;
-      } finally {
-        options.signal.removeEventListener("abort", skipTransition);
-      }
-    } else {
-      commitMarkup();
     }
     if (options.signal.aborted) {
       throw abortError();
@@ -1719,6 +1741,20 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     window.addEventListener("hashchange", trustedHashChangeListener);
     iframe.addEventListener("load", directNavigationListener);
 
+    let adoptedMarkupRevealed = options.markup.kind !== "adopted";
+    const revealAdoptedMarkup = (): void => {
+      if (adoptedMarkupRevealed || disposed || options.signal.aborted) {
+        return;
+      }
+      adoptedMarkupRevealed = true;
+      for (const node of options.markup.kind === "adopted"
+        ? options.markup.previewNodes
+        : []) {
+        node.parentNode?.removeChild(node);
+      }
+      restoreAdoptedStagingStyles();
+    };
+
     const runtime: VFrameRealm = {
       window,
       document,
@@ -1727,6 +1763,49 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       async executeInitialScripts() {
         installNavigation();
         await scriptRunner?.executeInitial();
+      },
+      reveal() {
+        if (disposed || options.signal.aborted) {
+          throw abortError();
+        }
+        if (adoptedMarkupRevealed) {
+          return;
+        }
+
+        const transitionHost = options.host as HTMLElement & {
+          startViewTransition?: (update: () => void) => ViewTransition;
+        };
+        const reducedMotion = options.host.ownerDocument.defaultView
+          ?.matchMedia("(prefers-reduced-motion: reduce)").matches === true;
+        if (
+          reducedMotion ||
+          typeof transitionHost.startViewTransition !== "function"
+        ) {
+          revealAdoptedMarkup();
+          return;
+        }
+
+        const transition = transitionHost.startViewTransition(
+          revealAdoptedMarkup,
+        );
+        const transitionReady = transition.ready.catch(() => undefined);
+        const skipTransition = () => transition.skipTransition();
+        if (options.signal.aborted) {
+          skipTransition();
+        } else {
+          options.signal.addEventListener("abort", skipTransition, { once: true });
+        }
+        return (async () => {
+          try {
+            await transition.updateCallbackDone;
+            await transitionReady;
+          } finally {
+            options.signal.removeEventListener("abort", skipTransition);
+          }
+          if (options.signal.aborted) {
+            throw abortError();
+          }
+        })();
       },
       dispose() {
         if (disposed) {
@@ -1750,8 +1829,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         networkDispose();
         iframe?.remove();
         facade?.dispose();
-        restoreInternalStyles();
         markup?.html.remove();
+        markup?.inlineStyleSheet.remove();
+        restoreAdoptedStagingStyles();
+        restoreInternalStyles();
       },
     };
     options.signal.addEventListener("abort", runtime.dispose, { once: true });
@@ -1761,7 +1842,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       disposeBootstrapResource();
     }
     markup?.html.remove();
+    markup?.inlineStyleSheet.remove();
     iframe?.remove();
+    restoreAdoptedStagingStyles();
     restoreInternalStyles();
     throw error;
   }

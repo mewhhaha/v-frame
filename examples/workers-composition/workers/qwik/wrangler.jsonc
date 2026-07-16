@@ -1,14 +1,20 @@
 {
   "$schema": "../../../../node_modules/wrangler/config-schema.json",
   "name": "v-frame-example-qwik-widget",
-  "main": "src/index.tsx",
-  "compatibility_date": "2026-07-13",
+  "main": "server/build/index.js",
+  "build": {
+    "command": "pnpm run build:qwik"
+  },
+  "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
   "define": {
     "import.meta.env.BASE_URL": "\"/\""
   },
   "alias": {
     "@qwik-client-manifest": "v-frame-qwik-client-manifest"
+  },
+  "assets": {
+    "directory": "./public"
   },
   "observability": {
     "enabled": true,

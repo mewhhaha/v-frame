@@ -122,6 +122,319 @@ test("adopts server-rendered shadow content without fetching the entry document"
   expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(1);
 });
 
+test("keeps adopted preview visible until its initial module completes", async ({ page }) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(() => {
+    let releaseModule = () => undefined;
+    const moduleGate = new Promise<void>((resolve) => {
+      releaseModule = resolve;
+    });
+    const transitionSnapshots: Array<{
+      liveText: string | null;
+      markupCount: number;
+      moduleFinished: boolean;
+    }> = [];
+    const transitionState = {
+      starts: 0,
+      transitionSnapshots,
+    };
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    prototype.startViewTransition = function startViewTransition(update): ViewTransition {
+      transitionState.starts += 1;
+      const markup = this.shadowRoot?.querySelectorAll("v-html") ?? [];
+      transitionSnapshots.push({
+        liveText: markup[1]?.querySelector("#adopted-copy")?.textContent ?? null,
+        markupCount: markup.length,
+        moduleFinished: (window as Window & typeof globalThis & {
+          __adoptedModuleFinished?: boolean;
+        }).__adoptedModuleFinished === true,
+      });
+      const updateCallbackDone = Promise.resolve().then(update);
+      return {
+        finished: new Promise<void>(() => undefined),
+        ready: Promise.reject(new Error("The staged transition is not animatable")),
+        types: new Set<string>(),
+        updateCallbackDone,
+        skipTransition() {},
+      } as unknown as ViewTransition;
+    };
+
+    const hostWindow = window as Window & typeof globalThis & {
+      __adoptedModuleFinished?: boolean;
+      __adoptedModuleGate?: Promise<void>;
+      __adoptedModuleStarted?: boolean;
+      __adoptedTransitionState?: typeof transitionState;
+      __releaseAdoptedModule?: () => void;
+    };
+    hostWindow.__adoptedModuleFinished = false;
+    hostWindow.__adoptedModuleGate = moduleGate;
+    hostWindow.__adoptedModuleStarted = false;
+    hostWindow.__adoptedTransitionState = transitionState;
+    hostWindow.__releaseAdoptedModule = releaseModule;
+
+    const frame = document.createElement("v-frame");
+    frame.setAttribute("adopt", "");
+    frame.setAttribute("src", "/documents/adopted-entry.html");
+    frame.attachShadow({ mode: "open" }).innerHTML = `
+      <v-html style="visibility: visible !important; opacity: 1 !important">
+        <v-head><style>v-html, v-body { display: block; } v-head { display: none; }</style></v-head>
+        <v-body>
+          <p id="adopted-copy" style="visibility: visible !important; pointer-events: auto !important">Server-rendered before activation</p>
+          <script
+            type="application/vnd.v-frame"
+            data-v-frame-script
+            data-v-frame-type="module"
+          >
+            document.querySelector('#adopted-copy').textContent = 'Prepared by initial module';
+            top.__adoptedModuleStarted = true;
+            await top.__adoptedModuleGate;
+            top.__adoptedModuleFinished = true;
+          </script>
+        </v-body>
+      </v-html>`;
+    document.querySelector("#host")?.append(frame);
+  });
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & typeof globalThis & { __adoptedModuleStarted?: boolean })
+      .__adoptedModuleStarted
+  )).toBe(true);
+  const frame = page.locator("v-frame");
+  const staged = await frame.evaluate((element) => {
+    const frameElement = element as HTMLElement & { status: string };
+    const markup = Array.from(
+      frameElement.shadowRoot?.querySelectorAll("v-html") ?? [],
+    );
+    return {
+      connected: markup.map((html) => html.isConnected),
+      displays: markup.map((html) => getComputedStyle(html).display),
+      copyPointerEvents: markup.map((html) =>
+        getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents
+      ),
+      copyVisibilities: markup.map((html) =>
+        getComputedStyle(html.querySelector("#adopted-copy")!).visibility
+      ),
+      liveHeight: markup[1]?.getBoundingClientRect().height,
+      markupText: markup.map((html) =>
+        html.querySelector("#adopted-copy")?.textContent
+      ),
+      status: frameElement.status,
+      styleSheets: frameElement.shadowRoot?.adoptedStyleSheets.length,
+      transitionStarts: (window as Window & typeof globalThis & {
+        __adoptedTransitionState: { starts: number };
+      }).__adoptedTransitionState.starts,
+      opacities: markup.map((html) => getComputedStyle(html).opacity),
+      visibilities: markup.map((html) => getComputedStyle(html).visibility),
+    };
+  });
+  expect(staged).toEqual({
+    connected: [true, true],
+    copyPointerEvents: ["auto", "none"],
+    copyVisibilities: ["visible", "hidden"],
+    displays: ["block", "block"],
+    liveHeight: expect.any(Number),
+    markupText: [
+      "Server-rendered before activation",
+      "Prepared by initial module",
+    ],
+    status: "loading",
+    styleSheets: 2,
+    transitionStarts: 0,
+    opacities: ["1", "0"],
+    visibilities: ["visible", "hidden"],
+  });
+  expect(staged.liveHeight).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    (window as Window & typeof globalThis & { __releaseAdoptedModule: () => void })
+      .__releaseAdoptedModule();
+  });
+  await expect.poll(() => frame.evaluate((element) =>
+    (element as HTMLElement & { status: string }).status
+  )).toBe("ready");
+  const revealed = await frame.evaluate((element) => {
+    const frameElement = element as HTMLElement & { status: string };
+    const hostWindow = window as Window & typeof globalThis & {
+      __adoptedModuleFinished: boolean;
+      __adoptedTransitionState: {
+        starts: number;
+        transitionSnapshots: Array<{
+          liveText: string | null;
+          markupCount: number;
+          moduleFinished: boolean;
+        }>;
+      };
+    };
+    return {
+      moduleFinished: hostWindow.__adoptedModuleFinished,
+      markupCount: frameElement.shadowRoot?.querySelectorAll("v-html").length,
+      text: frameElement.shadowRoot?.querySelector("#adopted-copy")?.textContent,
+      styleSheets: frameElement.shadowRoot?.adoptedStyleSheets.length,
+      transitionState: hostWindow.__adoptedTransitionState,
+    };
+  });
+  expect(revealed).toEqual({
+    moduleFinished: true,
+    markupCount: 1,
+    text: "Prepared by initial module",
+    styleSheets: 1,
+    transitionState: {
+      starts: 1,
+      transitionSnapshots: [{
+        liveText: "Prepared by initial module",
+        markupCount: 2,
+        moduleFinished: true,
+      }],
+    },
+  });
+});
+
+test("reveals adopted markup directly when scoped transitions are unavailable", async ({ page }) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(() => {
+    const hostWindow = window as Window & typeof globalThis & {
+      __fallbackTransitionStarts?: number;
+    };
+    hostWindow.__fallbackTransitionStarts = 0;
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    prototype.startViewTransition = function startViewTransition(): ViewTransition {
+      hostWindow.__fallbackTransitionStarts =
+        (hostWindow.__fallbackTransitionStarts ?? 0) + 1;
+      throw new Error("The frame should use its direct reveal fallback");
+    };
+
+    const frame = document.createElement("v-frame");
+    Object.defineProperty(frame, "startViewTransition", {
+      configurable: true,
+      value: undefined,
+    });
+    frame.setAttribute("adopt", "");
+    frame.setAttribute("src", "/documents/adopted-entry.html");
+    frame.attachShadow({ mode: "open" }).innerHTML = `
+      <v-html><v-head></v-head><v-body>
+        <p id="fallback-copy">Server-rendered fallback</p>
+        <script type="application/vnd.v-frame" data-v-frame-script>
+          document.querySelector('#fallback-copy').textContent = 'Fallback script complete';
+        </script>
+      </v-body></v-html>`;
+    document.querySelector("#host")?.append(frame);
+  });
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+
+  const frame = page.locator("v-frame");
+  await expect.poll(() => frame.evaluate((element) =>
+    (element as HTMLElement & { status: string }).status
+  )).toBe("ready");
+  const state = await page.evaluate(() => {
+    const hostWindow = window as Window & typeof globalThis & {
+      __fallbackTransitionStarts: number;
+    };
+    const frame = document.querySelector("v-frame");
+    return {
+      markupCount: frame?.shadowRoot?.querySelectorAll("v-html").length,
+      text: frame?.shadowRoot?.querySelector("#fallback-copy")?.textContent,
+      transitionStarts: hostWindow.__fallbackTransitionStarts,
+    };
+  });
+  expect(state).toEqual({
+    markupCount: 1,
+    text: "Fallback script complete",
+    transitionStarts: 0,
+  });
+});
+
+test("keeps the adopted preview after a bootstrap navigation failure", async ({ page }) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(() => {
+    const hostWindow = window as Window & typeof globalThis & {
+      __adoptedFailureEvents?: string[];
+      __adoptedFailureLoads?: number;
+      __adoptedFailureTransitions?: number;
+    };
+    hostWindow.__adoptedFailureEvents = [];
+    hostWindow.__adoptedFailureLoads = 0;
+    hostWindow.__adoptedFailureTransitions = 0;
+    const prototype = HTMLElement.prototype as HTMLElement & {
+      startViewTransition?: (update: () => void) => ViewTransition;
+    };
+    prototype.startViewTransition = function startViewTransition(update): ViewTransition {
+      hostWindow.__adoptedFailureTransitions =
+        (hostWindow.__adoptedFailureTransitions ?? 0) + 1;
+      update();
+      return {
+        finished: Promise.resolve(),
+        ready: Promise.resolve(),
+        types: new Set<string>(),
+        updateCallbackDone: Promise.resolve(),
+        skipTransition() {},
+      } as unknown as ViewTransition;
+    };
+
+    const frame = document.createElement("v-frame");
+    frame.addEventListener("v-frame-error", (event) => {
+      const failure = (event as CustomEvent<{ fatal: boolean; phase: string }>).detail;
+      if (failure.fatal) {
+        hostWindow.__adoptedFailureEvents?.push(failure.phase);
+      }
+    });
+    frame.addEventListener("v-frame-load", () => {
+      hostWindow.__adoptedFailureLoads = (hostWindow.__adoptedFailureLoads ?? 0) + 1;
+    });
+    frame.setAttribute("adopt", "");
+    frame.setAttribute("src", "/documents/adopted-entry.html");
+    frame.attachShadow({ mode: "open" }).innerHTML = `
+      <v-html><v-head></v-head><v-body>
+        <p id="failure-preview">Server-rendered failure fallback</p>
+        <script type="application/vnd.v-frame" data-v-frame-script>
+          location.assign('/documents/second.html');
+        </script>
+      </v-body></v-html>`;
+    document.querySelector("#host")?.append(frame);
+  });
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+
+  const frame = page.locator("v-frame");
+  await expect.poll(() => frame.evaluate((element) =>
+    (element as HTMLElement & { status: string }).status
+  )).toBe("error");
+  const state = await page.evaluate(() => {
+    const hostWindow = window as Window & typeof globalThis & {
+      __adoptedFailureEvents: string[];
+      __adoptedFailureLoads: number;
+      __adoptedFailureTransitions: number;
+    };
+    const frame = document.querySelector("v-frame");
+    return {
+      failures: hostWindow.__adoptedFailureEvents,
+      loads: hostWindow.__adoptedFailureLoads,
+      markupCount: frame?.shadowRoot?.querySelectorAll("v-html").length,
+      preview: frame?.shadowRoot?.querySelector("#failure-preview")?.textContent,
+      transitions: hostWindow.__adoptedFailureTransitions,
+    };
+  });
+  expect(state).toEqual({
+    failures: ["navigation"],
+    loads: 0,
+    markupCount: 1,
+    preview: "Server-rendered failure fallback",
+    transitions: 0,
+  });
+});
+
 test("runs simultaneous adopted handoffs as independent scoped transitions", async ({
   browserName,
   page,
@@ -145,13 +458,30 @@ test("runs simultaneous adopted handoffs as independent scoped transitions", asy
     (window as Window & typeof globalThis & { __transitionHosts?: HTMLElement[] })
       .__transitionHosts = transitionHosts;
 
+    let releaseFirstModule = () => undefined;
+    const firstModuleGate = new Promise<void>((resolve) => {
+      releaseFirstModule = resolve;
+    });
+    const hostWindow = window as Window & typeof globalThis & {
+      __firstModuleGate?: Promise<void>;
+      __releaseFirstModule?: () => void;
+    };
+    hostWindow.__firstModuleGate = firstModuleGate;
+    hostWindow.__releaseFirstModule = releaseFirstModule;
+
     for (const name of ["first", "second"]) {
       const frame = document.createElement("v-frame");
       frame.id = name;
       frame.setAttribute("adopt", "");
       frame.setAttribute("src", `/documents/${name}.html`);
       frame.attachShadow({ mode: "open" }).innerHTML =
-        `<v-html><v-head></v-head><v-body><p>${name}</p></v-body></v-html>`;
+        `<v-html><v-head></v-head><v-body><p>${name}</p>${
+          name === "first"
+            ? `<script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+                await top.__firstModuleGate;
+              </script>`
+            : ""
+        }</v-body></v-html>`;
       document.querySelector("#host")?.append(frame);
     }
   });
@@ -161,6 +491,18 @@ test("runs simultaneous adopted handoffs as independent scoped transitions", asy
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
   const frames = page.locator("v-frame");
+  await expect.poll(() => frames.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLElement & { status: string }).status)
+  )).toEqual(["loading", "ready"]);
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & typeof globalThis & { __transitionHosts: HTMLElement[] })
+      .__transitionHosts.map((host) => host.id)
+  )).toEqual(["second"]);
+
+  await page.evaluate(() => {
+    (window as Window & typeof globalThis & { __releaseFirstModule: () => void })
+      .__releaseFirstModule();
+  });
   await expect.poll(() => frames.evaluateAll((elements) =>
     elements.map((element) => (element as HTMLElement & { status: string }).status)
   )).toEqual(["ready", "ready"]);
@@ -219,6 +561,14 @@ test("does not restore adopted markup after removal during a transition", async 
     const frame = document.querySelector("v-frame") as HTMLElement & {
       status: string;
     };
+    (window as Window & typeof globalThis & { __heldFrameLoads?: number })
+      .__heldFrameLoads = 0;
+    frame.addEventListener("v-frame-load", () => {
+      const hostWindow = window as Window & typeof globalThis & {
+        __heldFrameLoads: number;
+      };
+      hostWindow.__heldFrameLoads += 1;
+    });
     (window as Window & typeof globalThis & { __heldFrame?: HTMLElement })
       .__heldFrame = frame;
     const bundle = await import(url);
@@ -240,8 +590,10 @@ test("does not restore adopted markup after removal during a transition", async 
     return {
       status: frame.status,
       childElements: frame.shadowRoot?.children.length,
+      loads: (window as Window & typeof globalThis & { __heldFrameLoads: number })
+        .__heldFrameLoads,
     };
-  })).toEqual({ status: "idle", childElements: 0 });
+  })).toEqual({ status: "idle", childElements: 0, loads: 0 });
   expect(fixture.requests.filter(
     (path) => path === "/documents/adopted-entry.html",
   )).toHaveLength(entryRequestsBefore);

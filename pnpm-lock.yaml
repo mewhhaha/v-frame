@@ -152,9 +152,15 @@ importers:
       concurrently:
         specifier: 10.0.3
         version: 10.0.3
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+      vite:
+        specifier: 7.3.6
+        version: 7.3.6(@types/node@26.1.1)(lightningcss@1.32.0)(sass@1.99.0)
 
 packages:
 
