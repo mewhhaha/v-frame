@@ -186,7 +186,7 @@ export interface VFrameRealm {
   readonly iframe: HTMLIFrameElement;
   readonly markup: PreparedMarkup;
   executeInitialScripts(): Promise<void>;
-  reveal(): Promise<void> | void;
+  reveal(): void;
   dispose(): void;
 }
 
@@ -1768,44 +1768,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         if (disposed || options.signal.aborted) {
           throw abortError();
         }
-        if (adoptedMarkupRevealed) {
-          return;
-        }
-
-        const transitionHost = options.host as HTMLElement & {
-          startViewTransition?: (update: () => void) => ViewTransition;
-        };
-        const reducedMotion = options.host.ownerDocument.defaultView
-          ?.matchMedia("(prefers-reduced-motion: reduce)").matches === true;
-        if (
-          reducedMotion ||
-          typeof transitionHost.startViewTransition !== "function"
-        ) {
-          revealAdoptedMarkup();
-          return;
-        }
-
-        const transition = transitionHost.startViewTransition(
-          revealAdoptedMarkup,
-        );
-        const transitionReady = transition.ready.catch(() => undefined);
-        const skipTransition = () => transition.skipTransition();
-        if (options.signal.aborted) {
-          skipTransition();
-        } else {
-          options.signal.addEventListener("abort", skipTransition, { once: true });
-        }
-        return (async () => {
-          try {
-            await transition.updateCallbackDone;
-            await transitionReady;
-          } finally {
-            options.signal.removeEventListener("abort", skipTransition);
-          }
-          if (options.signal.aborted) {
-            throw abortError();
-          }
-        })();
+        // The staged live tree is pixel-identical to the preview, so a
+        // synchronous swap never repaints. Masking it with a scoped View
+        // Transition would itself flicker: Chromium pixel-snaps transition
+        // snapshots, visibly shifting fractionally positioned frames.
+        revealAdoptedMarkup();
       },
       dispose() {
         if (disposed) {

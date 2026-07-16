@@ -324,11 +324,7 @@ export class VFrameElement extends HTMLElementBase {
       this.#realm = realm;
       await Promise.race([realm.executeInitialScripts(), fatalRealm]);
       this.#assertCurrentGeneration(generation, controller.signal);
-      const revealSettlement = realm.reveal();
-      if (revealSettlement !== undefined) {
-        await Promise.race([revealSettlement, fatalRealm]);
-      }
-      this.#assertCurrentGeneration(generation, controller.signal);
+      realm.reveal();
       this.#status = VFrameStatus.Ready;
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
         url: this.#currentURL ?? finalURL,
