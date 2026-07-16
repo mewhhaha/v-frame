@@ -81,11 +81,10 @@ fetching the entry document. The `adopt` property reflects the boolean
 attribute. Adoption is consumed once; `reload()`, reconnection, a later `src`
 change, or a `credentials` change uses the normal network load.
 
-When the browser supports element-scoped View Transitions, `v-frame` keeps a
-snapshot of the server-rendered widget visible while it installs the live tree.
-Frames transition independently, so several widgets can activate together.
-Reduced-motion preferences and browsers without scoped transitions use the
-same direct handoff without animation.
+The server-rendered preview stays visible while the live tree loads and
+hydrates out of view, and the handoff is a single synchronous swap. Because
+the staged tree matches the preview, the swap does not repaint. Frames hand
+off independently, so several widgets can activate together.
 
 Adopted markup must already use the materialized shell names and scoped CSS.
 URLs should be absolute or resolvable against `src`. Scripts must be inert

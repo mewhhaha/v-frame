@@ -35,10 +35,10 @@ runtime immediately after the composed markup, so activation does not wait for
 an external component-module request. `adopt` uses `src` as the widget's virtual
 URL but does not fetch it. It keeps the server preview visible while a laid-out,
 non-interactive live tree starts in the isolated realm. React hydrates that tree
-and Qwik installs its loader before `v-frame` reveals it. A scoped View
-Transition covers only that final synchronous reveal when the browser supports
-it, so the widgets can activate concurrently without transitioning the host
-page. A later `reload()` or `src` change uses the ordinary network path.
+and Qwik installs its loader before `v-frame` reveals it with a single
+synchronous swap. The staged tree matches the preview, so the reveal does not
+repaint and the widgets can activate concurrently. A later `reload()` or `src`
+change uses the ordinary network path.
 
 ## Why the preview is materialized
 
