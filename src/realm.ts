@@ -1721,7 +1721,23 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const rejectionListener = (event: PromiseRejectionEvent) => {
       options.onError({ phase: "runtime", url: currentURL, error: event.reason });
     };
+    // Reloading or leaving the host page fires beforeunload in every child
+    // realm too; only a child-initiated navigation is a fatal escape. The
+    // host's own beforeunload reaches us first (the browser walks the frame
+    // tree from the root), and the flag resets on the next task in case the
+    // host navigation is canceled and the page lives on.
+    const hostView = options.host.ownerDocument.defaultView;
+    let hostUnloadUnderway = false;
+    const hostBeforeUnloadListener = () => {
+      hostUnloadUnderway = true;
+      hostView?.setTimeout(() => {
+        hostUnloadUnderway = false;
+      }, 0);
+    };
     const directNavigationListener = () => {
+      if (hostUnloadUnderway) {
+        return;
+      }
       reportFatal({
         phase: "navigation",
         url: currentURL,
@@ -1737,6 +1753,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
     };
 
+    hostView?.addEventListener("beforeunload", hostBeforeUnloadListener, true);
+    bootstrapDisposers.push(() => {
+      hostView?.removeEventListener("beforeunload", hostBeforeUnloadListener, true);
+    });
     window.addEventListener("error", runtimeErrorListener);
     window.addEventListener("unhandledrejection", rejectionListener);
     window.addEventListener("beforeunload", directNavigationListener);
@@ -1786,6 +1806,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         options.shadowRoot.removeEventListener("click", suppressLinkDefault, true);
         options.shadowRoot.removeEventListener("auxclick", suppressLinkDefault, true);
         options.shadowRoot.removeEventListener("submit", suppressSubmitDefault, true);
+        hostView?.removeEventListener("beforeunload", hostBeforeUnloadListener, true);
         window.removeEventListener("error", runtimeErrorListener);
         window.removeEventListener("unhandledrejection", rejectionListener);
         window.removeEventListener("beforeunload", directNavigationListener);
