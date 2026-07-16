@@ -466,6 +466,37 @@ test("does not restore adopted markup after removal during activation", async ({
   )).toHaveLength(entryRequestsBefore);
 });
 
+test("host page reload leaves active adopted frames intact until teardown", async ({ page }) => {
+  await page.goto(`${fixture.origin}/documents/adopted-host.html`);
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  const frame = page.locator("v-frame");
+  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+
+  const teardownReports: string[] = [];
+  page.on("console", (message) => {
+    if (message.text().startsWith("v-frame-teardown:")) {
+      teardownReports.push(message.text());
+    }
+  });
+  await page.evaluate(() => {
+    window.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
+      console.log(`v-frame-teardown: error phase=${detail.phase} fatal=${detail.fatal}`);
+    }, true);
+    window.addEventListener("pagehide", () => {
+      const copyIntact = document.querySelector("v-frame")?.shadowRoot
+        ?.querySelector("#adopted-copy") !== null;
+      console.log(`v-frame-teardown: pagehide copyIntact=${copyIntact}`);
+    });
+  });
+  await page.reload({ waitUntil: "load" });
+
+  expect(teardownReports).toEqual(["v-frame-teardown: pagehide copyIntact=true"]);
+});
+
 test("emits lifecycle errors and ignores stale loads after disconnection", async ({ page }) => {
   await installBundle(page);
   const events = await page.evaluate(async (origin) => {
