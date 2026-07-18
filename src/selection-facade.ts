@@ -141,15 +141,6 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     }
     options.onSelectionChange();
   };
-  const privateRange = (
-    range: Range,
-    anchorNode = range.startContainer,
-    anchorOffset = range.startOffset,
-    focusNode = range.endContainer,
-    focusOffset = range.endOffset,
-  ): void => {
-    privateSelection = { range, anchorNode, anchorOffset, focusNode, focusOffset };
-  };
   const nativeSelectionCanChange = (): boolean => {
     if (privateSelection !== null) {
       return false;
@@ -388,7 +379,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         const previous = selectionSnapshot(state);
         state.range.deleteContents();
         if (privateSelection !== null) {
-          privateRange(state.range);
+          privateSelection = selectionStateFromRange(state.range);
         }
         notifySelectionChange(previous);
       },

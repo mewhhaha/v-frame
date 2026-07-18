@@ -15,7 +15,6 @@ import {
 } from "./document-facade.js";
 import { VirtualHistory } from "./history.js";
 import {
-  absolutizeElementAttributes,
   prepareAdoptedMarkup,
   prepareMarkup,
   type PreparedMarkup,
@@ -184,9 +183,6 @@ export interface CreateRealmOptions {
 
 export interface VFrameRealm {
   readonly window: VFrameWindow;
-  readonly document: Document;
-  readonly iframe: HTMLIFrameElement;
-  readonly markup: PreparedMarkup;
   executeInitialScripts(): Promise<void>;
   reveal(): void;
   dispose(): void;
@@ -499,7 +495,7 @@ function installViewportPatches(
   window: VFrameWindow,
   getSelection: () => Selection | null,
   dispatchScrollEvent: () => void,
-): { resizeObserver: ResizeObserver; dispose(): void } {
+): { dispose(): void } {
   const ResizeObserverConstructor = host.ownerDocument.defaultView?.ResizeObserver;
   if (ResizeObserverConstructor === undefined) {
     throw new Error("v-frame requires ResizeObserver support");
@@ -551,7 +547,6 @@ function installViewportPatches(
   host.addEventListener("scroll", scrollListener, { passive: true });
 
   return {
-    resizeObserver,
     dispose() {
       disposed = true;
       resizeObserver.disconnect();
@@ -699,7 +694,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       getBaseURL: getDocumentBaseURL,
     });
     bootstrapDisposers.push(networkDispose);
-    let windowEventDispose: () => void = () => undefined;
     const viewport = installViewportPatches(
       options.host,
       window,
@@ -1225,20 +1219,16 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         update.snapshot = null;
       }
     };
-    const dynamicStyles = (nodes: readonly Node[], connected = false): void => {
+    const dynamicStyles = (nodes: readonly Node[]): void => {
       const styles = virtualStylesFrom(nodes);
       const links = dynamicLinksFrom(nodes);
       for (const style of styles) {
-        if (connected) {
-          connectedStylesAwaitingObservation.add(style);
-        }
+        connectedStylesAwaitingObservation.add(style);
         scheduleConnectedDynamicStyle(style);
       }
       for (const link of links) {
-        if (connected) {
-          connectedLinksAwaitingObservation.add(link);
-        }
-        scheduleDynamicLink(link, connected);
+        connectedLinksAwaitingObservation.add(link);
+        scheduleDynamicLink(link, true);
       }
 
       for (const node of nodes) {
@@ -1298,7 +1288,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       },
       onConnectedNodes(nodes) {
         installCSSOMStyleSheets(nodes);
-        dynamicStyles(nodes, true);
+        dynamicStyles(nodes);
       },
     });
     bootstrapDisposers.push(() => facade?.dispose());
@@ -1343,7 +1333,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         options.onError({ phase: "runtime", ...failure });
       },
     });
-    windowEventDispose = installWindowEventBridge(
+    const windowEventDispose = installWindowEventBridge(
       window,
       options.shadowRoot,
       facade.eventForListener,
@@ -1413,11 +1403,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
             );
             if (record.attributeName === "style") {
               facade?.synchronizeStyleAttribute(record.target);
-            }
-            if (record.attributeName === "srcset") {
-              absolutizeElementAttributes(record.target, getDocumentBaseURL(), {
-                urlAttributes: false,
-              });
             }
             if (
               record.target instanceof window.HTMLStyleElement &&
@@ -1805,9 +1790,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const runtime: VFrameRealm = {
       window,
-      document,
-      iframe,
-      markup,
       async executeInitialScripts() {
         installNavigation();
         await scriptRunner?.executeInitial();

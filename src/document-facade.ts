@@ -2,7 +2,6 @@ import * as cssTree from "css-tree";
 import type { DeclarationList } from "css-tree";
 import { rewriteStyleAttribute, translateShellSelector } from "./css.js";
 import {
-  absolutizeElementAttributes,
   absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
@@ -251,7 +250,7 @@ class ListenerBridge {
   invoke(
     event: Event,
     capture: boolean,
-    shouldContinue: () => boolean = () => true,
+    shouldContinue: () => boolean,
   ): void {
     for (const record of [...this.#records]) {
       // A listener removed by an earlier listener in this dispatch is skipped,
@@ -326,12 +325,10 @@ export interface DocumentFacadeOptions {
 
 export interface NativeDocumentHandles {
   privateHead: HTMLHeadElement;
-  privateBody: HTMLElement;
   createElement<K extends keyof HTMLElementTagNameMap>(name: K): HTMLElementTagNameMap[K];
   appendChild<T extends Node>(parent: Node, child: T): T;
   getAttribute(element: Element, name: string): string | null;
   setAttribute(element: Element, name: string, value: string): void;
-  removeAttribute(element: Element, name: string): void;
 }
 
 export interface DocumentFacade {
@@ -1872,9 +1869,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         markSVGURLProperty(node);
       }
       rebaseElementURLs(node);
-      absolutizeElementAttributes(node, options.getBaseURL(), {
-        urlAttributes: false,
-      });
     }
 
     for (const child of Array.from(node.childNodes)) {
@@ -2085,9 +2079,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           element.nonce = nonce;
         }
       }
-      absolutizeElementAttributes(element, options.getBaseURL(), {
-        urlAttributes: false,
-      });
     }
   };
 
@@ -2677,7 +2668,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (records === undefined) {
         records = [];
         virtualListenerRecords.set(this, records);
-        virtualListenerTargets.add(this);
       }
       if (
         records.some(
@@ -4301,7 +4291,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   return {
     native: {
       privateHead,
-      privateBody,
       createElement<K extends keyof HTMLElementTagNameMap>(name: K) {
         return nativeCreateElement.call(document, name) as HTMLElementTagNameMap[K];
       },
@@ -4313,9 +4302,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       },
       setAttribute(element: Element, name: string, value: string) {
         nativeSetAttribute.call(element, name, value);
-      },
-      removeAttribute(element: Element, name: string) {
-        nativeRemoveAttribute.call(element, name);
       },
     },
     getSelection: () => selection,

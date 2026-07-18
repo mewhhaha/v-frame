@@ -70,11 +70,6 @@ export interface PrepareMarkupOptions {
   onError(error: MarkupError): void;
 }
 
-export interface PrepareAdoptedMarkupOptions
-  extends Omit<PrepareMarkupOptions, "source"> {
-  source: string;
-}
-
 export interface PreparedMarkup {
   html: HTMLElement;
   head: HTMLElement;
@@ -584,38 +579,35 @@ export function isURLAttribute(
   return namespaceURI === null && attributeName.toLowerCase() === "href";
 }
 
-export function absolutizeElementAttributes(
+function absolutizeElementAttributes(
   element: Element,
   baseURL: string,
-  options: { urlAttributes?: boolean; styleAttributes?: boolean } = {},
 ): void {
-  if (options.urlAttributes !== false) {
-    for (const attribute of Array.from(element.attributes)) {
-      if (!isURLAttribute(element, attribute.localName, attribute.namespaceURI)) {
-        continue;
-      }
+  for (const attribute of Array.from(element.attributes)) {
+    if (!isURLAttribute(element, attribute.localName, attribute.namespaceURI)) {
+      continue;
+    }
 
-      const value = attribute.value;
-      if (value.trim() === "" || value.trim().toLowerCase().startsWith("javascript:")) {
-        continue;
-      }
+    const value = attribute.value;
+    if (value.trim() === "" || value.trim().toLowerCase().startsWith("javascript:")) {
+      continue;
+    }
 
-      try {
-        const absoluteValue = new URL(value, baseURL).href;
-        if (absoluteValue !== value) {
-          if (attribute.namespaceURI === null) {
-            element.setAttribute(attribute.name, absoluteValue);
-          } else {
-            element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
-          }
+    try {
+      const absoluteValue = new URL(value, baseURL).href;
+      if (absoluteValue !== value) {
+        if (attribute.namespaceURI === null) {
+          element.setAttribute(attribute.name, absoluteValue);
+        } else {
+          element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
         }
-      } catch {
-        continue;
       }
+    } catch {
+      continue;
     }
   }
 
-  if (options.urlAttributes !== false && element.hasAttribute("srcset")) {
+  if (element.hasAttribute("srcset")) {
     const source = element.getAttribute("srcset") ?? "";
     const rewritten = absolutizeSrcset(source, baseURL);
     if (rewritten !== source) {
@@ -623,8 +615,7 @@ export function absolutizeElementAttributes(
     }
   }
 
-  const rewriteStyleAttributeValue = options.styleAttributes ?? options.urlAttributes !== false;
-  if (rewriteStyleAttributeValue && element.hasAttribute("style")) {
+  if (element.hasAttribute("style")) {
     try {
       const source = element.getAttribute("style") ?? "";
       const rewritten = rewriteStyleAttribute(source, baseURL);
@@ -821,7 +812,7 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
 }
 
 export async function prepareAdoptedMarkup(
-  options: PrepareAdoptedMarkupOptions,
+  options: PrepareMarkupOptions,
 ): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
   const parsed = parser.parseFromString(options.source, "text/html");

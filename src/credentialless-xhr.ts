@@ -886,7 +886,7 @@ export function createCredentiallessXMLHttpRequest(
       this.#dispatch("readystatechange");
 
       if (result !== "load" && requestHasBody) {
-        this.#dispatchUpload(result === "timeout" ? "timeout" : result);
+        this.#dispatchUpload(result);
         this.#dispatchUpload("loadend");
       }
       this.#dispatch(result, completedDownload);

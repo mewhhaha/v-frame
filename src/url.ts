@@ -20,40 +20,6 @@ export function parseEntryURL(value: string, baseURL: string): URL {
   return url;
 }
 
-export function resolveURL(value: string, baseURL: string): string {
-  try {
-    return new URL(value, baseURL).href;
-  } catch (cause) {
-    throw new TypeError(
-      `URL ${JSON.stringify(value)} cannot be resolved against ${JSON.stringify(baseURL)}`,
-      { cause },
-    );
-  }
-}
-
-export interface DocumentBaseURL {
-  url: string;
-  explicit: boolean;
-}
-
-export function resolveDocumentBaseURL(
-  document: Document,
-  fallbackURL: string,
-): DocumentBaseURL {
-  for (const base of document.querySelectorAll("base[href]")) {
-    try {
-      return {
-        url: new URL(base.getAttribute("href") ?? "", fallbackURL).href,
-        explicit: true,
-      };
-    } catch {
-      continue;
-    }
-  }
-
-  return { url: fallbackURL, explicit: false };
-}
-
 interface HistoryURLRealm {
   URL: typeof URL;
   DOMException: typeof DOMException;

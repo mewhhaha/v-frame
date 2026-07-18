@@ -115,10 +115,6 @@ export class ScriptRunner {
   readonly #getNativeCurrentScript: () => HTMLScriptElement | null;
   readonly #onError: (failure: ScriptFailure) => void;
   readonly #onRuntimeError: (failure: ScriptFailure) => void;
-  readonly #moduleErrorListener: (event: ErrorEvent) => void;
-  readonly #securityPolicyViolationListener: (event: SecurityPolicyViolationEvent) => void;
-  readonly #removeModuleErrorListener: () => void;
-  readonly #removeSecurityPolicyViolationListener: () => void;
   readonly #companions = new WeakMap<HTMLScriptElement, HTMLScriptElement>();
   readonly #externalModuleSettlements = new Set<ExternalModuleSettlement>();
   readonly #inlineModuleSettlements = new Set<InlineModuleSettlement>();
@@ -145,7 +141,7 @@ export class ScriptRunner {
     this.#getNativeCurrentScript = options.getNativeCurrentScript;
     this.#onError = options.onError;
     this.#onRuntimeError = options.onRuntimeError;
-    this.#moduleErrorListener = (event) => {
+    const moduleErrorListener = (event: ErrorEvent) => {
       const currentURL = this.#getCurrentURL();
       const comesFromCurrentDocument =
         errorComesFromCurrentDocument(event.filename, currentURL) ||
@@ -182,11 +178,8 @@ export class ScriptRunner {
     };
     const nativeAddEventListener = this.#window.addEventListener.bind(this.#window);
     const nativeRemoveEventListener = this.#window.removeEventListener.bind(this.#window);
-    nativeAddEventListener("error", this.#moduleErrorListener);
-    this.#removeModuleErrorListener = () => {
-      nativeRemoveEventListener("error", this.#moduleErrorListener);
-    };
-    this.#securityPolicyViolationListener = (event) => {
+    nativeAddEventListener("error", moduleErrorListener);
+    const securityPolicyViolationListener = (event: SecurityPolicyViolationEvent) => {
       if (
         event.disposition !== "enforce" ||
         event.blockedURI !== "inline" ||
@@ -200,16 +193,10 @@ export class ScriptRunner {
         `Inline script blocked by ${event.effectiveDirective}: ${event.originalPolicy}`,
       ));
     };
-    nativeAddEventListener("securitypolicyviolation", this.#securityPolicyViolationListener);
-    this.#removeSecurityPolicyViolationListener = () => {
-      nativeRemoveEventListener(
-        "securitypolicyviolation",
-        this.#securityPolicyViolationListener,
-      );
-    };
+    nativeAddEventListener("securitypolicyviolation", securityPolicyViolationListener);
     this.#signal.addEventListener("abort", () => {
-      this.#removeModuleErrorListener();
-      this.#removeSecurityPolicyViolationListener();
+      nativeRemoveEventListener("error", moduleErrorListener);
+      nativeRemoveEventListener("securitypolicyviolation", securityPolicyViolationListener);
       this.#inlineClassicCandidates.length = 0;
     }, { once: true });
   }
