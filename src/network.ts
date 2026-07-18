@@ -262,9 +262,15 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
       const [input, init] = argumentsList;
       const requestInput = isRequest(input);
-      const resolvedInput = requestInput
-        ? cloneRequest(input)
-        : resolveNetworkURL(window, input, options.getBaseURL());
+      let resolvedInput: Request | string;
+      try {
+        resolvedInput = requestInput
+          ? cloneRequest(input)
+          : resolveNetworkURL(window, input, options.getBaseURL());
+      } catch (error) {
+        // Native fetch never throws synchronously.
+        return Promise.reject(error);
+      }
 
       return nativeFetch(resolvedInput, {
         ...init,
