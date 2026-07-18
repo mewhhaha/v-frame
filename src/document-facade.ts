@@ -336,7 +336,6 @@ export interface DocumentFacade {
   getSelection(): Selection;
   markVirtualTree(node: Node): void;
   rebaseURLs(): void;
-  baseElementsChanged(): void;
   synchronizeURLAttribute(
     element: Element,
     attributeName: string,
@@ -827,7 +826,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeRemoveAttribute.call(element, options.inlineStyleSelectorAttribute);
   };
 
-  const styleSelectorValue = (element: Element): string => {
+  const ensureStyleSelector = (element: Element): string => {
     const existing = styleSelectorValues.get(element);
     if (existing !== undefined) {
       nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, existing);
@@ -869,7 +868,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         continue;
       }
 
-      const selectorValue = window.CSS.escape(styleSelectorValue(element));
+      const selectorValue = window.CSS.escape(ensureStyleSelector(element));
       rules.push(
         `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}{${rewritten}}`,
       );
@@ -2148,7 +2147,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           cssomMutatedStyleElements.add(clone);
         }
         removeStyleSelector(clone);
-        styleSelectorValue(clone);
+        ensureStyleSelector(clone);
       }
       if (isHTMLLinkElement(source) && isHTMLLinkElement(clone)) {
         authoredLinkRelValues.set(
@@ -4313,9 +4312,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         }
       }
       refreshInlineStyleSheet();
-    },
-    baseElementsChanged() {
-      options.onBaseElementChange();
     },
     synchronizeURLAttribute,
     synchronizeStyleAttribute,

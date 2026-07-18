@@ -2,9 +2,9 @@ import {
   CSSOMImportRuleError,
   fetchStylesheetText,
   rewriteCSSOMAddRule,
-  rewriteCSSOMCssText,
   rewriteCSSOMInsertRule,
   rewriteCSSOMSelectorText,
+  rewriteStyleAttribute,
   rewriteStylesheet,
   type StylesheetContext,
   type StylesheetImportFailure,
@@ -743,7 +743,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
                     set(value: string) {
                       cssText.set?.call(
                         declaration,
-                        rewriteCSSOMCssText(String(value), getDocumentBaseURL()),
+                        rewriteStyleAttribute(String(value), getDocumentBaseURL()),
                       );
                     },
                   });
@@ -767,12 +767,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         installRule(rule);
       }
     };
-    const installCSSOMStyleSheet = (style: HTMLStyleElement): void => {
+    const applyNonce = (style: HTMLStyleElement): void => {
       if (options.getNonce() === "") {
         style.removeAttribute("nonce");
       } else {
         style.nonce = options.getNonce();
       }
+    };
+    const installCSSOMStyleSheet = (style: HTMLStyleElement): void => {
+      applyNonce(style);
       if ((style.textContent ?? "") === "") {
         processedStyles.set(style, "");
       }
@@ -976,11 +979,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           if (!styleRevisionIsCurrent(style, update, revision, snapshot)) {
             return;
           }
-          if (options.getNonce() === "") {
-            style.removeAttribute("nonce");
-          } else {
-            style.nonce = options.getNonce();
-          }
+          applyNonce(style);
           setGeneratedStyleText(style, update, rewritten);
           update.status = "committed";
           processedStyles.set(style, rewritten);
@@ -1179,9 +1178,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
             return;
           }
           const style = document.createElement("style");
-          if (options.getNonce() !== "") {
-            style.nonce = options.getNonce();
-          }
+          applyNonce(style);
           style.dataset.vFrameSource = snapshot.href;
           style.media = snapshot.media;
           style.textContent = rewritten;
@@ -1301,11 +1298,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     if (!options.signal.aborted) {
       options.shadowRoot.append(liveMarkup);
       for (const [style, source] of initialStyleSources) {
-        if (options.getNonce() === "") {
-          style.removeAttribute("nonce");
-        } else {
-          style.nonce = options.getNonce();
-        }
+        applyNonce(style);
         style.textContent = source;
       }
       installCSSOMStyleSheets([liveMarkup]);
@@ -1415,7 +1408,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           }
         }
         if (baseElementsChanged) {
-          facade?.baseElementsChanged();
+          updateDocumentBaseURL();
         }
         for (const style of removedStyles) {
           if (!isConnectedToRealm(style)) {

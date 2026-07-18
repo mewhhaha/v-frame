@@ -215,9 +215,10 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
   const invalidSelectionState = (): never => {
     throw new options.window.DOMException("There is no range in the selection", "InvalidStateError");
   };
+  const currentRanges = (): Range[] =>
+    privateSelection === null ? virtualNativeRanges() : [privateSelection.range];
   const rangeAt = (index: number): Range => {
-    const ranges = privateSelection === null ? virtualNativeRanges() : [privateSelection.range];
-    const range = ranges[index];
+    const range = currentRanges()[index];
     if (range === undefined) {
       throw new options.window.DOMException("The selection has no range at that index", "IndexSizeError");
     }
@@ -266,7 +267,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     },
     rangeCount: {
       enumerable: true,
-      get: () => privateSelection === null ? virtualNativeRanges().length : 1,
+      get: () => currentRanges().length,
     },
     type: {
       enumerable: true,
@@ -292,7 +293,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           return;
         }
         // The Selection API makes addRange a no-op when a range is already set.
-        if ((privateSelection !== null ? 1 : virtualNativeRanges().length) !== 0) {
+        if (currentRanges().length !== 0) {
           return;
         }
 
@@ -416,7 +417,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         if (typeof options.window.StaticRange !== "function") {
           return [];
         }
-        return (privateSelection === null ? virtualNativeRanges() : [privateSelection.range]).map(
+        return currentRanges().map(
           (range) => new options.window.StaticRange({
             startContainer: range.startContainer,
             startOffset: range.startOffset,
@@ -508,7 +509,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     },
     toString: {
       value(): string {
-        return (privateSelection === null ? virtualNativeRanges() : [privateSelection.range])
+        return currentRanges()
           .map((range) => range.toString())
           .join("");
       },
