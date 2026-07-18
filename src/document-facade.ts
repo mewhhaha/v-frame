@@ -3578,18 +3578,22 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     ) as unknown as HTMLCollectionOf<T>;
   const tagCollections = new Map<string, HTMLCollectionOf<Element>>();
   const getElementsByTagName = (qualifiedName: string): HTMLCollectionOf<Element> => {
-    const collectionName = String(qualifiedName).toLowerCase();
-    const existing = tagCollections.get(collectionName);
+    const requestedName = String(qualifiedName);
+    const existing = tagCollections.get(requestedName);
     if (existing !== undefined) {
       return existing;
     }
 
+    // The native lookup lowercases HTML-namespace names itself while matching
+    // foreign elements (SVG, MathML) case-sensitively; only the shell
+    // translation below wants the lowercase form.
+    const collectionName = requestedName.toLowerCase();
     const collection = createLiveHTMLCollection(() => {
       const translated = collectionName === "*"
         ? "*"
         : translateSelector(collectionName);
       const matches = Array.from(
-        nativeGetElementsByTagName.call(options.html, collectionName),
+        nativeGetElementsByTagName.call(options.html, requestedName),
       );
       if (translated !== collectionName) {
         const seen = new Set(matches);
@@ -3611,7 +3615,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       }
       return matches;
     });
-    tagCollections.set(collectionName, collection);
+    tagCollections.set(requestedName, collection);
     return collection;
   };
   const namespaceTagCollections = new Map<string, HTMLCollectionOf<Element>>();
@@ -3898,6 +3902,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       writable: true,
       value(id: string) {
         const identifier = String(id);
+        // An empty id attribute means the element has no ID.
+        if (identifier === "") {
+          return null;
+        }
         if (
           options.html.id === identifier &&
           nativeHasAttribute.call(options.html, "id")
