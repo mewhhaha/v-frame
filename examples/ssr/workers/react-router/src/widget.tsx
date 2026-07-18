@@ -330,7 +330,6 @@ export const widgetStyle = `
   :root { color-scheme: only dark; }
   * { box-sizing: border-box; }
   .activity-widget { min-height: 100%; padding: 1.25rem; background: #0d0d0f; color: #f4f4f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  .widget-kicker { margin: 0 0 0.4rem; color: #6ee7b7; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.04em; }
   .activity-widget h2 { margin: 0; color: #f4f4f5; font-size: 1.35rem; font-weight: 600; letter-spacing: -0.025em; }
   .widget-copy { max-width: 62ch; margin: 0.45rem 0 1.2rem; color: #a1a1aa; font-size: 0.8125rem; line-height: 1.6; }
   .conversation-thread { margin-top: 1rem; }
@@ -349,9 +348,6 @@ export const widgetStyle = `
   .wikipedia-term:focus-visible { outline: 2px solid #6ee7b7; outline-offset: 3px; }
   .preview-popover { position: fixed; inset: var(--preview-top, 1rem) auto auto var(--preview-left, 1rem); width: min(22rem, calc(100vw - 2rem)); margin: 0; padding: 0.65rem; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 0.75rem; background: #1b1b1f; color: #f4f4f5; }
   .preview-popover:not(:popover-open) { display: none; }
-  .preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.1rem 0.1rem 0.55rem; }
-  .preview-heading .widget-kicker { margin: 0; }
-  .preview-heading > span { color: #a78bfa; font-size: 0.625rem; font-weight: 600; }
   .nested-widget-surface { position: relative; border-radius: 0.55rem; }
   .nested-workspace-widget { display: block; min-height: 10.5rem; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 0.55rem; overflow: hidden; }
   .activity-widget[data-composition-visible] .nested-widget-surface::before { position: absolute; z-index: 4; border: 2px solid #a78bfa; border-radius: inherit; background: color-mix(in srgb, #a78bfa 7%, transparent); content: ""; inset: 0; pointer-events: none; }
@@ -370,7 +366,7 @@ export const widgetStyle = `
   .plugin button[aria-pressed="true"] { border-color: rgba(110, 231, 183, 0.35); color: #6ee7b7; }
   @media (max-width: 36rem) {
     .activity-widget { padding: 1.1rem; }
-    .widget-kicker, .activity-actions output { font-size: 0.875rem; }
+    .activity-actions output { font-size: 0.875rem; }
     .widget-copy, .message-content > p, .activity-list li, .plugin strong, .plugin p { font-size: 1rem; }
     .activity-actions { align-items: flex-start; flex-direction: column; }
     .activity-actions button { min-height: 3rem; font-size: 1rem; }
@@ -389,7 +385,6 @@ export const widgetStyle = `
   .wikipedia-term { border-bottom-color: #b4b4b4; color: #f5f5f5; }
   .preview-popover { width: min(22.5rem, calc(100vw - 1.5rem)); height: 12.5rem; padding: 0; border-color: #444; border-radius: 0.85rem; background: #212121; color: #f5f5f5; }
   .nested-widget-surface, .nested-workspace-widget { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: inherit; }
-  .widget-kicker { color: #a0a0a0; font-family: inherit; text-transform: uppercase; }
   .activity-actions { gap: 0.35rem; margin-top: 0.8rem; }
   .activity-actions button { min-height: 1.9rem; padding: 0.3rem 0.5rem; background: transparent; color: #a0a0a0; font-weight: 400; }
   .activity-actions button:hover { background: #212121; color: white; }

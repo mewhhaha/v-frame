@@ -234,9 +234,6 @@ export const widgetStyle = `
   .composer-widget { display: grid; min-height: 8rem; padding: 0.85rem; background: #151518; color: #f4f4f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   .composer-widget textarea { width: 100%; min-height: 3rem; resize: none; border: 0; outline: 0; background: transparent; color: #f4f4f5; font-size: 0.875rem; line-height: 1.5; }
   .composer-widget textarea::placeholder { color: #71717a; }
-  .composer-actions { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 1rem; }
-  .composer-actions p { overflow: hidden; margin: 0; color: #71717a; font-size: 0.6875rem; text-overflow: ellipsis; white-space: nowrap; }
-  .composer-actions button { min-height: 2.125rem; padding: 0.4rem 0.8rem; border: 0; border-radius: 0.5rem; background: #f4f4f5; color: #18181b; cursor: pointer; font-size: 0.75rem; font-weight: 600; }
   .usage-widget { min-height: 100%; padding: 1.25rem; background: #0d0d0f; color: #f4f4f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   .usage-widget h2 { margin: 0.4rem 0 0; font-size: 1.35rem; font-weight: 600; letter-spacing: -0.025em; }
   .usage-copy { margin: 0.45rem 0 0; color: #a1a1aa; font-size: 0.8125rem; line-height: 1.55; }
@@ -245,8 +242,6 @@ export const widgetStyle = `
   .usage-overview article > span { display: block; color: #a1a1aa; font-size: 0.75rem; }
   .usage-overview strong { display: block; margin-top: 0.7rem; font-size: 1.4rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   .usage-overview small { color: #71717a; font-size: 0.6875rem; }
-  .usage-overview article > div { height: 0.25rem; margin-top: 0.9rem; overflow: hidden; border-radius: 999px; background: #27272a; }
-  .usage-overview article > div span { display: block; height: 100%; border-radius: inherit; background: #10a37f; }
   .wikipedia-preview { min-height: 100%; padding: 0.9rem; background: #151518; color: #f4f4f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   .wikipedia-preview h2 { margin: 0.4rem 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 1.15rem; font-weight: 600; }
   .wikipedia-preview p { margin: 0.55rem 0 0; color: #d4d4d8; font-size: 0.8125rem; line-height: 1.55; }
@@ -265,8 +260,6 @@ export const widgetStyle = `
   .profile-menu button:hover { background: rgba(255, 255, 255, 0.05); }
   @media (max-width: 36rem) {
     .composer-widget textarea, .usage-copy, .usage-overview article > span, .wikipedia-preview p { font-size: 1rem; }
-    .composer-actions p { display: none; }
-    .composer-actions button { min-height: 3rem; font-size: 1rem; }
     .usage-overview { grid-template-columns: 1fr; }
     .wikipedia-preview a { font-size: 0.875rem; }
   }

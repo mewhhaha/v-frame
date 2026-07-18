@@ -14,6 +14,14 @@
   "services": [
     { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
   ],
+  "env": {
+    "test": {
+      "name": "v-frame-example-react-router-widget-test",
+      "services": [
+        { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget-test" }
+      ]
+    }
+  },
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },

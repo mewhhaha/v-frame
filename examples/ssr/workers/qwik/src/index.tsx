@@ -92,7 +92,7 @@ function materializedDocument(markup: string): string {
 }
 
 function networkDocument(markup: string): string {
-  return `<!doctype html><html lang="en"><head><style>${widgetStyle}</style></head><body>${markup}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${widgetStyle}</style></head><body>${markup}</body></html>`;
 }
 
 export default {
@@ -110,7 +110,12 @@ export default {
     const markup = await renderWidget(url, pathname);
     return new Response(
       pathname === "/preview" ? materializedDocument(markup) : networkDocument(markup),
-      { headers: { "Content-Type": "text/html; charset=utf-8" } },
+      {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/html; charset=utf-8",
+        },
+      },
     );
   },
 } satisfies ExportedHandler;

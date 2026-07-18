@@ -10,16 +10,16 @@
     "build:qwik": "vite build -c workers/qwik/vite.config.ts && vite build -c workers/qwik/vite.config.ts --ssr src/index.tsx",
     "predev": "pnpm --workspace-root run build && pnpm run build",
     "dev": "pnpm run dev:workers",
-    "dev:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --port 43500 --inspector-port 43600 -c workers/host/wrangler.jsonc\" \"wrangler dev --port 43501 --inspector-port 43601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --port 43502 --inspector-port 43602 -c workers/qwik/wrangler.jsonc\"",
+    "dev:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --env= --port 43500 --inspector-port 43600 -c workers/host/wrangler.jsonc\" \"wrangler dev --env= --port 43501 --inspector-port 43601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --env= --port 43502 --inspector-port 43602 -c workers/qwik/wrangler.jsonc\"",
     "types": "wrangler types worker-configuration.d.ts -c workers/host/wrangler.jsonc -c workers/react-router/wrangler.jsonc -c workers/qwik/wrangler.jsonc",
     "typecheck": "tsc --noEmit",
-    "test:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --port 44500 --inspector-port 44600 -c workers/host/wrangler.jsonc\" \"wrangler dev --port 44501 --inspector-port 44601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --port 44502 --inspector-port 44602 -c workers/qwik/wrangler.jsonc\"",
+    "test:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --env test --port 44500 --inspector-port 44600 -c workers/host/wrangler.jsonc\" \"wrangler dev --env test --port 44501 --inspector-port 44601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --env test --port 44502 --inspector-port 44602 -c workers/qwik/wrangler.jsonc\"",
     "test:routing": "playwright test -c playwright.config.ts",
     "check": "pnpm run build && pnpm run types && pnpm run typecheck && pnpm run test:routing && pnpm run check:deploy",
-    "check:deploy": "wrangler deploy --dry-run -c workers/react-router/wrangler.jsonc && wrangler deploy --dry-run -c workers/qwik/wrangler.jsonc && wrangler deploy --dry-run -c workers/host/wrangler.jsonc",
+    "check:deploy": "wrangler deploy --env= --dry-run -c workers/react-router/wrangler.jsonc && wrangler deploy --env= --dry-run -c workers/qwik/wrangler.jsonc && wrangler deploy --env= --dry-run -c workers/host/wrangler.jsonc",
     "predeploy": "pnpm --workspace-root run build && pnpm run build",
-    "deploy": "pnpm run deploy:components && wrangler deploy -c workers/host/wrangler.jsonc",
-    "deploy:components": "wrangler deploy -c workers/qwik/wrangler.jsonc && wrangler deploy -c workers/react-router/wrangler.jsonc"
+    "deploy": "pnpm run deploy:components && wrangler deploy --env= -c workers/host/wrangler.jsonc",
+    "deploy:components": "wrangler deploy --env= -c workers/qwik/wrangler.jsonc && wrangler deploy --env= -c workers/react-router/wrangler.jsonc"
   },
   "devDependencies": {
     "@types/node": "26.1.1",

@@ -43,45 +43,39 @@ const hostSections = {
 } as const;
 
 type HostSectionKey = keyof typeof hostSections;
+type PageFrameId = "react-router" | "qwik";
 
 const hostSectionRoutes = {
   migration: { "react-router": "/activity", qwik: "/inventory" },
   research: { "react-router": "/research", qwik: "/inventory" },
   brief: { "react-router": "/brief", qwik: "/inventory" },
-  plugins: { "react-router": "/plugins", qwik: "/inventory" },
-  usage: { "react-router": "/activity", qwik: "/catalog" },
+  plugins: { "react-router": "/plugins" },
+  usage: { qwik: "/catalog" },
 } as const;
 
-function requestedRoute(
-  url: URL,
-  frameId: "react-router" | "qwik",
-  fallback: string,
-): string {
-  const route = url.searchParams.get(frameId);
-  const allowedRoutes = frameId === "react-router" ? reactRoutes : qwikRoutes;
-  return route !== null && allowedRoutes.has(route) ? route : fallback;
-}
-
-function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: string): string {
+function shell(hostSection: HostSectionKey): string {
   const section = hostSections[hostSection];
+  const sectionRoutes = hostSectionRoutes[hostSection];
+  const frameIds = Object.keys(sectionRoutes) as PageFrameId[];
   const threadSection = hostSection === "migration" || hostSection === "research" || hostSection === "brief";
-  const widgetGridClasses = threadSection
-    ? "widget-grid"
-    : `widget-grid widget-grid-single widget-grid-${hostSection}`;
-  const reactSurfaceHidden = hostSection === "usage" ? " hidden" : "";
-  const qwikSurfaceHidden = hostSection === "plugins" ? " hidden" : "";
-  const reactSurfaceLabel = hostSection === "plugins"
-    ? "React plugins frontend"
-    : "React transcript frontend";
-  const qwikSurfaceLabel = hostSection === "usage"
-    ? "Qwik usage frontend"
-    : "Qwik composer frontend";
+  const compositionClasses = threadSection
+    ? "page-composition"
+    : `page-composition widget-grid-single widget-grid-${hostSection}`;
+  const workspaceSurfaces = frameIds.map((frameId) => {
+    if (frameId === "react-router") {
+      const label = hostSection === "plugins"
+        ? "React plugins frontend"
+        : "React transcript frontend";
+      return `<div id="react-surface" class="widget-surface widget-react" data-composition-label="${label}"><div id="react-router-widget"></div></div>`;
+    }
+    const label = hostSection === "usage"
+      ? "Qwik usage frontend"
+      : "Qwik composer frontend";
+    return `<div id="qwik-surface" class="widget-surface widget-qwik" data-composition-label="${label}"><div id="qwik-widget"></div></div>`;
+  }).join("");
   const hostSectionDefinitions = JSON.stringify(hostSections).replaceAll("<", "\\u003c");
   const hostSectionRouteDefinitions = JSON.stringify(hostSectionRoutes).replaceAll("<", "\\u003c");
-  const initialRoutes = JSON.stringify({
-    "react-router": reactRoute,
-    qwik: qwikRoute,
-  }).replaceAll("<", "\\u003c");
+  const initialRoutes = JSON.stringify(sectionRoutes).replaceAll("<", "\\u003c");
 
   return `<!doctype html>
 <html lang="en" class="scheme-only-dark">
@@ -139,7 +133,9 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
       .composition-swatches span { width: 0.45rem; height: 0.65rem; margin-left: -0.1rem; border: 1px solid #18181b; border-radius: 0.12rem; }
       .composition-swatches span:first-child { margin-left: 0; background: var(--composition-react); }
       .composition-swatches span:last-child { background: var(--composition-qwik); }
-      .widget-grid { display: flex; width: min(100%, 58rem); height: calc(100dvh - 3.25rem); min-height: 0; flex-direction: column; margin: 0 auto; }
+      .widget-grid { position: relative; width: min(100%, 58rem); height: calc(100dvh - 3.25rem); min-height: 0; margin: 0 auto; }
+      .page-composition { display: flex; width: 100%; height: 100%; min-height: 0; flex-direction: column; }
+      .navigation-stage { position: absolute; visibility: hidden; pointer-events: none; inset: 0; }
       .widget-surface { position: relative; min-width: 0; overflow: hidden; }
       .widget-react { min-height: 0; flex: 1; }
       .widget-qwik { width: min(calc(100% - 2rem), 48rem); height: 6.6rem; flex: none; align-self: center; margin-bottom: 1rem; border: 1px solid #333; border-radius: 1.5rem; background: var(--surface); }
@@ -242,11 +238,12 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
               </button>
             </div>
           </header>
-          <div id="host-workspace" class="${widgetGridClasses}">
-            <div id="react-surface" class="widget-surface widget-react" data-composition-label="${reactSurfaceLabel}"${reactSurfaceHidden}><div id="react-router-widget"></div></div>
-            <div id="qwik-surface" class="widget-surface widget-qwik" data-composition-label="${qwikSurfaceLabel}"${qwikSurfaceHidden}><div id="qwik-widget"></div></div>
+          <div id="host-workspace" class="widget-grid">
+            <div id="host-composition" class="${compositionClasses}" data-host-composition>
+              ${workspaceSurfaces}
+            </div>
           </div>
-          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">react-router ${reactRoute}; qwik ${qwikRoute}</output></p>
+          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">${Object.entries(sectionRoutes).map(([frameId, route]) => `${frameId} ${route}`).join("; ")}</output></p>
         </main>
       </div>
     </div>
@@ -259,7 +256,7 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
       const hostSectionDefinitions = ${hostSectionDefinitions};
       const hostSectionRoutes = ${hostSectionRouteDefinitions};
       const initialRoutes = ${initialRoutes};
-      const frameRoutes = { ...initialRoutes };
+      let frameRoutes = { ...initialRoutes };
       const allowedRoutes = {
         "react-router": new Set(["/activity", "/research", "/brief", "/plugins"]),
         qwik: new Set(["/inventory", "/catalog"]),
@@ -277,117 +274,29 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
         sessionId = "";
       }
       const seenMessages = new Set();
-      const routeOutput = document.querySelector("#host-route");
+      const hostSidebar = document.querySelector("#host-sidebar");
       const sidebarToggle = document.querySelector("#sidebar-toggle");
       const compositionToggle = document.querySelector("#composition-toggle");
       const compositionToggleLabel = document.querySelector("#composition-toggle-label");
       const compositionStorageKey = "v-frame:composition-visible";
       const hostWorkspace = document.querySelector("#host-workspace");
-      const reactSurface = document.querySelector("#react-surface");
-      const qwikSurface = document.querySelector("#qwik-surface");
       const hostSectionKicker = document.querySelector("#host-section-kicker");
       const hostSectionTitle = document.querySelector("#host-section-title");
       const hostSectionDescription = document.querySelector("#host-section-description");
-      let pendingHostSection = null;
-      let pendingFrameRoutes = new Map();
+      const routeOutput = document.querySelector("#host-route");
+      let pendingNavigation = null;
 
       sidebarToggle?.addEventListener("click", () => {
         const sidebarClosed = !document.documentElement.hasAttribute("data-sidebar-closed");
         document.documentElement.toggleAttribute("data-sidebar-closed", sidebarClosed);
         sidebarToggle.setAttribute("aria-expanded", String(!sidebarClosed));
         sidebarToggle.textContent = sidebarClosed ? "Show sidebar" : "Hide sidebar";
-      });
-
-      const updateHostSectionChrome = (sectionKey) => {
-        const section = hostSectionDefinitions[sectionKey];
-        if (section === undefined) return;
-
-        document.title = section.title + " · Relay";
-        if (hostSectionKicker !== null) hostSectionKicker.textContent = section.kicker;
-        if (hostSectionTitle !== null) hostSectionTitle.textContent = section.title;
-        if (hostSectionDescription !== null) {
-          hostSectionDescription.textContent = section.description;
+        hostSidebar?.toggleAttribute("inert", sidebarClosed);
+        if (sidebarClosed) {
+          hostSidebar?.setAttribute("aria-hidden", "true");
+        } else {
+          hostSidebar?.removeAttribute("aria-hidden");
         }
-        for (const link of document.querySelectorAll("[data-host-section]")) {
-          const active = link.getAttribute("data-host-section") === sectionKey;
-          link.classList.toggle("host-link-active", active && link.classList.contains("host-link"));
-          if (active) {
-            link.setAttribute("aria-current", "page");
-          } else {
-            link.removeAttribute("aria-current");
-          }
-        }
-        document.querySelector(".mobile-navigation")?.removeAttribute("open");
-      };
-
-      const revealHostSection = (sectionKey) => {
-        const threadSection = sectionKey === "migration" || sectionKey === "research" || sectionKey === "brief";
-        hostWorkspace?.classList.toggle("widget-grid-single", !threadSection);
-        hostWorkspace?.classList.toggle("widget-grid-plugins", sectionKey === "plugins");
-        hostWorkspace?.classList.toggle("widget-grid-usage", sectionKey === "usage");
-        reactSurface?.toggleAttribute("hidden", sectionKey === "usage");
-        qwikSurface?.toggleAttribute("hidden", sectionKey === "plugins");
-        reactSurface?.setAttribute(
-          "data-composition-label",
-          sectionKey === "plugins" ? "React plugins frontend" : "React transcript frontend",
-        );
-        qwikSurface?.setAttribute(
-          "data-composition-label",
-          sectionKey === "usage" ? "Qwik usage frontend" : "Qwik composer frontend",
-        );
-      };
-
-      const frameIdsForSection = (sectionKey) => {
-        if (sectionKey === "plugins") return ["react-router"];
-        if (sectionKey === "usage") return ["qwik"];
-        return ["react-router", "qwik"];
-      };
-
-      const beginHostSectionTransition = (sectionKey, mode) => {
-        const sectionRoutes = hostSectionRoutes[sectionKey];
-        if (sectionRoutes === undefined) return;
-
-        updateHostSectionChrome(sectionKey);
-        pendingHostSection = sectionKey;
-        pendingFrameRoutes = new Map(
-          frameIdsForSection(sectionKey).map((frameId) => [frameId, sectionRoutes[frameId]]),
-        );
-        for (const [frameId, route] of Object.entries(sectionRoutes)) {
-          frameRoutes[frameId] = route;
-          postRoute(frameId, route, mode);
-        }
-        showRoutes();
-      };
-
-      document.addEventListener("click", (event) => {
-        if (
-          event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey ||
-          event.shiftKey || event.altKey
-        ) return;
-        const link = event.target instanceof Element
-          ? event.target.closest("a[data-host-section]")
-          : null;
-        if (!(link instanceof HTMLAnchorElement) || link.origin !== location.origin) return;
-
-        const sectionKey = link.dataset.hostSection;
-        const section = hostSectionDefinitions[sectionKey];
-        if (section === undefined) return;
-        if (channel === null) return;
-        event.preventDefault();
-        if (location.pathname === section.path) {
-          document.querySelector(".mobile-navigation")?.removeAttribute("open");
-          return;
-        }
-
-        const next = new URL(location.href);
-        next.pathname = section.path;
-        next.hash = "";
-        for (const frameId of Object.keys(frameRoutes)) {
-          next.searchParams.delete(frameId);
-        }
-        history.pushState(null, "", next.pathname + next.search);
-        beginHostSectionTransition(sectionKey, "push");
-        hostSectionTitle?.focus();
       });
 
       const updateNestedCompositionSurface = (visible) => {
@@ -419,30 +328,10 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
       compositionToggle?.addEventListener("click", () => {
         showComposition(!document.documentElement.hasAttribute("data-composition-visible"));
       });
-      document.addEventListener("v-frame-load", (event) => {
-        if (event.target instanceof Element && event.target.matches('v-frame[data-frame-id="react-router"]')) {
-          updateNestedCompositionSurface(
-            document.documentElement.hasAttribute("data-composition-visible"),
-          );
-        }
-      });
 
       const routeFor = (frameId) => {
-        const route = new URL(location.href).searchParams.get(frameId);
-        if (allowedRoutes[frameId]?.has(route)) return route;
-        const hostSectionKey = Object.keys(hostSectionDefinitions).find(
-          (sectionKey) => hostSectionDefinitions[sectionKey].path === location.pathname,
-        );
-        return hostSectionKey === undefined
-          ? initialRoutes[frameId]
-          : hostSectionRoutes[hostSectionKey][frameId];
-      };
-      const showRoutes = () => {
-        if (routeOutput !== null) {
-          routeOutput.textContent = Object.entries(frameRoutes)
-            .map(([frameId, route]) => frameId + " " + route)
-            .join("; ");
-        }
+        const route = frameRoutes[frameId];
+        return allowedRoutes[frameId]?.has(route) ? route : null;
       };
       const postRoute = (frameId, route, mode) => {
         channel?.postMessage({
@@ -476,31 +365,238 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
           message.target === "host";
       };
 
-      channel?.addEventListener("message", (event) => {
+      const cancelPendingNavigation = () => {
+        if (pendingNavigation === null) return;
+        pendingNavigation.composition.remove();
+        pendingNavigation = null;
+        try {
+          sessionStorage.setItem(sessionKey, sessionId);
+        } catch (error) {
+          console.warn("Could not restore the current routing session", error);
+        }
+      };
+
+      const beginHostSectionTransition = (sectionKey, mode) => {
+        const section = hostSectionDefinitions[sectionKey];
+        const sectionRoutes = hostSectionRoutes[sectionKey];
+        if (section === undefined || sectionRoutes === undefined || hostWorkspace === null) return;
+        if (pendingNavigation?.sectionKey === sectionKey) return;
+
+        cancelPendingNavigation();
+        let nextSessionId;
+        try {
+          nextSessionId = crypto.randomUUID();
+          sessionStorage.setItem(sessionKey, nextSessionId);
+        } catch (error) {
+          console.warn("Could not prepare the destination routing session", error);
+          if (mode === "push") {
+            location.assign(section.path);
+          } else {
+            location.replace(section.path);
+          }
+          return;
+        }
+
+        const threadSection = sectionKey === "migration" || sectionKey === "research" || sectionKey === "brief";
+        const composition = document.createElement("div");
+        composition.className = threadSection
+          ? "page-composition navigation-stage"
+          : "page-composition widget-grid-single widget-grid-" + sectionKey + " navigation-stage";
+        composition.dataset.hostComposition = "";
+        composition.dataset.navigationSession = nextSessionId;
+        composition.setAttribute("aria-hidden", "true");
+        composition.setAttribute("inert", "");
+
+        for (const [frameId, route] of Object.entries(sectionRoutes)) {
+          const reactFrame = frameId === "react-router";
+          const label = reactFrame
+            ? sectionKey === "plugins" ? "React plugins frontend" : "React transcript frontend"
+            : sectionKey === "usage" ? "Qwik usage frontend" : "Qwik composer frontend";
+          const surface = document.createElement("div");
+          surface.className = reactFrame
+            ? "widget-surface widget-react"
+            : "widget-surface widget-qwik";
+          surface.dataset.compositionLabel = label;
+          surface.dataset.surfaceId = reactFrame ? "react-surface" : "qwik-surface";
+
+          const frame = document.createElement("v-frame");
+          frame.dataset.frameId = frameId;
+          frame.dataset.pendingFrame = "";
+          frame.setAttribute(
+            "src",
+            reactFrame
+              ? "/widgets/react-router" + route
+              : "/widgets/qwik" + route + "?frameId=qwik",
+          );
+          frame.setAttribute("aria-label", label);
+          surface.append(frame);
+          composition.append(surface);
+        }
+
+        const destination = new URL(location.href);
+        destination.pathname = section.path;
+        destination.hash = "";
+        for (const frameId of Object.keys(allowedRoutes)) {
+          destination.searchParams.delete(frameId);
+        }
+        pendingNavigation = {
+          composition,
+          destination: destination.pathname + destination.search,
+          expectedFrames: Object.keys(sectionRoutes).length,
+          loadedFrames: new Set(),
+          mode,
+          routes: sectionRoutes,
+          sectionKey,
+          sessionId: nextSessionId,
+        };
+        document.querySelector(".mobile-navigation")?.removeAttribute("open");
+        hostWorkspace.append(composition);
+      };
+
+      const commitPendingNavigation = () => {
+        const completedNavigation = pendingNavigation;
+        if (completedNavigation === null) return;
+        pendingNavigation = null;
+
+        const outgoingComposition = document.querySelector(
+          '[data-host-composition]:not(.navigation-stage)',
+        );
+        completedNavigation.composition.classList.remove("navigation-stage");
+        completedNavigation.composition.removeAttribute("aria-hidden");
+        completedNavigation.composition.removeAttribute("inert");
+        completedNavigation.composition.id = "host-composition";
+        for (const surface of completedNavigation.composition.querySelectorAll("[data-surface-id]")) {
+          surface.id = surface.dataset.surfaceId;
+          delete surface.dataset.surfaceId;
+        }
+        for (const frame of completedNavigation.composition.querySelectorAll("v-frame[data-frame-id]")) {
+          frame.id = frame.dataset.frameId + "-frontend";
+          delete frame.dataset.pendingFrame;
+        }
+        outgoingComposition?.remove();
+
+        const section = hostSectionDefinitions[completedNavigation.sectionKey];
+        document.title = section.title + " · Relay";
+        if (hostSectionKicker !== null) hostSectionKicker.textContent = section.kicker;
+        if (hostSectionTitle !== null) hostSectionTitle.textContent = section.title;
+        if (hostSectionDescription !== null) {
+          hostSectionDescription.textContent = section.description;
+        }
+        for (const link of document.querySelectorAll(".host-link[data-host-section]")) {
+          const active = link.getAttribute("data-host-section") === completedNavigation.sectionKey;
+          link.classList.toggle("host-link-active", active);
+          if (active) {
+            link.setAttribute("aria-current", "page");
+          } else {
+            link.removeAttribute("aria-current");
+          }
+        }
+
+        frameRoutes = { ...completedNavigation.routes };
+        if (routeOutput !== null) {
+          routeOutput.textContent = Object.entries(frameRoutes)
+            .map(([frameId, route]) => frameId + " " + route)
+            .join("; ");
+        }
+        if (completedNavigation.mode === "push") {
+          history.pushState(null, "", completedNavigation.destination);
+        } else if (completedNavigation.mode === "replace") {
+          history.replaceState(null, "", completedNavigation.destination);
+        }
+
+        channel?.removeEventListener("message", receiveRoutingMessage);
+        channel?.close();
+        sessionId = completedNavigation.sessionId;
+        seenMessages.clear();
+        try {
+          channel = new BroadcastChannel(channelPrefix + sessionId);
+          channel.addEventListener("message", receiveRoutingMessage);
+        } catch (error) {
+          channel = null;
+          console.warn("Could not activate the destination routing channel", error);
+        }
+        showComposition(document.documentElement.hasAttribute("data-composition-visible"));
+        for (const [frameId, route] of Object.entries(frameRoutes)) {
+          postRoute(frameId, route, "replace");
+        }
+        hostSectionTitle?.focus();
+      };
+
+      document.addEventListener("v-frame-load", (event) => {
+        if (!(event.target instanceof Element)) return;
+        const stagedComposition = event.target.closest(".navigation-stage");
+        if (stagedComposition !== null && pendingNavigation?.composition === stagedComposition) {
+          const frameId = event.target.getAttribute("data-frame-id");
+          if (frameId === null) return;
+          pendingNavigation.loadedFrames.add(frameId);
+          if (pendingNavigation.loadedFrames.size === pendingNavigation.expectedFrames) {
+            commitPendingNavigation();
+          }
+          return;
+        }
+        if (event.target.matches('v-frame[data-frame-id="react-router"]')) {
+          updateNestedCompositionSurface(
+            document.documentElement.hasAttribute("data-composition-visible"),
+          );
+        }
+      });
+
+      document.addEventListener("v-frame-error", (event) => {
+        if (
+          !(event.target instanceof Element)
+          || pendingNavigation === null
+          || !pendingNavigation.composition.contains(event.target)
+        ) return;
+
+        const failedNavigation = pendingNavigation;
+        cancelPendingNavigation();
+        if (failedNavigation.mode === "push") {
+          location.assign(failedNavigation.destination);
+        } else {
+          location.replace(failedNavigation.destination);
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey ||
+          event.shiftKey || event.altKey
+        ) return;
+        const link = event.target instanceof Element
+          ? event.target.closest("a[data-host-section]")
+          : null;
+        if (!(link instanceof HTMLAnchorElement) || link.origin !== location.origin) return;
+
+        const sectionKey = link.dataset.hostSection;
+        const section = hostSectionDefinitions[sectionKey];
+        if (section === undefined || channel === null) return;
+        event.preventDefault();
+        if (location.pathname === section.path) {
+          cancelPendingNavigation();
+          document.querySelector(".mobile-navigation")?.removeAttribute("open");
+          return;
+        }
+        beginHostSectionTransition(sectionKey, "push");
+      });
+
+      function receiveRoutingMessage(event) {
         const message = event.data;
         if (event.origin !== location.origin || !validBase(message)) return;
         if (seenMessages.has(message.messageId)) return;
         rememberMessage(message.messageId);
 
         if (message.kind === "route-ready") {
-          if (
-            pendingHostSection === null
-            || pendingFrameRoutes.get(message.source) !== message.route
-          ) return;
-
-          pendingFrameRoutes.delete(message.source);
-          if (pendingFrameRoutes.size === 0) {
-            revealHostSection(pendingHostSection);
-            pendingHostSection = null;
-          }
+          const route = routeFor(message.source);
+          if (route === null || route !== message.route) return;
+          document.querySelector(
+            'v-frame[data-frame-id="' + message.source + '"]',
+          )?.setAttribute("data-routing-ready", "");
           return;
         }
 
         const route = routeFor(message.source);
         if (message.kind === "hello") {
-          document.querySelector(
-            'v-frame[data-frame-id="' + message.source + '"]',
-          )?.setAttribute("data-routing-ready", "");
+          if (route === null) return;
           postRoute(message.source, route, "replace");
           return;
         }
@@ -509,32 +605,44 @@ function shell(hostSection: HostSectionKey, reactRoute: string, qwikRoute: strin
           !allowedRoutes[message.source].has(message.route) ||
           (message.mode !== "push" && message.mode !== "replace")
         ) return;
-        if (message.route === route) {
+        if (route !== null && message.route === route) {
           postRoute(message.source, route, "replace");
           return;
         }
 
-        frameRoutes[message.source] = message.route;
-        const next = new URL(location.href);
-        next.searchParams.set(message.source, message.route);
-        history[message.mode === "replace" ? "replaceState" : "pushState"](
-          null,
-          "",
-          next.pathname + next.search + next.hash,
-        );
-        showRoutes();
-        postRoute(message.source, message.route, message.mode);
-      });
-
-      addEventListener("popstate", () => {
-        const hostSectionKey = Object.keys(hostSectionDefinitions).find(
+        const currentHostSection = Object.keys(hostSectionDefinitions).find(
           (sectionKey) => hostSectionDefinitions[sectionKey].path === location.pathname,
         );
-        if (hostSectionKey !== undefined) {
-          beginHostSectionTransition(hostSectionKey, "traverse");
+        const matchingSections = Object.keys(hostSectionRoutes).filter(
+          (sectionKey) => hostSectionRoutes[sectionKey][message.source] === message.route,
+        );
+        const sectionKey = currentHostSection !== undefined && matchingSections.includes(currentHostSection)
+          ? currentHostSection
+          : matchingSections[0];
+        if (sectionKey === undefined) return;
+
+        beginHostSectionTransition(sectionKey, message.mode);
+      }
+
+      channel?.addEventListener("message", receiveRoutingMessage);
+      addEventListener("popstate", () => {
+        const sectionKey = Object.keys(hostSectionDefinitions).find(
+          (candidate) => hostSectionDefinitions[candidate].path === location.pathname,
+        );
+        if (sectionKey === undefined) return;
+        if (channel === null) {
+          location.reload();
+          return;
         }
+        beginHostSectionTransition(sectionKey, "traverse");
       });
-      addEventListener("pagehide", () => channel?.close(), { once: true });
+      addEventListener("pagehide", () => {
+        cancelPendingNavigation();
+        channel?.close();
+      }, { once: true });
+      addEventListener("pageshow", (event) => {
+        if (event.persisted) location.reload();
+      });
 
     </script>
   </body>
@@ -545,6 +653,12 @@ interface WidgetDefinition {
   frameId: string;
   label: string;
   source: string;
+}
+
+interface PageWidget {
+  frameId: PageFrameId;
+  response: Response;
+  route: string;
 }
 
 function serviceRequest(service: string, path: string): Request {
@@ -620,36 +734,40 @@ export default {
       return new Response("page not found", { status: 404 });
     }
 
-    const reactRoute = requestedRoute(
-      url,
-      "react-router",
-      hostSectionRoutes[hostSection]["react-router"],
+    const sectionRoutes = hostSectionRoutes[hostSection];
+    const pageWidgetsPromise: Promise<PageWidget[]> = Promise.all(
+      (Object.entries(sectionRoutes) as [PageFrameId, string][]).map(
+        async ([frameId, route]) => {
+          const response = frameId === "react-router"
+            ? await env.REACT_ROUTER_WIDGET.fetch(
+              serviceRequest(
+                "react-router-widget",
+                `/preview?route=${encodeURIComponent(route)}&base=/widgets/react-router&frameId=react-router`,
+              ),
+            )
+            : await env.QWIK_WIDGET.fetch(
+              serviceRequest(
+                "qwik-widget",
+                `/preview?route=${encodeURIComponent(route)}&base=/widgets/qwik/build/&frameId=qwik`,
+              ),
+            );
+          return { frameId, response, route };
+        },
+      ),
     );
-    const qwikRoute = requestedRoute(url, "qwik", hostSectionRoutes[hostSection].qwik);
-    const [reactRouter, qwik, account] = await Promise.all([
-      env.REACT_ROUTER_WIDGET.fetch(
-        serviceRequest(
-          "react-router-widget",
-          `/preview?route=${encodeURIComponent(reactRoute)}&base=/widgets/react-router&frameId=react-router`,
-        ),
+    const accountPromise: Promise<Response> = env.QWIK_WIDGET.fetch(
+      serviceRequest(
+        "qwik-widget",
+        "/preview?route=%2Finventory&base=%2Fwidgets%2Fqwik%2Fbuild%2F&surface=profile",
       ),
-      env.QWIK_WIDGET.fetch(
-        serviceRequest(
-          "qwik-widget",
-          `/preview?route=${encodeURIComponent(qwikRoute)}&base=/widgets/qwik/build/&frameId=qwik`,
-        ),
-      ),
-      env.QWIK_WIDGET.fetch(
-        serviceRequest(
-          "qwik-widget",
-          "/preview?route=%2Finventory&base=%2Fwidgets%2Fqwik%2Fbuild%2F&surface=profile",
-        ),
-      ),
+    );
+    const [pageWidgets, account] = await Promise.all([
+      pageWidgetsPromise,
+      accountPromise,
     ]);
-    let failure = failedWidget("react-router", reactRouter);
-    if (failure === null) {
-      failure = failedWidget("qwik", qwik);
-    }
+    let failure = pageWidgets
+      .map(({ frameId, response }) => failedWidget(frameId, response))
+      .find((candidate) => candidate !== null) ?? null;
     if (failure === null) {
       failure = failedWidget("account", account);
     }
@@ -665,29 +783,33 @@ export default {
       );
     }
 
-    const shellResponse = new Response(shell(hostSection, reactRoute, qwikRoute), {
+    const shellResponse = new Response(shell(hostSection), {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "public, max-age=60",
+        "Cache-Control": "no-store",
       },
     });
     const rewriter = new HTMLRewriter();
-    rewriter.on(
-      "#react-router-widget",
-      widgetContent(reactRouter, {
-        frameId: "react-router",
-        label: "React transcript or plugins frontend",
-        source: `/widgets/react-router${reactRoute}`,
-      }),
-    );
-    rewriter.on(
-      "#qwik-widget",
-      widgetContent(qwik, {
-        frameId: "qwik",
-        label: "Qwik composer or usage frontend",
-        source: `/widgets/qwik${qwikRoute}?frameId=qwik`,
-      }),
-    );
+    for (const { frameId, response, route } of pageWidgets) {
+      let label = "Qwik composer frontend";
+      if (frameId === "react-router") {
+        label = hostSection === "plugins"
+          ? "React plugins frontend"
+          : "React transcript frontend";
+      } else if (hostSection === "usage") {
+        label = "Qwik usage frontend";
+      }
+      rewriter.on(
+        frameId === "react-router" ? "#react-router-widget" : "#qwik-widget",
+        widgetContent(response, {
+          frameId,
+          label,
+          source: frameId === "react-router"
+            ? `/widgets/react-router${route}`
+            : `/widgets/qwik${route}?frameId=qwik`,
+        }),
+      );
+    }
     rewriter.on(
       "#account-widget",
       widgetContent(account, {
