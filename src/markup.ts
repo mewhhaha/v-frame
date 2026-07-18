@@ -14,6 +14,10 @@ const RAW_TEXT_ELEMENTS = new Set([
   "iframe",
   "noembed",
   "noframes",
+  // v-frame always executes guest scripts, so noscript tokenizes as raw text
+  // exactly like a scripting-enabled parser; without this, a style marker
+  // inside head noscript gets popped out of it and applies as a live style.
+  "noscript",
   "script",
   "style",
   "textarea",

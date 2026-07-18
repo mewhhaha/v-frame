@@ -170,8 +170,14 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     }
 
     try {
-      selection.removeAllRanges();
-      selection.addRange(state.range);
+      // addRange would normalize the selection to forward; setBaseAndExtent
+      // preserves the caller's anchor/focus direction.
+      selection.setBaseAndExtent(
+        state.anchorNode,
+        state.anchorOffset,
+        state.focusNode,
+        state.focusOffset,
+      );
       if (virtualNativeRanges().length === 0) {
         privateSelection = state;
       }

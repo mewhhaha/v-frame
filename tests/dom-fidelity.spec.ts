@@ -434,3 +434,50 @@ test("keeps document collections live with stable identities", async ({ page }) 
     classes: true,
   });
 });
+
+test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({ page }) => {
+  await mountFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const virtualDocument = frame.contentWindow!.document;
+
+    const svg = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const gradient = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+    svg.append(gradient);
+    virtualDocument.body.append(svg);
+
+    const emptyID = virtualDocument.createElement("div");
+    emptyID.setAttribute("id", "");
+    virtualDocument.body.append(emptyID);
+
+    const plain = virtualDocument.createElement("div");
+    plain.setAttribute("once", "true");
+    plain.setAttribute("onboarding-step", "intro");
+    plain.setAttribute("onclick", "this.dataset.clicked = 'yes'");
+    virtualDocument.body.append(plain);
+    plain.click();
+
+    return {
+      byAuthoredCase: virtualDocument.getElementsByTagName("linearGradient").length,
+      byLowercase: virtualDocument.getElementsByTagName("lineargradient").length,
+      emptyLookupIsNull: virtualDocument.getElementById("") === null,
+      onceAttribute: plain.getAttribute("once"),
+      onboardingAttribute: plain.getAttribute("onboarding-step"),
+      onceSelectorMatches: plain.matches("[once]"),
+      inlineHandlerRan: (plain as HTMLElement).dataset.clicked ?? null,
+    };
+  });
+
+  expect(result).toEqual({
+    byAuthoredCase: 1,
+    byLowercase: 0,
+    emptyLookupIsNull: true,
+    onceAttribute: "true",
+    onboardingAttribute: "intro",
+    onceSelectorMatches: true,
+    inlineHandlerRan: "yes",
+  });
+});

@@ -863,3 +863,69 @@ test("uses CORS responses and applies include credentials to entry and child fet
   await expect(omitted.locator("#credential-result")).toHaveText("omitted");
   expect(fixture.corsRequests.filter((path) => path === "/api/credentialed")).toHaveLength(3);
 });
+
+test("closes dialog form submissions natively without emitting navigation", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "dialog-form", `${fixture.origin}/documents/history.html`);
+  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await frame.evaluate((element) => {
+    (element as HTMLElement & { navigationKinds?: string[] }).navigationKinds = [];
+    element.addEventListener("v-frame-navigate", (event) => {
+      (element as HTMLElement & { navigationKinds: string[] }).navigationKinds.push(
+        (event as CustomEvent<{ kind: string }>).detail.kind,
+      );
+    });
+  });
+
+  const state = await childValue(frame, async (window) => {
+    const document = window.document;
+    const dialog = document.createElement("dialog");
+    const form = document.createElement("form");
+    form.setAttribute("method", "dialog");
+    const button = document.createElement("button");
+    button.value = "confirmed";
+    form.append(button);
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    const openBefore = dialog.open;
+    button.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    return { openBefore, openAfter: dialog.open, returnValue: dialog.returnValue };
+  });
+
+  expect(state).toEqual({ openBefore: true, openAfter: false, returnValue: "confirmed" });
+  expect(await frame.evaluate(
+    (element) => (element as HTMLElement & { navigationKinds: string[] }).navigationKinds,
+  )).toEqual([]);
+});
+
+test("replaces the history entry when a fragment link targets the current URL", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "repeat-fragment", `${fixture.origin}/documents/history.html`);
+  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await frame.evaluate((element) => {
+    (element as HTMLElement & { navigationKinds?: string[] }).navigationKinds = [];
+    element.addEventListener("v-frame-navigate", (event) => {
+      (element as HTMLElement & { navigationKinds: string[] }).navigationKinds.push(
+        (event as CustomEvent<{ kind: string }>).detail.kind,
+      );
+    });
+  });
+  const historyLength = () => childValue(frame, (window) => window.history.length);
+  const recordedKinds = () => frame.evaluate(
+    (element) => (element as HTMLElement & { navigationKinds: string[] }).navigationKinds.length,
+  );
+
+  const initialLength = await historyLength();
+  await frame.locator("#top-link").click();
+  await expect.poll(recordedKinds).toBe(1);
+  const afterFirst = await historyLength();
+
+  await frame.locator("#top-link").click();
+  await frame.locator("#top-link").click();
+  await expect.poll(recordedKinds).toBe(3);
+
+  expect(afterFirst).toBe(initialLength + 1);
+  expect(await historyLength()).toBe(afterFirst);
+});
