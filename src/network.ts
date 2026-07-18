@@ -333,7 +333,14 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
       const previousRequest = activeXHRSends.get(this);
       const nativeArguments = [...argumentsList];
-      nativeArguments[1] = resolveNetworkURL(window, argumentsList[1], options.getBaseURL());
+      try {
+        nativeArguments[1] = resolveNetworkURL(window, argumentsList[1], options.getBaseURL());
+      } catch {
+        throw new window.DOMException(
+          `XMLHttpRequest could not resolve URL ${JSON.stringify(String(argumentsList[1]))} against ${JSON.stringify(options.getBaseURL())}`,
+          "SyntaxError",
+        );
+      }
       Reflect.apply(nativeXHROpen, this, nativeArguments);
       if (previousRequest !== undefined) {
         activeRequests.delete(previousRequest);
