@@ -825,6 +825,38 @@ export async function prepareAdoptedMarkup(
     );
   }
   html.remove();
+  const shadowHosts = new WeakSet<Element>();
+  for (const element of collectParsedElements(html)) {
+    if (
+      element.namespaceURI !== HTML_NAMESPACE
+      || element.localName !== "template"
+    ) {
+      continue;
+    }
+
+    const template = element as HTMLTemplateElement;
+    const host = template.parentElement;
+    const mode = template.getAttribute("shadowrootmode");
+    if (
+      host === null
+      || host.namespaceURI !== HTML_NAMESPACE
+      || host.localName !== "v-frame"
+      || shadowHosts.has(host)
+      || mode !== "open"
+    ) {
+      continue;
+    }
+
+    const shadowRoot = host.attachShadow({
+      mode,
+      clonable: template.hasAttribute("shadowrootclonable"),
+      delegatesFocus: template.hasAttribute("shadowrootdelegatesfocus"),
+      serializable: template.hasAttribute("shadowrootserializable"),
+    });
+    shadowHosts.add(host);
+    shadowRoot.append(template.content);
+    template.remove();
+  }
 
   for (const script of html.querySelectorAll<HTMLScriptElement>("script[data-v-frame-script]")) {
     if (script.getAttribute("type") !== "application/vnd.v-frame") {

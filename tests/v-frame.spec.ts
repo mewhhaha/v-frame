@@ -98,6 +98,89 @@ test("adopts server-rendered shadow content without fetching the entry document"
   expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(1);
 });
 
+test("preserves nested adopted frames without fetching either entry document", async ({ page }) => {
+  const outerRequestsBefore = fixture.requests.filter(
+    (path) => path === "/documents/outer-adopted-entry.html",
+  ).length;
+  const innerRequestsBefore = fixture.requests.filter(
+    (path) => path === "/documents/inner-adopted-entry.html",
+  ).length;
+  await page.goto(`${fixture.origin}/documents/nested-adopted-host.html`);
+  await page.evaluate(() => {
+    let releaseOuterModule = () => undefined;
+    const outerModuleGate = new Promise<void>((resolve) => {
+      releaseOuterModule = resolve;
+    });
+    const hostWindow = window as Window & typeof globalThis & {
+      __nestedOuterModuleGate?: Promise<void>;
+      __nestedOuterModuleStarted?: boolean;
+      __releaseNestedOuterModule?: () => void;
+    };
+    hostWindow.__nestedOuterModuleGate = outerModuleGate;
+    hostWindow.__nestedOuterModuleStarted = false;
+    hostWindow.__releaseNestedOuterModule = releaseOuterModule;
+  });
+
+  await page.evaluate(async (url) => {
+    const bundle = await import(url);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & typeof globalThis & { __nestedOuterModuleStarted?: boolean })
+      .__nestedOuterModuleStarted
+  )).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const outer = document.querySelector("#outer-frame");
+    const nestedFrames = Array.from(
+      outer?.shadowRoot?.querySelectorAll("#inner-frame") ?? [],
+    ) as Array<HTMLElement & { status: string }>;
+    return {
+      outerStatus: (outer as HTMLElement & { status: string } | null)?.status,
+      nestedFrames: nestedFrames.length,
+      nestedStatuses: nestedFrames.map((frame) => frame.status),
+      nestedText: nestedFrames.map((frame) =>
+        frame.shadowRoot?.querySelector("#nested-copy")?.textContent
+      ),
+    };
+  })).toEqual({
+    outerStatus: "loading",
+    nestedFrames: 2,
+    nestedStatuses: ["ready", "ready"],
+    nestedText: ["Nested preview activated", "Nested preview activated"],
+  });
+  expect(fixture.requests.filter(
+    (path) => path === "/documents/outer-adopted-entry.html",
+  )).toHaveLength(outerRequestsBefore);
+  expect(fixture.requests.filter(
+    (path) => path === "/documents/inner-adopted-entry.html",
+  )).toHaveLength(innerRequestsBefore);
+
+  await page.evaluate(() => {
+    (window as Window & typeof globalThis & { __releaseNestedOuterModule: () => void })
+      .__releaseNestedOuterModule();
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const outer = document.querySelector("#outer-frame") as
+      | (HTMLElement & { status: string })
+      | null;
+    const inner = outer?.shadowRoot?.querySelector("#inner-frame") as
+      | (HTMLElement & { status: string })
+      | null;
+    return {
+      innerStatus: inner?.status,
+      nestedFrames: outer?.shadowRoot?.querySelectorAll("#inner-frame").length,
+      nestedText: inner?.shadowRoot?.querySelector("#nested-copy")?.textContent,
+      outerStatus: outer?.status,
+    };
+  })).toEqual({
+    innerStatus: "ready",
+    nestedFrames: 1,
+    nestedText: "Nested preview activated",
+    outerStatus: "ready",
+  });
+});
+
 test("keeps adopted preview visible until its initial module completes", async ({ page }) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {

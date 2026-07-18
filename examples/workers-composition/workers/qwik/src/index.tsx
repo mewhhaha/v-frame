@@ -3,6 +3,7 @@ import { renderToStream } from "@builder.io/qwik/server";
 import { manifest } from "@qwik-client-manifest";
 import {
   isWidgetRoute,
+  type RoutingFrameId,
   type WidgetRoute,
   widgetStyle,
   WorkspaceWidget,
@@ -30,22 +31,32 @@ function requestedRoute(url: URL, pathname: WidgetEndpoint): WidgetRoute {
   return route !== null && isWidgetRoute(route) ? route : "/inventory";
 }
 
+function requestedFrameId(url: URL): RoutingFrameId {
+  return url.searchParams.get("frameId") === "qwik" ? "qwik" : "";
+}
+
 async function renderWidget(url: URL, pathname: WidgetEndpoint): Promise<string> {
   const chunks: string[] = [];
-  await renderToStream(<WorkspaceWidget initialRoute={requestedRoute(url, pathname)} />, {
-    base: widgetBuildBase(url, pathname),
-    containerTagName: "div",
-    manifest,
-    preloader: false,
-    qwikLoader: "module",
-    snapshot: true,
-    stream: {
-      write(chunk) {
-        chunks.push(chunk);
+  await renderToStream(
+    <WorkspaceWidget
+      initialRoute={requestedRoute(url, pathname)}
+      routingFrameId={requestedFrameId(url)}
+    />,
+    {
+      base: widgetBuildBase(url, pathname),
+      containerTagName: "div",
+      manifest,
+      preloader: false,
+      qwikLoader: "module",
+      snapshot: true,
+      stream: {
+        write(chunk) {
+          chunks.push(chunk);
+        },
       },
+      streaming: { inOrder: { strategy: "disabled" } },
     },
-    streaming: { inOrder: { strategy: "disabled" } },
-  });
+  );
   return chunks.join("");
 }
 

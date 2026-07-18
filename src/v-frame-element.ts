@@ -415,7 +415,7 @@ export class VFrameElement extends HTMLElementBase {
     }
 
     return {
-      source: this.#root.innerHTML,
+      source: this.#root.getHTML({ serializableShadowRoots: true }),
       previewNodes: Array.from(this.#root.childNodes),
     };
   }

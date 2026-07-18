@@ -4,10 +4,16 @@
   "main": "src/index.tsx",
   "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }
+  ],
   "assets": {
     "directory": "./public",
     "run_worker_first": ["/activity", "/history", "/document", "/preview"]
   },
+  "services": [
+    { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
+  ],
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },

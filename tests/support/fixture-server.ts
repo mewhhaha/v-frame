@@ -42,6 +42,33 @@ function pageFor(path: string) {
           </v-html>
         </template>
       </v-frame>`);
+    case "/documents/nested-adopted-host.html":
+      return html(`<v-frame id="outer-frame" adopt src="/documents/outer-adopted-entry.html">
+        <template shadowrootmode="open" shadowrootserializable>
+          <v-html lang="en">
+            <v-head></v-head>
+            <v-body>
+              <v-frame id="inner-frame" adopt src="/documents/inner-adopted-entry.html">
+                <template shadowrootmode="open" shadowrootserializable>
+                  <v-html lang="en">
+                    <v-head></v-head>
+                    <v-body>
+                      <p id="nested-copy">Server-rendered nested preview</p>
+                      <script type="application/vnd.v-frame" data-v-frame-script>
+                        document.querySelector('#nested-copy').textContent = 'Nested preview activated';
+                      </script>
+                    </v-body>
+                  </v-html>
+                </template>
+              </v-frame>
+              <script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+                top.__nestedOuterModuleStarted = true;
+                await top.__nestedOuterModuleGate;
+              </script>
+            </v-body>
+          </v-html>
+        </template>
+      </v-frame>`);
     case "/documents/adopted-entry.html":
       return html('<main id="network-reload">Fetched by reload</main>');
     case "/documents/first.html":

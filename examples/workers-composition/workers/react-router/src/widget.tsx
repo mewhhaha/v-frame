@@ -33,6 +33,18 @@ function ActivityPage() {
         <li><strong>Checkout shell</strong><span>Promoted to production</span></li>
         <li><strong>Search widget</strong><span>Preview is ready</span></li>
       </ol>
+      <section className="nested-widget" aria-labelledby="nested-widget-title">
+        <div>
+          <span className="widget-kicker">Nested v-frame</span>
+          <h3 id="nested-widget-title">Workspace inventory</h3>
+        </div>
+        <v-frame
+          adopt
+          className="nested-workspace-widget"
+          src="/widgets/qwik/inventory"
+          aria-label="Nested Qwik workspace inventory widget"
+        />
+      </section>
       <button type="button" onClick={() => setUpdatesAcknowledged(true)}>
         Acknowledge updates
       </button>
@@ -97,6 +109,9 @@ export const widgetStyle = `
   .activity-list li, .history-list li { display: flex; justify-content: space-between; gap: 1rem; padding-bottom: 0.7rem; border-bottom: 1px solid #334e83; }
   .activity-list span, .history-list span, .history-list time { color: #bfdbfe; font-size: 0.82rem; text-align: right; }
   .history-list time { min-width: 4.5rem; text-align: left; }
+  .nested-widget { margin-top: 1.2rem; padding: 1rem; border: 1px solid #334e83; border-radius: 0.8rem; background: #10204c; }
+  .nested-widget h3 { margin: 0.25rem 0 0.8rem; }
+  .nested-workspace-widget { display: block; min-height: 24rem; }
   .activity-widget button { margin-top: 1.2rem; padding: 0.65rem 0.9rem; border: 0; border-radius: 0.65rem; background: #60a5fa; color: #10204c; font: inherit; font-weight: 800; cursor: pointer; }
   .activity-widget output { display: block; margin-top: 0.65rem; color: #bfdbfe; font-size: 0.82rem; }
 `;

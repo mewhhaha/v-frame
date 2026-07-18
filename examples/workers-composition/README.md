@@ -5,15 +5,17 @@ widgets before the page is delivered. The React Router application uses its
 normal `StaticRouter`/`hydrateRoot` lifecycle, and the Qwik application uses its
 normal optimizer-generated snapshot, Qwikloader, and resumable QRLs. The public
 host requests both Workers through Cloudflare service bindings and streams each
-response into a declarative shadow root.
+response into a declarative shadow root. The React Router Worker requests a
+second Qwik preview through its own service binding and nests it one level
+deeper.
 
 ```text
-                          ┌─ React Router SSR Worker ─┐
-browser ← host HTML ← host Worker                     ├─ service bindings
-                          └─ Qwik SSR Worker ─────────┘
+                          ┌─ React Router SSR Worker ── Qwik SSR Worker
+browser ← host HTML ← host Worker
+                          └─ Qwik SSR Worker
 ```
 
-The delivered HTML already contains both widget bodies:
+The delivered HTML already contains all three widget bodies:
 
 ```html
 <v-frame adopt src="/widgets/react-router/activity">
@@ -26,8 +28,10 @@ The delivered HTML already contains both widget bodies:
 </v-frame>
 ```
 
-It also contains the minified `v-frame` runtime, so neither the widget previews
-nor the web component require a follow-up request before activation.
+It also contains the minified `v-frame` runtime, so neither widget preview nor
+the web component requires a follow-up request before activation. Serializable
+declarative shadow roots preserve the nested Qwik preview while the outer React
+Router widget is adopted into its live tree.
 
 Declarative Shadow DOM makes that content visible while the document is still
 being parsed. The host response also contains a self-registering `v-frame`
@@ -72,11 +76,16 @@ existing ID, so they remain ordinary standalone applications when opened
 directly. A fresh ID also avoids inheriting a copied `sessionStorage` value from
 an opener tab.
 
-Messages use a small versioned protocol. A child sends `navigate-request`; the
-host validates the frame and route, updates its own URL, and responds with a
-targeted `route-change`. A `hello` handshake gives a newly activated frame the
-current host route. The ID prevents unrelated tabs from receiving one another's
-messages, but it is coordination rather than an authorization boundary.
+Messages use a small versioned protocol. A top-level child sends
+`navigate-request`; the host validates the frame and route, updates its own URL,
+and responds with a targeted `route-change`. A `hello` handshake gives a newly
+activated frame the current host route, including after browser history
+traversal. The nested Qwik widget intentionally has no host routing identity, so
+its inventory/catalog navigation remains local and cannot change the sibling
+Qwik widget's route. The ID prevents unrelated tabs from receiving one
+another's messages, but it is coordination rather than an authorization
+boundary. If the session or channel APIs are unavailable, coordination remains
+disabled and each widget keeps its framework-local routing.
 
 ## Run locally
 

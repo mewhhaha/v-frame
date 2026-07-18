@@ -1,4 +1,10 @@
 import vFrameInlineScript from "../generated/v-frame-inline.txt";
+import {
+  routingChannelPrefix,
+  routingProtocol,
+  routingSessionStorageKey,
+  routingVersion,
+} from "../../shared/routing";
 
 const embeddedVFrameScript = vFrameInlineScript.replace(/<\/script/gi, "<\\/script");
 const reactRoutes = new Set(["/activity", "/history"]);
@@ -61,14 +67,15 @@ function shell(reactRoute: string, qwikRoute: string): string {
         <div id="react-router-widget"></div>
         <div id="qwik-widget"></div>
       </div>
-      <p class="delivery-note">Both widget bodies and the v-frame runtime arrived in the host HTML. The browser made no activation fetch.</p>
-      <p class="host-route">Host route: <output id="host-route" aria-live="polite">react-router ${reactRoute}</output></p>
+      <p class="delivery-note">All three widget bodies and the v-frame runtime arrived in the host HTML. Activation makes no widget document fetch at either depth.</p>
+      <p class="host-route">Host routes: <output id="host-route" aria-live="polite">react-router ${reactRoute}; qwik ${qwikRoute}</output></p>
     </main>
     <script data-v-frame-runtime>${embeddedVFrameScript}</script>
     <script>
-      const protocol = "v-frame-routing";
-      const version = 1;
-      const sessionKey = "v-frame:routing-session";
+      const protocol = ${JSON.stringify(routingProtocol)};
+      const version = ${routingVersion};
+      const sessionKey = ${JSON.stringify(routingSessionStorageKey)};
+      const channelPrefix = ${JSON.stringify(routingChannelPrefix)};
       const initialRoutes = ${initialRoutes};
       const frameRoutes = { ...initialRoutes };
       const allowedRoutes = {
@@ -76,10 +83,17 @@ function shell(reactRoute: string, qwikRoute: string): string {
         qwik: new Set(["/inventory", "/catalog"]),
       };
       const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-      const sessionId = crypto.randomUUID();
-      sessionStorage.setItem(sessionKey, sessionId);
-
-      const channel = new BroadcastChannel("v-frame:routing:v1:" + sessionId);
+      let sessionId = "";
+      let channel = null;
+      try {
+        if (typeof BroadcastChannel === "function") {
+          sessionId = crypto.randomUUID();
+          sessionStorage.setItem(sessionKey, sessionId);
+          channel = new BroadcastChannel(channelPrefix + sessionId);
+        }
+      } catch {
+        sessionId = "";
+      }
       const seenMessages = new Set();
       const routeOutput = document.querySelector("#host-route");
 
@@ -87,11 +101,15 @@ function shell(reactRoute: string, qwikRoute: string): string {
         const route = new URL(location.href).searchParams.get(frameId);
         return allowedRoutes[frameId]?.has(route) ? route : initialRoutes[frameId];
       };
-      const showRoute = (frameId, route) => {
-        if (routeOutput !== null) routeOutput.textContent = frameId + " " + route;
+      const showRoutes = () => {
+        if (routeOutput !== null) {
+          routeOutput.textContent = Object.entries(frameRoutes)
+            .map(([frameId, route]) => frameId + " " + route)
+            .join("; ");
+        }
       };
       const postRoute = (frameId, route, mode) => {
-        channel.postMessage({
+        channel?.postMessage({
           protocol,
           version,
           sessionId,
@@ -122,7 +140,7 @@ function shell(reactRoute: string, qwikRoute: string): string {
           message.target === "host";
       };
 
-      channel.addEventListener("message", (event) => {
+      channel?.addEventListener("message", (event) => {
         const message = event.data;
         if (event.origin !== location.origin || !validBase(message)) return;
         if (seenMessages.has(message.messageId)) return;
@@ -151,7 +169,7 @@ function shell(reactRoute: string, qwikRoute: string): string {
           "",
           next.pathname + next.search + next.hash,
         );
-        showRoute(message.source, message.route);
+        showRoutes();
         postRoute(message.source, message.route, message.mode);
       });
 
@@ -161,8 +179,9 @@ function shell(reactRoute: string, qwikRoute: string): string {
           frameRoutes[frameId] = route;
           postRoute(frameId, route, "traverse");
         }
+        showRoutes();
       });
-      addEventListener("pagehide", () => channel.close(), { once: true });
+      addEventListener("pagehide", () => channel?.close(), { once: true });
 
     </script>
   </body>
@@ -188,7 +207,7 @@ function widgetContent(
   return {
     element(element) {
       element.before(
-        `<v-frame adopt data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open">`,
+        `<v-frame adopt data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
         { html: true },
       );
       element.replace(response, { html: true });
@@ -220,8 +239,11 @@ export default {
     }
     if (url.pathname.startsWith("/widgets/qwik/")) {
       const mountedPath = url.pathname.slice("/widgets/qwik".length);
+      const routingFrameIdQuery = url.searchParams.get("frameId") === "qwik"
+        ? "&frameId=qwik"
+        : "";
       const componentPath = qwikRoutes.has(mountedPath)
-        ? `/document?route=${encodeURIComponent(mountedPath)}&base=/widgets/qwik/build/`
+        ? `/document?route=${encodeURIComponent(mountedPath)}&base=/widgets/qwik/build/${routingFrameIdQuery}`
         : mountedPath + url.search;
       return env.QWIK_WIDGET.fetch(serviceRequest("qwik-widget", componentPath));
     }
@@ -241,7 +263,7 @@ export default {
       env.QWIK_WIDGET.fetch(
         serviceRequest(
           "qwik-widget",
-          `/preview?route=${encodeURIComponent(qwikRoute)}&base=/widgets/qwik/build/`,
+          `/preview?route=${encodeURIComponent(qwikRoute)}&base=/widgets/qwik/build/&frameId=qwik`,
         ),
       ),
     ]);
@@ -278,7 +300,7 @@ export default {
         widgetContent(qwik, {
           frameId: "qwik",
           label: "Qwik workspace inventory widget",
-          source: `/widgets/qwik${qwikRoute}`,
+          source: `/widgets/qwik${qwikRoute}?frameId=qwik`,
         }),
       )
       .transform(shellResponse);

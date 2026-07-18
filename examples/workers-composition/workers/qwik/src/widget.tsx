@@ -1,43 +1,119 @@
 /** @jsxImportSource @builder.io/qwik */
-import { $, component$, useSignal } from "@builder.io/qwik";
+import { $, component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
-const routingProtocol = "v-frame-routing";
-const routingVersion = 1;
+import {
+  isRoutingMessage,
+  openRoutingChannel,
+  postRoutingMessage,
+  routingProtocol,
+  routingSessionId,
+  routingVersion,
+} from "../../shared/routing";
 
 export type WidgetRoute = "/inventory" | "/catalog";
+export type RoutingFrameId = "" | "qwik";
 
 export function isWidgetRoute(value: string): value is WidgetRoute {
   return value === "/inventory" || value === "/catalog";
 }
 
-const requestHostNavigation = $((route: WidgetRoute) => {
-  const sessionId = sessionStorage.getItem("v-frame:routing-session");
+const requestHostNavigation = $((routingFrameId: RoutingFrameId, route: WidgetRoute) => {
+  if (routingFrameId === "") {
+    return;
+  }
+
+  const sessionId = routingSessionId();
   if (sessionId === null) {
     return;
   }
 
-  const channel = new BroadcastChannel(`v-frame:routing:v1:${sessionId}`);
-  channel.postMessage({
+  const channel = openRoutingChannel(sessionId);
+  if (channel === null) {
+    return;
+  }
+
+  const didPostNavigation = postRoutingMessage(channel, {
     protocol: routingProtocol,
     version: routingVersion,
     sessionId,
-    messageId: crypto.randomUUID(),
-    source: "qwik",
+    source: routingFrameId,
     target: "host",
     kind: "navigate-request",
     route,
     mode: "push",
   });
+  if (!didPostNavigation) {
+    channel.close();
+    return;
+  }
+
   setTimeout(() => channel.close(), 0);
 });
 
 export interface WorkspaceWidgetProps {
   initialRoute: WidgetRoute;
+  routingFrameId: RoutingFrameId;
 }
 
-export const WorkspaceWidget = component$(({ initialRoute }: WorkspaceWidgetProps) => {
+export const WorkspaceWidget = component$(({
+  initialRoute,
+  routingFrameId,
+}: WorkspaceWidgetProps) => {
   const availableItems = useSignal(3);
   const currentRoute = useSignal<WidgetRoute>(initialRoute);
+
+  useVisibleTask$(({ cleanup }) => {
+    if (routingFrameId === "") {
+      return;
+    }
+
+    const sessionId = routingSessionId();
+    if (sessionId === null) {
+      return;
+    }
+
+    const channel = openRoutingChannel(sessionId);
+    if (channel === null) {
+      return;
+    }
+    const receiveRouteChange = (event: MessageEvent<unknown>) => {
+      if (event.origin !== location.origin || !isRoutingMessage(event.data)) {
+        return;
+      }
+      const message = event.data;
+      if (
+        message.sessionId !== sessionId
+        || message.source !== "host"
+        || message.target !== routingFrameId
+        || message.kind !== "route-change"
+        || message.route === undefined
+        || !isWidgetRoute(message.route)
+      ) {
+        return;
+      }
+      currentRoute.value = message.route;
+    };
+
+    channel.addEventListener("message", receiveRouteChange);
+    const didPostHello = postRoutingMessage(channel, {
+      protocol: routingProtocol,
+      version: routingVersion,
+      sessionId,
+      source: routingFrameId,
+      target: "host",
+      kind: "hello",
+    });
+    if (!didPostHello) {
+      channel.removeEventListener("message", receiveRouteChange);
+      channel.close();
+      return;
+    }
+
+    cleanup(() => {
+      channel.removeEventListener("message", receiveRouteChange);
+      channel.close();
+    });
+  });
 
   if (currentRoute.value === "/catalog") {
     return (
@@ -61,7 +137,7 @@ export const WorkspaceWidget = component$(({ initialRoute }: WorkspaceWidgetProp
             class="inventory-link"
             onClick$={async () => {
               currentRoute.value = "/inventory";
-              await requestHostNavigation("/inventory");
+              await requestHostNavigation(routingFrameId, "/inventory");
             }}
           >
             Back to inventory
@@ -100,7 +176,7 @@ export const WorkspaceWidget = component$(({ initialRoute }: WorkspaceWidgetProp
           class="inventory-link"
           onClick$={async () => {
             currentRoute.value = "/catalog";
-            await requestHostNavigation("/catalog");
+            await requestHostNavigation(routingFrameId, "/catalog");
           }}
         >
           View catalog
