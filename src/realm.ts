@@ -1190,11 +1190,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           }
           style.dataset.vFrameSource = snapshot.href;
           style.media = snapshot.media;
-          style.disabled = snapshot.disabled;
           style.textContent = rewritten;
           processedStyles.set(style, rewritten);
           link.replaceWith(style);
+          // disabled only reaches a sheet once the style is connected; on a
+          // detached element the assignment is a spec-mandated no-op.
+          style.disabled = snapshot.disabled;
           installCSSOMStyleSheet(style);
+          link.dispatchEvent(new window.Event("load"));
           reportImportFailures(
             importFailures,
             () =>
@@ -1210,6 +1213,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           update.revision += 1;
           update.snapshot = null;
           link.remove();
+          link.dispatchEvent(new window.Event("error"));
           options.onError({ phase: "stylesheet", url: snapshot.href, error });
         }
       })();
@@ -1635,13 +1639,22 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
 
+      const form = event.target as HTMLFormElement;
+      const submitter = event.submitter as HTMLElement | null;
+      const method = (
+        submitter?.getAttribute("formmethod") ?? form.getAttribute("method") ?? ""
+      ).toLowerCase();
+      // A dialog submission navigates nowhere; its default action (closing
+      // the dialog) must stay native.
+      if (method === "dialog") {
+        return;
+      }
+
       facade?.suppressEventDefault(event);
       if (scheduledNavigationEvents.has(event)) {
         return;
       }
       scheduledNavigationEvents.add(event);
-      const form = event.target as HTMLFormElement;
-      const submitter = event.submitter as HTMLElement | null;
       scheduleNavigationDefault(() => {
         if (disposed || facade?.wasEventDefaultPrevented(event) === true) {
           return;
