@@ -113,17 +113,17 @@ function absolutizeCssURLs(ast: CssNode, stylesheetURL: string): void {
   cssTree.walk(ast, {
     visit: "Url",
     enter(node) {
-      if (node.value.startsWith("#")) {
+      // An empty url() is an invalid resource that must never be fetched, so
+      // rebasing it against the stylesheet would invent a request.
+      if (node.value === "" || node.value.startsWith("#")) {
         return;
       }
 
       try {
         node.value = new URL(node.value, stylesheetURL).href;
-      } catch (cause) {
-        throw new TypeError(
-          `CSS URL ${JSON.stringify(node.value)} cannot be resolved in ${stylesheetURL}`,
-          { cause },
-        );
+      } catch {
+        // Browsers keep a rule whose url() cannot be resolved and simply fail
+        // to load the resource; discarding the stylesheet would lose the rest.
       }
     },
   });
@@ -165,8 +165,17 @@ function importParts(rule: Atrule, stylesheetURL: string): ImportParts | null {
     }
   }
 
+  let url: string;
+  try {
+    url = new URL(reference.value, stylesheetURL).href;
+  } catch {
+    // An unresolvable @import stays in place uninlined; the browser ignores
+    // it, matching native handling of a bad import URL.
+    return null;
+  }
+
   return {
-    url: new URL(reference.value, stylesheetURL).href,
+    url,
     layer,
     supports,
     media,
@@ -203,6 +212,13 @@ export function fetchStylesheetText(
 
   const request = context.fetchText(url);
   context.requests.set(url, request);
+  // A rejected fetch is evicted so a later insertion can retry the network
+  // instead of replaying the cached failure for the realm's lifetime.
+  request.catch(() => {
+    if (context.requests.get(url) === request) {
+      context.requests.delete(url);
+    }
+  });
   return request;
 }
 
