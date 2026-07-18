@@ -262,9 +262,15 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
       const [input, init] = argumentsList;
       const requestInput = isRequest(input);
-      const resolvedInput = requestInput
-        ? cloneRequest(input)
-        : resolveNetworkURL(window, input, options.getBaseURL());
+      let resolvedInput: Request | string;
+      try {
+        resolvedInput = requestInput
+          ? cloneRequest(input)
+          : resolveNetworkURL(window, input, options.getBaseURL());
+      } catch (error) {
+        // Native fetch never throws synchronously.
+        return Promise.reject(error);
+      }
 
       return nativeFetch(resolvedInput, {
         ...init,
@@ -327,7 +333,14 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
       const previousRequest = activeXHRSends.get(this);
       const nativeArguments = [...argumentsList];
-      nativeArguments[1] = resolveNetworkURL(window, argumentsList[1], options.getBaseURL());
+      try {
+        nativeArguments[1] = resolveNetworkURL(window, argumentsList[1], options.getBaseURL());
+      } catch {
+        throw new window.DOMException(
+          `XMLHttpRequest could not resolve URL ${JSON.stringify(String(argumentsList[1]))} against ${JSON.stringify(options.getBaseURL())}`,
+          "SyntaxError",
+        );
+      }
       Reflect.apply(nativeXHROpen, this, nativeArguments);
       if (previousRequest !== undefined) {
         activeRequests.delete(previousRequest);
@@ -348,7 +361,8 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
       }
       nativeXHRUploads.set(this.upload, this);
-      const request = activeXHRSends.get(this) ?? registerNativeXHR(this);
+      const inFlightRequest = activeXHRSends.get(this);
+      const request = inFlightRequest ?? registerNativeXHR(this);
       const unregisterRequest = () => {
         this.removeEventListener("loadstart", listenForLoadStart);
         activeRequests.delete(request);
@@ -370,7 +384,13 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       try {
         nativeXHRSend.call(this, body);
       } catch (error) {
-        unregisterRequest();
+        // A send() rejected mid-flight (InvalidStateError) must not strip the
+        // live request's teardown tracking.
+        if (inFlightRequest === undefined) {
+          unregisterRequest();
+        } else {
+          this.removeEventListener("loadstart", listenForLoadStart);
+        }
         throw error;
       }
     };

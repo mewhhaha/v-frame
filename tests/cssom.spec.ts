@@ -183,3 +183,51 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
   await expect(frame.locator("#add-rule-target")).toHaveCSS("color", "rgb(21, 22, 23)");
   await expect(frame.locator("#selector-target")).toHaveCSS("color", "rgb(31, 32, 33)");
 });
+
+test("applies, clears, and rejects shorthand values through the inline style declaration", async ({ page }) => {
+  await installBundle(page);
+  const result = await page.evaluate(async (origin) => {
+    const frame = document.createElement("v-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const loaded = new Promise<void>((resolveLoaded) => {
+      frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
+    });
+    frame.setAttribute("src", `${origin}/documents/cssom.html`);
+    document.querySelector("#host")?.append(frame);
+    await loaded;
+
+    const child = frame.contentWindow!;
+    const idlTarget = child.document.querySelector("#insert-rule-target") as HTMLElement;
+    idlTarget.style.margin = "10px";
+
+    const setPropertyTarget = child.document.querySelector("#add-rule-target") as HTMLElement;
+    setPropertyTarget.style.setProperty("padding", "4px 8px");
+
+    const clearedTarget = child.document.querySelector("#selector-target") as HTMLElement;
+    clearedTarget.setAttribute("style", "background: rgb(9, 9, 9); color: rgb(5, 6, 7)");
+    clearedTarget.style.background = "";
+    clearedTarget.style.setProperty("color", "notacolor");
+
+    return {
+      idlMargin: idlTarget.style.margin,
+      setPropertyPadding: setPropertyTarget.style.getPropertyValue("padding"),
+      clearedColor: clearedTarget.style.getPropertyValue("color"),
+      clearedAttribute: clearedTarget.getAttribute("style"),
+    };
+  }, fixture.origin);
+
+  expect(result.idlMargin).toBe("10px");
+  expect(result.setPropertyPadding).toBe("4px 8px");
+  expect(result.clearedColor).toBe("rgb(5, 6, 7)");
+  expect(result.clearedAttribute).not.toContain("background");
+  expect(result.clearedAttribute).toContain("color:rgb(5,6,7)");
+
+  const frame = page.locator("v-frame");
+  await expect(frame.locator("#insert-rule-target")).toHaveCSS("margin-top", "10px");
+  await expect(frame.locator("#insert-rule-target")).toHaveCSS("margin-left", "10px");
+  await expect(frame.locator("#add-rule-target")).toHaveCSS("padding-top", "4px");
+  await expect(frame.locator("#add-rule-target")).toHaveCSS("padding-left", "8px");
+  await expect(frame.locator("#selector-target")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(frame.locator("#selector-target")).toHaveCSS("color", "rgb(5, 6, 7)");
+});

@@ -898,6 +898,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     refreshInlineStyleSheet();
   };
 
+  const probeStyleDeclaration = (): CSSStyleDeclaration | undefined => {
+    const scratch = nativeCreateElement.call(
+      styleDeclarationDocument,
+      "span",
+    ) as HTMLElement;
+    return nativeHTMLElementStyle?.get?.call(scratch) as
+      | CSSStyleDeclaration
+      | undefined;
+  };
+
   const styleFacade = (element: Element): CSSStyleDeclaration => {
     const existing = styleFacades.get(element);
     if (existing !== undefined) {
@@ -933,12 +943,29 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       } else {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
       }
+      if (nextValue !== "") {
+        const probe = probeStyleDeclaration();
+        if (probe !== undefined) {
+          probe.setProperty(propertyName, nextValue);
+          // Native setProperty ignores values its parser rejects; the authored
+          // style must stay untouched too.
+          if (probe.getPropertyValue(propertyName) === "") {
+            return;
+          }
+        }
+      }
       const propertyNames = Array.from(
         { length: declaration.length },
         (_value, index) => declaration.item(index),
       );
+      // item() enumerates longhands only, so an applied shorthand is detected
+      // through its serialized value instead.
       const canonicalProperty = propertyNames.find(
         (candidate) => stylePropertyKey(candidate) === stylePropertyKey(propertyName),
+      ) ?? (
+        declaration.getPropertyValue(propertyName) === ""
+          ? undefined
+          : propertyName.toLowerCase()
       );
       let logicalValue: string;
       try {
@@ -1048,20 +1075,39 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
               logicalValue = target.cssText;
             }
           }
+          if (typeof property === "string" && String(value) === "") {
+            // Clearing a shorthand IDL attribute must also drop an authored
+            // shorthand declaration, which the vanished-longhand pass misses.
+            try {
+              logicalValue = updateAuthoredStyleProperty(
+                logicalValue,
+                stylePropertyNameFromIDL(property),
+                "",
+                "",
+              );
+            } catch {
+              logicalValue = target.cssText;
+            }
+          }
           if (typeof property === "string" && String(value) !== "") {
-            const scratch = nativeCreateElement.call(
-              styleDeclarationDocument,
-              "span",
-            ) as HTMLElement;
-            const probe = nativeHTMLElementStyle?.get?.call(scratch) as
-              | CSSStyleDeclaration
-              | undefined;
+            const probe = probeStyleDeclaration();
             if (probe !== undefined && Reflect.set(probe, property, value, probe)) {
-              const canonicalProperty = probe.item(0);
-              if (
-                canonicalProperty !== "" &&
-                currentProperties.has(stylePropertyKey(canonicalProperty))
-              ) {
+              const probeProperties = Array.from(
+                { length: probe.length },
+                (_probeValue, index) => probe.item(index),
+              );
+              const applied = probeProperties.length > 0 &&
+                probeProperties.every((name) =>
+                  currentProperties.has(stylePropertyKey(name)),
+                );
+              if (applied) {
+                // A shorthand IDL attribute must be written back as the
+                // shorthand itself, not as its first longhand.
+                const assignedProperty = stylePropertyNameFromIDL(property);
+                const canonicalProperty =
+                  probe.getPropertyValue(assignedProperty) === ""
+                    ? probe.item(0)
+                    : assignedProperty;
                 try {
                   logicalValue = updateAuthoredStyleProperty(
                     logicalValue,
@@ -1204,9 +1250,21 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeSetAttribute.call(script, "type", "application/x-v-frame-inert");
   };
 
-  const eventAttributeName = (attributeName: string): string | null => {
+  const eventAttributeName = (
+    element: Element,
+    attributeName: string,
+  ): string | null => {
     const normalizedName = attributeName.toLowerCase();
-    return /^on[a-z][a-z0-9_-]*$/.test(normalizedName) ? normalizedName : null;
+    if (!/^on[a-z]/.test(normalizedName)) {
+      return null;
+    }
+    // Browsers compile only the fixed set of event-handler content attributes;
+    // the element interface's handler properties mirror that set, so names like
+    // "once" or "onboarding-step" stay plain attributes. The prototype chain is
+    // consulted directly to ignore expando properties.
+    return normalizedName in Object.getPrototypeOf(element)
+      ? normalizedName
+      : null;
   };
 
   const listenerEventSource = (event: Event): Event =>
@@ -1766,7 +1824,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (newlyVirtual) {
         installForeignElementFacade(node);
         for (const attribute of Array.from(node.attributes)) {
-          const attributeName = eventAttributeName(attribute.name);
+          const attributeName = eventAttributeName(node, attribute.name);
           if (attributeName === null) {
             continue;
           }
@@ -2729,7 +2787,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         };
       }
     }
-    const eventName = eventAttributeName(normalizedAttributeName);
+    const eventName = eventAttributeName(element, normalizedAttributeName);
     if (eventName !== null && virtualNodes.has(element)) {
       return {
         managed: true,
@@ -2904,7 +2962,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       setLogicalLinkRel(element, nextValue, false);
       return;
     }
-    const inlineEventAttribute = eventAttributeName(attributeName);
+    const inlineEventAttribute = eventAttributeName(element, attributeName);
     if (virtualNodes.has(element) && inlineEventAttribute !== null) {
       let attributes = eventAttributeValues.get(element);
       if (attributes === undefined) {
@@ -2963,7 +3021,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       removeLogicalLinkRel(element);
       return;
     }
-    const inlineEventAttribute = eventAttributeName(attributeName);
+    const inlineEventAttribute = eventAttributeName(element, attributeName);
     if (virtualNodes.has(element) && inlineEventAttribute !== null) {
       eventAttributeValues.get(element)?.delete(inlineEventAttribute);
       setElementHandler(element, inlineEventAttribute.slice(2), null);
@@ -3578,18 +3636,22 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     ) as unknown as HTMLCollectionOf<T>;
   const tagCollections = new Map<string, HTMLCollectionOf<Element>>();
   const getElementsByTagName = (qualifiedName: string): HTMLCollectionOf<Element> => {
-    const collectionName = String(qualifiedName).toLowerCase();
-    const existing = tagCollections.get(collectionName);
+    const requestedName = String(qualifiedName);
+    const existing = tagCollections.get(requestedName);
     if (existing !== undefined) {
       return existing;
     }
 
+    // The native lookup lowercases HTML-namespace names itself while matching
+    // foreign elements (SVG, MathML) case-sensitively; only the shell
+    // translation below wants the lowercase form.
+    const collectionName = requestedName.toLowerCase();
     const collection = createLiveHTMLCollection(() => {
       const translated = collectionName === "*"
         ? "*"
         : translateSelector(collectionName);
       const matches = Array.from(
-        nativeGetElementsByTagName.call(options.html, collectionName),
+        nativeGetElementsByTagName.call(options.html, requestedName),
       );
       if (translated !== collectionName) {
         const seen = new Set(matches);
@@ -3611,7 +3673,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       }
       return matches;
     });
-    tagCollections.set(collectionName, collection);
+    tagCollections.set(requestedName, collection);
     return collection;
   };
   const namespaceTagCollections = new Map<string, HTMLCollectionOf<Element>>();
@@ -3898,6 +3960,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       writable: true,
       value(id: string) {
         const identifier = String(id);
+        // An empty id attribute means the element has no ID.
+        if (identifier === "") {
+          return null;
+        }
         if (
           options.html.id === identifier &&
           nativeHasAttribute.call(options.html, "id")

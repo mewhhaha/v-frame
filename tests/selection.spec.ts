@@ -391,3 +391,52 @@ test("uses the virtual document element for document-root traversal", async ({ p
     iteratorNames: ["v-html", "v-head", "v-body", "main", "input", "button"],
   });
 });
+
+test("reports direction with the spec enum values and ignores addRange on a set selection", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "direction-frame");
+
+  const state = await childValue(frame, (window) => {
+    const document = window.document;
+    const copy = document.createElement("p");
+    copy.textContent = "direction";
+    document.body.append(copy);
+    const text = copy.firstChild as Text;
+    const selection = window.getSelection();
+    if (selection === null) {
+      throw new Error("The child selection facade is unavailable");
+    }
+
+    selection.setBaseAndExtent(text, 3, text, 7);
+    const forward = selection.direction;
+    selection.setBaseAndExtent(text, 7, text, 3);
+    const backward = selection.direction;
+    selection.removeAllRanges();
+    const none = selection.direction;
+
+    const first = document.createRange();
+    first.setStart(text, 0);
+    first.setEnd(text, 2);
+    selection.addRange(first);
+    const second = document.createRange();
+    second.setStart(text, 4);
+    second.setEnd(text, 6);
+    selection.addRange(second);
+
+    return {
+      forward,
+      backward,
+      none,
+      rangeCount: selection.rangeCount,
+      keptOffsets: [selection.anchorOffset, selection.focusOffset],
+    };
+  });
+
+  expect(state).toEqual({
+    forward: "forward",
+    backward: "backward",
+    none: "none",
+    rangeCount: 1,
+    keptOffsets: [0, 2],
+  });
+});

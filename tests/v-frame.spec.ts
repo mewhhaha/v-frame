@@ -548,3 +548,51 @@ test("forwards fetch-driven DOM changes and iframe history navigation", async ({
   await expect.poll(async () => (await frame.evaluate((element) => (element as any).currentURL))).toContain("history-state");
   await expect(navigated).resolves.toContain("history-state");
 });
+
+test("applies properties assigned before upgrade through their setters", async ({ page }) => {
+  await page.goto(fixture.origin);
+  const result = await page.evaluate(async (origin) => {
+    const frame = document.createElement("v-frame") as HTMLElement & {
+      src: string;
+      status: string;
+    };
+    frame.src = `${origin}/documents/first.html`;
+    document.querySelector("#host")?.append(frame);
+
+    const bundle = await import(`${origin}/dist/index.js`);
+    bundle.defineVFrame();
+
+    const loaded = new Promise<void>((resolve) => {
+      frame.addEventListener("v-frame-load", () => resolve(), { once: true });
+    });
+    const reflected = {
+      src: frame.getAttribute("src"),
+      ownSrc: Object.prototype.hasOwnProperty.call(frame, "src"),
+    };
+    await loaded;
+    return { ...reflected, status: frame.status };
+  }, fixture.origin);
+
+  expect(result).toEqual({
+    src: `${fixture.origin}/documents/first.html`,
+    ownSrc: false,
+    status: "ready",
+  });
+});
+
+test("keeps noscript content inert while scripts run", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, `${fixture.origin}/documents/noscript.html`);
+  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+
+  await expect(frame.locator("#noscript-copy")).toHaveText("Scripted");
+  await expect(frame.locator("#noscript-fallback")).toHaveCount(0);
+  await expect(frame.locator("#noscript-copy")).toHaveCSS("color", "rgb(0, 0, 0)");
+  const noscriptTexts = await frame.evaluate((element) => Array.from(
+    (element as any).contentWindow.document.querySelectorAll("noscript"),
+    (noscript) => (noscript as HTMLElement).textContent ?? "",
+  ).join(" "));
+  expect(noscriptTexts).toContain("noscript-fallback");
+  expect(noscriptTexts).toContain("#noscript-copy");
+  expect(fixture.requests).not.toContain("/assets/noscript-only.css");
+});

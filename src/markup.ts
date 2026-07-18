@@ -14,6 +14,10 @@ const RAW_TEXT_ELEMENTS = new Set([
   "iframe",
   "noembed",
   "noframes",
+  // v-frame always executes guest scripts, so noscript tokenizes as raw text
+  // exactly like a scripting-enabled parser; without this, a style marker
+  // inside head noscript gets popped out of it and applies as a live style.
+  "noscript",
   "script",
   "style",
   "textarea",
@@ -697,6 +701,20 @@ async function prepareLinkedStyle(
   }
 }
 
+// v-frame always executes guest scripts, so noscript content must stay the
+// inert text a scripting-enabled parser produces. DOMParser parses with
+// scripting disabled and would otherwise yield live elements whose styles
+// and resources load. Text-only noscript (already inert) is left untouched
+// because serializing it again would escape its markup a second time.
+function neutralizeNoscriptContent(root: Element): void {
+  for (const noscript of root.querySelectorAll("noscript")) {
+    if (noscript.firstElementChild === null) {
+      continue;
+    }
+    noscript.textContent = noscript.innerHTML;
+  }
+}
+
 export async function prepareMarkup(options: PrepareMarkupOptions): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
   const neutralized = neutralizeStyleMarkup(options.source);
@@ -725,6 +743,7 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
   body.append(...Array.from(parsedBody.childNodes));
   html.append(head, body);
 
+  neutralizeNoscriptContent(html);
   const authoredURLAttributes = collectAuthoredURLAttributes(html);
   const authoredStyleAttributes = new Map<Element, string>();
   for (const [element, authoredStyle] of parsedStyleAttributes) {
@@ -830,6 +849,7 @@ export async function prepareAdoptedMarkup(
     }
   }
 
+  neutralizeNoscriptContent(html);
   const baseURL = resolveMarkupBaseURL(html, options.pageURL);
   const authoredURLAttributes = collectAuthoredURLAttributes(html);
   const authoredStyleAttributes = new Map<Element, string>();

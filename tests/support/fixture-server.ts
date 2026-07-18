@@ -165,6 +165,11 @@ function pageFor(path: string) {
         </script>`);
     case "/documents/nonce.html":
       return html('<p id="nonce-copy">Nonce fixture</p>', '<style>#nonce-copy { color: rgb(7, 8, 9); }</style>');
+    case "/documents/noscript.html":
+      return html(
+        '<p id="noscript-copy">Scripted</p><noscript><link rel="stylesheet" href="/assets/noscript-only.css"><p id="noscript-fallback">Fallback</p></noscript>',
+        '<noscript><style>#noscript-copy { color: rgb(200, 0, 0); }</style></noscript>',
+      );
     case "/documents/direct-location.html":
       return html('<script>location.assign("/documents/second.html");</script>');
     case "/documents/broken.html":

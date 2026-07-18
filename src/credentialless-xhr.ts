@@ -538,6 +538,7 @@ export function createCredentiallessXMLHttpRequest(
         );
       }
 
+      const wasOpened = this.#readyState === CredentiallessXMLHttpRequest.OPENED;
       this.#terminateActiveRequest();
       this.#requestMethod = requestMethod;
       this.#requestURL = requestURL;
@@ -545,7 +546,10 @@ export function createCredentiallessXMLHttpRequest(
       this.#overrideMimeType = null;
       this.#resetResponse();
       this.#readyState = CredentiallessXMLHttpRequest.OPENED;
-      this.#dispatch("readystatechange");
+      // Reopening an already-opened request keeps its state, so no event fires.
+      if (!wasOpened) {
+        this.#dispatch("readystatechange");
+      }
     }
 
     setRequestHeader(name: string, value: string): void {
@@ -690,6 +694,9 @@ export function createCredentiallessXMLHttpRequest(
         }
 
         if (this.#requestHasBody) {
+          // The upload-complete flag is set before the terminal upload events,
+          // so a later failure cannot re-fire them via the request-error steps.
+          this.#requestHasBody = false;
           const completedUpload = progressValues(requestUploadSize ?? 0, requestUploadSize);
           this.#dispatchUpload("progress", completedUpload);
           if (!this.#isCurrentRequest(requestGeneration)) {
@@ -736,12 +743,21 @@ export function createCredentiallessXMLHttpRequest(
 
       this.#responseText = text;
       if (responseIsDocument) {
-        const documentMimeType: DOMParserSupportedType = isXMLMimeType(mimeType) ? "application/xml" : "text/html";
-        const document = new window.DOMParser().parseFromString(text, documentMimeType);
-        this.#responseXML = document;
-        if (this.#responseType === "document") {
-          this.#responseValue = document;
-          return;
+        const xmlResponse = isXMLMimeType(mimeType);
+        // The spec restricts HTML parsing to responseType "document"; the
+        // legacy default mode only ever exposes XML documents.
+        if (this.#responseType === "document" || xmlResponse) {
+          const documentMimeType: DOMParserSupportedType = xmlResponse ? "application/xml" : "text/html";
+          let document: Document | null = new window.DOMParser().parseFromString(text, documentMimeType);
+          if (xmlResponse && document.querySelector("parsererror") !== null) {
+            // A failed XML parse yields null, not the parser's error markup.
+            document = null;
+          }
+          this.#responseXML = document;
+          if (this.#responseType === "document") {
+            this.#responseValue = document;
+            return;
+          }
         }
       }
 
