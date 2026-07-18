@@ -212,8 +212,8 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
 
     const anchor = collapsedRange(state.anchorNode, state.anchorOffset);
     return anchor.comparePoint(state.focusNode, state.focusOffset) === -1
-      ? "backwards"
-      : "forwards";
+      ? "backward"
+      : "forward";
   };
   const invalidSelectionState = (): never => {
     throw new options.window.DOMException("There is no range in the selection", "InvalidStateError");
@@ -292,6 +292,10 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     addRange: {
       value(range: Range): void {
         if (!containsVirtualRange(range)) {
+          return;
+        }
+        // The Selection API makes addRange a no-op when a range is already set.
+        if ((privateSelection !== null ? 1 : virtualNativeRanges().length) !== 0) {
           return;
         }
 
