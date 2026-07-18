@@ -435,6 +435,60 @@ test("keeps document collections live with stable identities", async ({ page }) 
   });
 });
 
+test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({ page }) => {
+  await mountFrame(page);
+
+  await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const virtualDocument = frame.contentWindow!.document;
+    const named = virtualDocument.createElement("input");
+    named.setAttribute("name", "iterated");
+    named.id = "iterated-input";
+    virtualDocument.body.append(named);
+
+    const styled = virtualDocument.createElement("div");
+    styled.id = "ns-styled";
+    styled.textContent = "clickable";
+    styled.style.color = "rgb(4, 5, 6)";
+    virtualDocument.body.append(styled);
+
+    styled.addEventListener("click", (event) => {
+      styled.dataset.trusted = String(event.isTrusted);
+    });
+  });
+
+  await page.locator("#fidelity-frame").locator("#ns-styled").click();
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const virtualDocument = frame.contentWindow!.document;
+    const iterated: string[] = [];
+    virtualDocument.getElementsByName("iterated").forEach((node) => {
+      iterated.push((node as Element).id);
+    });
+    const styled = virtualDocument.querySelector("#ns-styled") as HTMLElement;
+    return {
+      iterated,
+      styleNS: styled.getAttributeNS(null, "style"),
+      styleQualified: styled.getAttribute("style"),
+      hasStyleNS: styled.hasAttributeNS(null, "style"),
+      trusted: styled.dataset.trusted,
+    };
+  });
+
+  expect(result).toEqual({
+    iterated: ["iterated-input"],
+    styleNS: "color:rgb(4,5,6)",
+    styleQualified: "color:rgb(4,5,6)",
+    hasStyleNS: true,
+    trusted: "true",
+  });
+});
+
 test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({ page }) => {
   await mountFrame(page);
 
