@@ -1,0 +1,68 @@
+@if (transcript; as conversation) {
+  <main class="conversation-page">
+    <h1 class="sr-only">{{ conversation.title }}</h1>
+    <section id="user-message" class="message message-user" aria-label="You">
+      <p>{{ conversation.prompt }}</p>
+    </section>
+
+    <section id="assistant-response" class="message message-assistant" aria-label="Relay assistant">
+      <div class="message-content">
+        <p>{{ conversation.response }}</p>
+        <ol>
+          @for (step of conversation.steps; track step.title) {
+            <li><strong>{{ step.title }}</strong> {{ step.detail }}</li>
+          }
+        </ol>
+        <p class="reference-copy">
+          This approach is related to
+          <button
+            type="button"
+            class="wikipedia-trigger"
+            aria-describedby="wikipedia-preview"
+            (mouseenter)="showWikipediaPreview($event)"
+            (mouseleave)="scheduleWikipediaPreviewClose()"
+            (focus)="showWikipediaPreview($event)"
+            (blur)="scheduleWikipediaPreviewClose()"
+          >{{ conversation.articleTitle }}</button>, which offers a useful reference model.
+        </p>
+        <aside class="response-note">
+          <p>Suggested checkpoint</p>
+          <strong>{{ conversation.checkpoint }}</strong>
+        </aside>
+        <div class="message-actions">
+          <button type="button" (click)="saveSummary()" aria-label="Save response">♡</button>
+          <button type="button" aria-label="Copy response">Copy</button>
+          <output aria-live="polite">{{ savedNotes() }} saved</output>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside
+    #wikipediaPopover
+    id="wikipedia-preview"
+    class="wikipedia-popover"
+    popover="manual"
+    role="tooltip"
+    (mouseenter)="keepWikipediaPreviewOpen()"
+    (mouseleave)="scheduleWikipediaPreviewClose()"
+  >
+    <v-frame
+      class="wikipedia-frame"
+      [attr.src]="wikipediaPreviewUrl"
+      aria-label="Wikipedia article preview microfrontend"
+      credentials="omit"
+    ></v-frame>
+  </aside>
+} @else {
+  <main class="empty-conversation">
+    <section id="conversation-starters" aria-labelledby="empty-conversation-title">
+      <h1 id="empty-conversation-title">What would you like to work on?</h1>
+      <ul role="list">
+        <li><button type="button">Create an image</button></li>
+        <li><button type="button">Analyze a document</button></li>
+        <li><button type="button">Plan a project</button></li>
+      </ul>
+    </section>
+  </main>
+}

@@ -1,7 +1,7 @@
 packages:
-  - examples/host
-  - examples/host/microfrontends/*
-  - examples/workers-composition
+  - examples/client
+  - examples/client/microfrontends/*
+  - examples/ssr
 
 allowBuilds:
   '@parcel/watcher': false
@@ -10,5 +10,8 @@ allowBuilds:
   msgpackr-extract: false
   sharp: false
   workerd: true
+minimumReleaseAgeExclude:
+  - '@comp0/core@0.1.0-next.11'
+  - '@comp0/react@0.1.0-next.11'
 onlyBuiltDependencies:
   - esbuild

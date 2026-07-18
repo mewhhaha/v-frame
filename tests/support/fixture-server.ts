@@ -94,6 +94,10 @@ function pageFor(path: string) {
           script.text = "window.__dynamicInsertRealm = window; document.body.insertAdjacentHTML('beforeend', '<output id=\\\"dynamic-insert-result\\\">child realm executed</output>');";
           document.querySelector('#dynamic-target').insertAdjacentElement('afterend', script);
         </script>`);
+    case "/documents/nested-network.html":
+      return html('<v-frame id="nested-network-frame" src="/documents/inner-network.html"></v-frame>');
+    case "/documents/inner-network.html":
+      return html('<p id="nested-network-copy">Nested network frame loaded</p>');
     case "/documents/inline-module.html":
       return html(`<output id="module-result">pending</output>
         <script type="module">

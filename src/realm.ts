@@ -224,6 +224,7 @@ async function connectIframe(
           }
           try {
             document.open();
+            document.write("<!doctype html>");
             document.close();
           } catch (error) {
             cleanup();
@@ -1333,7 +1334,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     );
     bootstrapDisposers.push(windowEventDispose);
 
-    const mutationObserver = new options.host.ownerDocument.defaultView!.MutationObserver(
+    const mutationObserver = new globalThis.MutationObserver(
       (records) => {
         const stylesWithContentChanges = new Set<HTMLStyleElement>();
         const stylesWithAttributeChanges = new Set<HTMLStyleElement>();

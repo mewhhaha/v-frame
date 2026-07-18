@@ -31,6 +31,26 @@ async function mountFrame(page: Page, pathname = "/documents/dom.html"): Promise
   )).toBe("ready");
 }
 
+test("uses standards mode in the child document", async ({ page }) => {
+  await mountFrame(page);
+
+  const documentMode = await page.evaluate(() => {
+    const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The event fidelity frame has no child window");
+    }
+    return {
+      compatMode: child.document.compatMode,
+      doctype: child.document.doctype?.name,
+    };
+  });
+
+  expect(documentMode).toEqual({ compatMode: "CSS1Compat", doctype: "html" });
+});
+
 test("uses one logical event across the element, document, and window path", async ({ page }) => {
   await mountFrame(page);
 

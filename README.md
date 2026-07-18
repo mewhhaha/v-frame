@@ -314,9 +314,9 @@ pnpm test
 
 ## Examples
 
-`examples/host` is a React host that switches among Angular, Solid, and Qwik
+`examples/client` is a React host that switches among Angular, Solid, and Qwik
 microfrontends with load-gated View Transitions.
 
-`examples/workers-composition` uses Cloudflare service bindings to compose
+`examples/ssr` uses Cloudflare service bindings to compose
 React Router and Qwik SSR widgets into adopted `<v-frame>` elements before the
 host HTML is delivered.

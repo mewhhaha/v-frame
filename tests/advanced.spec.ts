@@ -55,6 +55,19 @@ test("executes an insertAdjacentElement script only in the child realm", async (
   expect(await childValue(frame, (window) => (window as any).__dynamicInsertRealm === window)).toBe(true);
 });
 
+test("loads a network v-frame nested inside a child document", async ({ page }) => {
+  await installBundle(page);
+  const outerFrame = await mountFrame(page, "/documents/nested-network.html");
+  const innerFrame = outerFrame.locator("#nested-network-frame");
+
+  await expect.poll(() => innerFrame.evaluate(
+    (element) => (element as HTMLElement & { status: string }).status,
+  )).toBe("ready");
+  await expect(innerFrame.locator("#nested-network-copy")).toHaveText(
+    "Nested network frame loaded",
+  );
+});
+
 test("waits for an inline module top-level await before becoming ready", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/inline-module.html");

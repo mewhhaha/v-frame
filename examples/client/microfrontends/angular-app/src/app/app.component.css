@@ -1,0 +1,57 @@
+:host {
+  display: block;
+  height: 100%;
+  background: #000;
+  color: #f5f5f5;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+button { font: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; margin: -1px; padding: 0; border: 0; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+
+.conversation-page { width: min(100%, 48rem); margin: 0 auto; padding: 1.5rem 1.5rem 3rem; }
+.message { min-width: 0; padding: 1.2rem 0; }
+.message-user { display: flex; justify-content: flex-end; }
+.message-user > p { max-width: min(36rem, 82%); padding: 0.65rem 1rem; border-radius: 1.25rem; background: #2f2f2f; }
+.message p { margin: 0; color: #ececec; font-size: 0.9375rem; line-height: 1.72; text-wrap: pretty; }
+.message-content { min-width: 0; }
+.message-content ol { display: grid; gap: 0.7rem; margin: 1rem 0 0; padding-left: 1.25rem; color: #ececec; }
+.message-content li { padding-left: 0.25rem; font-size: 0.9375rem; line-height: 1.7; }
+.message-content strong { color: #fff; font-weight: 600; }
+.reference-copy { margin-top: 1rem !important; }
+.wikipedia-trigger { padding: 0; border: 0; border-bottom: 1px dashed #b4b4b4; background: transparent; color: #f5f5f5; cursor: help; font: inherit; }
+.wikipedia-trigger:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+.wikipedia-popover { position: fixed; inset: var(--preview-top, 1rem) auto auto var(--preview-left, 1rem); width: min(22.5rem, calc(100vw - 1.5rem)); height: 12.5rem; margin: 0; padding: 0; overflow: hidden; border: 1px solid #444; border-radius: 0.85rem; background: #212121; color: #f5f5f5; }
+.wikipedia-popover:not(:popover-open) { display: none; }
+.wikipedia-frame { display: block; width: 100%; height: 100%; border: 0; }
+:host([data-composition-visible]) .wikipedia-popover { border-color: #8b5cf6; outline: 2px solid #8b5cf6; outline-offset: -2px; }
+:host([data-composition-visible]) .wikipedia-popover::after { position: absolute; z-index: 2; top: 0.45rem; right: 0.45rem; padding: 0.22rem 0.42rem; border-radius: 999px; background: #8b5cf6; color: white; content: "Qwik Wikipedia preview frontend"; font-size: 0.625rem; font-weight: 600; pointer-events: none; }
+.response-note { margin-top: 1.15rem; padding: 0.9rem 1rem; border-left: 2px solid #8e8e8e; background: #151515; }
+.response-note p { color: #8e8e8e; font-size: 0.75rem; line-height: 1.4; }
+.response-note strong { display: block; margin-top: 0.3rem; font-size: 0.8125rem; line-height: 1.55; }
+.message-actions { display: flex; min-width: 0; align-items: center; gap: 0.2rem; margin-top: 0.8rem; }
+.message-actions button { min-height: 1.75rem; padding: 0.25rem 0.45rem; border: 0; border-radius: 0.4rem; background: transparent; color: #a0a0a0; cursor: pointer; font-size: 0.75rem; }
+.message-actions button:hover { background: #212121; color: #f5f5f5; }
+.message-actions button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+.message-actions output { margin-left: 0.25rem; color: #737373; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+
+.empty-conversation { display: grid; height: 100%; place-items: end center; padding: 2rem 1rem 2.75rem; }
+.empty-conversation section { width: min(100%, 28rem); text-align: center; }
+.empty-conversation h1 { margin: 0; color: #f5f5f5; font-size: clamp(1.35rem, 3vw, 1.7rem); font-weight: 400; letter-spacing: -0.025em; }
+.empty-conversation ul { display: grid; gap: 0.3rem; width: fit-content; margin: 1.5rem auto 0; padding: 0; text-align: left; }
+.empty-conversation button { min-height: 2rem; padding: 0.35rem 0.55rem; border: 0; border-radius: 0.45rem; background: transparent; color: #b4b4b4; cursor: pointer; font-size: 0.875rem; }
+.empty-conversation button:hover { background: #212121; color: #f5f5f5; }
+.empty-conversation button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+
+@media (max-width: 36rem) {
+  .conversation-page { padding: 0.5rem 1rem 2rem; }
+  .message { padding: 1rem 0; }
+  .message p, .message-content li { font-size: 1rem; }
+  .message-user > p { max-width: 92%; }
+  .response-note p, .response-note strong, .message-actions output { font-size: 0.875rem; }
+  .message-actions button { min-height: 3rem; font-size: 0.9375rem; }
+  .empty-conversation { padding-bottom: 1rem; }
+  .empty-conversation button { min-height: 3rem; font-size: 1rem; }
+}
