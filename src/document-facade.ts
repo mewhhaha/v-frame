@@ -2474,7 +2474,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode?.insertBefore(fragment, this.nextSibling);
           return;
         default:
-          throw new DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
       }
     },
   });
@@ -2502,7 +2502,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode.insertBefore(element, this.nextSibling);
           return element;
         default:
-          throw new DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
       }
     },
   });
@@ -4234,7 +4234,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   });
 
   function unsupportedDocumentWriting(): never {
-    throw new DOMException(
+    throw new window.DOMException(
       "document.open(), document.close(), and document.write() are unsupported inside v-frame",
       "NotSupportedError",
     );

@@ -863,7 +863,10 @@ export async function prepareAdoptedMarkup(
   );
 
   for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
-    const attributeBaseURL = element.localName === "base" ? options.pageURL : baseURL;
+    const attributeBaseURL =
+      element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
+        ? options.pageURL
+        : baseURL;
     absolutizeElementAttributes(element, attributeBaseURL);
   }
 

@@ -1343,10 +1343,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         const removedStyles = new Set<HTMLStyleElement>();
         const removedLinks = new Set<HTMLLinkElement>();
         let baseElementsChanged = false;
+        // Only HTML-namespace base elements affect the document base URL;
+        // querySelector's unprefixed type selector also matches foreign ones.
+        const isHTMLBase = (element: Element): boolean =>
+          element.localName === "base" &&
+          element.namespaceURI === "http://www.w3.org/1999/xhtml";
         const subtreeHasBaseElement = (node: Node): boolean =>
-          (node instanceof window.Element && node.localName === "base") ||
-          ("querySelector" in node &&
-            (node as ParentNode).querySelector("base") !== null);
+          (node instanceof window.Element && isHTMLBase(node)) ||
+          ("querySelectorAll" in node &&
+            Array.from((node as ParentNode).querySelectorAll("base")).some(isHTMLBase));
         for (const record of records) {
           if (record.type === "childList") {
             if (
