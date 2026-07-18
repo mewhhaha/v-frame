@@ -11,6 +11,15 @@
     { "binding": "REACT_ROUTER_WIDGET", "service": "v-frame-example-react-router-widget" },
     { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
   ],
+  "env": {
+    "test": {
+      "name": "v-frame-example-composed-host-test",
+      "services": [
+        { "binding": "REACT_ROUTER_WIDGET", "service": "v-frame-example-react-router-widget-test" },
+        { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget-test" }
+      ]
+    }
+  },
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },

@@ -3,10 +3,13 @@
 This example uses a server-rendered host sidebar to compose independently
 deployed SSR applications into `<v-frame>` page and widget surfaces before the
 page is delivered. The dark Relay shell exposes three recent threads, Plugins,
-and Usage through host-owned SPA navigation. React Router owns the transcript
-and plugins routes. Each transcript includes a nested Qwik Wikipedia preview
+and Usage through host-owned SPA navigation. React Router owns the
+transcript and plugins routes. Each transcript includes a nested Qwik Wikipedia preview
 shown from an annotated term on hover or keyboard focus. A sibling Qwik
 composer or usage frontend and a Qwik account menu remain independent surfaces.
+The host mounts only the page frontends required by the current section. Thread
+pages own a React transcript and Qwik composer, Plugins owns one React frame,
+and Usage owns one Qwik frame.
 
 The workspace reads as one product by default. **Show composition** reveals
 the host, React Router, and Qwik ownership boundaries and keeps that view active
@@ -20,10 +23,10 @@ ownership into the host.
 The React Router application uses its
 normal `StaticRouter`/`hydrateRoot` lifecycle, and the Qwik application uses its
 normal optimizer-generated snapshot, Qwikloader, and resumable QRLs. The public
-host requests both Workers through Cloudflare service bindings and streams each
-response into a declarative shadow root. The React Router Worker requests a
-second Qwik preview through its own service binding and nests it one level
-deeper.
+host requests only the page Workers required for the initial route through
+Cloudflare service bindings and streams each response into a declarative shadow
+root. The React Router Worker requests a second Qwik preview through its own
+service binding and nests it one level deeper.
 
 The hydrated React surface uses the headless `@comp0/react` button primitive;
 the host and Qwik surfaces remain framework-native.
@@ -34,7 +37,8 @@ browser ← host HTML ← host Worker
                           └─ Qwik SSR Worker
 ```
 
-The delivered HTML already contains all three widget bodies:
+The delivered HTML already contains the active page widget bodies and the
+account widget:
 
 ```html
 <v-frame adopt src="/widgets/react-router/activity">
@@ -47,10 +51,15 @@ The delivered HTML already contains all three widget bodies:
 </v-frame>
 ```
 
-It also contains the minified `v-frame` runtime, so neither widget preview nor
-the web component requires a follow-up request before activation. Serializable
+It also contains the minified `v-frame` runtime, so the initial widget previews
+and web component require no follow-up request before activation. Serializable
 declarative shadow roots preserve the nested Qwik preview while the outer React
 Router widget is adopted into its live tree.
+
+React Router network documents leave the nested Qwik custom element empty in
+the server markup and let it load through its own `src`. This keeps the nested
+shadow tree outside React's hydration comparison during SPA navigation, while
+the initial host response remains fully server composed.
 
 Declarative Shadow DOM makes that content visible while the document is still
 being parsed. The host response also contains a self-registering `v-frame`
@@ -60,8 +69,15 @@ URL but does not fetch it. It keeps the server preview visible while a laid-out,
 non-interactive live tree starts in the isolated realm. React hydrates that tree
 and Qwik installs its loader before `v-frame` reveals it with a single
 synchronous swap. The staged tree matches the preview, so the reveal does not
-repaint and the widgets can activate concurrently. A later `reload()` or `src`
-change uses the ordinary network path.
+repaint and the widgets can activate concurrently.
+
+Host SPA navigation gives each destination composition a fresh routing session
+and loads its required `v-frame` applications in a hidden staging surface. The
+current composition remains mounted and visible until every destination frame
+emits `v-frame-load`. One synchronous commit then updates the URL and shell,
+reveals the staged composition, and removes the outgoing frames. No inactive
+page application survives the handoff; only the host-owned account frontend
+persists between pages. A staging failure falls back to document navigation.
 
 ## Why the preview is materialized
 
@@ -97,15 +113,15 @@ directly. A fresh ID also avoids inheriting a copied `sessionStorage` value from
 an opener tab.
 
 Messages use a small versioned protocol. A top-level child sends
-`navigate-request`; the host validates the frame and route, updates its own URL,
-and responds with a targeted `route-change`. A `hello` handshake gives a newly
-activated frame the current host route, including after browser history
-traversal. The nested Qwik widget intentionally has no host routing identity, so
-its Wikipedia preview cannot change the sibling Qwik widget's route. The ID
-prevents unrelated tabs from receiving one
-another's messages, but it is coordination rather than an authorization
-boundary. If the session or channel APIs are unavailable, host links fall back
-to ordinary document navigation.
+`navigate-request`; the host validates the frame and route, then stages the
+matching host composition. A destination gets a new channel ID so its handshake
+cannot reroute the still-visible outgoing application. After commit, a targeted
+`route-change` completes the new frames' handshake. The nested Qwik widget
+intentionally has no host routing identity, so its Wikipedia preview cannot
+change the sibling Qwik widget's route. The ID prevents unrelated tabs from
+receiving one another's messages, but it is coordination rather than an
+authorization boundary. Host links remain ordinary document links when the
+session or channel APIs are unavailable.
 
 ## Run locally
 

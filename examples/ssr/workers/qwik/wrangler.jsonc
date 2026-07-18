@@ -3,7 +3,8 @@
   "name": "v-frame-example-qwik-widget",
   "main": "server/build/index.js",
   "build": {
-    "command": "pnpm run build:qwik"
+    "command": "pnpm run build:qwik",
+    "watch_dir": "./workers/qwik/src"
   },
   "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
@@ -15,6 +16,14 @@
   },
   "assets": {
     "directory": "./public"
+  },
+  "env": {
+    "test": {
+      "name": "v-frame-example-qwik-widget-test",
+      "define": {
+        "import.meta.env.BASE_URL": "\"/\""
+      }
+    }
   },
   "observability": {
     "enabled": true,

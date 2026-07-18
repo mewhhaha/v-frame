@@ -21,7 +21,14 @@ interface RenderContext {
 }
 
 function normalizedBasePath(value: string | null): string {
-  if (value === null || !value.startsWith("/")) {
+  if (
+    value === null
+    || !value.startsWith("/")
+    || value.startsWith("//")
+    || value.includes("\\")
+    || value.includes("?")
+    || value.includes("#")
+  ) {
     return "/";
   }
   const normalized = value.replace(/\/+$/, "");
@@ -72,13 +79,13 @@ function networkDocument(markup: string, moduleURL: string): string {
 
 function documentResponse(context: RenderContext): Response {
   return new Response(networkDocument(renderWidget(context), clientModuleURL(context.basename)), {
-    headers: { "Content-Type": contentType },
+    headers: { "Cache-Control": "no-store", "Content-Type": contentType },
   });
 }
 
 function previewResponse(context: RenderContext): Response {
   return new Response(materializedDocument(renderWidget(context), clientModuleURL(context.basename)), {
-    headers: { "Content-Type": contentType },
+    headers: { "Cache-Control": "no-store", "Content-Type": contentType },
   });
 }
 
@@ -127,7 +134,9 @@ export default {
     const response = endpoint === "/document"
       ? documentResponse(context)
       : previewResponse(context);
-    if (context.route === "/plugins") {
+    // Network documents keep React's custom-element boundary empty while the
+    // nested frame loads from its src.
+    if (endpoint === "/document" || context.route === "/plugins") {
       return response;
     }
 
