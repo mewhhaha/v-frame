@@ -483,6 +483,11 @@ test("treats an empty hash as a local fragment and scrolls to the top", async ({
 
   await frame.locator("#top-link").click();
 
+  // The navigation default runs from a scheduled task, so the commit must be
+  // observed before asserting on the recorded kinds and events.
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/history.html#`);
   await expect.poll(() => frame.evaluate((element) => element.scrollTop)).toBe(0);
   expect(await frame.evaluate((element) => ({
     url: (element as HTMLElement & { currentURL: string }).currentURL,
@@ -495,11 +500,14 @@ test("treats an empty hash as a local fragment and scrolls to the top", async ({
     (window as Window & typeof globalThis & {
       __fragmentEvents: Array<{ type: string; oldURL?: string; newURL?: string }>;
     }).__fragmentEvents,
-  )).toEqual([{
-    type: "hashchange",
-    oldURL: `${fixture.origin}/documents/history.html`,
-    newURL: `${fixture.origin}/documents/history.html#`,
-  }]);
+  )).toEqual([
+    { type: "popstate" },
+    {
+      type: "hashchange",
+      oldURL: `${fixture.origin}/documents/history.html`,
+      newURL: `${fixture.origin}/documents/history.html#`,
+    },
+  ]);
 });
 
 test("reports but does not perform canceled link and form navigation", async ({ page }) => {
