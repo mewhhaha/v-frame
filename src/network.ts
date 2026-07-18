@@ -214,6 +214,40 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const cloneRequest = (input: Request): Request =>
     Reflect.apply(nativeRequestClone, input, []) as Request;
 
+  // The injected init is never empty, which would reset a Request input's
+  // referrer metadata to its defaults and re-attach an explicitly severed
+  // signal, so both are forwarded explicitly unless the caller overrides them.
+  const forwardedRequestInit = (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    requestInput: boolean,
+  ): RequestInit => {
+    const forwarded: RequestInit = {
+      ...init,
+      credentials:
+        init?.credentials ??
+        (requestInput && isRequest(input) ? input.credentials : options.credentials),
+      signal: combinedSignal(
+        window,
+        options.signal,
+        init !== undefined && "signal" in init
+          ? init.signal ?? undefined
+          : requestInput && isRequest(input)
+            ? input.signal
+            : undefined,
+      ),
+    };
+    if (requestInput && isRequest(input)) {
+      if (init === undefined || !("referrer" in init)) {
+        forwarded.referrer = input.referrer;
+      }
+      if (init === undefined || !("referrerPolicy" in init)) {
+        forwarded.referrerPolicy = input.referrerPolicy;
+      }
+    }
+    return forwarded;
+  };
+
   class VFrameRequest extends NativeRequest {
     constructor(...argumentsList: [] | ConstructorParameters<typeof NativeRequest>) {
       if (argumentsList.length === 0) {
@@ -226,19 +260,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       const resolvedInput = requestInput
         ? input
         : resolveNetworkURL(window, input, options.getBaseURL());
-      const requestSignal =
-        requestInput ? input.signal : undefined;
-      super(resolvedInput, {
-        ...init,
-        credentials:
-          init?.credentials ??
-          (requestInput ? input.credentials : options.credentials),
-        signal: combinedSignal(
-          window,
-          options.signal,
-          init?.signal ?? requestSignal,
-        ),
-      });
+      super(resolvedInput, forwardedRequestInit(input, init, requestInput));
     }
   }
 
@@ -272,18 +294,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         return Promise.reject(error);
       }
 
-      return nativeFetch(resolvedInput, {
-        ...init,
-        credentials:
-          init?.credentials ??
-          (requestInput ? input.credentials : options.credentials),
-        signal: combinedSignal(
-          window,
-          options.signal,
-          init?.signal ??
-            (requestInput ? input.signal : undefined),
-        ),
-      });
+      return nativeFetch(resolvedInput, forwardedRequestInit(input, init, requestInput));
     },
   });
 
