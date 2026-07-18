@@ -361,7 +361,8 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
       }
       nativeXHRUploads.set(this.upload, this);
-      const request = activeXHRSends.get(this) ?? registerNativeXHR(this);
+      const inFlightRequest = activeXHRSends.get(this);
+      const request = inFlightRequest ?? registerNativeXHR(this);
       const unregisterRequest = () => {
         this.removeEventListener("loadstart", listenForLoadStart);
         activeRequests.delete(request);
@@ -383,7 +384,13 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       try {
         nativeXHRSend.call(this, body);
       } catch (error) {
-        unregisterRequest();
+        // A send() rejected mid-flight (InvalidStateError) must not strip the
+        // live request's teardown tracking.
+        if (inFlightRequest === undefined) {
+          unregisterRequest();
+        } else {
+          this.removeEventListener("loadstart", listenForLoadStart);
+        }
         throw error;
       }
     };
