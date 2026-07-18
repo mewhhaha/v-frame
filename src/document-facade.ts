@@ -254,6 +254,11 @@ class ListenerBridge {
     shouldContinue: () => boolean = () => true,
   ): void {
     for (const record of [...this.#records]) {
+      // A listener removed by an earlier listener in this dispatch is skipped,
+      // matching the DOM inner-invoke algorithm.
+      if (!this.#records.includes(record)) {
+        continue;
+      }
       if (record.type === event.type && record.capture === capture) {
         record.wrapper(event);
         if (!shouldContinue()) {
@@ -411,7 +416,7 @@ function liveIndexedCollection<T extends object>(
   const namedItem = (name: string): T | null => currentNamedValue?.(String(name)) ?? null;
   const iterator = (): ArrayIterator<T> => currentValues()[Symbol.iterator]();
 
-  return new Proxy(target, {
+  const proxy = new Proxy(target, {
     get(proxyTarget, property, receiver) {
       if (property === "length") {
         return currentValues().length;
@@ -431,6 +436,25 @@ function liveIndexedCollection<T extends object>(
         return currentValues()[index];
       }
       if (Reflect.has(proxyTarget, property)) {
+        // Prototype iteration helpers brand-check their receiver, which the
+        // proxy fails; reimplement them over the live values instead.
+        switch (property) {
+          case "forEach":
+            return (
+              callback: (value: T, index: number, list: unknown) => void,
+              thisArg?: unknown,
+            ) => {
+              currentValues().forEach((value, valueIndex) =>
+                callback.call(thisArg, value, valueIndex, proxy),
+              );
+            };
+          case "entries":
+            return () => currentValues().entries();
+          case "keys":
+            return () => currentValues().keys();
+          case "values":
+            return () => currentValues().values();
+        }
         return Reflect.get(proxyTarget, property, receiver);
       }
       if (typeof property === "string" && currentNamedValue !== undefined) {
@@ -470,7 +494,8 @@ function liveIndexedCollection<T extends object>(
       }
       return Reflect.getOwnPropertyDescriptor(proxyTarget, property);
     },
-  }) as LiveIndexedCollection<T>;
+  });
+  return proxy as LiveIndexedCollection<T>;
 }
 
 export function installDocumentFacade(options: DocumentFacadeOptions): DocumentFacade {
@@ -1407,11 +1432,17 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
               : source.cancelBubble;
           case "returnValue":
             return !virtualDefaultsPrevented.has(source);
+          case "isTrusted":
+            // The mirrored event is synthetic; trust belongs to the source.
+            return source.isTrusted;
           case "composedPath":
             return () => logicalComposedPath(source);
           case "preventDefault":
             return () => {
-              virtualDefaultsPrevented.add(source);
+              // preventDefault is a spec no-op on non-cancelable events.
+              if (source.cancelable) {
+                virtualDefaultsPrevented.add(source);
+              }
               source.preventDefault();
               target.preventDefault();
             };
@@ -1444,7 +1475,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           return true;
         }
         if (property === "returnValue") {
-          if (!value) {
+          if (!value && source.cancelable) {
             virtualDefaultsPrevented.add(source);
             source.preventDefault();
             target.preventDefault();
@@ -2556,6 +2587,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   const invokeRootListeners = (event: Event, capture: boolean): void => {
     for (const record of [...(virtualListenerRecords.get(options.html) ?? [])]) {
+      // A listener removed by an earlier listener in this dispatch is skipped,
+      // matching the DOM inner-invoke algorithm.
+      if (virtualListenerRecords.get(options.html)?.includes(record) !== true) {
+        continue;
+      }
       if (record.type !== event.type || record.capture !== capture) {
         continue;
       }
@@ -2809,10 +2845,19 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     namespaceURI: string | null,
     localName: string,
   ): string | null {
-    if (virtualNodes.has(element)) {
-      if (namespaceURI === null && localName === "style") {
-        return options.authoredStyleAttributes.get(element) ?? null;
+    // With no namespace, the lookup covers the same managed attributes as
+    // getAttribute. localName stays case-sensitive, so only the canonical
+    // lowercase spelling can name a managed attribute.
+    if (
+      (namespaceURI === null || namespaceURI === "") &&
+      localName === localName.toLowerCase()
+    ) {
+      const logical = logicalAttribute(element, localName);
+      if (logical.managed) {
+        return logical.value;
       }
+    }
+    if (virtualNodes.has(element)) {
       const attributeName = urlAttributeKey(element, localName, namespaceURI);
       const authoredAttributes = options.authoredURLAttributes.get(element);
       if (attributeName !== null && authoredAttributes?.has(attributeName) === true) {
@@ -2834,10 +2879,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     namespaceURI: string | null,
     localName: string,
   ): boolean {
-    if (virtualNodes.has(element)) {
-      if (namespaceURI === null && localName === "style") {
-        return options.authoredStyleAttributes.has(element);
+    // Mirrors getVirtualAttributeNS: null-namespace lookups resolve the same
+    // managed attributes as hasAttribute.
+    if (
+      (namespaceURI === null || namespaceURI === "") &&
+      localName === localName.toLowerCase()
+    ) {
+      const logical = logicalAttribute(element, localName);
+      if (logical.managed) {
+        return logical.value !== null;
       }
+    }
+    if (virtualNodes.has(element)) {
       const attributeName = urlAttributeKey(element, localName, namespaceURI);
       const authoredAttributes = options.authoredURLAttributes.get(element);
       if (attributeName !== null && authoredAttributes?.has(attributeName) === true) {
