@@ -216,9 +216,15 @@ export class VirtualHistory {
 
     const previousURL = this.currentURL;
     this.#mirrorEntry(nextURL, nextState);
-    this.#entries.splice(this.#index + 1);
-    this.#entries.push({ url: nextURL, state: nextState });
-    this.#index = this.#entries.length - 1;
+    // The HTML navigate algorithm turns a fragment navigation to the current
+    // URL into a replace, so repeated clicks on one anchor don't grow history.
+    if (kind === "fragment" && nextURL === previousURL) {
+      this.#entries[this.#index] = { url: nextURL, state: nextState };
+    } else {
+      this.#entries.splice(this.#index + 1);
+      this.#entries.push({ url: nextURL, state: nextState });
+      this.#index = this.#entries.length - 1;
+    }
     this.#commit(kind === "fragment" ? "fragment" : "none", previousURL);
     return true;
   }
@@ -313,11 +319,11 @@ export class VirtualHistory {
       return;
     }
 
-    if (eventType === "traverse") {
-      this.#window.dispatchEvent(
-        new this.#window.PopStateEvent("popstate", { state: this.state }),
-      );
-    }
+    // Same-document navigations fire popstate before hashchange, per the HTML
+    // spec's "update document for history step application".
+    this.#window.dispatchEvent(
+      new this.#window.PopStateEvent("popstate", { state: this.state }),
+    );
 
     const previousFragmentStart = previousURL.indexOf("#");
     const currentFragmentStart = this.currentURL.indexOf("#");
