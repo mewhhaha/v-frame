@@ -66,6 +66,7 @@ async function startXHRFixture(): Promise<XHRFixture> {
     if (path === "/api/xhr-document") return reply(response, 200, "application/xml", "<root><copy>document</copy></root>");
     if (path === "/api/xhr-html-document") return reply(response, 200, "text/html", page("<main>HTML document</main>"));
     if (path === "/api/xhr-plain-document") return reply(response, 200, "text/plain", "not a document");
+    if (path === "/api/xhr-bad-xml") return reply(response, 200, "application/xml", "<root><unclosed></root>");
     if (path === "/api/slow") {
       setTimeout(() => reply(response, 200, "text/plain", "slow response"), 250);
       return;
@@ -799,4 +800,69 @@ test("teardown suppresses XHR callbacks for credentialless and native transports
       }
     }
   }
+});
+
+test("restricts document parsing to responseType document and fires one readystatechange per open", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "document-modes", `${fixture.origin}/documents/xhr.html`, "omit");
+  const result = await childValue(frame, async (window) => {
+    const request = (url: string, type?: XMLHttpRequestResponseType) => new Promise<XMLHttpRequest>((resolve) => {
+      const xhr = new window.XMLHttpRequest();
+      xhr.open("GET", url);
+      if (type !== undefined) {
+        xhr.responseType = type;
+      }
+      xhr.onloadend = () => resolve(xhr);
+      xhr.send();
+    });
+
+    const html = await request("/api/xhr-html-document");
+    const xml = await request("/api/xhr-document");
+    const badXML = await request("/api/xhr-bad-xml", "document");
+
+    const openStates: number[] = [];
+    const reopened = new window.XMLHttpRequest();
+    reopened.addEventListener("readystatechange", () => openStates.push(reopened.readyState));
+    reopened.open("GET", "/api/xhr-echo");
+    reopened.open("GET", "/api/xhr-echo");
+
+    return {
+      htmlResponseXMLIsNull: html.responseXML === null,
+      htmlTextPreserved: html.responseText.includes("HTML document"),
+      xmlRoot: (xml.responseXML as Document).documentElement.tagName,
+      badXMLResponse: badXML.response,
+      badXMLResponseXML: badXML.responseXML,
+      openStates,
+    };
+  });
+
+  expect(result).toEqual({
+    htmlResponseXMLIsNull: true,
+    htmlTextPreserved: true,
+    xmlRoot: "root",
+    badXMLResponse: null,
+    badXMLResponseXML: null,
+    openStates: [1],
+  });
+});
+
+test("resolves invalid network URLs to rejections and native SyntaxError throws", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "invalid-urls", `${fixture.origin}/documents/xhr.html`, "same-origin");
+  const result = await childValue(frame, async (window) => {
+    let openError = "";
+    try {
+      new window.XMLHttpRequest().open("GET", "http://[");
+    } catch (error) {
+      openError = (error as DOMException).name;
+    }
+
+    const rejection = window.fetch("http://[").then(
+      () => "resolved",
+      (error) => (error instanceof window.TypeError ? "TypeError" : String(error)),
+    );
+    return { openError, fetchRejection: await rejection };
+  });
+
+  expect(result).toEqual({ openError: "SyntaxError", fetchRejection: "TypeError" });
 });

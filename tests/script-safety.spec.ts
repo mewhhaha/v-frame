@@ -65,6 +65,8 @@ function pageSource(pathname: string): string | null {
       return documentSource("<main>TLA failure</main>", '<script type="module">await Promise.reject(new Error("module TLA rejected"))</script>');
     case "/blank.html":
       return documentSource('<main id="script-root">Script safety</main>');
+    case "/bad-src.html":
+      return documentSource('<main id="script-root">Bad src</main><script src="http://["></script><script>window.__afterBadSrc = true;</script>');
     case "/nomodule.html":
       return documentSource(`
         <main id="script-root">Script safety</main>
@@ -388,6 +390,44 @@ for (const [name, pathname] of [
     });
   });
 }
+
+test("reports an unresolvable script source as an Error without failing the load", async ({ page }) => {
+  await installBundle(page);
+  const result = await page.evaluate(async ({ frameNonce, source }) => {
+    const frame = document.createElement("v-frame") as HTMLElement & {
+      status: string;
+      contentWindow: (Window & { __afterBadSrc?: boolean }) | null;
+    };
+    const failures: Array<{ phase: string; fatal: boolean; isError: boolean }> = [];
+    frame.setAttribute("nonce", frameNonce);
+    frame.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{ phase: string; fatal: boolean; error: unknown }>).detail;
+      failures.push({
+        phase: detail.phase,
+        fatal: detail.fatal,
+        isError: detail.error instanceof Error,
+      });
+    });
+    const loaded = new Promise<void>((resolve) => {
+      frame.addEventListener("v-frame-load", () => resolve(), { once: true });
+    });
+    frame.setAttribute("src", source);
+    document.querySelector("#host")?.append(frame);
+    await loaded;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      failures,
+      status: frame.status,
+      ranFollowing: frame.contentWindow?.__afterBadSrc === true,
+    };
+  }, { frameNonce: nonce, source: `${fixture.origin}/bad-src.html` });
+
+  expect(result).toEqual({
+    failures: [{ phase: "script", fatal: false, isError: true }],
+    status: "ready",
+    ranFollowing: true,
+  });
+});
 
 test("routes late and cloned dynamic scripts through the child runner only", async ({ page }) => {
   await installBundle(page);
