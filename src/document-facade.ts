@@ -1204,9 +1204,21 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeSetAttribute.call(script, "type", "application/x-v-frame-inert");
   };
 
-  const eventAttributeName = (attributeName: string): string | null => {
+  const eventAttributeName = (
+    element: Element,
+    attributeName: string,
+  ): string | null => {
     const normalizedName = attributeName.toLowerCase();
-    return /^on[a-z][a-z0-9_-]*$/.test(normalizedName) ? normalizedName : null;
+    if (!/^on[a-z]/.test(normalizedName)) {
+      return null;
+    }
+    // Browsers compile only the fixed set of event-handler content attributes;
+    // the element interface's handler properties mirror that set, so names like
+    // "once" or "onboarding-step" stay plain attributes. The prototype chain is
+    // consulted directly to ignore expando properties.
+    return normalizedName in Object.getPrototypeOf(element)
+      ? normalizedName
+      : null;
   };
 
   const listenerEventSource = (event: Event): Event =>
@@ -1766,7 +1778,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (newlyVirtual) {
         installForeignElementFacade(node);
         for (const attribute of Array.from(node.attributes)) {
-          const attributeName = eventAttributeName(attribute.name);
+          const attributeName = eventAttributeName(node, attribute.name);
           if (attributeName === null) {
             continue;
           }
@@ -2729,7 +2741,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         };
       }
     }
-    const eventName = eventAttributeName(normalizedAttributeName);
+    const eventName = eventAttributeName(element, normalizedAttributeName);
     if (eventName !== null && virtualNodes.has(element)) {
       return {
         managed: true,
@@ -2904,7 +2916,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       setLogicalLinkRel(element, nextValue, false);
       return;
     }
-    const inlineEventAttribute = eventAttributeName(attributeName);
+    const inlineEventAttribute = eventAttributeName(element, attributeName);
     if (virtualNodes.has(element) && inlineEventAttribute !== null) {
       let attributes = eventAttributeValues.get(element);
       if (attributes === undefined) {
@@ -2963,7 +2975,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       removeLogicalLinkRel(element);
       return;
     }
-    const inlineEventAttribute = eventAttributeName(attributeName);
+    const inlineEventAttribute = eventAttributeName(element, attributeName);
     if (virtualNodes.has(element) && inlineEventAttribute !== null) {
       eventAttributeValues.get(element)?.delete(inlineEventAttribute);
       setElementHandler(element, inlineEventAttribute.slice(2), null);
