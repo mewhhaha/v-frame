@@ -51,6 +51,48 @@ test("uses standards mode in the child document", async ({ page }) => {
   expect(documentMode).toEqual({ compatMode: "CSS1Compat", doctype: "html" });
 });
 
+test("preserves properties from physical event subclasses", async ({ page }) => {
+  await mountFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The event fidelity frame has no child window");
+    }
+
+    class StateChangeEvent extends Event {
+      readonly newState = "open";
+      readonly oldState = "closed";
+    }
+
+    const target = child.document.createElement("button");
+    child.document.body.append(target);
+    let observed: { childEvent: boolean; newState?: string; oldState?: string } | null = null;
+    child.document.addEventListener("state-change", (event) => {
+      const stateEvent = event as Event & { newState?: string; oldState?: string };
+      observed = {
+        childEvent: event instanceof child.Event,
+        newState: stateEvent.newState,
+        oldState: stateEvent.oldState,
+      };
+    });
+    target.dispatchEvent(new StateChangeEvent("state-change", {
+      bubbles: true,
+      composed: true,
+    }));
+    return observed;
+  });
+
+  expect(result).toEqual({
+    childEvent: true,
+    newState: "open",
+    oldState: "closed",
+  });
+});
+
 test("uses one logical event across the element, document, and window path", async ({ page }) => {
   await mountFrame(page);
 

@@ -1,4 +1,35 @@
-@if (transcript; as conversation) {
+@if (isOverlayLab) {
+  <main class="overlay-lab" data-library="angular-material">
+    <header>
+      <p>Angular</p>
+      <h1>Angular Material</h1>
+    </header>
+    <button
+      type="button"
+      class="lab-button"
+      data-testid="tooltip-trigger"
+      matTooltip="Angular tooltip"
+      matTooltipClass="overlay-tooltip"
+      [matTooltipShowDelay]="0"
+    >Tooltip</button>
+    <button
+      #overlayPopoverTrigger
+      type="button"
+      class="lab-button"
+      data-testid="popover-trigger"
+      [matMenuTriggerFor]="projectMenu"
+      (menuOpened)="positionOverlayMenu()"
+    >Popover</button>
+    <mat-menu #projectMenu="matMenu" class="overlay-popover">
+      <section class="popover-content" data-testid="popover-content" (click)="$event.stopPropagation()">
+        <strong>Project settings</strong>
+        <label>Project name<input data-testid="popover-input" value="Relay" /></label>
+      </section>
+    </mat-menu>
+    <button #overlayDialogTrigger type="button" class="lab-button" data-testid="dialog-trigger" (click)="openOverlayDialog()">Modal</button>
+    <p class="boundary-note">The dashed edge is the microfrontend viewport.</p>
+  </main>
+} @else if (transcript; as conversation) {
   <main class="conversation-page">
     <h1 class="sr-only">{{ conversation.title }}</h1>
     <section id="user-message" class="message message-user" aria-label="You">

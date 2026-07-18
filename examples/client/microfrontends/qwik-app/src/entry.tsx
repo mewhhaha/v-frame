@@ -1,4 +1,11 @@
 import { component$, render } from "@builder.io/qwik";
+import qwikLoaderSource from "@builder.io/qwik/qwikloader.js?raw";
+import { Modal, Popover, Tooltip } from "@qwik-ui/headless";
+
+const qwikLoader = document.createElement("script");
+qwikLoader.id = "qwikloader";
+qwikLoader.text = qwikLoaderSource;
+document.head.append(qwikLoader);
 
 const wikipediaArticles = {
   migration: {
@@ -86,7 +93,44 @@ const WikipediaPreviewWidget = component$(() => (
   </article>
 ));
 
+const OverlayLab = component$(() => (
+  <main class="overlay-lab" data-library="qwik-ui-headless">
+    <header>
+      <p>Qwik</p>
+      <h1>Qwik UI Headless</h1>
+    </header>
+    <Tooltip.Root delayDuration={0} gutter={8} flip>
+      <Tooltip.Trigger class="lab-button" data-testid="tooltip-trigger">Tooltip</Tooltip.Trigger>
+      <Tooltip.Panel class="overlay-content tooltip-content" data-testid="tooltip-content">
+        Qwik tooltip
+        <Tooltip.Arrow class="overlay-arrow" />
+      </Tooltip.Panel>
+    </Tooltip.Root>
+
+    <Popover.Root gutter={8}>
+      <Popover.Trigger class="lab-button" data-testid="popover-trigger">Popover</Popover.Trigger>
+      <Popover.Panel class="overlay-content popover-content" data-testid="popover-content">
+        <strong>Project settings</strong>
+        <label>Project name<input data-testid="popover-input" value="Relay" /></label>
+        <button type="button" class="close-button" popovertargetaction="hide">Close</button>
+      </Popover.Panel>
+    </Popover.Root>
+
+    <Modal.Root>
+      <Modal.Trigger class="lab-button" data-testid="dialog-trigger">Modal</Modal.Trigger>
+      <Modal.Panel class="dialog-content" data-testid="dialog-content">
+        <Modal.Title>Qwik modal</Modal.Title>
+        <Modal.Description>Qwik UI manages focus and dismissal.</Modal.Description>
+        <input data-testid="dialog-first" aria-label="Modal project name" value="Relay" autoFocus />
+        <Modal.Close class="close-button" data-testid="dialog-close">Close</Modal.Close>
+      </Modal.Panel>
+    </Modal.Root>
+    <p class="boundary-note">The dashed edge is the microfrontend viewport.</p>
+  </main>
+));
+
 const App = component$(() => {
+  if (surface === "overlays") return <OverlayLab />;
   if (surface === "wikipedia") return <WikipediaPreviewWidget />;
   if (surface === "composer") return <ComposerWidget />;
   if (surface === "profile") return <ProfileWidget />;
@@ -97,6 +141,20 @@ const root = document.getElementById("app");
 if (!root) throw new Error("qwik-app: missing #app mount element in index.html");
 
 void render(root, <App />).then(() => {
+  if (surface === "overlays") {
+    const trigger = root.querySelector<HTMLElement>('[data-testid="popover-trigger"]');
+    const panel = root.querySelector<HTMLElement>('[data-testid="popover-content"]');
+    if (!trigger || !panel) {
+      throw new Error("qwik-app: overlay surface rendered without its popover controls");
+    }
+    panel.addEventListener("toggle", () => {
+      if (!panel.matches(":popover-open")) return;
+      const triggerBounds = trigger.getBoundingClientRect();
+      panel.style.setProperty("--popover-left", `${triggerBounds.left}px`);
+      panel.style.setProperty("--popover-top", `${triggerBounds.bottom + 8}px`);
+    });
+    return;
+  }
   if (surface !== "composer") return;
 
   const form = root.querySelector<HTMLFormElement>(".composer-widget");

@@ -2,10 +2,14 @@ import {
   Component,
   CUSTOM_ELEMENTS_SCHEMA,
   ElementRef,
+  inject,
   OnDestroy,
   signal,
   ViewChild,
 } from '@angular/core';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatTooltipModule } from '@angular/material/tooltip';
 
 interface TranscriptStep {
   detail: string;
@@ -67,17 +71,70 @@ const threadTranscripts = {
 type ThreadKey = keyof typeof threadTranscripts;
 
 @Component({
+  selector: 'app-overlay-dialog',
+  imports: [MatDialogModule],
+  template: `
+    <section class="overlay-dialog" data-testid="dialog-content" (keydown)="cycleDialogFocus($event)">
+      <h2 mat-dialog-title>Angular modal</h2>
+      <mat-dialog-content>Angular Material manages focus and dismissal.</mat-dialog-content>
+      <label>Project name<input data-testid="dialog-first" aria-label="Modal project name" value="Relay" /></label>
+      <mat-dialog-actions>
+        <button type="button" mat-dialog-close data-testid="dialog-close">Close</button>
+      </mat-dialog-actions>
+    </section>
+  `,
+  styles: [`
+    .overlay-dialog { display: grid; gap: 0.75rem; color: #f5f5f5; }
+    h2, mat-dialog-content { margin: 0; padding: 0; }
+    mat-dialog-content { color: #b4b4b4; font-size: 0.8rem; }
+    label { display: grid; gap: 0.35rem; color: #b4b4b4; font-size: 0.75rem; }
+    input { min-height: 2.25rem; padding: 0.4rem 0.55rem; border: 1px solid #555; border-radius: 0.4rem; background: #171717; color: white; font: inherit; }
+    mat-dialog-actions { min-height: 0; padding: 0; }
+    button { min-height: 2.25rem; padding: 0.4rem 0.75rem; border: 1px solid #444; border-radius: 0.55rem; background: #242424; color: #f5f5f5; font: inherit; }
+  `],
+})
+export class OverlayDialogComponent {
+  protected cycleDialogFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return;
+    const dialog = event.currentTarget;
+    if (!(dialog instanceof HTMLElement)) return;
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('input, button'))
+      .filter((control) => !control.hasAttribute('disabled'));
+    const firstControl = controls[0];
+    const lastControl = controls.at(-1);
+    if (!firstControl || !lastControl) return;
+
+    if (!event.shiftKey && document.activeElement === lastControl) {
+      event.preventDefault();
+      firstControl.focus();
+    } else if (event.shiftKey && document.activeElement === firstControl) {
+      event.preventDefault();
+      lastControl.focus();
+    }
+  }
+}
+
+@Component({
   selector: 'app-root',
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
+  imports: [MatDialogModule, MatMenuModule, MatTooltipModule],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
 })
 export class AppComponent implements OnDestroy {
+  @ViewChild('overlayPopoverTrigger')
+  private overlayPopoverTrigger?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('overlayDialogTrigger')
+  private overlayDialogTrigger?: ElementRef<HTMLButtonElement>;
+
   @ViewChild('wikipediaPopover')
   private wikipediaPopover?: ElementRef<HTMLElement>;
 
   private closePreviewTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly dialog = inject(MatDialog);
 
+  protected readonly isOverlayLab = new URL(document.URL).searchParams.get('surface') === 'overlays';
   protected readonly savedNotes = signal(2);
   protected readonly transcript = this.readThread();
   protected readonly wikipediaPreviewUrl = this.transcript
@@ -90,6 +147,31 @@ export class AppComponent implements OnDestroy {
 
   protected saveSummary(): void {
     this.savedNotes.update((value) => value + 1);
+  }
+
+  protected openOverlayDialog(): void {
+    const dialog = this.dialog.open(OverlayDialogComponent, {
+      autoFocus: '[data-testid="dialog-first"]',
+      panelClass: 'overlay-dialog-panel',
+      width: '20rem',
+    });
+    dialog.afterClosed().subscribe(() => this.overlayDialogTrigger?.nativeElement.focus());
+  }
+
+  protected positionOverlayMenu(): void {
+    requestAnimationFrame(() => {
+      const trigger = this.overlayPopoverTrigger?.nativeElement;
+      const content = document.querySelector<HTMLElement>('[data-testid="popover-content"]');
+      const pane = content?.closest<HTMLElement>('.cdk-overlay-pane');
+      if (!trigger || !content || !pane) return;
+
+      const triggerBounds = trigger.getBoundingClientRect();
+      const contentBounds = content.getBoundingClientRect();
+      pane.style.translate = [
+        `${triggerBounds.left - contentBounds.left}px`,
+        `${triggerBounds.bottom + 8 - contentBounds.top}px`,
+      ].join(' ');
+    });
   }
 
   protected showWikipediaPreview(event: Event): void {

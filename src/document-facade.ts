@@ -308,6 +308,7 @@ export interface DocumentFacadeOptions {
   authoredStyleAttributes: Map<Element, string>;
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
+  updateTopLayerViewport(x: number, y: number): void;
   getNonce(): string;
   getBaseURL(): string;
   getCurrentURL(): string;
@@ -548,6 +549,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const nativeGetElementsByTagName = elementPrototype.getElementsByTagName;
   const nativeGetElementsByTagNameNS = elementPrototype.getElementsByTagNameNS;
   const nativeAttachShadow = elementPrototype.attachShadow;
+  const nativeGetBoundingClientRect = elementPrototype.getBoundingClientRect;
+  const nativeGetClientRects = elementPrototype.getClientRects;
   const nativeInnerHTML = Object.getOwnPropertyDescriptor(elementPrototype, "innerHTML");
   const nativeOuterHTML = Object.getOwnPropertyDescriptor(elementPrototype, "outerHTML");
   const nativeElementRemove = elementPrototype.remove;
@@ -780,6 +783,59 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     });
     Object.defineProperty(target, key, { configurable: true, ...descriptor });
   };
+
+  const viewportOrigin = (): { x: number; y: number } => {
+    const hostRect = options.host.getBoundingClientRect();
+    return {
+      x: hostRect.left + options.host.clientLeft,
+      y: hostRect.top + options.host.clientTop,
+    };
+  };
+  const toVirtualDOMRect = (rect: DOMRectReadOnly): DOMRect => {
+    const origin = viewportOrigin();
+    return new window.DOMRect(
+      rect.x - origin.x,
+      rect.y - origin.y,
+      rect.width,
+      rect.height,
+    );
+  };
+  const getVirtualBoundingClientRect = (element: Element): DOMRect =>
+    toVirtualDOMRect(nativeGetBoundingClientRect.call(element));
+  const getVirtualClientRects = (element: Element): DOMRectList => {
+    const rects = Array.from(
+      nativeGetClientRects.call(element),
+      (rect) => toVirtualDOMRect(rect),
+    ) as DOMRect[] & { item(index: number): DOMRect | null };
+    Object.defineProperty(rects, "item", {
+      configurable: true,
+      value: (index: number) => rects[index] ?? null,
+    });
+    return rects as unknown as DOMRectList;
+  };
+  const toHostViewportPoint = (x: number, y: number): { x: number; y: number } => {
+    const origin = viewportOrigin();
+    return { x: x + origin.x, y: y + origin.y };
+  };
+
+  const hostWindow = hostDocument.defaultView;
+  let topLayerViewportActivated = false;
+  const refreshTopLayerViewportStyle = (): void => {
+    if (!topLayerViewportActivated) return;
+    const origin = viewportOrigin();
+    // Promotion changes the CSS viewport to the host page; translate it back
+    // to the child viewport while preserving the browser's top-layer clipping escape.
+    options.updateTopLayerViewport(origin.x, origin.y);
+  };
+  const refreshOpeningTopLayer: EventListener = (event) => {
+    if ((event as Event & { newState?: string }).newState === "open") {
+      topLayerViewportActivated = true;
+      refreshTopLayerViewportStyle();
+    }
+  };
+  options.html.addEventListener("beforetoggle", refreshOpeningTopLayer, true);
+  hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle);
+  hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, true);
 
   const styleDeclarationDocument = new window.DOMParser().parseFromString(
     "<!doctype html><html><body></body></html>",
@@ -1456,6 +1512,12 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
               target.stopImmediatePropagation();
             };
           default: {
+            if (!(property in target) && property in source) {
+              const sourceValue = Reflect.get(source, property, source);
+              return typeof sourceValue === "function"
+                ? sourceValue.bind(source)
+                : sourceValue;
+            }
             const value = Reflect.get(target, property, target);
             return typeof value === "function" ? value.bind(target) : value;
           }
@@ -2516,6 +2578,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         nativeInnerHTML.set?.call(this, markup);
         return;
       }
+      if (isHTMLTemplateElement(this)) {
+        nativeInnerHTML.set?.call(this, String(markup));
+        markVirtualNode(this.content);
+        return;
+      }
       const fragment = parseFragment(String(markup));
       this.replaceChildren(fragment);
     },
@@ -3239,6 +3306,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
     try {
       const descriptors: PropertyDescriptorMap = {
+        getBoundingClientRect: {
+          configurable: true,
+          writable: true,
+          value: () => getVirtualBoundingClientRect(element),
+        },
+        getClientRects: {
+          configurable: true,
+          writable: true,
+          value: () => getVirtualClientRects(element),
+        },
         getAttribute: {
           configurable: true,
           writable: true,
@@ -3331,6 +3408,22 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     writable: true,
     value(this: Element, qualifiedName: string): string | null {
       return getVirtualAttribute(this, qualifiedName);
+    },
+  });
+  patch(elementPrototype, "getBoundingClientRect", {
+    writable: true,
+    value(this: Element): DOMRect {
+      return virtualNodes.has(this)
+        ? getVirtualBoundingClientRect(this)
+        : nativeGetBoundingClientRect.call(this);
+    },
+  });
+  patch(elementPrototype, "getClientRects", {
+    writable: true,
+    value(this: Element): DOMRectList {
+      return virtualNodes.has(this)
+        ? getVirtualClientRects(this)
+        : nativeGetClientRects.call(this);
     },
   });
   patch(elementPrototype, "getAttributeNS", {
@@ -4182,14 +4275,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       configurable: true,
       writable: true,
       value(x: number, y: number) {
-        return options.shadowRoot.elementFromPoint?.(x, y) ?? null;
+        const point = toHostViewportPoint(x, y);
+        return options.shadowRoot.elementFromPoint?.(point.x, point.y) ?? null;
       },
     },
     elementsFromPoint: {
       configurable: true,
       writable: true,
       value(x: number, y: number) {
-        return options.shadowRoot.elementsFromPoint?.(x, y) ?? [];
+        const point = toHostViewportPoint(x, y);
+        return options.shadowRoot.elementsFromPoint?.(point.x, point.y) ?? [];
       },
     },
     appendChild: {
@@ -4339,6 +4434,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     dispose() {
       disposed = true;
+      options.html.removeEventListener("beforetoggle", refreshOpeningTopLayer, true);
+      hostWindow?.removeEventListener("resize", refreshTopLayerViewportStyle);
+      hostWindow?.removeEventListener("scroll", refreshTopLayerViewportStyle, true);
       if (selectionChangeTimer !== undefined) {
         window.clearTimeout(selectionChangeTimer);
         selectionChangeTimer = undefined;

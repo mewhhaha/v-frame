@@ -237,20 +237,22 @@ test("keeps adopted preview visible until its initial module completes", async (
       frameElement.shadowRoot?.querySelectorAll("v-html") ?? [],
     );
     const frameRect = frameElement.getBoundingClientRect();
+    const physicalRect = (html: Element) =>
+      Element.prototype.getBoundingClientRect.call(html);
     return {
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
       liveOverlaysPreview:
-        markup[1].getBoundingClientRect().top === markup[0].getBoundingClientRect().top,
+        physicalRect(markup[1]).top === physicalRect(markup[0]).top,
       frameHeightMatchesPreview:
-        frameRect.height === markup[0].getBoundingClientRect().height,
+        frameRect.height === physicalRect(markup[0]).height,
       copyPointerEvents: markup.map((html) =>
         getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents
       ),
       copyVisibilities: markup.map((html) =>
         getComputedStyle(html.querySelector("#adopted-copy")!).visibility
       ),
-      liveHeight: markup[1]?.getBoundingClientRect().height,
+      liveHeight: physicalRect(markup[1]).height,
       markupText: markup.map((html) =>
         html.querySelector("#adopted-copy")?.textContent
       ),

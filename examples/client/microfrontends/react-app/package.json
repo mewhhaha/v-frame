@@ -1,18 +1,19 @@
 {
-  "name": "example-mfe-solid",
+  "name": "example-mfe-react",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "build": "vite build"
   },
   "dependencies": {
-    "@kobalte/core": "0.13.12",
-    "solid-js": "1.9.14"
+    "radix-ui": "1.6.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "6.0.3",
     "vite": "8.1.4",
-    "vite-plugin-solid": "2.11.12",
     "typescript": "7.0.2"
   }
 }

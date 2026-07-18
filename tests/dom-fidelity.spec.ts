@@ -256,6 +256,170 @@ test("scopes shell selectors and root translation to the connected virtual tree"
   });
 });
 
+test("parses and clones virtual template contents", async ({ page }) => {
+  await mountFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+
+    const template = child.document.createElement("template");
+    template.innerHTML = '<button type="button"><span>Open</span></button>';
+    const button = template.content.firstElementChild;
+    const clone = button?.cloneNode(true);
+
+    return {
+      buttonMarkup: button?.outerHTML,
+      cloneMarkup: clone instanceof child.Element ? clone.outerHTML : null,
+      contentUsesFacadeDocument: template.content.ownerDocument === child.document,
+      buttonUsesFacadeDocument: button?.ownerDocument === child.document,
+      buttonUsesTemplateRoot: button?.getRootNode() === template.content,
+    };
+  });
+
+  expect(result).toEqual({
+    buttonMarkup: '<button type="button"><span>Open</span></button>',
+    cloneMarkup: '<button type="button"><span>Open</span></button>',
+    contentUsesFacadeDocument: true,
+    buttonUsesFacadeDocument: true,
+    buttonUsesTemplateRoot: true,
+  });
+});
+
+test("reports element geometry in the virtual viewport coordinate space", async ({ page }) => {
+  await mountFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+
+    frame.style.cssText = [
+      "position: fixed",
+      "left: 120px",
+      "top: 80px",
+      "width: 400px",
+      "height: 300px",
+      "border: 7px solid transparent",
+    ].join(";");
+    const target = child.document.createElement("button");
+    target.id = "geometry-target";
+    target.style.cssText = [
+      "position: fixed",
+      "left: 40px",
+      "top: 50px",
+      "width: 90px",
+      "height: 30px",
+    ].join(";");
+    child.document.body.append(target);
+
+    const virtualRect = target.getBoundingClientRect();
+    const physicalRect = Element.prototype.getBoundingClientRect.call(target);
+    const frameRect = frame.getBoundingClientRect();
+    const hitX = virtualRect.left + virtualRect.width / 2;
+    const hitY = virtualRect.top + virtualRect.height / 2;
+    const hit = child.document.elementFromPoint(hitX, hitY);
+    const hits = child.document.elementsFromPoint(hitX, hitY);
+
+    return {
+      virtualRect: {
+        left: virtualRect.left,
+        top: virtualRect.top,
+        width: virtualRect.width,
+        height: virtualRect.height,
+      },
+      translatedLeft: physicalRect.left - frameRect.left - frame.clientLeft,
+      translatedTop: physicalRect.top - frameRect.top - frame.clientTop,
+      clientRectLeft: target.getClientRects().item(0)?.left,
+      hitTarget: hit === target,
+      hitsContainTarget: Array.from(hits).includes(target),
+    };
+  });
+
+  expect(result.virtualRect.left).toBeCloseTo(result.translatedLeft, 5);
+  expect(result.virtualRect.top).toBeCloseTo(result.translatedTop, 5);
+  expect(result.virtualRect.width).toBe(90);
+  expect(result.virtualRect.height).toBe(30);
+  expect(result.clientRectLeft).toBeCloseTo(result.virtualRect.left, 5);
+  expect(result.hitTarget).toBe(true);
+  expect(result.hitsContainTarget).toBe(true);
+});
+
+test("positions native popovers in the virtual viewport", async ({ page }) => {
+  await mountFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: Window | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+
+    frame.style.cssText = [
+      "position: fixed",
+      "left: 120px",
+      "top: 80px",
+      "width: 400px",
+      "height: 300px",
+      "border: 7px solid transparent",
+      "overflow: hidden",
+    ].join(";");
+    const popover = child.document.createElement("div");
+    popover.popover = "manual";
+    popover.style.cssText = [
+      "position: absolute",
+      "inset: auto",
+      "left: 360px",
+      "top: 280px",
+      "width: 90px",
+      "height: 30px",
+      "margin: 0",
+    ].join(";");
+    child.document.body.append(popover);
+    popover.showPopover();
+
+    const virtualRect = popover.getBoundingClientRect();
+    const physicalRect = Element.prototype.getBoundingClientRect.call(popover);
+    const frameRect = frame.getBoundingClientRect();
+    const result = {
+      open: popover.matches(":popover-open"),
+      virtualLeft: virtualRect.left,
+      virtualTop: virtualRect.top,
+      physicalLeft: physicalRect.left,
+      physicalTop: physicalRect.top,
+      expectedPhysicalLeft: frameRect.left + frame.clientLeft + 360,
+      expectedPhysicalTop: frameRect.top + frame.clientTop + 280,
+      extendsPastFrame:
+        physicalRect.right > frameRect.right && physicalRect.bottom > frameRect.bottom,
+      outsideHitRetargetsToFrame: document.elementFromPoint(
+        frameRect.right + 20,
+        physicalRect.top + 15,
+      ) === frame,
+    };
+    popover.hidePopover();
+    return result;
+  });
+
+  expect(result.open).toBe(true);
+  expect(result.virtualLeft).toBeCloseTo(360, 5);
+  expect(result.virtualTop).toBeCloseTo(280, 5);
+  expect(result.physicalLeft).toBeCloseTo(result.expectedPhysicalLeft, 5);
+  expect(result.physicalTop).toBeCloseTo(result.expectedPhysicalTop, 5);
+  expect(result.extendsPastFrame).toBe(true);
+  expect(result.outsideHitRetargetsToFrame).toBe(true);
+});
+
 test("keeps document collections live with stable identities", async ({ page }) => {
   await mountFrame(page);
 

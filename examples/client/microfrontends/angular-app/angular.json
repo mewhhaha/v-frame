@@ -18,7 +18,10 @@
             "tsConfig": "tsconfig.app.json",
             "polyfills": ["zone.js"],
             "assets": [],
-            "styles": [],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/cyan-orange.css",
+              "src/styles.css"
+            ],
             "scripts": []
           },
           "configurations": {

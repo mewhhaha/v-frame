@@ -261,24 +261,44 @@ async function connectIframe(
   return iframe;
 }
 
-function installInternalStyles(shadowRoot: ShadowRoot): () => void {
+interface InternalStyles {
+  updateTopLayerViewport(x: number, y: number): void;
+  dispose(): void;
+}
+
+function installInternalStyles(shadowRoot: ShadowRoot): InternalStyles {
   const previous = [...shadowRoot.adoptedStyleSheets];
   const view = shadowRoot.ownerDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
-    return () => undefined;
+    return {
+      updateTopLayerViewport: () => undefined,
+      dispose: () => undefined,
+    };
   }
 
   try {
     const sheet = new view.CSSStyleSheet();
     sheet.replaceSync(INTERNAL_CSS);
     shadowRoot.adoptedStyleSheets = [...previous, sheet];
-    return () => {
-      shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
-        (candidate) => candidate !== sheet,
-      );
+    return {
+      updateTopLayerViewport(x, y) {
+        sheet.replaceSync(`${INTERNAL_CSS}
+:where([popover]:popover-open) {
+  translate: ${x}px ${y}px !important;
+}
+`);
+      },
+      dispose() {
+        shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
+          (candidate) => candidate !== sheet,
+        );
+      },
     };
   } catch {
-    return () => undefined;
+    return {
+      updateTopLayerViewport: () => undefined,
+      dispose: () => undefined,
+    };
   }
 }
 
@@ -564,7 +584,7 @@ function installViewportPatches(
 }
 
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
-  const restoreInternalStyles = installInternalStyles(options.shadowRoot);
+  const internalStyles = installInternalStyles(options.shadowRoot);
   const bootstrapDisposers: Array<() => void> = [];
   let restoreAdoptedStagingStyles: () => void = () => undefined;
   let iframe: HTMLIFrameElement | null = null;
@@ -1259,6 +1279,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       authoredStyleAttributes: markup.authoredStyleAttributes,
       inlineStyleSelectorAttribute: markup.inlineStyleSelectorAttribute,
       inlineStyleSheet: markup.inlineStyleSheet,
+      updateTopLayerViewport: internalStyles.updateTopLayerViewport,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
       getCurrentURL: () => currentURL,
@@ -1829,7 +1850,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         markup?.html.remove();
         markup?.inlineStyleSheet.remove();
         restoreAdoptedStagingStyles();
-        restoreInternalStyles();
+        internalStyles.dispose();
       },
     };
     options.signal.addEventListener("abort", runtime.dispose, { once: true });
@@ -1842,7 +1863,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     markup?.inlineStyleSheet.remove();
     iframe?.remove();
     restoreAdoptedStagingStyles();
-    restoreInternalStyles();
+    internalStyles.dispose();
     throw error;
   }
 }
