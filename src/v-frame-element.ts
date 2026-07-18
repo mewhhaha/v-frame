@@ -47,6 +47,9 @@ export class VFrameElement extends HTMLElementBase {
     const declarativeRoot = this.shadowRoot;
     this.#root = declarativeRoot ?? this.attachShadow({ mode: "open" });
     this.#adoptionAvailable = declarativeRoot !== null;
+    // A nonce assigned before upgrade lands in the native [[CryptographicNonce]]
+    // slot rather than an own property, so it must be read back explicitly.
+    this.#nonce = nativeNonceDescriptor?.get?.call(this) ?? "";
   }
 
   get src(): string {
@@ -103,10 +106,25 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   connectedCallback(): void {
+    this.#upgradeProperty("adopt");
+    this.#upgradeProperty("credentials");
+    this.#upgradeProperty("src");
     this.#connected = true;
     if (this.src.trim() !== "") {
       this.#observeLoad(this.#startLoad(this.#consumeAdoptedMarkup()));
     }
+  }
+
+  // Own properties assigned before upgrade shadow the prototype accessors;
+  // re-applying them through the setters restores reflection and validation.
+  #upgradeProperty(property: "src" | "adopt" | "credentials"): void {
+    if (!Object.prototype.hasOwnProperty.call(this, property)) {
+      return;
+    }
+    const record = this as unknown as Record<string, unknown>;
+    const value = record[property];
+    delete record[property];
+    record[property] = value;
   }
 
   disconnectedCallback(): void {
