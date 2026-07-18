@@ -1533,6 +1533,25 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
               candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
         );
 
+    const scrollToFragment = (targetURL: URL): void => {
+      const encodedIdentifier = targetURL.hash.slice(1);
+      let identifier = encodedIdentifier;
+      try {
+        identifier = decodeURIComponent(encodedIdentifier);
+      } catch {
+        // Malformed escapes remain literal, matching URL fragment storage.
+      }
+      if (identifier === "") {
+        options.host.scrollTo(0, 0);
+        return;
+      }
+      const target = document.getElementById(identifier) ??
+        Array.from(document.anchors).find(
+          (anchor) => anchor.getAttribute("name") === identifier,
+        );
+      target?.scrollIntoView();
+    };
+
     const navigateFromLink = (
       event: MouseEvent,
       anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement,
@@ -1584,22 +1603,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
       if (fragment) {
-        const encodedIdentifier = targetURL.hash.slice(1);
-        let identifier = encodedIdentifier;
-        try {
-          identifier = decodeURIComponent(encodedIdentifier);
-        } catch {
-          // Malformed escapes remain literal, matching URL fragment storage.
-        }
-        if (identifier === "") {
-          options.host.scrollTo(0, 0);
-        } else {
-          const target = document.getElementById(identifier) ??
-            Array.from(document.anchors).find(
-              (anchor) => anchor.getAttribute("name") === identifier,
-            );
-          target?.scrollIntoView();
-        }
+        scrollToFragment(targetURL);
       }
     };
 
@@ -1701,7 +1705,16 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           options.onNavigate(detail);
           return null;
         }
-        return history.navigate(targetURL.href, "window") ? window : null;
+        // A same-document _self open is a fragment navigation, with the same
+        // events and scroll-to-anchor behavior as a link click.
+        const fragment = isSameDocumentFragment(currentURL, targetURL.href);
+        if (!history.navigate(targetURL.href, fragment ? "fragment" : "window")) {
+          return null;
+        }
+        if (fragment) {
+          scrollToFragment(targetURL);
+        }
+        return window;
       },
     });
 
