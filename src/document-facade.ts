@@ -898,6 +898,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     refreshInlineStyleSheet();
   };
 
+  const probeStyleDeclaration = (): CSSStyleDeclaration | undefined => {
+    const scratch = nativeCreateElement.call(
+      styleDeclarationDocument,
+      "span",
+    ) as HTMLElement;
+    return nativeHTMLElementStyle?.get?.call(scratch) as
+      | CSSStyleDeclaration
+      | undefined;
+  };
+
   const styleFacade = (element: Element): CSSStyleDeclaration => {
     const existing = styleFacades.get(element);
     if (existing !== undefined) {
@@ -933,12 +943,29 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       } else {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
       }
+      if (nextValue !== "") {
+        const probe = probeStyleDeclaration();
+        if (probe !== undefined) {
+          probe.setProperty(propertyName, nextValue);
+          // Native setProperty ignores values its parser rejects; the authored
+          // style must stay untouched too.
+          if (probe.getPropertyValue(propertyName) === "") {
+            return;
+          }
+        }
+      }
       const propertyNames = Array.from(
         { length: declaration.length },
         (_value, index) => declaration.item(index),
       );
+      // item() enumerates longhands only, so an applied shorthand is detected
+      // through its serialized value instead.
       const canonicalProperty = propertyNames.find(
         (candidate) => stylePropertyKey(candidate) === stylePropertyKey(propertyName),
+      ) ?? (
+        declaration.getPropertyValue(propertyName) === ""
+          ? undefined
+          : propertyName.toLowerCase()
       );
       let logicalValue: string;
       try {
@@ -1048,20 +1075,39 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
               logicalValue = target.cssText;
             }
           }
+          if (typeof property === "string" && String(value) === "") {
+            // Clearing a shorthand IDL attribute must also drop an authored
+            // shorthand declaration, which the vanished-longhand pass misses.
+            try {
+              logicalValue = updateAuthoredStyleProperty(
+                logicalValue,
+                stylePropertyNameFromIDL(property),
+                "",
+                "",
+              );
+            } catch {
+              logicalValue = target.cssText;
+            }
+          }
           if (typeof property === "string" && String(value) !== "") {
-            const scratch = nativeCreateElement.call(
-              styleDeclarationDocument,
-              "span",
-            ) as HTMLElement;
-            const probe = nativeHTMLElementStyle?.get?.call(scratch) as
-              | CSSStyleDeclaration
-              | undefined;
+            const probe = probeStyleDeclaration();
             if (probe !== undefined && Reflect.set(probe, property, value, probe)) {
-              const canonicalProperty = probe.item(0);
-              if (
-                canonicalProperty !== "" &&
-                currentProperties.has(stylePropertyKey(canonicalProperty))
-              ) {
+              const probeProperties = Array.from(
+                { length: probe.length },
+                (_probeValue, index) => probe.item(index),
+              );
+              const applied = probeProperties.length > 0 &&
+                probeProperties.every((name) =>
+                  currentProperties.has(stylePropertyKey(name)),
+                );
+              if (applied) {
+                // A shorthand IDL attribute must be written back as the
+                // shorthand itself, not as its first longhand.
+                const assignedProperty = stylePropertyNameFromIDL(property);
+                const canonicalProperty =
+                  probe.getPropertyValue(assignedProperty) === ""
+                    ? probe.item(0)
+                    : assignedProperty;
                 try {
                   logicalValue = updateAuthoredStyleProperty(
                     logicalValue,
