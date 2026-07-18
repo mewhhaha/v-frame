@@ -727,7 +727,7 @@ export class ScriptRunner {
       );
       companion.addEventListener(
         "error",
-        finishFailed,
+        () => finishFailed(),
         { once: true },
       );
       const abort = () => {
