@@ -2,7 +2,6 @@ import * as cssTree from "css-tree";
 import type { DeclarationList } from "css-tree";
 import { rewriteStyleAttribute, translateShellSelector } from "./css.js";
 import {
-  absolutizeElementAttributes,
   absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
@@ -251,9 +250,14 @@ class ListenerBridge {
   invoke(
     event: Event,
     capture: boolean,
-    shouldContinue: () => boolean = () => true,
+    shouldContinue: () => boolean,
   ): void {
     for (const record of [...this.#records]) {
+      // A listener removed by an earlier listener in this dispatch is skipped,
+      // matching the DOM inner-invoke algorithm.
+      if (!this.#records.includes(record)) {
+        continue;
+      }
       if (record.type === event.type && record.capture === capture) {
         record.wrapper(event);
         if (!shouldContinue()) {
@@ -321,12 +325,10 @@ export interface DocumentFacadeOptions {
 
 export interface NativeDocumentHandles {
   privateHead: HTMLHeadElement;
-  privateBody: HTMLElement;
   createElement<K extends keyof HTMLElementTagNameMap>(name: K): HTMLElementTagNameMap[K];
   appendChild<T extends Node>(parent: Node, child: T): T;
   getAttribute(element: Element, name: string): string | null;
   setAttribute(element: Element, name: string, value: string): void;
-  removeAttribute(element: Element, name: string): void;
 }
 
 export interface DocumentFacade {
@@ -334,7 +336,6 @@ export interface DocumentFacade {
   getSelection(): Selection;
   markVirtualTree(node: Node): void;
   rebaseURLs(): void;
-  baseElementsChanged(): void;
   synchronizeURLAttribute(
     element: Element,
     attributeName: string,
@@ -411,7 +412,7 @@ function liveIndexedCollection<T extends object>(
   const namedItem = (name: string): T | null => currentNamedValue?.(String(name)) ?? null;
   const iterator = (): ArrayIterator<T> => currentValues()[Symbol.iterator]();
 
-  return new Proxy(target, {
+  const proxy = new Proxy(target, {
     get(proxyTarget, property, receiver) {
       if (property === "length") {
         return currentValues().length;
@@ -431,6 +432,25 @@ function liveIndexedCollection<T extends object>(
         return currentValues()[index];
       }
       if (Reflect.has(proxyTarget, property)) {
+        // Prototype iteration helpers brand-check their receiver, which the
+        // proxy fails; reimplement them over the live values instead.
+        switch (property) {
+          case "forEach":
+            return (
+              callback: (value: T, index: number, list: unknown) => void,
+              thisArg?: unknown,
+            ) => {
+              currentValues().forEach((value, valueIndex) =>
+                callback.call(thisArg, value, valueIndex, proxy),
+              );
+            };
+          case "entries":
+            return () => currentValues().entries();
+          case "keys":
+            return () => currentValues().keys();
+          case "values":
+            return () => currentValues().values();
+        }
         return Reflect.get(proxyTarget, property, receiver);
       }
       if (typeof property === "string" && currentNamedValue !== undefined) {
@@ -470,7 +490,8 @@ function liveIndexedCollection<T extends object>(
       }
       return Reflect.getOwnPropertyDescriptor(proxyTarget, property);
     },
-  }) as LiveIndexedCollection<T>;
+  });
+  return proxy as LiveIndexedCollection<T>;
 }
 
 export function installDocumentFacade(options: DocumentFacadeOptions): DocumentFacade {
@@ -805,7 +826,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeRemoveAttribute.call(element, options.inlineStyleSelectorAttribute);
   };
 
-  const styleSelectorValue = (element: Element): string => {
+  const ensureStyleSelector = (element: Element): string => {
     const existing = styleSelectorValues.get(element);
     if (existing !== undefined) {
       nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, existing);
@@ -847,7 +868,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         continue;
       }
 
-      const selectorValue = window.CSS.escape(styleSelectorValue(element));
+      const selectorValue = window.CSS.escape(ensureStyleSelector(element));
       rules.push(
         `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}{${rewritten}}`,
       );
@@ -1407,11 +1428,17 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
               : source.cancelBubble;
           case "returnValue":
             return !virtualDefaultsPrevented.has(source);
+          case "isTrusted":
+            // The mirrored event is synthetic; trust belongs to the source.
+            return source.isTrusted;
           case "composedPath":
             return () => logicalComposedPath(source);
           case "preventDefault":
             return () => {
-              virtualDefaultsPrevented.add(source);
+              // preventDefault is a spec no-op on non-cancelable events.
+              if (source.cancelable) {
+                virtualDefaultsPrevented.add(source);
+              }
               source.preventDefault();
               target.preventDefault();
             };
@@ -1444,7 +1471,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           return true;
         }
         if (property === "returnValue") {
-          if (!value) {
+          if (!value && source.cancelable) {
             virtualDefaultsPrevented.add(source);
             source.preventDefault();
             target.preventDefault();
@@ -1841,9 +1868,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         markSVGURLProperty(node);
       }
       rebaseElementURLs(node);
-      absolutizeElementAttributes(node, options.getBaseURL(), {
-        urlAttributes: false,
-      });
     }
 
     for (const child of Array.from(node.childNodes)) {
@@ -2054,9 +2078,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           element.nonce = nonce;
         }
       }
-      absolutizeElementAttributes(element, options.getBaseURL(), {
-        urlAttributes: false,
-      });
     }
   };
 
@@ -2126,7 +2147,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           cssomMutatedStyleElements.add(clone);
         }
         removeStyleSelector(clone);
-        styleSelectorValue(clone);
+        ensureStyleSelector(clone);
       }
       if (isHTMLLinkElement(source) && isHTMLLinkElement(clone)) {
         authoredLinkRelValues.set(
@@ -2453,7 +2474,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode?.insertBefore(fragment, this.nextSibling);
           return;
         default:
-          throw new DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
       }
     },
   });
@@ -2481,7 +2502,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode.insertBefore(element, this.nextSibling);
           return element;
         default:
-          throw new DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
       }
     },
   });
@@ -2556,6 +2577,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   const invokeRootListeners = (event: Event, capture: boolean): void => {
     for (const record of [...(virtualListenerRecords.get(options.html) ?? [])]) {
+      // A listener removed by an earlier listener in this dispatch is skipped,
+      // matching the DOM inner-invoke algorithm.
+      if (virtualListenerRecords.get(options.html)?.includes(record) !== true) {
+        continue;
+      }
       if (record.type !== event.type || record.capture !== capture) {
         continue;
       }
@@ -2641,7 +2667,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (records === undefined) {
         records = [];
         virtualListenerRecords.set(this, records);
-        virtualListenerTargets.add(this);
       }
       if (
         records.some(
@@ -2809,10 +2834,19 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     namespaceURI: string | null,
     localName: string,
   ): string | null {
-    if (virtualNodes.has(element)) {
-      if (namespaceURI === null && localName === "style") {
-        return options.authoredStyleAttributes.get(element) ?? null;
+    // With no namespace, the lookup covers the same managed attributes as
+    // getAttribute. localName stays case-sensitive, so only the canonical
+    // lowercase spelling can name a managed attribute.
+    if (
+      (namespaceURI === null || namespaceURI === "") &&
+      localName === localName.toLowerCase()
+    ) {
+      const logical = logicalAttribute(element, localName);
+      if (logical.managed) {
+        return logical.value;
       }
+    }
+    if (virtualNodes.has(element)) {
       const attributeName = urlAttributeKey(element, localName, namespaceURI);
       const authoredAttributes = options.authoredURLAttributes.get(element);
       if (attributeName !== null && authoredAttributes?.has(attributeName) === true) {
@@ -2834,10 +2868,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     namespaceURI: string | null,
     localName: string,
   ): boolean {
-    if (virtualNodes.has(element)) {
-      if (namespaceURI === null && localName === "style") {
-        return options.authoredStyleAttributes.has(element);
+    // Mirrors getVirtualAttributeNS: null-namespace lookups resolve the same
+    // managed attributes as hasAttribute.
+    if (
+      (namespaceURI === null || namespaceURI === "") &&
+      localName === localName.toLowerCase()
+    ) {
+      const logical = logicalAttribute(element, localName);
+      if (logical.managed) {
+        return logical.value !== null;
       }
+    }
+    if (virtualNodes.has(element)) {
       const attributeName = urlAttributeKey(element, localName, namespaceURI);
       const authoredAttributes = options.authoredURLAttributes.get(element);
       if (attributeName !== null && authoredAttributes?.has(attributeName) === true) {
@@ -4192,7 +4234,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   });
 
   function unsupportedDocumentWriting(): never {
-    throw new DOMException(
+    throw new window.DOMException(
       "document.open(), document.close(), and document.write() are unsupported inside v-frame",
       "NotSupportedError",
     );
@@ -4248,7 +4290,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   return {
     native: {
       privateHead,
-      privateBody,
       createElement<K extends keyof HTMLElementTagNameMap>(name: K) {
         return nativeCreateElement.call(document, name) as HTMLElementTagNameMap[K];
       },
@@ -4261,9 +4302,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       setAttribute(element: Element, name: string, value: string) {
         nativeSetAttribute.call(element, name, value);
       },
-      removeAttribute(element: Element, name: string) {
-        nativeRemoveAttribute.call(element, name);
-      },
     },
     getSelection: () => selection,
     markVirtualTree: markVirtualNode,
@@ -4274,9 +4312,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         }
       }
       refreshInlineStyleSheet();
-    },
-    baseElementsChanged() {
-      options.onBaseElementChange();
     },
     synchronizeURLAttribute,
     synchronizeStyleAttribute,

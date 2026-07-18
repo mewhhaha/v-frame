@@ -356,22 +356,13 @@ export function rewriteCSSOMAddRule(
 ): { selector: string; declarations: string } {
   return {
     selector: rewriteCSSOMSelectorText(selector),
-    declarations: rewriteCSSOMCssText(declarations, baseURL),
+    declarations: rewriteStyleAttribute(declarations, baseURL),
   };
 }
 
 export function rewriteCSSOMSelectorText(source: string): string {
   const ast = cssTree.parse(source, { context: "selectorList" }) as Selector;
   rewriteShellSelectors(ast, true);
-  return cssTree.generate(ast);
-}
-
-export function rewriteCSSOMCssText(source: string, baseURL: string): string {
-  const ast = cssTree.parse(source, {
-    context: "declarationList",
-    parseCustomProperty: true,
-  });
-  absolutizeCssURLs(ast, baseURL);
   return cssTree.generate(ast);
 }
 

@@ -114,7 +114,8 @@ function normalizedRequestMethod(window: VFrameWindow, method: string): string {
 }
 
 function progressValues(loaded: number, total: number | null): ProgressValues {
-  return total === null
+  // The spec computes length only when it is known AND not zero.
+  return total === null || total === 0
     ? { lengthComputable: false, loaded, total: 0 }
     : { lengthComputable: true, loaded, total };
 }
@@ -683,16 +684,8 @@ export function createCredentiallessXMLHttpRequest(
           return;
         }
 
-        this.#responseHeaders = response.headers;
-        this.#responseURL = response.url;
-        this.#status = response.status;
-        this.#statusText = response.statusText;
-        this.#readyState = CredentiallessXMLHttpRequest.HEADERS_RECEIVED;
-        this.#dispatch("readystatechange");
-        if (!this.#isCurrentRequest(requestGeneration)) {
-          return;
-        }
-
+        // The request body is fully transmitted once the response arrives, so
+        // upload events complete before HEADERS_RECEIVED, matching native XHR.
         if (this.#requestHasBody) {
           // The upload-complete flag is set before the terminal upload events,
           // so a later failure cannot re-fire them via the request-error steps.
@@ -710,6 +703,16 @@ export function createCredentiallessXMLHttpRequest(
           if (!this.#isCurrentRequest(requestGeneration)) {
             return;
           }
+        }
+
+        this.#responseHeaders = response.headers;
+        this.#responseURL = response.url;
+        this.#status = response.status;
+        this.#statusText = response.statusText;
+        this.#readyState = CredentiallessXMLHttpRequest.HEADERS_RECEIVED;
+        this.#dispatch("readystatechange");
+        if (!this.#isCurrentRequest(requestGeneration)) {
+          return;
         }
 
         const responseBody = await response.arrayBuffer();
@@ -883,7 +886,7 @@ export function createCredentiallessXMLHttpRequest(
       this.#dispatch("readystatechange");
 
       if (result !== "load" && requestHasBody) {
-        this.#dispatchUpload(result === "timeout" ? "timeout" : result);
+        this.#dispatchUpload(result);
         this.#dispatchUpload("loadend");
       }
       this.#dispatch(result, completedDownload);

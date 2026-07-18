@@ -29,7 +29,7 @@ function entryFetchError(url: string, response: Response): TypeError {
 }
 
 export class VFrameElement extends HTMLElementBase {
-  static readonly observedAttributes = ["src", "credentials", "nonce", "adopt"];
+  static readonly observedAttributes = ["src", "credentials", "nonce"];
 
   readonly #root: ShadowRoot;
   #status: VFrameStatusValue = VFrameStatus.Idle;
@@ -129,10 +129,7 @@ export class VFrameElement extends HTMLElementBase {
 
   disconnectedCallback(): void {
     this.#connected = false;
-    this.#generation += 1;
-    this.#destroyRealm();
-    this.#currentURL = null;
-    this.#status = VFrameStatus.Idle;
+    this.#resetToIdle();
   }
 
   attributeChangedCallback(
@@ -144,18 +141,12 @@ export class VFrameElement extends HTMLElementBase {
       this.#nonce = nativeNonceDescriptor?.get?.call(this) ?? newValue ?? "";
       return;
     }
-    if (name === "adopt") {
-      return;
-    }
     if (oldValue === newValue || !this.#connected) {
       return;
     }
 
     if (this.src.trim() === "") {
-      this.#generation += 1;
-      this.#destroyRealm();
-      this.#currentURL = null;
-      this.#status = VFrameStatus.Idle;
+      this.#resetToIdle();
       return;
     }
 
@@ -164,14 +155,18 @@ export class VFrameElement extends HTMLElementBase {
 
   reload(): Promise<void> {
     if (!this.isConnected || this.src.trim() === "") {
-      this.#generation += 1;
-      this.#destroyRealm();
-      this.#currentURL = null;
-      this.#status = VFrameStatus.Idle;
+      this.#resetToIdle();
       return Promise.resolve();
     }
 
     return this.#startLoad();
+  }
+
+  #resetToIdle(): void {
+    this.#generation += 1;
+    this.#destroyRealm();
+    this.#currentURL = null;
+    this.#status = VFrameStatus.Idle;
   }
 
   addEventListener<K extends keyof VFrameEventMap>(

@@ -29,6 +29,9 @@ export class VirtualHistory {
   readonly #hostOrigin: string;
   readonly #entries: HistoryEntry[];
   #index = 0;
+  // Stored entry state stays pristine; each activation exposes its own clone,
+  // so mutations of history.state do not survive back/forward traversal.
+  #activeState: unknown = null;
   #scrollRestoration: ScrollRestoration = "auto";
   #disposed = false;
 
@@ -48,7 +51,7 @@ export class VirtualHistory {
   }
 
   get state(): unknown {
-    return this.#entries[this.#index]?.state ?? null;
+    return this.#activeState;
   }
 
   install(): void {
@@ -172,6 +175,7 @@ export class VirtualHistory {
     this.#entries.splice(this.#index + 1);
     this.#entries.push({ url: nextURL, state: nextState });
     this.#index = this.#entries.length - 1;
+    this.#activeState = this.#cloneState(nextState);
     this.#commit("none");
     return true;
   }
@@ -194,6 +198,7 @@ export class VirtualHistory {
 
     this.#mirrorEntry(nextURL, nextState);
     this.#entries[this.#index] = { url: nextURL, state: nextState };
+    this.#activeState = this.#cloneState(nextState);
     this.#commit("none");
     return true;
   }
@@ -225,6 +230,7 @@ export class VirtualHistory {
       this.#entries.push({ url: nextURL, state: nextState });
       this.#index = this.#entries.length - 1;
     }
+    this.#activeState = this.#cloneState(nextState);
     this.#commit(kind === "fragment" ? "fragment" : "none", previousURL);
     return true;
   }
@@ -291,6 +297,7 @@ export class VirtualHistory {
     const previousURL = this.currentURL;
     this.#mirrorEntry(nextEntry.url, nextEntry.state);
     this.#index = nextIndex;
+    this.#activeState = this.#cloneState(nextEntry.state);
     this.#commit("traverse", previousURL);
   }
 
