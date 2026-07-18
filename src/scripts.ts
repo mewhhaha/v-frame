@@ -591,10 +591,13 @@ export class ScriptRunner {
       } else if (this.#credentials === "omit") {
         companion.crossOrigin = "anonymous";
       } else if (hasExternalSource(pseudoScript)) {
-        const sourceOrigin = new URL(pseudoScript.src).origin;
-        if (sourceOrigin !== this.#executionOrigin) {
-          companion.crossOrigin = "anonymous";
-        }
+        // An unresolvable src stays on the companion so its native load failure
+        // reports a per-script error instead of failing the whole document.
+        try {
+          if (new URL(pseudoScript.src).origin !== this.#executionOrigin) {
+            companion.crossOrigin = "anonymous";
+          }
+        } catch {}
       }
     }
 
