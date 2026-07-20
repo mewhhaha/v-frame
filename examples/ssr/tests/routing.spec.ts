@@ -200,9 +200,9 @@ test("promotes the Wikipedia preview beyond the React frame clipping boundary", 
   const popover = frame.locator(".preview-popover");
   const frameBounds = await frame.boundingBox();
   if (frameBounds === null) throw new Error("The React frame has no rendered bounds");
-  await popover.evaluate((element, top) => {
-    (element as HTMLElement).style.setProperty("--preview-top", `${top}px`);
-  }, Math.max(4, frameBounds.y - 64));
+  await popover.evaluate((element) => {
+    (element as HTMLElement).style.setProperty("--preview-top", "-64px");
+  });
 
   const popoverBounds = await popover.boundingBox();
   if (popoverBounds === null) throw new Error("The Wikipedia preview has no rendered bounds");

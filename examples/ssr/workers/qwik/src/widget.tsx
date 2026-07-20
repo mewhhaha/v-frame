@@ -254,7 +254,7 @@ export const widgetStyle = `
   .profile-copy { display: grid; min-width: 0; gap: 0.12rem; }
   .profile-copy strong { overflow: hidden; color: #e4e4e7; font-size: 0.75rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .profile-copy small, .profile-more { color: #71717a; font-size: 0.6875rem; }
-  .profile-menu { inset: auto auto 4rem 0.8rem; width: 14.4rem; margin: 0; padding: 0.45rem; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 0.7rem; background: #1b1b1f; color: #f4f4f5; }
+  .profile-menu { inset: 0 auto auto 0.8rem; width: 14.4rem; margin: 0; padding: 0.45rem; transform: translateY(calc(-100% - 0.6rem)); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 0.7rem; background: #1b1b1f; color: #f4f4f5; }
   .profile-menu p { margin: 0; padding: 0.55rem 0.6rem; border-bottom: 1px solid rgba(255, 255, 255, 0.09); color: #a1a1aa; font-size: 0.75rem; }
   .profile-menu button { display: block; width: 100%; min-height: 2.25rem; padding: 0.45rem 0.6rem; border: 0; border-radius: 0.45rem; background: transparent; color: #e4e4e7; cursor: pointer; font-size: 0.75rem; text-align: left; }
   .profile-menu button:hover { background: rgba(255, 255, 255, 0.05); }
@@ -306,7 +306,7 @@ export const widgetStyle = `
   .profile-copy small, .profile-more { color: #737373; }
   .profile-trigger:hover { background: #212121; }
   .profile-more { margin-left: auto; }
-  .profile-menu { inset: auto auto 4.25rem 0.75rem; width: 14rem; border-color: #3a3a3a; border-radius: 0.65rem; background: #212121; color: #f5f5f5; }
+  .profile-menu { inset: 0 auto auto 0.75rem; width: 14rem; transform: translateY(calc(-100% - 0.85rem)); border-color: #3a3a3a; border-radius: 0.65rem; background: #212121; color: #f5f5f5; }
   .profile-menu p { border-bottom-color: #333; color: #a0a0a0; }
   .profile-menu button { min-height: 2rem; color: #ececec; }
   .profile-menu button:hover { background: #303030; }
