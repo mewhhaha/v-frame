@@ -89,7 +89,7 @@ to the top layer.
 | Framework | Library | Compatibility result inside `v-frame` |
 | --- | --- | --- |
 | React | Radix UI 1.6.2 | Tooltip, popover, and modal lifecycle checks pass. The example adds a direct boundary-leave listener because Radix's delegated tooltip leave does not cross the shadow boundary. |
-| Angular | Angular Material 21.1.5 | Tooltip, menu, and dialog checks pass. The example rebases the CDK menu pane and explicitly cycles/restores dialog focus around the adopted shadow tree. |
+| Angular | Angular Material 21.2.14 | Tooltip, menu, and dialog checks pass. The example rebases the CDK menu pane and explicitly cycles/restores dialog focus around the adopted shadow tree. |
 | Solid | Kobalte 0.13.12 | Kobalte mounts after virtual template contents preserve native `template.content` behavior; tooltip, popover, and modal checks pass. |
 | Qwik | Qwik UI Headless 0.7.7 | The explicit Qwik loader activates delegated handlers. Preserved `ToggleEvent` fields and top-layer viewport translation keep its tooltip, popover, and modal working. |
 
