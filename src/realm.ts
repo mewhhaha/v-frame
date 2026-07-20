@@ -13,7 +13,11 @@ import {
   installDocumentFacade,
   type DocumentFacade,
 } from "./document-facade.js";
-import { VirtualHistory } from "./history.js";
+import {
+  type DocumentHistoryMode,
+  VirtualHistory,
+  VirtualHistorySession,
+} from "./history.js";
 import {
   prepareAdoptedMarkup,
   prepareMarkup,
@@ -171,12 +175,19 @@ export interface CreateRealmOptions {
     | { kind: "document"; source: string }
     | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
   pageURL: string;
+  historySession: VirtualHistorySession;
+  stageMarkup: boolean;
   credentials: VFrameCredentials;
   signal: AbortSignal;
   getNonce(): string;
   fetchStylesheet(url: string): Promise<string>;
   onURLChange(url: string): void;
   onNavigate(detail: VFrameNavigateEventDetail): boolean;
+  onDocumentNavigation(
+    detail: VFrameNavigateEventDetail,
+    mode: DocumentHistoryMode,
+  ): boolean;
+  onDocumentTraversal(session: VirtualHistorySession): void;
   onError(failure: RealmFailure): void;
   onFatal(failure: RealmFailure): void;
 }
@@ -302,11 +313,11 @@ function installInternalStyles(shadowRoot: ShadowRoot): InternalStyles {
   }
 }
 
-function installAdoptedStagingStyles(shadowRoot: ShadowRoot): () => void {
+function installStagingStyles(shadowRoot: ShadowRoot): () => void {
   const view = shadowRoot.ownerDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
     throw new Error(
-      "Cannot stage adopted v-frame markup without constructed stylesheet support",
+      "Cannot stage v-frame markup without constructed stylesheet support",
     );
   }
 
@@ -586,7 +597,7 @@ function installViewportPatches(
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
   const internalStyles = installInternalStyles(options.shadowRoot);
   const bootstrapDisposers: Array<() => void> = [];
-  let restoreAdoptedStagingStyles: () => void = () => undefined;
+  let restoreStagingStyles: () => void = () => undefined;
   let iframe: HTMLIFrameElement | null = null;
   let markup: PreparedMarkup | null = null;
 
@@ -695,7 +706,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const history = new VirtualHistory({
       window,
-      initialURL: options.pageURL,
+      session: options.historySession,
       hostOrigin: options.host.ownerDocument.location.origin,
       getBaseURL: getDocumentBaseURL,
       onNavigate: options.onNavigate,
@@ -704,6 +715,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         updateDocumentBaseURL();
         options.onURLChange(url);
       },
+      onDocumentTraversal: options.onDocumentTraversal,
     });
     history.install();
     bootstrapDisposers.push(() => history.dispose());
@@ -1312,8 +1324,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
     bootstrapDisposers.push(() => facade?.dispose());
     const liveMarkup = markup.html;
-    if (options.markup.kind === "adopted") {
-      restoreAdoptedStagingStyles = installAdoptedStagingStyles(
+    if (options.markup.kind === "adopted" || options.stageMarkup) {
+      restoreStagingStyles = installStagingStyles(
         options.shadowRoot,
       );
     }
@@ -1521,9 +1533,45 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         kind: "form",
         state: null,
       };
-      const allowed = options.onNavigate(detail);
-      if (allowed && target === "_blank" && method === "get") {
-        nativeWindowOpen(targetURL.href, "_blank", "noopener");
+      if (target === "_blank") {
+        const allowed = options.onNavigate(detail);
+        if (allowed && method === "get") {
+          nativeWindowOpen(targetURL.href, "_blank", "noopener");
+        } else if (allowed) {
+          options.onError({
+            phase: "navigation",
+            url: targetURL.href,
+            error: new window.DOMException(
+              `v-frame cannot submit ${method.toUpperCase()} form ${targetURL.href} to a new browsing context`,
+              "NotSupportedError",
+            ),
+          });
+        }
+        return;
+      }
+
+      if (
+        (target !== "" && target !== "_self") ||
+        (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
+      ) {
+        options.onNavigate(detail);
+        return;
+      }
+
+      if (method === "get") {
+        options.onDocumentNavigation(detail, "push");
+        return;
+      }
+
+      if (options.onNavigate(detail)) {
+        options.onError({
+          phase: "navigation",
+          url: targetURL.href,
+          error: new window.DOMException(
+            `v-frame cannot submit ${method.toUpperCase()} form ${targetURL.href}; only same-context GET navigation is supported`,
+            "NotSupportedError",
+          ),
+        });
       }
     };
 
@@ -1589,10 +1637,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
 
       if (
-        target === "_top" ||
-        target === "_parent" ||
-        targetURL.origin !== new URL(currentURL).origin ||
-        targetURL.protocol === "javascript:"
+        (target !== "" && target !== "_self") ||
+        (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
       ) {
         options.onNavigate({
           from: currentURL,
@@ -1604,7 +1650,16 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
 
       const fragment = isSameDocumentFragment(currentURL, targetURL.href);
-      if (!history.navigate(targetURL.href, fragment ? "fragment" : "link")) {
+      if (!fragment) {
+        options.onDocumentNavigation({
+          from: currentURL,
+          to: targetURL.href,
+          kind: "link",
+          state: null,
+        }, "push");
+        return;
+      }
+      if (!history.navigateFragment(targetURL.href)) {
         return;
       }
       if (fragment) {
@@ -1703,9 +1758,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
             : null;
         }
         if (
-          normalizedTarget === "_top" ||
-          normalizedTarget === "_parent" ||
-          targetURL.origin !== new URL(currentURL).origin
+          (normalizedTarget !== "" && normalizedTarget !== "_self") ||
+          (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
         ) {
           options.onNavigate(detail);
           return null;
@@ -1713,7 +1767,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // A same-document _self open is a fragment navigation, with the same
         // events and scroll-to-anchor behavior as a link click.
         const fragment = isSameDocumentFragment(currentURL, targetURL.href);
-        if (!history.navigate(targetURL.href, fragment ? "fragment" : "window")) {
+        if (!fragment) {
+          return options.onDocumentNavigation(detail, "push") ? window : null;
+        }
+        if (!history.navigateFragment(targetURL.href)) {
           return null;
         }
         if (fragment) {
@@ -1779,8 +1836,26 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       });
     };
     const trustedHashChangeListener = (event: HashChangeEvent) => {
+      if (!event.isTrusted) {
+        return;
+      }
+
+      event.stopImmediatePropagation();
+      const nativeURL = new URL(event.newURL);
+      const virtualURL = new URL(currentURL);
+      virtualURL.hash = nativeURL.hash;
+      if (nativeURL.hash === "" && event.newURL.endsWith("#")) {
+        virtualURL.href += "#";
+      }
+      if (!history.navigateNativeFragment(virtualURL.href)) {
+        history.restoreMirroredURL();
+      }
+    };
+    const trustedPopStateListener = (event: PopStateEvent) => {
       if (event.isTrusted) {
-        directNavigationListener();
+        // The hidden iframe history only mirrors the virtual history. Exposing
+        // its native event would deliver a second popstate to the sub-app.
+        event.stopImmediatePropagation();
       }
     };
 
@@ -1791,6 +1866,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     window.addEventListener("error", runtimeErrorListener);
     window.addEventListener("unhandledrejection", rejectionListener);
     window.addEventListener("beforeunload", directNavigationListener);
+    window.addEventListener("popstate", trustedPopStateListener);
     window.addEventListener("hashchange", trustedHashChangeListener);
     iframe.addEventListener("load", directNavigationListener);
 
@@ -1805,7 +1881,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         : []) {
         node.parentNode?.removeChild(node);
       }
-      restoreAdoptedStagingStyles();
+      restoreStagingStyles();
     };
 
     const runtime: VFrameRealm = {
@@ -1838,6 +1914,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         window.removeEventListener("error", runtimeErrorListener);
         window.removeEventListener("unhandledrejection", rejectionListener);
         window.removeEventListener("beforeunload", directNavigationListener);
+        window.removeEventListener("popstate", trustedPopStateListener);
         window.removeEventListener("hashchange", trustedHashChangeListener);
         iframe?.removeEventListener("load", directNavigationListener);
         window.HTMLFormElement.prototype.submit = nativeFormSubmit;
@@ -1849,7 +1926,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         facade?.dispose();
         markup?.html.remove();
         markup?.inlineStyleSheet.remove();
-        restoreAdoptedStagingStyles();
+        restoreStagingStyles();
         internalStyles.dispose();
       },
     };
@@ -1862,7 +1939,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     markup?.html.remove();
     markup?.inlineStyleSheet.remove();
     iframe?.remove();
-    restoreAdoptedStagingStyles();
+    restoreStagingStyles();
     internalStyles.dispose();
     throw error;
   }

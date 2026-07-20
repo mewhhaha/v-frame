@@ -315,7 +315,255 @@ test("documents javascript Location evaluation without document replacement as u
   });
 });
 
-test("uses the live base for window and SVG link navigation", async ({ page }) => {
+test("fetches link and GET form documents while preserving session history", async ({ page }) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(async (bundleURL) => {
+    const bundle = await import(bundleURL);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  await page.evaluate((source) => {
+    const frame = document.createElement("v-frame");
+    frame.id = "document-navigation-frame";
+    frame.setAttribute("src", source);
+    document.querySelector("#host")?.append(frame);
+  }, `${fixture.origin}/documents/first.html`);
+
+  const frame = page.locator("#document-navigation-frame");
+  await expect(frame.locator("#first")).toContainText("First document");
+  await frame.locator("#next").click();
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html`);
+  expect(await frame.getAttribute("src")).toBe(`${fixture.origin}/documents/first.html`);
+  expect(await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    return child?.history.length;
+  })).toBe(2);
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.back();
+  });
+  await expect(frame.locator("#first")).toContainText("First document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/first.html`);
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const form = child?.document.createElement("form");
+    if (child === null || child === undefined || form === undefined) {
+      throw new Error("The restored document has no child window");
+    }
+    form.id = "document-navigation-form";
+    form.method = "get";
+    form.action = "/documents/second.html?from=form";
+    const input = child.document.createElement("input");
+    input.name = "query";
+    input.value = "fixture";
+    const submit = child.document.createElement("button");
+    submit.textContent = "Submit";
+    form.append(input, submit);
+    child.document.body.append(form);
+  });
+  await frame.locator("#document-navigation-form button").click();
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.back();
+  });
+  await expect(frame.locator("#first")).toContainText("First document");
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.forward();
+  });
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+  await frame.locator("#second").evaluate((element) => element.remove());
+  await frame.evaluate((element) => (
+    element as HTMLElement & { reload(): Promise<void> }
+  ).reload());
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  expect(await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    return child?.history.length;
+  })).toBe(2);
+});
+
+test("restores the live realm when fetched navigation fails", async ({ page }) => {
+  const frame = await mountFrame(page);
+  await frame.evaluate((element) => {
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: Window | null;
+      originalWindow?: Window | null;
+    };
+    controlledFrame.originalWindow = controlledFrame.contentWindow;
+  });
+  const failure = frame.evaluate((element) => new Promise<{
+    fatal: boolean;
+    phase: string;
+    status: string;
+    url: string;
+  }>((resolve) => {
+    element.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{
+        fatal: boolean;
+        phase: string;
+        url: string;
+      }>).detail;
+      resolve({
+        fatal: detail.fatal,
+        phase: detail.phase,
+        status: (element as HTMLElement & { status: string }).status,
+        url: detail.url,
+      });
+    }, { once: true });
+  }));
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const link = child?.document.createElement("a");
+    if (child === null || child === undefined || link === undefined) {
+      throw new Error("The navigation frame has no child window");
+    }
+    link.id = "failed-document-link";
+    link.href = "/documents/broken.html";
+    link.textContent = "Broken document";
+    child.document.body.append(link);
+  });
+  await frame.locator("#failed-document-link").click();
+
+  expect(await failure).toEqual({
+    fatal: false,
+    phase: "entry",
+    status: "ready",
+    url: `${fixture.origin}/documents/broken.html`,
+  });
+  await expect(frame.locator("#load")).toHaveText("Load");
+  expect(await frame.evaluate((element) => {
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: Window | null;
+      originalWindow?: Window | null;
+    };
+    return controlledFrame.contentWindow === controlledFrame.originalWindow;
+  })).toBe(true);
+  expect(await frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/application.html`);
+});
+
+test("supports direct Location hash changes without replacing the realm", async ({ page }) => {
+  const frame = await mountFrame(page);
+  const result = await frame.evaluate(async (element) => {
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: Window | null;
+      currentURL: string;
+      status: string;
+    };
+    const child = controlledFrame.contentWindow;
+    if (child === null) {
+      throw new Error("The navigation frame has no child window");
+    }
+    const events: string[] = [];
+    child.addEventListener("popstate", () => events.push("popstate"));
+    child.addEventListener("hashchange", () => events.push("hashchange"));
+    child.location.hash = "direct-hash";
+    await new Promise((resolve) => child.setTimeout(resolve, 0));
+    return {
+      currentURL: controlledFrame.currentURL,
+      events,
+      retainedWindow: controlledFrame.contentWindow === child,
+      status: controlledFrame.status,
+    };
+  });
+
+  expect(result).toEqual({
+    currentURL: `${fixture.origin}/documents/application.html#direct-hash`,
+    events: ["popstate", "hashchange"],
+    retainedWindow: true,
+    status: "ready",
+  });
+});
+
+test("restores the virtual URL when the host cancels a direct hash change", async ({ page }) => {
+  const frame = await mountFrame(page);
+  const result = await frame.evaluate(async (element) => {
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: Window | null;
+      currentURL: string;
+    };
+    const child = controlledFrame.contentWindow;
+    if (child === null) {
+      throw new Error("The navigation frame has no child window");
+    }
+    const childEvents: string[] = [];
+    child.addEventListener("popstate", () => childEvents.push("popstate"));
+    child.addEventListener("hashchange", () => childEvents.push("hashchange"));
+    element.addEventListener("v-frame-navigate", (event) => event.preventDefault(), {
+      once: true,
+    });
+    child.location.hash = "blocked-hash";
+    await new Promise((resolve) => child.setTimeout(resolve, 0));
+    return {
+      childEvents,
+      currentURL: controlledFrame.currentURL,
+      locationHref: child.location.href,
+    };
+  });
+
+  expect(result).toEqual({
+    childEvents: [],
+    currentURL: `${fixture.origin}/documents/application.html`,
+    locationHref: `${fixture.origin}/documents/application.html`,
+  });
+});
+
+test("reports unsupported same-context POST forms without leaving the document", async ({ page }) => {
+  const frame = await mountFrame(page);
+  const error = frame.evaluate((element) => new Promise<{
+    fatal: boolean;
+    name: string;
+    phase: string;
+  }>((resolve) => {
+    element.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{
+        error: Error;
+        fatal: boolean;
+        phase: string;
+      }>).detail;
+      resolve({ fatal: detail.fatal, name: detail.error.name, phase: detail.phase });
+    }, { once: true });
+  }));
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const form = child?.document.createElement("form");
+    if (child === null || child === undefined || form === undefined) {
+      throw new Error("The navigation frame has no child window");
+    }
+    form.id = "unsupported-post-form";
+    form.method = "post";
+    form.action = "/documents/second.html";
+    const submit = child.document.createElement("button");
+    submit.textContent = "Submit";
+    form.append(submit);
+    child.document.body.append(form);
+  });
+  await frame.locator("#unsupported-post-form button").click();
+
+  expect(await error).toEqual({ fatal: false, name: "NotSupportedError", phase: "navigation" });
+  await expect(frame.locator("#load")).toHaveText("Load");
+  expect(await frame.evaluate(
+    (element) => (element as HTMLElement & { status: string }).status,
+  )).toBe("ready");
+});
+
+test("fetches window and SVG link destinations resolved against the live base", async ({ page }) => {
   const frame = await mountFrame(page);
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigations?: Array<{ kind: string; to: string }> })
@@ -329,7 +577,7 @@ test("uses the live base for window and SVG link navigation", async ({ page }) =
     });
   });
 
-  const openURLs = await frame.evaluate((element) => {
+  await frame.evaluate((element) => {
     const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
@@ -338,23 +586,35 @@ test("uses the live base for window and SVG link navigation", async ({ page }) =
     base.href = "/first-window-base/";
     child.document.head.prepend(base);
     child.open("first", "_self");
-    const first = child.document.URL;
-    base.href = "/second-window-base/";
-    child.open("second", "_self");
-    return { first, second: child.document.URL };
   });
-  expect(openURLs).toEqual({
-    first: `${fixture.origin}/first-window-base/first`,
-    second: `${fixture.origin}/second-window-base/second`,
-  });
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/first-window-base/first`);
+  await expect(frame.locator("#first-window-document")).toHaveText("First window document");
 
   await frame.evaluate((element) => {
     const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
-    const base = child.document.querySelector("base") as HTMLBaseElement;
+    const base = child.document.createElement("base");
+    base.href = "/second-window-base/";
+    child.document.head.prepend(base);
+    child.open("second", "_self");
+  });
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/second-window-base/second`);
+  await expect(frame.locator("#second-window-document")).toHaveText("Second window document");
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    if (child === null) {
+      throw new Error("The navigation frame has no child window");
+    }
+    const base = child.document.createElement("base");
     base.href = "/svg-base/";
+    child.document.head.prepend(base);
     const svg = child.document.createElementNS("http://www.w3.org/2000/svg", "svg");
     const anchor = child.document.createElementNS("http://www.w3.org/2000/svg", "a");
     anchor.id = "svg-navigation-link";
@@ -382,6 +642,7 @@ test("uses the live base for window and SVG link navigation", async ({ page }) =
   await expect.poll(() => frame.evaluate(
     (element) => (element as HTMLElement & { currentURL: string }).currentURL,
   )).toBe(`${fixture.origin}/svg-base/destination.html`);
+  await expect(frame.locator("#svg-destination")).toHaveText("SVG destination document");
   expect(await frame.evaluate((element) => (
     element as HTMLElement & { navigations: Array<{ kind: string; to: string }> }
   ).navigations)).toEqual([

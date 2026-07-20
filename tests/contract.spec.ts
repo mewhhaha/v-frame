@@ -564,6 +564,38 @@ test("reports but does not perform canceled link and form navigation", async ({ 
   expect(await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }))).toEqual(hostHistory);
 });
 
+test("keeps the current document visible while a link destination loads", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, "staged-navigation", `${fixture.origin}/documents/history.html`);
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { status: string }).status,
+  )).toBe("ready");
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const link = child?.document.createElement("a");
+    if (child === null || child === undefined || link === undefined) {
+      throw new Error("The staged-navigation frame has no child window");
+    }
+    link.id = "slow-document-link";
+    link.href = "/documents/slow.html";
+    link.textContent = "Slow document";
+    child.document.body.append(link);
+  });
+
+  await frame.locator("#slow-document-link").click();
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { status: string }).status,
+  )).toBe("loading");
+  expect(await frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/history.html`);
+  await expect(frame.locator("#slow-document-link")).toHaveText("Slow document");
+  await expect(frame.locator("#slow-copy")).toHaveText("Slow document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { status: string }).status,
+  )).toBe("ready");
+});
+
 test("gates modified primary and middle link activations before opening a new context", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "new-context-navigation", `${fixture.origin}/documents/history.html`);

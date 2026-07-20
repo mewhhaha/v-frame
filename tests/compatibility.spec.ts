@@ -66,7 +66,14 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
         documentPage('<form id="native-form" action="/documents/form-target.html" method="get" target="_self"><input name="query" value="compatibility"><button>Submit</button></form>'),
       );
     }
-    if (path === "/documents/form-target.html") return reply(response, 200, "text/html", documentPage("Unexpected native navigation"));
+    if (path === "/documents/form-target.html") {
+      return reply(
+        response,
+        200,
+        "text/html",
+        documentPage('<main id="form-target">Form destination</main>'),
+      );
+    }
     return reply(response, 404, "text/plain", `No host fixture for ${path}`);
   });
   await new Promise<void>((resolveListening) => host.listen(0, "127.0.0.1", resolveListening));
@@ -206,10 +213,9 @@ test("reconstructs a source that declares restrictive CSP and framing headers", 
   );
 });
 
-test("reports a non-blank form submission without loading its action document", async ({ page }) => {
+test("loads an allowed same-context GET form destination", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "native-form", `${fixture.origin}/documents/native-form.html`);
-  const initialURL = await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL);
   const hostURL = page.url();
 
   await page.evaluate(() => {
@@ -232,7 +238,9 @@ test("reports a non-blank form submission without loading its action document", 
     kind: "form",
     to: `${fixture.origin}/documents/form-target.html?query=compatibility`,
   }]);
-  expect(await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(initialURL);
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as { currentURL: string | null }).currentURL,
+  )).toBe(`${fixture.origin}/documents/form-target.html?query=compatibility`);
   expect(page.url()).toBe(hostURL);
-  await expect(frame.locator("#native-form")).toBeVisible();
+  await expect(frame.locator("#form-target")).toHaveText("Form destination");
 });

@@ -75,6 +75,12 @@ function pageFor(path: string) {
       return html('<main id="first">First document <a id="next" href="second.html">next</a></main>');
     case "/documents/second.html":
       return html('<main id="second">Second document</main>');
+    case "/first-window-base/first":
+      return html('<main id="first-window-document">First window document</main>');
+    case "/second-window-base/second":
+      return html('<main id="second-window-document">Second window document</main>');
+    case "/svg-base/destination.html":
+      return html('<main id="svg-destination">SVG destination document</main>');
     case "/documents/scripted.html":
       return html('<main id="before-script">Before script</main><script src="../assets/append-content.js"></script>');
     case "/documents/styled.html":
@@ -472,7 +478,7 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
       return;
     }
     if (path === "/documents/slow.html") {
-      setTimeout(() => contractReply(response, 200, "text/html", contractPageFor(path) ?? ""), 100);
+      setTimeout(() => contractReply(response, 200, "text/html", contractPageFor(path) ?? ""), 500);
       return;
     }
     if (path === "/documents/redirect.html") {

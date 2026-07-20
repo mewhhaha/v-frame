@@ -131,6 +131,8 @@ function pageSource(pathname: string): string | null {
           document.querySelector('#stopped').addEventListener('click', (event) => event.stopPropagation());
         </script>
       `);
+    case "/stopped-navigation":
+      return documentSource('<main id="stopped-destination">Stopped propagation still navigated</main>');
     case "/window-events.html":
       return documentSource(`
         <button id="event-target">Dispatch event</button>
@@ -911,14 +913,11 @@ test("cancels navigation only when child event listeners prevent the default", a
   const hostURL = page.url();
 
   await frame.locator("#prevented").click();
-  await frame.locator("#stopped").click();
   const state = await childValue(frame, async (window) => {
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
     window.document.dispatchEvent(new window.Event("realm-document"));
     return {
       events: (window as typeof window & { __listenerEvents: unknown[] }).__listenerEvents,
       documentEvent: (window as typeof window & { __documentEvent: unknown }).__documentEvent,
-      url: window.document.URL,
     };
   });
 
@@ -942,8 +941,14 @@ test("cancels navigation only when child event listeners prevent the default", a
       },
     ],
     documentEvent: { event: true, target: true, currentTarget: true },
-    url: `${fixture.origin}/stopped-navigation`,
   });
+  await frame.locator("#stopped").click();
+  await expect(frame.locator("#stopped-destination")).toHaveText(
+    "Stopped propagation still navigated",
+  );
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/stopped-navigation`);
   expect(await frame.evaluate((element) =>
     (element as HTMLElement & { navigations: Array<{ from: string; to: string }> }).navigations,
   )).toEqual([{

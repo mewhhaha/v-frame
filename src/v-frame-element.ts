@@ -1,4 +1,5 @@
 import { createRealm, type RealmFailure, type VFrameRealm } from "./realm.js";
+import { VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { VFrameStatus } from "./types.js";
 import type {
@@ -28,6 +29,18 @@ function entryFetchError(url: string, response: Response): TypeError {
   );
 }
 
+interface AdoptedMarkup {
+  source: string;
+  previewNodes: readonly Node[];
+}
+
+interface FrameLoad {
+  source: string;
+  adoptedMarkup: AdoptedMarkup | null;
+  historySession: VirtualHistorySession | null;
+  stageMarkup: boolean;
+}
+
 export class VFrameElement extends HTMLElementBase {
   static readonly observedAttributes = ["src", "credentials", "nonce"];
 
@@ -35,8 +48,12 @@ export class VFrameElement extends HTMLElementBase {
   #status: VFrameStatusValue = VFrameStatus.Idle;
   #currentURL: string | null = null;
   #realm: VFrameRealm | null = null;
-  #controller: AbortController | null = null;
+  #loadingRealm: VFrameRealm | null = null;
+  #realmController: AbortController | null = null;
+  #loadController: AbortController | null = null;
+  #historySession: VirtualHistorySession | null = null;
   #generation = 0;
+  #realmGeneration = 0;
   #connected = false;
   #adoptionAvailable = false;
   #adoptionConsumed = false;
@@ -102,7 +119,7 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   get contentWindow(): Window | null {
-    return this.#realm?.window ?? null;
+    return this.#realm?.window ?? this.#loadingRealm?.window ?? null;
   }
 
   connectedCallback(): void {
@@ -111,7 +128,13 @@ export class VFrameElement extends HTMLElementBase {
     this.#upgradeProperty("src");
     this.#connected = true;
     if (this.src.trim() !== "") {
-      this.#observeLoad(this.#startLoad(this.#consumeAdoptedMarkup()));
+      const adoptedMarkup = this.#consumeAdoptedMarkup();
+      this.#observeLoad(this.#startLoad({
+        source: this.src,
+        adoptedMarkup,
+        historySession: null,
+        stageMarkup: adoptedMarkup !== null,
+      }));
     }
   }
 
@@ -150,7 +173,12 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
 
-    this.#observeLoad(this.#startLoad());
+    this.#observeLoad(this.#startLoad({
+      source: this.src,
+      adoptedMarkup: null,
+      historySession: null,
+      stageMarkup: false,
+    }));
   }
 
   reload(): Promise<void> {
@@ -159,13 +187,19 @@ export class VFrameElement extends HTMLElementBase {
       return Promise.resolve();
     }
 
-    return this.#startLoad();
+    return this.#startLoad({
+      source: this.#currentURL ?? this.src,
+      adoptedMarkup: null,
+      historySession: this.#historySession?.clone() ?? null,
+      stageMarkup: this.#realm !== null,
+    });
   }
 
   #resetToIdle(): void {
     this.#generation += 1;
     this.#destroyRealm();
     this.#currentURL = null;
+    this.#historySession = null;
     this.#status = VFrameStatus.Idle;
   }
 
@@ -194,38 +228,59 @@ export class VFrameElement extends HTMLElementBase {
     void load.catch(() => undefined);
   }
 
-  #startLoad(
-    adoptedMarkup: { source: string; previewNodes: readonly Node[] } | null = null,
-  ): Promise<void> {
+  #startLoad(load: FrameLoad): Promise<void> {
+    this.#loadController?.abort();
+    this.#loadingRealm = null;
     const generation = this.#generation + 1;
     this.#generation = generation;
-    if (adoptedMarkup === null) {
-      this.#destroyRealm();
-    } else {
-      this.#realm?.dispose();
+    const previousRealm = this.#realm;
+    const previousRealmController = this.#realmController;
+    const previousHistorySession = this.#historySession;
+    const previousURL = this.#currentURL;
+    const previousStatus = this.#status;
+    if (!load.stageMarkup) {
+      previousRealm?.dispose();
       this.#realm = null;
-      this.#controller?.abort();
-      this.#controller = null;
+      previousRealmController?.abort();
+      this.#realmController = null;
+      this.#historySession = null;
+      this.#currentURL = null;
+      for (const child of Array.from(this.#root.children)) {
+        child.remove();
+      }
     }
-    return this.#load(generation, adoptedMarkup);
+    const controller = new AbortController();
+    this.#loadController = controller;
+    return this.#load(generation, controller, load, {
+      realm: load.stageMarkup ? previousRealm : null,
+      realmController: load.stageMarkup ? previousRealmController : null,
+      historySession: load.stageMarkup ? previousHistorySession : null,
+      url: load.stageMarkup ? previousURL : null,
+      status: load.stageMarkup ? previousStatus : VFrameStatus.Idle,
+    });
   }
 
   async #load(
     generation: number,
-    adoptedMarkup: { source: string; previewNodes: readonly Node[] } | null,
+    controller: AbortController,
+    load: FrameLoad,
+    previous: {
+      realm: VFrameRealm | null;
+      realmController: AbortController | null;
+      historySession: VirtualHistorySession | null;
+      url: string | null;
+      status: VFrameStatusValue;
+    },
   ): Promise<void> {
-    const controller = new AbortController();
-    this.#controller = controller;
     this.#status = VFrameStatus.Loading;
-    this.#currentURL = null;
 
     let requestedURL: URL;
     try {
-      requestedURL = parseEntryURL(this.src, this.ownerDocument.baseURI);
+      requestedURL = parseEntryURL(load.source, this.ownerDocument.baseURI);
     } catch (error) {
-      this.#failGeneration(generation, {
+      this.#finishFailedLoad(generation, controller, previous, {
         phase: "entry",
-        url: this.src,
+        url: load.source,
         error,
       });
       throw error;
@@ -236,6 +291,8 @@ export class VFrameElement extends HTMLElementBase {
     });
 
     let fatalRealmFailure: RealmFailure | null = null;
+    let entryResolved = false;
+    let failureURL = requestedURL.href;
     let rejectFatalRealm: (error: unknown) => void = () => undefined;
     const fatalRealm = new Promise<never>((_resolve, reject) => {
       rejectFatalRealm = reject;
@@ -244,7 +301,7 @@ export class VFrameElement extends HTMLElementBase {
     try {
       let source: string;
       let finalURL: string;
-      if (adoptedMarkup === null) {
+      if (load.adoptedMarkup === null) {
         const response = await fetch(requestedURL, {
           credentials: this.credentials,
           signal: controller.signal,
@@ -264,18 +321,36 @@ export class VFrameElement extends HTMLElementBase {
         }
         finalURL = responseURL.href;
       } else {
-        source = adoptedMarkup.source;
+        source = load.adoptedMarkup.source;
         finalURL = requestedURL.href;
       }
-      this.#currentURL = finalURL;
+      entryResolved = true;
+      failureURL = finalURL;
+      const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
+      historySession.replaceCurrentURL(finalURL);
+      if (previous.realm === null) {
+        this.#currentURL = finalURL;
+      }
 
+      let activated = false;
+      let candidateRealm: VFrameRealm | null = null;
+      const ownsController = () =>
+        this.#generation === generation &&
+        (this.#loadController === controller || this.#realmController === controller) &&
+        !controller.signal.aborted;
       const realm = await createRealm({
         host: this,
         shadowRoot: this.#root,
-        markup: adoptedMarkup === null
+        markup: load.adoptedMarkup === null
           ? { kind: "document", source }
-          : { kind: "adopted", source, previewNodes: adoptedMarkup.previewNodes },
+          : {
+            kind: "adopted",
+            source,
+            previewNodes: load.adoptedMarkup.previewNodes,
+          },
         pageURL: finalURL,
+        historySession,
+        stageMarkup: load.stageMarkup,
         credentials: this.credentials,
         signal: controller.signal,
         getNonce: () => this.nonce,
@@ -292,60 +367,103 @@ export class VFrameElement extends HTMLElementBase {
           return stylesheetResponse.text();
         },
         onURLChange: (url) => {
-          if (this.#generation === generation) {
+          finalURL = url;
+          failureURL = url;
+          if (ownsController() && previous.realm === null) {
             this.#currentURL = url;
           }
         },
         onNavigate: (detail) => {
-          if (
-            this.#generation !== generation ||
-            this.#controller !== controller ||
-            controller.signal.aborted
-          ) {
+          if (!ownsController()) {
             return false;
           }
 
           const allowed = this.#dispatchNavigate(detail);
-          return allowed &&
-            this.#generation === generation &&
-            this.#controller === controller &&
-            !controller.signal.aborted;
+          return allowed && ownsController();
+        },
+        onDocumentNavigation: (detail, mode) => {
+          if (!ownsController()) {
+            return false;
+          }
+          const allowed = this.#dispatchNavigate(detail);
+          if (!allowed || !ownsController()) {
+            return false;
+          }
+          const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
+          queueMicrotask(() => {
+            if (!ownsController()) {
+              return;
+            }
+            this.#observeLoad(this.#startLoad({
+              source: detail.to,
+              adoptedMarkup: null,
+              historySession: nextSession,
+              stageMarkup: this.#realm !== null,
+            }));
+          });
+          return true;
+        },
+        onDocumentTraversal: (nextSession) => {
+          if (!ownsController()) {
+            return;
+          }
+          queueMicrotask(() => {
+            if (!ownsController()) {
+              return;
+            }
+            this.#observeLoad(this.#startLoad({
+              source: nextSession.currentURL,
+              adoptedMarkup: null,
+              historySession: nextSession,
+              stageMarkup: this.#realm !== null,
+            }));
+          });
         },
         onError: (failure) => {
-          if (this.#generation === generation) {
+          if (ownsController()) {
             this.#dispatchError({ ...failure, fatal: false });
           }
         },
         onFatal: (failure) => {
-          if (
-            this.#generation !== generation ||
-            this.#controller !== controller
-          ) {
+          if (!ownsController()) {
             return;
           }
           fatalRealmFailure = failure;
-          this.#failGeneration(generation, failure);
+          if (activated && this.#realm === candidateRealm) {
+            this.#failGeneration(generation, failure);
+          }
           rejectFatalRealm(failure.error);
         },
       });
+      candidateRealm = realm;
 
       if (this.#generation !== generation || controller.signal.aborted) {
         realm.dispose();
         return;
       }
 
-      this.#realm = realm;
+      if (previous.realm === null) {
+        this.#loadingRealm = realm;
+      }
+
       await Promise.race([realm.executeInitialScripts(), fatalRealm]);
       this.#assertCurrentGeneration(generation, controller.signal);
+      previous.realm?.dispose();
+      previous.realmController?.abort();
+      this.#realm = realm;
+      this.#loadingRealm = null;
+      this.#realmController = controller;
+      this.#loadController = null;
+      this.#historySession = historySession;
+      this.#realmGeneration = generation;
+      this.#currentURL = finalURL;
+      activated = true;
       realm.reveal();
       this.#status = VFrameStatus.Ready;
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
         url: this.#currentURL ?? finalURL,
       });
     } catch (error) {
-      if (fatalRealmFailure !== null) {
-        throw error;
-      }
       if (
         this.#generation !== generation ||
         controller.signal.aborted ||
@@ -354,11 +472,47 @@ export class VFrameElement extends HTMLElementBase {
         return;
       }
 
-      const phase = this.#currentURL === null ? "entry" : "bootstrap";
-      const url = this.#currentURL ?? requestedURL.href;
-      this.#failGeneration(generation, { phase, url, error });
+      const failure = fatalRealmFailure ?? {
+        phase: entryResolved ? "bootstrap" as const : "entry" as const,
+        url: failureURL,
+        error,
+      };
+      this.#finishFailedLoad(generation, controller, previous, failure);
       throw error;
     }
+  }
+
+  #finishFailedLoad(
+    generation: number,
+    controller: AbortController,
+    previous: {
+      realm: VFrameRealm | null;
+      realmController: AbortController | null;
+      historySession: VirtualHistorySession | null;
+      url: string | null;
+      status: VFrameStatusValue;
+    },
+    failure: RealmFailure,
+  ): void {
+    if (this.#generation !== generation || this.#loadController !== controller) {
+      return;
+    }
+
+    this.#loadController = null;
+    this.#loadingRealm = null;
+    controller.abort();
+    if (previous.realm === null) {
+      this.#failGeneration(generation, failure);
+      return;
+    }
+
+    this.#generation = this.#realmGeneration;
+    this.#realm = previous.realm;
+    this.#realmController = previous.realmController;
+    this.#historySession = previous.historySession;
+    this.#currentURL = previous.url;
+    this.#status = previous.status;
+    this.#dispatchError({ ...failure, fatal: false });
   }
 
   #assertCurrentGeneration(generation: number, signal: AbortSignal): void {
@@ -379,8 +533,14 @@ export class VFrameElement extends HTMLElementBase {
     const realm = this.#realm;
     this.#realm = null;
     realm?.dispose();
-    this.#controller?.abort();
-    this.#controller = null;
+    this.#loadingRealm?.dispose();
+    this.#loadingRealm = null;
+    this.#realmController?.abort();
+    this.#realmController = null;
+    this.#loadController?.abort();
+    this.#loadController = null;
+    this.#historySession = null;
+    this.#realmGeneration = 0;
     this.#currentURL = null;
     this.#status = VFrameStatus.Error;
     this.#dispatchError({ ...failure, fatal: true });
@@ -390,8 +550,14 @@ export class VFrameElement extends HTMLElementBase {
     const realm = this.#realm;
     this.#realm = null;
     realm?.dispose();
-    this.#controller?.abort();
-    this.#controller = null;
+    this.#loadingRealm?.dispose();
+    this.#loadingRealm = null;
+    this.#realmController?.abort();
+    this.#realmController = null;
+    this.#loadController?.abort();
+    this.#loadController = null;
+    this.#historySession = null;
+    this.#realmGeneration = 0;
     for (const child of Array.from(this.#root.children)) {
       child.remove();
     }
