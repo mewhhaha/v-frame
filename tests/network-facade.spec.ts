@@ -257,7 +257,7 @@ test("network constructors and requests follow the live first-valid document bas
   ]);
 });
 
-test("foreign-realm POST Requests preserve their request state and use child-realm TypeErrors", async ({ page }) => {
+test("foreign-realm POST Requests preserve metadata, consume bodies, and use child-realm TypeErrors", async ({ page }) => {
   await installBundle(page);
   await mountFrame(page, "foreign-request", "same-origin");
 
@@ -273,6 +273,7 @@ test("foreign-realm POST Requests preserve their request state and use child-rea
       method: "POST",
     });
     const directResponse = await childWindow.fetch(directRequest);
+    const directRequestBodyUsed = directRequest.bodyUsed;
 
     const sourceRequest = new Request(`${origin}/foreign/constructed`, {
       body: "constructed body",
@@ -282,6 +283,7 @@ test("foreign-realm POST Requests preserve their request state and use child-rea
     });
     const childRequest = new childWindow.Request(sourceRequest);
     const constructedResponse = await childWindow.fetch(childRequest);
+    const constructedRequestBodyUsed = childRequest.bodyUsed;
 
     const usedRequest = new Request(`${origin}/foreign/used`, {
       body: "used body",
@@ -301,12 +303,14 @@ test("foreign-realm POST Requests preserve their request state and use child-rea
     return {
       constructed: await constructedResponse.json(),
       constructedRequest: {
+        bodyUsed: constructedRequestBodyUsed,
         credentials: childRequest.credentials,
         method: childRequest.method,
         requestHeader: childRequest.headers.get("x-network-request"),
         url: childRequest.url,
       },
       direct: await directResponse.json(),
+      directRequestBodyUsed,
       usedRequestError,
     };
   }, { origin: fixture.origin });
@@ -320,6 +324,7 @@ test("foreign-realm POST Requests preserve their request state and use child-rea
       requestHeader: "constructed header",
     },
     constructedRequest: {
+      bodyUsed: true,
       credentials: "include",
       method: "POST",
       requestHeader: "constructed header",
@@ -332,6 +337,7 @@ test("foreign-realm POST Requests preserve their request state and use child-rea
       path: "/foreign/direct",
       requestHeader: "direct header",
     },
+    directRequestBodyUsed: true,
     usedRequestError: { isChildTypeError: true, name: "TypeError" },
   });
 });

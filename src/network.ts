@@ -76,7 +76,6 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const window = options.window;
   const nativeFetch = window.fetch.bind(window);
   const NativeRequest = window.Request;
-  const nativeRequestClone = NativeRequest.prototype.clone;
   const nativeRequestURLGetter = Object.getOwnPropertyDescriptor(NativeRequest.prototype, "url")?.get;
   const NativeXMLHttpRequest = window.XMLHttpRequest;
   const nativeXHROpen = NativeXMLHttpRequest.prototype.open;
@@ -211,9 +210,6 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
   };
 
-  const cloneRequest = (input: Request): Request =>
-    Reflect.apply(nativeRequestClone, input, []) as Request;
-
   // The injected init is never empty, which would reset a Request input's
   // referrer metadata to its defaults and re-attach an explicitly severed
   // signal, so both are forwarded explicitly unless the caller overrides them.
@@ -287,7 +283,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       let resolvedInput: Request | string;
       try {
         resolvedInput = requestInput
-          ? cloneRequest(input)
+          ? input
           : resolveNetworkURL(window, input, options.getBaseURL());
       } catch (error) {
         // Native fetch never throws synchronously.
