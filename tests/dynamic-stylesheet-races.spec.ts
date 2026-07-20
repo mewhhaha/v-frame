@@ -58,6 +58,7 @@ async function startFixture(): Promise<DynamicStylesheetFixture> {
     ["/styles/inline-observer.css", pendingStylesheet()],
     ["/styles/inline-clear.css", pendingStylesheet()],
     ["/styles/inline-stale-failure.css", pendingStylesheet()],
+    ["/styles/final-failure.css", pendingStylesheet()],
     ["/styles/removal.css", pendingStylesheet()],
     ["/styles/teardown.css", pendingStylesheet()],
     ["/styles/link-first.css", pendingStylesheet()],
@@ -91,16 +92,16 @@ async function startFixture(): Promise<DynamicStylesheetFixture> {
 
     const delayed = pending.get(pathname);
     if (delayed !== undefined) {
+      if (request.headers["sec-fetch-dest"] === "style") {
+        reply(response, 200, "text/css", "");
+        return;
+      }
       if (delayed.response !== null) {
         reply(response, 409, "text/plain", `Duplicate delayed request for ${pathname}`);
         return;
       }
       delayed.response = response;
       delayed.resolveRequested();
-      return;
-    }
-    if (pathname === "/styles/final-failure.css") {
-      reply(response, 500, "text/plain", "Current stylesheet failed");
       return;
     }
     if (pathname === "/styles/link-third.css") {
@@ -376,7 +377,9 @@ test("ignores a stale inline import failure and reports the current final failur
     style.textContent = "#race-target { color: rgb(21, 22, 23); }";
     style.textContent = '@import url("/styles/final-failure.css"); #race-target { color: rgb(41, 42, 43); }';
   });
+  await fixture.waitForRequest("/styles/final-failure.css");
   fixture.release("/styles/inline-stale-failure.css", 500, "Stale stylesheet failed");
+  fixture.release("/styles/final-failure.css", 500, "Current stylesheet failed");
 
   await expect.poll(() => failures(frame)).toEqual([{
     phase: "stylesheet",
