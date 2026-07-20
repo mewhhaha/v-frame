@@ -715,11 +715,7 @@ test("forwards host resize and scroll state then stops child timers when dispose
     element.scrollTop = 40;
   });
   await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { resize: number } }).__viewportEvents.resize)).toBeGreaterThan(0);
-  await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { scroll: number; ticks: number } }).__viewportEvents)).toMatchObject({
-    scroll: expect.any(Number),
-    ticks: expect.any(Number),
-  });
-  expect(await childValue(frame, (window) => (window as Window & { __viewportEvents: { scroll: number } }).__viewportEvents.scroll)).toBeGreaterThan(0);
+  await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { scroll: number } }).__viewportEvents.scroll)).toBeGreaterThan(0);
   expect(await childValue(frame, (window) => window.scrollY)).toBe(40);
   await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { ticks: number } }).__viewportEvents.ticks)).toBeGreaterThan(2);
 
