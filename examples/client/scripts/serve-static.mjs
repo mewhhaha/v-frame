@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { extname, join, normalize } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -28,7 +28,7 @@ if (!rootArg || !portArg) {
   );
 }
 
-const root = normalize(rootArg);
+const root = resolve(rootArg);
 const port = Number(portArg);
 if (!Number.isInteger(port) || port <= 0) {
   throw new Error(`port must be a positive integer, got ${JSON.stringify(portArg)}`);
@@ -38,8 +38,13 @@ if (!existsSync(root) || !statSync(root).isDirectory()) {
 }
 
 function resolveFile(pathname) {
-  const requested = normalize(join(root, decodeURIComponent(pathname)));
-  if (!requested.startsWith(root)) return null;
+  const requested = resolve(root, `.${decodeURIComponent(pathname)}`);
+  const pathFromRoot = relative(root, requested);
+  if (
+    pathFromRoot === ".."
+    || pathFromRoot.startsWith(`..${sep}`)
+    || isAbsolute(pathFromRoot)
+  ) return null;
   if (existsSync(requested) && statSync(requested).isFile()) return requested;
   return null;
 }
@@ -47,8 +52,15 @@ function resolveFile(pathname) {
 const server = createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  const { pathname } = new URL(req.url ?? "/", `http://localhost:${port}`);
-  const file = resolveFile(pathname) ?? join(root, "index.html");
+  let file;
+  try {
+    const { pathname } = new URL(req.url ?? "/", `http://localhost:${port}`);
+    file = resolveFile(pathname) ?? join(root, "index.html");
+  } catch (error) {
+    res.statusCode = 400;
+    res.end(`invalid request URL: ${error.message}`);
+    return;
+  }
 
   res.setHeader("Content-Type", CONTENT_TYPES[extname(file)] ?? "application/octet-stream");
   createReadStream(file)
