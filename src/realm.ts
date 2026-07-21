@@ -13,11 +13,11 @@ import {
   installDocumentFacade,
   type DocumentFacade,
 } from "./document-facade.js";
+import { VirtualHistory, VirtualHistorySession } from "./history.js";
 import {
-  type DocumentHistoryMode,
-  VirtualHistory,
-  VirtualHistorySession,
-} from "./history.js";
+  V_FRAME_GATEWAY_VERSION,
+  V_FRAME_REALM_MARKER,
+} from "./gateway-contract.js";
 import {
   prepareAdoptedMarkup,
   prepareMarkup,
@@ -39,16 +39,6 @@ const INTERNAL_CSS = `
   display: block;
   position: relative;
   overflow: auto;
-}
-iframe[aria-hidden="true"] {
-  position: absolute !important;
-  top: 0 !important;
-  left: 0 !important;
-  width: 1px !important;
-  height: 1px !important;
-  border: 0 !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
 }
 v-html,
 v-body {
@@ -171,6 +161,7 @@ export interface RealmFailure {
 export interface CreateRealmOptions {
   host: HTMLElement;
   shadowRoot: ShadowRoot;
+  iframe: HTMLIFrameElement;
   markup:
     | { kind: "document"; source: string }
     | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
@@ -183,11 +174,8 @@ export interface CreateRealmOptions {
   fetchStylesheet(url: string): Promise<string>;
   onURLChange(url: string): void;
   onNavigate(detail: VFrameNavigateEventDetail): boolean;
-  onDocumentNavigation(
-    detail: VFrameNavigateEventDetail,
-    mode: DocumentHistoryMode,
-  ): boolean;
-  onDocumentTraversal(session: VirtualHistorySession): void;
+  onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
+  onNativeLocationNavigation(detail: VFrameNavigateEventDetail): void;
   onError(failure: RealmFailure): void;
   onFatal(failure: RealmFailure): void;
 }
@@ -203,9 +191,10 @@ function abortError(): DOMException {
   return new DOMException("The v-frame load was superseded", "AbortError");
 }
 
-async function connectIframe(
+export async function connectRealmIframe(
   shadowRoot: ShadowRoot,
   signal: AbortSignal,
+  locationURL: string,
 ): Promise<HTMLIFrameElement> {
   if (signal.aborted) {
     throw abortError();
@@ -214,21 +203,54 @@ async function connectIframe(
   const iframe = shadowRoot.ownerDocument.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
   iframe.tabIndex = -1;
+  iframe.style.setProperty("position", "absolute", "important");
+  iframe.style.setProperty("top", "0", "important");
+  iframe.style.setProperty("left", "0", "important");
+  iframe.style.setProperty("width", "1px", "important");
+  iframe.style.setProperty("height", "1px", "important");
+  iframe.style.setProperty("border", "0", "important");
+  iframe.style.setProperty("opacity", "0", "important");
+  iframe.style.setProperty("pointer-events", "none", "important");
+  iframe.src = locationURL;
 
   await new Promise<void>((resolve, reject) => {
     let replacementDocumentOpened = false;
     const loaded = () => {
       if (!replacementDocumentOpened) {
         const document = iframe.contentDocument;
-        if (document === null) {
+        const realmWindow = iframe.contentWindow;
+        if (document === null || realmWindow === null) {
           cleanup();
           iframe.remove();
-          reject(new Error("The connected iframe has no same-origin initial document"));
+          reject(new Error("The connected iframe has no same-origin initial realm"));
+          return;
+        }
+        if (
+          document.querySelector(
+            `meta[name="${V_FRAME_REALM_MARKER}"][content="${V_FRAME_GATEWAY_VERSION}"]`,
+          ) === null
+        ) {
+          cleanup();
+          iframe.remove();
+          reject(new Error(
+            `v-frame route ${locationURL} did not return the gateway realm marker`,
+          ));
+          return;
+        }
+        if (
+          realmWindow.location.href !== locationURL
+        ) {
+          const resolvedURL = realmWindow.location.href;
+          cleanup();
+          iframe.remove();
+          reject(new Error(
+            `v-frame route ${locationURL} resolved its iframe marker to ${resolvedURL}`,
+          ));
           return;
         }
 
         replacementDocumentOpened = true;
-        // After the initial load, document.open() inherits the host URL without a request.
+        // document.open() keeps the current URL without making another request.
         queueMicrotask(() => {
           if (signal.aborted) {
             return;
@@ -237,6 +259,12 @@ async function connectIframe(
             document.open();
             document.write("<!doctype html>");
             document.close();
+            // Firefox completes the replacement document asynchronously; wait
+            // so application handlers cannot observe that bootstrap lifecycle.
+            realmWindow.setTimeout(() => {
+              cleanup();
+              resolve();
+            }, 0);
           } catch (error) {
             cleanup();
             iframe.remove();
@@ -528,9 +556,9 @@ function installViewportPatches(
   getSelection: () => Selection | null,
   dispatchScrollEvent: () => void,
 ): { dispose(): void } {
-  const ResizeObserverConstructor = host.ownerDocument.defaultView?.ResizeObserver;
-  if (ResizeObserverConstructor === undefined) {
-    throw new Error("v-frame requires ResizeObserver support");
+  const hostWindow = host.ownerDocument.defaultView;
+  if (hostWindow === null || typeof hostWindow.matchMedia !== "function") {
+    throw new Error("v-frame requires a host window with matchMedia support");
   }
 
   const descriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
@@ -543,8 +571,15 @@ function installViewportPatches(
     }
   };
 
-  patch("innerWidth", { get: () => host.clientWidth });
-  patch("innerHeight", { get: () => host.clientHeight });
+  patch("innerWidth", { get: () => hostWindow.innerWidth });
+  patch("innerHeight", { get: () => hostWindow.innerHeight });
+  patch("outerWidth", { get: () => hostWindow.outerWidth });
+  patch("outerHeight", { get: () => hostWindow.outerHeight });
+  patch("visualViewport", { get: () => hostWindow.visualViewport });
+  patch("matchMedia", {
+    writable: true,
+    value: hostWindow.matchMedia.bind(hostWindow),
+  });
   patch("scrollX", { get: () => host.scrollLeft });
   patch("scrollY", { get: () => host.scrollTop });
   patch("pageXOffset", { get: () => host.scrollLeft });
@@ -566,10 +601,10 @@ function installViewportPatches(
     value: getSelection,
   });
 
-  const resizeObserver = new ResizeObserverConstructor(() => {
+  const resizeListener = () => {
     window.dispatchEvent(new window.Event("resize"));
-  });
-  resizeObserver.observe(host);
+  };
+  hostWindow.addEventListener("resize", resizeListener);
   let disposed = false;
   const scrollListener = () => {
     if (!disposed) {
@@ -581,7 +616,7 @@ function installViewportPatches(
   return {
     dispose() {
       disposed = true;
-      resizeObserver.disconnect();
+      hostWindow.removeEventListener("resize", resizeListener);
       host.removeEventListener("scroll", scrollListener);
       for (const [name, descriptor] of descriptors) {
         if (descriptor === undefined) {
@@ -598,11 +633,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
   const internalStyles = installInternalStyles(options.shadowRoot);
   const bootstrapDisposers: Array<() => void> = [];
   let restoreStagingStyles: () => void = () => undefined;
-  let iframe: HTMLIFrameElement | null = null;
+  let iframe: HTMLIFrameElement | null = options.iframe;
   let markup: PreparedMarkup | null = null;
 
   try {
-    iframe = await connectIframe(options.shadowRoot, options.signal);
     const window = iframe.contentWindow as VFrameWindow | null;
     const document = iframe.contentDocument;
     if (window === null || document === null) {
@@ -707,7 +741,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const history = new VirtualHistory({
       window,
       session: options.historySession,
-      hostOrigin: options.host.ownerDocument.location.origin,
       getBaseURL: getDocumentBaseURL,
       onNavigate: options.onNavigate,
       onURLChange(url) {
@@ -715,7 +748,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         updateDocumentBaseURL();
         options.onURLChange(url);
       },
-      onDocumentTraversal: options.onDocumentTraversal,
     });
     history.install();
     bootstrapDisposers.push(() => history.dispose());
@@ -1559,7 +1591,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
 
       if (method === "get") {
-        options.onDocumentNavigation(detail, "push");
+        options.onShellNavigation(detail);
         return;
       }
 
@@ -1651,12 +1683,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
       const fragment = isSameDocumentFragment(currentURL, targetURL.href);
       if (!fragment) {
-        options.onDocumentNavigation({
+        const detail = {
           from: currentURL,
           to: targetURL.href,
           kind: "link",
           state: null,
-        }, "push");
+        } satisfies VFrameNavigateEventDetail;
+        options.onShellNavigation(detail);
         return;
       }
       if (!history.navigateFragment(targetURL.href)) {
@@ -1768,7 +1801,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // events and scroll-to-anchor behavior as a link click.
         const fragment = isSameDocumentFragment(currentURL, targetURL.href);
         if (!fragment) {
-          return options.onDocumentNavigation(detail, "push") ? window : null;
+          const allowed = options.onShellNavigation(detail);
+          return allowed ? window : null;
         }
         if (!history.navigateFragment(targetURL.href)) {
           return null;
@@ -1809,11 +1843,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const rejectionListener = (event: PromiseRejectionEvent) => {
       options.onError({ phase: "runtime", url: currentURL, error: event.reason });
     };
-    // Reloading or leaving the host page fires beforeunload in every child
-    // realm too; only a child-initiated navigation is a fatal escape. The
-    // host's own beforeunload reaches us first (the browser walks the frame
-    // tree from the root), and the flag resets on the next task in case the
-    // host navigation is canceled and the page lives on.
+    // Reloading or leaving the host page unloads every child realm too. The
+    // host's beforeunload reaches us first, so only an independently loaded
+    // child marker is promoted back to the host.
     const hostView = options.host.ownerDocument.defaultView;
     let hostUnloadUnderway = false;
     const hostBeforeUnloadListener = () => {
@@ -1822,17 +1854,43 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         hostUnloadUnderway = false;
       }, 0);
     };
-    const directNavigationListener = () => {
+    const iframeNavigationListener = () => {
       if (hostUnloadUnderway) {
         return;
       }
-      reportFatal({
-        phase: "navigation",
-        url: currentURL,
-        error: new DOMException(
-          "Direct Location navigation is unsupported inside v-frame",
-          "NotSupportedError",
-        ),
+      let targetURL: string;
+      let markerPresent: boolean;
+      try {
+        targetURL = window.location.href;
+        markerPresent = window.document.querySelector(
+          `meta[name="${V_FRAME_REALM_MARKER}"][content="${V_FRAME_GATEWAY_VERSION}"]`,
+        ) !== null;
+      } catch (error) {
+        reportFatal({
+          phase: "navigation",
+          url: currentURL,
+          error: new window.DOMException(
+            `v-frame native Location left the same-origin gateway route from ${currentURL}: ${String(error)}`,
+            "SecurityError",
+          ),
+        });
+        return;
+      }
+      if (!markerPresent) {
+        reportFatal({
+          phase: "navigation",
+          url: targetURL,
+          error: new Error(
+            `v-frame route ${targetURL} did not return the gateway realm marker`,
+          ),
+        });
+        return;
+      }
+      options.onNativeLocationNavigation({
+        from: currentURL,
+        to: targetURL,
+        kind: "window",
+        state: null,
       });
     };
     const trustedHashChangeListener = (event: HashChangeEvent) => {
@@ -1847,7 +1905,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       if (nativeURL.hash === "" && event.newURL.endsWith("#")) {
         virtualURL.href += "#";
       }
-      if (!history.navigateNativeFragment(virtualURL.href)) {
+      if (!options.onShellNavigation({
+        from: currentURL,
+        to: virtualURL.href,
+        kind: "fragment",
+        state: null,
+      })) {
         history.restoreMirroredURL();
       }
     };
@@ -1865,10 +1928,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
     window.addEventListener("error", runtimeErrorListener);
     window.addEventListener("unhandledrejection", rejectionListener);
-    window.addEventListener("beforeunload", directNavigationListener);
     window.addEventListener("popstate", trustedPopStateListener);
     window.addEventListener("hashchange", trustedHashChangeListener);
-    iframe.addEventListener("load", directNavigationListener);
+    iframe.addEventListener("load", iframeNavigationListener);
 
     let adoptedMarkupRevealed = options.markup.kind !== "adopted";
     const revealAdoptedMarkup = (): void => {
@@ -1913,10 +1975,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         hostView?.removeEventListener("beforeunload", hostBeforeUnloadListener, true);
         window.removeEventListener("error", runtimeErrorListener);
         window.removeEventListener("unhandledrejection", rejectionListener);
-        window.removeEventListener("beforeunload", directNavigationListener);
         window.removeEventListener("popstate", trustedPopStateListener);
         window.removeEventListener("hashchange", trustedHashChangeListener);
-        iframe?.removeEventListener("load", directNavigationListener);
+        iframe?.removeEventListener("load", iframeNavigationListener);
         window.HTMLFormElement.prototype.submit = nativeFormSubmit;
         history.dispose();
         viewport.dispose();

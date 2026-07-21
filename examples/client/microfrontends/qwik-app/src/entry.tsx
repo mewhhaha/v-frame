@@ -125,7 +125,7 @@ const OverlayLab = component$(() => (
         <Modal.Close class="close-button" data-testid="dialog-close">Close</Modal.Close>
       </Modal.Panel>
     </Modal.Root>
-    <p class="boundary-note">The dashed edge is the microfrontend viewport.</p>
+    <p class="boundary-note">The dashed edge is the microfrontend rendering boundary.</p>
   </main>
 ));
 

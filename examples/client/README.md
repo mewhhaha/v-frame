@@ -48,11 +48,16 @@ its own framework and visual state.
 | qwik-app | 43173 | `microfrontends/qwik-app/dist` |
 | react-app | 43174 | `microfrontends/react-app/dist` |
 
-The host page on 43170 loads each microfrontend from its own origin (43171,
-43172, 43173, or 43174) via `fetch`, so every microfrontend's static server must send
-`Access-Control-Allow-Origin: *`; without it, the browser blocks the
-cross-origin response before `v-frame` ever sees it. `scripts/serve-static.mjs`
-sets that header on every response it serves.
+The microfrontends remain independently served on ports 43171–43174, while the
+host exposes them through same-origin `/frontends/*` gateway routes. Vite
+proxies ordinary document and asset requests to the owning server and returns
+the `v-frame` realm marker for iframe requests. The built applications use
+matching base paths so their assets continue through the correct proxy.
+
+This same-origin public route is required even when the application is
+deployed elsewhere. It gives the hidden execution iframe its real application
+URL and lets direct `Location` navigation reach the gateway before application
+code can execute in the wrong document.
 
 Angular CLI 21 requires Node 22.22.3+, 24.15+, or 26+. Use the repository's
 Node 26 default to build every microfrontend.

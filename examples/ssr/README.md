@@ -51,10 +51,14 @@ account widget:
 </v-frame>
 ```
 
-It also contains the minified `v-frame` runtime, so the initial widget previews
-and web component require no follow-up request before activation. Serializable
-declarative shadow roots preserve the nested Qwik preview while the outer React
-Router widget is adopted into its live tree.
+It also contains the minified `v-frame` runtime. Serializable declarative
+shadow roots preserve the nested Qwik preview while the outer React Router
+widget is adopted into its live tree. Activation does not fetch the application
+document again, but makes one small iframe request per realm
+to establish and verify its public route. The host answers those requests
+directly without invoking a widget service binding. The nested preview is
+present in both the visible server preview and the staged live React tree, so
+its handoff performs two marker requests before the preview copy is removed.
 
 React Router network documents leave the nested Qwik custom element empty in
 the server markup and let it load through its own `src`. This keeps the nested
@@ -64,12 +68,20 @@ the initial host response remains fully server composed.
 Declarative Shadow DOM makes that content visible while the document is still
 being parsed. The host response also contains a self-registering `v-frame`
 runtime immediately after the composed markup, so activation does not wait for
-an external component-module request. `adopt` uses `src` as the widget's virtual
-URL but does not fetch it. It keeps the server preview visible while a laid-out,
+an external component-module request. `adopt` uses `src` as the widget's native
+and logical URL but does not fetch its application HTML. It keeps the server preview visible while a laid-out,
 non-interactive live tree starts in the isolated realm. React hydrates that tree
 and Qwik installs its loader before `v-frame` reveals it with a single
 synchronous swap. The staged tree matches the preview, so the reveal does not
 repaint and the widgets can activate concurrently.
+
+The public widget routes use `serveVFrameRoute()` from `v-frame/gateway`.
+Iframe requests receive a fixed marker document, ordinary `v-frame` fetches
+receive the framework document plus the gateway version header, and top-level
+widget document requests redirect to the corresponding canonical host route.
+This lets direct child `Location` navigation fall back to a complete composed
+document. The existing BroadcastChannel protocol remains the preferred soft
+navigation path because it stages the next composition without a page reload.
 
 Host SPA navigation gives each destination composition a fresh routing session
 and loads its required `v-frame` applications in a hidden staging surface. The

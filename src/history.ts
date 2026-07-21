@@ -1,4 +1,4 @@
-import { mirrorURLToHostOrigin, resolveHistoryURL } from "./url.js";
+import { resolveHistoryURL } from "./url.js";
 import type {
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
@@ -8,27 +8,21 @@ import type {
 interface HistoryEntry {
   url: string;
   state: unknown;
-  documentID: number;
 }
-
-export type DocumentHistoryMode = "push" | "replace";
 
 export class VirtualHistorySession {
   readonly #entries: HistoryEntry[];
   #index: number;
-  #nextDocumentID: number;
   scrollRestoration: ScrollRestoration;
 
   constructor(
     initialURL: string,
     entries?: HistoryEntry[],
     index?: number,
-    nextDocumentID?: number,
     scrollRestoration?: ScrollRestoration,
   ) {
-    this.#entries = entries ?? [{ url: initialURL, state: null, documentID: 0 }];
+    this.#entries = entries ?? [{ url: initialURL, state: null }];
     this.#index = index ?? 0;
-    this.#nextDocumentID = nextDocumentID ?? 1;
     this.scrollRestoration = scrollRestoration ?? "auto";
   }
 
@@ -42,10 +36,6 @@ export class VirtualHistorySession {
 
   get currentState(): unknown {
     return this.currentEntry.state;
-  }
-
-  get currentDocumentID(): number {
-    return this.currentEntry.documentID;
   }
 
   get currentIndex(): number {
@@ -65,34 +55,8 @@ export class VirtualHistorySession {
       this.currentURL,
       this.#entries.map((entry) => ({ ...entry })),
       this.#index,
-      this.#nextDocumentID,
       this.scrollRestoration,
     );
-  }
-
-  forkDocumentNavigation(url: string, mode: DocumentHistoryMode): VirtualHistorySession {
-    const session = this.clone();
-    const entry = {
-      url,
-      state: null,
-      documentID: session.#nextDocumentID,
-    };
-    session.#nextDocumentID += 1;
-    if (mode === "replace") {
-      session.#entries[session.#index] = entry;
-      return session;
-    }
-
-    session.#entries.splice(session.#index + 1);
-    session.#entries.push(entry);
-    session.#index = session.#entries.length - 1;
-    return session;
-  }
-
-  forkTraversal(index: number): VirtualHistorySession {
-    const session = this.clone();
-    session.#index = index;
-    return session;
   }
 
   entryAt(index: number): HistoryEntry | undefined {
@@ -108,7 +72,6 @@ export class VirtualHistorySession {
     this.#entries.push({
       url,
       state,
-      documentID: this.currentDocumentID,
     });
     this.#index = this.#entries.length - 1;
   }
@@ -117,7 +80,6 @@ export class VirtualHistorySession {
     this.#entries[this.#index] = {
       url,
       state,
-      documentID: this.currentDocumentID,
     };
   }
 
@@ -137,46 +99,31 @@ export class VirtualHistorySession {
 export interface VirtualHistoryOptions {
   window: VFrameWindow;
   session: VirtualHistorySession;
-  hostOrigin: string;
   getBaseURL(): string;
   onNavigate(detail: VFrameNavigateEventDetail): boolean;
   onURLChange(url: string): void;
-  onDocumentTraversal(session: VirtualHistorySession): void;
 }
 
 export class VirtualHistory {
   readonly #window: VFrameWindow;
   readonly #history: History;
   readonly #nativeReplaceState: History["replaceState"];
-  readonly #nativeLengthGetter: (() => number) | null;
   readonly #onNavigate: VirtualHistoryOptions["onNavigate"];
   readonly #onURLChange: VirtualHistoryOptions["onURLChange"];
-  readonly #onDocumentTraversal: VirtualHistoryOptions["onDocumentTraversal"];
   readonly #getBaseURL: VirtualHistoryOptions["getBaseURL"];
-  readonly #hostOrigin: string;
   readonly #session: VirtualHistorySession;
   // Stored entry state stays pristine; each activation exposes its own clone,
   // so mutations of history.state do not survive back/forward traversal.
   #activeState: unknown = null;
-  #nativeHistoryLength = 0;
   #disposed = false;
 
   constructor(options: VirtualHistoryOptions) {
     this.#window = options.window;
     this.#history = options.window.history;
     this.#nativeReplaceState = options.window.history.replaceState.bind(options.window.history);
-    const nativeLengthGetter = Object.getOwnPropertyDescriptor(
-      options.window.History.prototype,
-      "length",
-    )?.get;
-    this.#nativeLengthGetter = nativeLengthGetter === undefined
-      ? null
-      : () => Number(nativeLengthGetter.call(this.#history));
     this.#onNavigate = options.onNavigate;
     this.#onURLChange = options.onURLChange;
-    this.#onDocumentTraversal = options.onDocumentTraversal;
     this.#getBaseURL = options.getBaseURL;
-    this.#hostOrigin = options.hostOrigin;
     this.#session = options.session;
     this.#activeState = this.#cloneState(options.session.currentState);
   }
@@ -288,7 +235,6 @@ export class VirtualHistory {
     });
 
     this.#mirrorEntry(this.currentURL, this.state);
-    this.#nativeHistoryLength = this.#readNativeHistoryLength();
   }
 
   pushState(state: unknown, url?: string | URL | null): boolean {
@@ -357,37 +303,6 @@ export class VirtualHistory {
     this.#mirrorEntry(nextURL, nextState);
     this.#session.navigateFragment(nextURL, nextState);
     this.#activeState = this.#cloneState(nextState);
-    this.#commit("fragment", previousURL);
-    return true;
-  }
-
-  navigateNativeFragment(url: string): boolean {
-    if (this.#disposed) {
-      return false;
-    }
-
-    const nextURL = resolveHistoryURL(
-      url,
-      this.currentURL,
-      this.currentURL,
-      this.#window,
-    );
-    const nextState = null;
-    const nativeHistoryLength = this.#readNativeHistoryLength();
-    const replacesCurrentEntry = nativeHistoryLength === this.#nativeHistoryLength;
-    this.#nativeHistoryLength = nativeHistoryLength;
-    if (!this.#approve(nextURL, "fragment", nextState)) {
-      return false;
-    }
-
-    const previousURL = this.currentURL;
-    this.#mirrorEntry(nextURL, nextState);
-    if (replacesCurrentEntry) {
-      this.#session.replaceState(nextURL, nextState);
-    } else {
-      this.#session.navigateFragment(nextURL, nextState);
-    }
-    this.#activeState = null;
     this.#commit("fragment", previousURL);
     return true;
   }
@@ -461,11 +376,6 @@ export class VirtualHistory {
       return;
     }
 
-    if (nextEntry.documentID !== this.#session.currentDocumentID) {
-      this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex));
-      return;
-    }
-
     const previousURL = this.currentURL;
     this.#mirrorEntry(nextEntry.url, nextEntry.state);
     this.#session.traverse(nextIndex);
@@ -523,14 +433,6 @@ export class VirtualHistory {
   }
 
   #mirrorEntry(url: string, state: unknown): void {
-    const mirrorURL = mirrorURLToHostOrigin(
-      url,
-      this.#hostOrigin,
-    );
-    this.#nativeReplaceState(state, "", mirrorURL);
-  }
-
-  #readNativeHistoryLength(): number {
-    return this.#nativeLengthGetter?.() ?? this.#nativeHistoryLength;
+    this.#nativeReplaceState(state, "", url);
   }
 }

@@ -2,10 +2,10 @@ import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
+import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface CompatibilityFixture {
   origin: string;
-  sourceOrigin: string;
   close(): Promise<void>;
 }
 
@@ -36,8 +36,8 @@ function closeServer(server: Server): Promise<void> {
 
 async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
-  let origin = "";
   const host = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const path = pathname(request);
     if (path === "/") return reply(response, 200, "text/html", documentPage('<div id="host"></div>'));
     if (path === "/dist/index.js") {
@@ -81,40 +81,9 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
   if (hostAddress === null || typeof hostAddress === "string") {
     throw new Error("The compatibility host fixture did not expose a TCP address");
   }
-  origin = `http://127.0.0.1:${hostAddress.port}`;
-
-  const source = createServer((request, response) => {
-    const path = pathname(request);
-    const corsHeaders = { "access-control-allow-origin": origin };
-    if (path === "/documents/cross-origin.html") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        documentPage(`<output id="entry-origin">pending</output><script>
-          document.cookie = "vframe_compatibility_cookie=host-origin; Path=/; SameSite=Lax";
-          localStorage.setItem("vframe_compatibility_storage", "host-origin");
-          sessionStorage.setItem("vframe_compatibility_session", "host-origin");
-          document.querySelector("#entry-origin").textContent = location.origin;
-        </script>`),
-        corsHeaders,
-      );
-    }
-    return reply(response, 404, "text/plain", `No source fixture for ${path}`, corsHeaders);
-  });
-  await new Promise<void>((resolveListening) => source.listen(0, "127.0.0.1", resolveListening));
-  const sourceAddress = source.address();
-  if (sourceAddress === null || typeof sourceAddress === "string") {
-    await closeServer(host);
-    throw new Error("The compatibility source fixture did not expose a TCP address");
-  }
-
   return {
-    origin,
-    sourceOrigin: `http://127.0.0.1:${sourceAddress.port}`,
-    async close() {
-      await Promise.all([closeServer(host), closeServer(source)]);
-    },
+    origin: `http://127.0.0.1:${hostAddress.port}`,
+    close: () => closeServer(host),
   };
 }
 
@@ -153,54 +122,28 @@ async function mountFrame(
   return frame;
 }
 
-async function childValue<T>(
-  frame: import("@playwright/test").Locator,
-  expression: (window: Window & typeof globalThis) => T,
-): Promise<T> {
-  return frame.evaluate((element, source) => {
-    const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
-  }, expression.toString()) as Promise<T>;
-}
-
-test("runs a CORS entry with host-origin location, storage, and cookies", async ({ page }) => {
+test("rejects a cross-origin application route", async ({ page }) => {
   await installBundle(page);
-  const frame = await mountFrame(page, "cross-origin", `${fixture.sourceOrigin}/documents/cross-origin.html`);
+  const failure = await page.evaluate(async () => {
+    const frame = document.createElement("v-frame") as HTMLElement & { status: string };
+    const reported = new Promise<{ message: string; phase: string }>((resolve) => {
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (event as CustomEvent<{ error: Error; phase: string }>).detail;
+        resolve({ message: detail.error.message, phase: detail.phase });
+      }, { once: true });
+    });
+    frame.setAttribute("src", "https://application.invalid/orders");
+    document.querySelector("#host")?.append(frame);
+    return { failure: await reported, status: frame.status };
+  });
 
-  try {
-    await expect(frame.locator("#entry-origin")).toHaveText(fixture.origin);
-    const childState = await childValue(frame, (window) => ({
-      origin: window.location.origin,
-      localStorage: window.localStorage.getItem("vframe_compatibility_storage"),
-      sessionStorage: window.sessionStorage.getItem("vframe_compatibility_session"),
-      cookie: window.document.cookie,
-    }));
-    const hostState = await page.evaluate(() => ({
-      origin: location.origin,
-      localStorage: localStorage.getItem("vframe_compatibility_storage"),
-      sessionStorage: sessionStorage.getItem("vframe_compatibility_session"),
-      cookie: document.cookie,
-    }));
-
-    expect(childState).toEqual({
-      origin: fixture.origin,
-      localStorage: "host-origin",
-      sessionStorage: "host-origin",
-      cookie: expect.stringContaining("vframe_compatibility_cookie=host-origin"),
-    });
-    expect(hostState).toEqual({
-      origin: fixture.origin,
-      localStorage: "host-origin",
-      sessionStorage: "host-origin",
-      cookie: expect.stringContaining("vframe_compatibility_cookie=host-origin"),
-    });
-  } finally {
-    await page.evaluate(() => {
-      localStorage.removeItem("vframe_compatibility_storage");
-      sessionStorage.removeItem("vframe_compatibility_session");
-      document.cookie = "vframe_compatibility_cookie=; Max-Age=0; Path=/; SameSite=Lax";
-    });
-  }
+  expect(failure).toEqual({
+    failure: {
+      message: `v-frame route https://application.invalid/orders must share host origin ${fixture.origin}`,
+      phase: "entry",
+    },
+    status: "error",
+  });
 });
 
 test("reconstructs a source that declares restrictive CSP and framing headers", async ({ page }) => {
@@ -213,34 +156,28 @@ test("reconstructs a source that declares restrictive CSP and framing headers", 
   );
 });
 
-test("loads an allowed same-context GET form destination", async ({ page }) => {
+test("promotes an allowed same-context GET form to the host", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "native-form", `${fixture.origin}/documents/native-form.html`);
-  const hostURL = page.url();
-
   await page.evaluate(() => {
-    const navigations: Array<{ kind: string; to: string }> = [];
     document.querySelector("#native-form")?.addEventListener("v-frame-navigate", (event) => {
       const detail = (event as CustomEvent<{ kind: string; to: string }>).detail;
-      navigations.push({ kind: detail.kind, to: detail.to });
+      sessionStorage.setItem("compatibility-navigation", JSON.stringify({
+        kind: detail.kind,
+        to: detail.to,
+      }));
     });
-    (window as Window & { compatibilityNavigations?: typeof navigations }).compatibilityNavigations = navigations;
   });
 
-  await frame.locator("#native-form button").click();
-  await expect.poll(() => page.evaluate(() =>
-    (window as Window & { compatibilityNavigations?: unknown[] }).compatibilityNavigations?.length ?? 0,
-  )).toBe(1);
-
-  expect(await page.evaluate(() => (window as Window & {
-    compatibilityNavigations: Array<{ kind: string; to: string }>;
-  }).compatibilityNavigations)).toEqual([{
+  await Promise.all([
+    page.waitForURL(`${fixture.origin}/documents/form-target.html?query=compatibility`),
+    frame.locator("#native-form button").click(),
+  ]);
+  await expect(page.locator("#form-target")).toHaveText("Form destination");
+  expect(await page.evaluate(() => JSON.parse(
+    sessionStorage.getItem("compatibility-navigation") ?? "null",
+  ))).toEqual({
     kind: "form",
     to: `${fixture.origin}/documents/form-target.html?query=compatibility`,
-  }]);
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as { currentURL: string | null }).currentURL,
-  )).toBe(`${fixture.origin}/documents/form-target.html?query=compatibility`);
-  expect(page.url()).toBe(hostURL);
-  await expect(frame.locator("#form-target")).toHaveText("Form destination");
+  });
 });

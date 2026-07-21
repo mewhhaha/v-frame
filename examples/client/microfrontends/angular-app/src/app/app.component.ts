@@ -138,7 +138,7 @@ export class AppComponent implements OnDestroy {
   protected readonly savedNotes = signal(2);
   protected readonly transcript = this.readThread();
   protected readonly wikipediaPreviewUrl = this.transcript
-    ? `http://localhost:43173/?surface=wikipedia&article=${this.transcript.articleKey}`
+    ? `/frontends/qwik/?surface=wikipedia&article=${this.transcript.articleKey}`
     : '';
 
   ngOnDestroy(): void {
@@ -181,8 +181,8 @@ export class AppComponent implements OnDestroy {
     if (!popover || !(trigger instanceof HTMLElement)) return;
 
     const triggerBounds = trigger.getBoundingClientRect();
-    const viewportWidth = window.parent.innerWidth;
-    const viewportHeight = window.parent.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
     const previewWidth = Math.min(360, viewportWidth - 24);
     const left = Math.min(
       Math.max(12, triggerBounds.left),

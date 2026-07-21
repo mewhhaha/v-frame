@@ -363,67 +363,6 @@ test("reveals adopted markup synchronously without starting a view transition", 
   });
 });
 
-test("keeps the adopted preview after a bootstrap navigation failure", async ({ page }) => {
-  await page.goto(fixture.origin);
-  await page.evaluate(() => {
-    const hostWindow = window as Window & typeof globalThis & {
-      __adoptedFailureEvents?: string[];
-      __adoptedFailureLoads?: number;
-    };
-    hostWindow.__adoptedFailureEvents = [];
-    hostWindow.__adoptedFailureLoads = 0;
-
-    const frame = document.createElement("v-frame");
-    frame.addEventListener("v-frame-error", (event) => {
-      const failure = (event as CustomEvent<{ fatal: boolean; phase: string }>).detail;
-      if (failure.fatal) {
-        hostWindow.__adoptedFailureEvents?.push(failure.phase);
-      }
-    });
-    frame.addEventListener("v-frame-load", () => {
-      hostWindow.__adoptedFailureLoads = (hostWindow.__adoptedFailureLoads ?? 0) + 1;
-    });
-    frame.setAttribute("adopt", "");
-    frame.setAttribute("src", "/documents/adopted-entry.html");
-    frame.attachShadow({ mode: "open" }).innerHTML = `
-      <v-html><v-head></v-head><v-body>
-        <p id="failure-preview">Server-rendered failure fallback</p>
-        <script type="application/vnd.v-frame" data-v-frame-script>
-          location.assign('/documents/second.html');
-        </script>
-      </v-body></v-html>`;
-    document.querySelector("#host")?.append(frame);
-  });
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-
-  const frame = page.locator("v-frame");
-  await expect.poll(() => frame.evaluate((element) =>
-    (element as HTMLElement & { status: string }).status
-  )).toBe("error");
-  const state = await page.evaluate(() => {
-    const hostWindow = window as Window & typeof globalThis & {
-      __adoptedFailureEvents: string[];
-      __adoptedFailureLoads: number;
-    };
-    const frame = document.querySelector("v-frame");
-    return {
-      failures: hostWindow.__adoptedFailureEvents,
-      loads: hostWindow.__adoptedFailureLoads,
-      markupCount: frame?.shadowRoot?.querySelectorAll("v-html").length,
-      preview: frame?.shadowRoot?.querySelector("#failure-preview")?.textContent,
-    };
-  });
-  expect(state).toEqual({
-    failures: ["navigation"],
-    loads: 0,
-    markupCount: 1,
-    preview: "Server-rendered failure fallback",
-  });
-});
-
 test("reveals simultaneous adopted handoffs independently", async ({ page }) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {

@@ -1,4 +1,5 @@
 import vFrameInlineScript from "../generated/v-frame-inline.txt";
+import { serveVFrameRoute } from "../../../../../src/gateway";
 import {
   routingChannelPrefix,
   routingProtocol,
@@ -9,6 +10,14 @@ import {
 const embeddedVFrameScript = vFrameInlineScript.replace(/<\/script/gi, "<\\/script");
 const reactRoutes = new Set(["/activity", "/research", "/brief", "/plugins"]);
 const qwikRoutes = new Set(["/inventory", "/catalog"]);
+const widgetDocumentRoutes = new Map([
+  ["/widgets/react-router/activity", "/"],
+  ["/widgets/react-router/research", "/research"],
+  ["/widgets/react-router/brief", "/brief"],
+  ["/widgets/react-router/plugins", "/plugins"],
+  ["/widgets/qwik/inventory", "/"],
+  ["/widgets/qwik/catalog", "/usage"],
+]);
 const hostSections = {
   migration: {
     path: "/",
@@ -697,12 +706,26 @@ export default {
     }
 
     const url = new URL(request.url);
+    const documentRoute = widgetDocumentRoutes.get(url.pathname);
+    if (
+      documentRoute !== undefined &&
+      request.headers.get("Sec-Fetch-Dest") === "document"
+    ) {
+      const shellURL = new URL(documentRoute, url);
+      shellURL.hash = url.hash;
+      return Response.redirect(shellURL, 302);
+    }
     if (url.pathname.startsWith("/widgets/react-router/")) {
       const mountedPath = url.pathname.slice("/widgets/react-router".length);
       const componentPath = reactRoutes.has(mountedPath)
         ? `/document?route=${encodeURIComponent(mountedPath)}&base=/widgets/react-router&frameId=react-router`
         : mountedPath + url.search;
-      return env.REACT_ROUTER_WIDGET.fetch(serviceRequest("react-router-widget", componentPath));
+      return serveVFrameRoute({
+        request,
+        loadDocument: () => env.REACT_ROUTER_WIDGET.fetch(
+          serviceRequest("react-router-widget", componentPath),
+        ),
+      });
     }
     if (url.pathname.startsWith("/widgets/qwik/")) {
       const mountedPath = url.pathname.slice("/widgets/qwik".length);
@@ -725,7 +748,12 @@ export default {
         }
         componentPath = `/document?${componentParameters}`;
       }
-      return env.QWIK_WIDGET.fetch(serviceRequest("qwik-widget", componentPath));
+      return serveVFrameRoute({
+        request,
+        loadDocument: () => env.QWIK_WIDGET.fetch(
+          serviceRequest("qwik-widget", componentPath),
+        ),
+      });
     }
     const hostSection = (Object.keys(hostSections) as HostSectionKey[]).find(
       (sectionKey) => hostSections[sectionKey].path === url.pathname,

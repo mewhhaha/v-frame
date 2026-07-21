@@ -59,11 +59,6 @@ export function resolveHistoryURL(
   return nextURL.href;
 }
 
-export function mirrorURLToHostOrigin(sourceURL: string, hostOrigin: string): string {
-  const source = new URL(sourceURL);
-  return `${hostOrigin}${source.pathname}${source.search}${source.hash}`;
-}
-
 export function isSameDocumentFragment(from: string, to: string): boolean {
   const fromURL = new URL(from);
   const toURL = new URL(to);

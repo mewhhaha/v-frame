@@ -1,6 +1,7 @@
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { serveRealmMarker } from "./gateway-fixture.js";
 
 export interface FixtureServer {
   origin: string;
@@ -220,6 +221,7 @@ export async function startFixtureServer(): Promise<FixtureServer> {
   const requests: string[] = [];
   const distFile = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const path = pathname(request);
     requests.push(path);
 
@@ -284,9 +286,7 @@ export async function startFixtureServer(): Promise<FixtureServer> {
 
 export interface ContractFixtureServers {
   origin: string;
-  corsOrigin: string;
   requests: string[];
-  corsRequests: string[];
   close(): Promise<void>;
 }
 
@@ -303,12 +303,10 @@ function contractReply(
   status: number,
   type: string,
   body: string | Buffer,
-  headers: Record<string, string> = {},
 ) {
   response.writeHead(status, {
     "content-type": type,
     "cache-control": "no-store",
-    ...headers,
   });
   response.end(body);
 }
@@ -369,6 +367,24 @@ function contractPageFor(path: string) {
         </form>
         <div style="height: 600px"></div>
       </main>`);
+    case "/documents/location.html":
+      return contractHTML(`<script>
+        window.__initialLocationSnapshot = {
+          href: location.href,
+          origin: location.origin,
+          globalOrigin: window.origin,
+          pathname: location.pathname,
+          search: location.search,
+          hash: location.hash,
+          documentURL: document.URL,
+          documentURI: document.documentURI,
+          localStorage: localStorage.getItem('vframe_origin_storage'),
+          sessionStorage: sessionStorage.getItem('vframe_origin_session'),
+          cookie: document.cookie,
+        };
+        window.__originHistoryAnimationFrameCount = 0;
+        requestAnimationFrame(() => window.__originHistoryAnimationFrameCount += 1);
+      </script>`);
     case "/documents/viewport.html":
       return contractHTML(`<div style="height: 800px">Viewport fixture</div>
         <script>
@@ -390,74 +406,9 @@ function closeContractServer(server: Server): Promise<void> {
 
 export async function startContractFixtureServers(): Promise<ContractFixtureServers> {
   const requests: string[] = [];
-  const corsRequests: string[] = [];
   const distFile = resolve(process.cwd(), "dist/index.js");
-  const corsServer = createServer((request, response) => {
-    const path = contractPathname(request);
-    corsRequests.push(path);
-    const origin = request.headers.origin;
-    const corsHeaders = origin === undefined
-      ? {}
-      : {
-          "access-control-allow-origin": origin,
-          "access-control-allow-credentials": "true",
-        };
-
-    if (request.method === "OPTIONS") {
-      return contractReply(response, 204, "text/plain", "", {
-        ...corsHeaders,
-        "access-control-allow-methods": "GET, OPTIONS",
-      });
-    }
-    if (path === "/documents/cors.html") {
-      return contractReply(response, 200, "text/html", contractHTML(`<output id="credential-result">pending</output>
-        <script>
-          (async () => {
-            const response = await fetch('/api/credentialed');
-            document.querySelector('#credential-result').textContent = await response.text();
-          })();
-        </script>`), corsHeaders);
-    }
-    if (path === "/documents/location.html") {
-      return contractReply(response, 200, "text/html", contractHTML(`<script>
-        window.__initialLocationSnapshot = {
-          href: location.href,
-          origin: location.origin,
-          globalOrigin: window.origin,
-          pathname: location.pathname,
-          search: location.search,
-          hash: location.hash,
-          documentURL: document.URL,
-          documentURI: document.documentURI,
-          localStorage: localStorage.getItem('vframe_origin_storage'),
-          sessionStorage: sessionStorage.getItem('vframe_origin_session'),
-          cookie: document.cookie,
-        };
-        window.__originHistoryAnimationFrameCount = 0;
-        requestAnimationFrame(() => window.__originHistoryAnimationFrameCount += 1);
-      </script>`), corsHeaders);
-    }
-    if (path === "/documents/runtime-error.html") {
-      return contractReply(response, 200, "text/html", contractHTML(`<script>
-        setTimeout(() => { throw new Error('cross-origin inline runtime failure'); }, 0);
-      </script>`), corsHeaders);
-    }
-    if (path === "/api/credentialed") {
-      const hasContractCookie = (request.headers.cookie ?? "").includes("contract_credentials=include");
-      return contractReply(response, 200, "text/plain", hasContractCookie ? "included" : "omitted", corsHeaders);
-    }
-    return contractReply(response, 404, "text/plain", `No CORS fixture for ${path}`, corsHeaders);
-  });
-
-  await new Promise<void>((resolveListening) => corsServer.listen(0, resolveListening));
-  const corsAddress = corsServer.address();
-  if (!corsAddress || typeof corsAddress === "string") {
-    await closeContractServer(corsServer);
-    throw new Error("CORS fixture server did not expose a TCP address");
-  }
-  const corsOrigin = `http://127.0.0.1:${corsAddress.port}`;
-
   const server = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const path = contractPathname(request);
     requests.push(path);
 
@@ -501,17 +452,12 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
   const address = server.address();
   if (!address || typeof address === "string") {
     await closeContractServer(server);
-    await closeContractServer(corsServer);
     throw new Error("Contract fixture server did not expose a TCP address");
   }
 
   return {
     origin: `http://127.0.0.1:${address.port}`,
-    corsOrigin,
     requests,
-    corsRequests,
-    async close() {
-      await Promise.all([closeContractServer(server), closeContractServer(corsServer)]);
-    },
+    close: () => closeContractServer(server),
   };
 }

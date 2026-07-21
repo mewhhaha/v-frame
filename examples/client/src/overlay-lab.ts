@@ -8,10 +8,10 @@ interface OverlaySurface {
 }
 
 const overlaySurfaces: readonly OverlaySurface[] = [
-  { framework: "react", library: "Radix UI", src: "http://localhost:43174/" },
-  { framework: "angular", library: "Angular Material", src: "http://localhost:43171/?surface=overlays" },
-  { framework: "solid", library: "Kobalte", src: "http://localhost:43172/?surface=overlays" },
-  { framework: "qwik", library: "Qwik UI Headless", src: "http://localhost:43173/?surface=overlays" },
+  { framework: "react", library: "Radix UI", src: "/frontends/react/" },
+  { framework: "angular", library: "Angular Material", src: "/frontends/angular/?surface=overlays" },
+  { framework: "solid", library: "Kobalte", src: "/frontends/solid/?surface=overlays" },
+  { framework: "qwik", library: "Qwik UI Headless", src: "/frontends/qwik/?surface=overlays" },
 ];
 
 defineVFrame();

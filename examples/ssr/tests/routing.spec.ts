@@ -61,11 +61,17 @@ async function expectHostRoutes(
   await expect(page.locator("#host-route")).toHaveText(routes);
 }
 
-test("delivers the transcript, composer, account, and preview without entry document requests", async ({ page }) => {
-  const entryRequests: string[] = [];
+test("activates composed frames through the gateway without entry document fetches", async ({ page }) => {
+  const entryFetches: string[] = [];
+  const realmRequests: string[] = [];
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (widgetEntryPaths.has(pathname)) entryRequests.push(pathname);
+    if (!widgetEntryPaths.has(pathname)) return;
+    if (request.resourceType() === "fetch") {
+      entryFetches.push(pathname);
+    } else if (request.resourceType() === "document") {
+      realmRequests.push(pathname);
+    }
   });
 
   await page.goto("/");
@@ -79,7 +85,24 @@ test("delivers the transcript, composer, account, and preview without entry docu
   await expect(accountFrame(page).getByRole("button", { name: /Avery Morgan/ })).toBeVisible();
   await openWikipediaPreview(page);
   await expectHostRoutes(page, "react-router /activity; qwik /inventory");
-  expect(entryRequests).toEqual([]);
+  expect(entryFetches).toEqual([]);
+  expect(realmRequests.sort()).toEqual([
+    "/widgets/qwik/inventory",
+    "/widgets/qwik/inventory",
+    "/widgets/qwik/inventory",
+    "/widgets/qwik/inventory",
+    "/widgets/react-router/activity",
+  ]);
+});
+
+test("maps a top-level widget route back to its composed shell route", async ({ page }) => {
+  await page.goto("/widgets/react-router/research");
+
+  await expect(page).toHaveURL("/research");
+  await expect(
+    reactFrame(page).getByRole("heading", { name: "Customer research conversation" }),
+  ).toBeVisible();
+  await expect(topLevelQwikFrame(page).getByRole("textbox", { name: "Message Relay" })).toBeVisible();
 });
 
 test("hydrates a staged React transcript without recovery", async ({ page }) => {
@@ -244,10 +267,13 @@ test("navigates between page-scoped frontend compositions", async ({ page }) => 
   }
   await page.evaluate(() => document.documentElement.setAttribute("data-document-marker", "initial"));
 
-  const documentRequests: string[] = [];
+  const topLevelDocumentRequests: string[] = [];
   page.on("request", (request) => {
-    if (request.resourceType() === "document") {
-      documentRequests.push(new URL(request.url()).pathname);
+    if (
+      request.resourceType() === "document" &&
+      request.frame() === page.mainFrame()
+    ) {
+      topLevelDocumentRequests.push(new URL(request.url()).pathname);
     }
   });
 
@@ -272,7 +298,7 @@ test("navigates between page-scoped frontend compositions", async ({ page }) => 
   await expect(reactFrame(page)).toHaveCount(0);
   await expect(topLevelQwikFrame(page).getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
   await expectHostRoutes(page, "qwik /catalog");
-  expect(documentRequests).toEqual([]);
+  expect(topLevelDocumentRequests).toEqual([]);
 
   await page.goBack();
   await expect(page).toHaveURL("/plugins");

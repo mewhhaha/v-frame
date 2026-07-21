@@ -3,10 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createServer as createTCPServer } from "node:net";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
+import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface XHRFixture {
   origin: string;
-  otherOrigin: string;
   methodOrigin: string;
   close(): Promise<void>;
 }
@@ -34,6 +34,7 @@ async function startXHRFixture(): Promise<XHRFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   let origin = "";
   const primary = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const path = requestPath(request);
     if (path === "/") return reply(response, 200, "text/html", page('<div id="host"></div>'));
     if (path === "/dist/index.js") {
@@ -93,23 +94,6 @@ async function startXHRFixture(): Promise<XHRFixture> {
   }
   origin = `http://127.0.0.1:${primaryAddress.port}`;
 
-  const secondary = createServer((request, response) => {
-    const path = requestPath(request);
-    const corsHeaders = { "access-control-allow-origin": origin };
-    if (path === "/documents/relative.html") {
-      return reply(response, 200, "text/html", page('<main>Relative URL fixture</main>'), corsHeaders);
-    }
-    if (path === "/api/relative") {
-      return reply(response, 200, "application/json", JSON.stringify({ path, origin: `http://${request.headers.host}` }), corsHeaders);
-    }
-    return reply(response, 404, "text/plain", `No secondary fixture for ${path}`, corsHeaders);
-  });
-  await new Promise<void>((resolveListening) => secondary.listen(0, "127.0.0.1", resolveListening));
-  const secondaryAddress = secondary.address();
-  if (secondaryAddress === null || typeof secondaryAddress === "string") {
-    throw new Error("The secondary XHR fixture did not expose a TCP address");
-  }
-
   const methodServer = createTCPServer((socket) => {
     socket.once("data", (chunk) => {
       const requestLine = chunk.toString().split("\r\n", 1)[0] ?? "";
@@ -137,12 +121,10 @@ async function startXHRFixture(): Promise<XHRFixture> {
 
   return {
     origin,
-    otherOrigin: `http://127.0.0.1:${secondaryAddress.port}`,
     methodOrigin: `http://127.0.0.1:${methodAddress.port}`,
     async close() {
       await Promise.all([
         new Promise<void>((resolveClosed, reject) => primary.close((error) => error ? reject(error) : resolveClosed())),
-        new Promise<void>((resolveClosed, reject) => secondary.close((error) => error ? reject(error) : resolveClosed())),
         new Promise<void>((resolveClosed, reject) => methodServer.close((error) => error ? reject(error) : resolveClosed())),
       ]);
     },
@@ -269,26 +251,6 @@ test("omits same-origin cookies while preserving XHR headers, JSON, and events",
   expect(includedResult).toEqual({
     withCredentials: true,
     response: { cookie: "xhr_host_cookie=present", method: "GET", requestHeader: "" },
-  });
-});
-
-test("resolves relative XHR URLs from the virtual current URL", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "relative", `${fixture.otherOrigin}/documents/relative.html`, "omit");
-  const result = await childValue(frame, async (window) => {
-    const xhr = new window.XMLHttpRequest();
-    xhr.open("GET", "/api/relative");
-    xhr.responseType = "json";
-    return await new Promise((resolve) => {
-      xhr.onloadend = () => resolve({ status: xhr.status, responseURL: xhr.responseURL, response: xhr.response });
-      xhr.send();
-    });
-  });
-
-  expect(result).toEqual({
-    status: 200,
-    responseURL: `${fixture.otherOrigin}/api/relative`,
-    response: { path: "/api/relative", origin: fixture.otherOrigin },
   });
 });
 

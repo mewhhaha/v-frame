@@ -375,84 +375,6 @@ test("stops old virtual history when navigation approval reloads the frame", asy
   });
 });
 
-test("fails and tears down the child realm after direct location navigation during bootstrap", async ({ page }) => {
-  await installBundle(page);
-  const errors = await page.evaluate(async (origin) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
-      currentURL: string | null;
-      reload(): Promise<void>;
-      status: string;
-    };
-    const failures: Array<{ phase: string; fatal: boolean }> = [];
-    let navigationCount = 0;
-    let retainedHistory: History | null = null;
-    const realmObserver = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const addedNode of record.addedNodes) {
-          if (addedNode instanceof HTMLIFrameElement) {
-            retainedHistory = addedNode.contentWindow?.history ?? null;
-          }
-        }
-      }
-    });
-    realmObserver.observe(frame.shadowRoot!, { childList: true });
-    const navigationFailure = new Promise<void>((resolve) => {
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
-        failures.push({ phase: detail.phase, fatal: detail.fatal });
-        if (detail.phase === "navigation" && detail.fatal) {
-          resolve();
-        }
-      });
-    });
-    frame.addEventListener("v-frame-navigate", () => {
-      navigationCount += 1;
-    });
-    frame.src = `${origin}/documents/direct-location.html`;
-    document.querySelector("#host")?.append(frame);
-    const reload = frame.reload();
-    await navigationFailure;
-    const reloadRejection = await reload.then(
-      () => null,
-      (error: unknown) => error instanceof DOMException ? error.name : String(error),
-    );
-    realmObserver.disconnect();
-    if (retainedHistory === null) {
-      throw new Error("The failing frame did not expose its child history");
-    }
-
-    let retainedException: string | null = null;
-    try {
-      retainedHistory.pushState({ attempt: 1 }, "", "http://[");
-      retainedHistory.replaceState({ attempt: 2 }, "", "http://[");
-    } catch (error) {
-      retainedException = String(error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    return {
-      failures,
-      navigationCount,
-      reloadRejection,
-      retainedException,
-      status: frame.status,
-      currentURL: frame.currentURL,
-      hasContentWindow: frame.contentWindow !== null,
-    };
-  }, fixture.origin);
-
-  expect(errors).toEqual({
-    failures: [{ phase: "navigation", fatal: true }],
-    navigationCount: 0,
-    reloadRejection: "NotSupportedError",
-    retainedException: null,
-    status: "error",
-    currentURL: null,
-    hasContentWindow: false,
-  });
-});
-
 test("disposes retained virtual history when realm bootstrap fails", async ({ page }) => {
   await installBundle(page);
   const failure = await page.evaluate(async (origin) => {
@@ -488,8 +410,8 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
       });
     });
 
-    const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
-    Object.defineProperty(window, "ResizeObserver", {
+    const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
+    Object.defineProperty(window, "matchMedia", {
       configurable: true,
       writable: true,
       value: undefined,
@@ -506,10 +428,10 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
         (error: unknown) => error instanceof Error ? error.message : String(error),
       );
     } finally {
-      if (resizeObserverDescriptor === undefined) {
-        delete (window as Window & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+      if (matchMediaDescriptor === undefined) {
+        delete (window as Window & { matchMedia?: typeof matchMedia }).matchMedia;
       } else {
-        Object.defineProperty(window, "ResizeObserver", resizeObserverDescriptor);
+        Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
       }
       realmObserver.disconnect();
     }
@@ -539,7 +461,7 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
   expect(failure).toEqual({
     failures: [{ phase: "bootstrap", fatal: true }],
     navigationCount: 0,
-    reloadRejection: "v-frame requires ResizeObserver support",
+    reloadRejection: "v-frame requires a host window with matchMedia support",
     retainedException: null,
     status: "error",
     currentURL: null,

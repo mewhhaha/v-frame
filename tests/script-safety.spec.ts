@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface FixtureServer {
   origin: string;
@@ -251,6 +252,7 @@ function pageSource(pathname: string): string | null {
 async function startFixtureServer(): Promise<FixtureServer> {
   const distFile = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
     if (pathname === "/") {
       reply(response, 200, "text/html", documentSource('<div id="host"></div>'));
@@ -908,6 +910,10 @@ test("cancels navigation only when child event listeners prevent the default", a
       (element as HTMLElement & {
         navigations: Array<{ from: string; to: string }>;
       }).navigations.push({ from: detail.from, to: detail.to });
+      sessionStorage.setItem("script-safety-navigation", JSON.stringify({
+        from: detail.from,
+        to: detail.to,
+      }));
     });
   });
   const hostURL = page.url();
@@ -942,18 +948,18 @@ test("cancels navigation only when child event listeners prevent the default", a
     ],
     documentEvent: { event: true, target: true, currentTarget: true },
   });
-  await frame.locator("#stopped").click();
-  await expect(frame.locator("#stopped-destination")).toHaveText(
+  await Promise.all([
+    page.waitForURL(`${fixture.origin}/stopped-navigation`),
+    frame.locator("#stopped").click(),
+  ]);
+  await expect(page.locator("#stopped-destination")).toHaveText(
     "Stopped propagation still navigated",
   );
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/stopped-navigation`);
-  expect(await frame.evaluate((element) =>
-    (element as HTMLElement & { navigations: Array<{ from: string; to: string }> }).navigations,
-  )).toEqual([{
+  expect(await page.evaluate(() => JSON.parse(
+    sessionStorage.getItem("script-safety-navigation") ?? "null",
+  ))).toEqual({
     from: `${fixture.origin}/events.html`,
     to: `${fixture.origin}/stopped-navigation`,
-  }]);
-  expect(page.url()).toBe(hostURL);
+  });
+  expect(page.url()).not.toBe(hostURL);
 });

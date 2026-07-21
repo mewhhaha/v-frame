@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface PendingStylesheet {
   requested: Promise<void>;
@@ -65,6 +66,7 @@ async function startFixture(): Promise<DynamicStylesheetFixture> {
     ["/styles/link-reconnect.css", pendingStylesheet()],
   ]);
   const server = createServer((request, response) => {
+    if (serveRealmMarker(request, response)) return;
     const pathname = new URL(request.url ?? "/", "http://fixture.test").pathname;
     requestCounts.set(pathname, (requestCounts.get(pathname) ?? 0) + 1);
     if (pathname === "/") {

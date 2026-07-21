@@ -32,7 +32,7 @@ interface PreviewPopoverElement extends HTMLDivElement {
   style: { setProperty(name: string, value: string): void };
 }
 
-interface HostViewport {
+interface WidgetWindow {
   addEventListener(type: string, listener: EventListener): void;
   innerHeight: number;
   innerWidth: number;
@@ -92,7 +92,7 @@ const threadTranscripts = {
   },
 } as const satisfies Record<string, ThreadTranscript>;
 
-const browserWindow = globalThis as typeof globalThis & { parent: HostViewport };
+const browserWindow = globalThis as typeof globalThis & WidgetWindow;
 
 export function isWidgetRoute(value: string): value is WidgetRoute {
   return (widgetRoutes as readonly string[]).includes(value);
@@ -116,7 +116,7 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
     };
     const positionPreview = () => {
       const anchor = previewTrigger.getBoundingClientRect();
-      const hostViewport = browserWindow.parent;
+      const hostViewport = browserWindow;
       const horizontalMargin = 16;
       const anchorGap = 8;
       const previewWidth = Math.min(352, hostViewport.innerWidth - horizontalMargin * 2);
@@ -164,8 +164,8 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
     previewTrigger.addEventListener("keydown", closePreviewOnEscape);
     previewPopover.addEventListener("pointerenter", clearScheduledClose);
     previewPopover.addEventListener("pointerleave", schedulePreviewClose);
-    browserWindow.parent.addEventListener("resize", positionPreview);
-    browserWindow.parent.addEventListener("scroll", positionPreview);
+    browserWindow.addEventListener("resize", positionPreview);
+    browserWindow.addEventListener("scroll", positionPreview);
 
     return () => {
       clearScheduledClose();
@@ -176,8 +176,8 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
       previewTrigger.removeEventListener("keydown", closePreviewOnEscape);
       previewPopover.removeEventListener("pointerenter", clearScheduledClose);
       previewPopover.removeEventListener("pointerleave", schedulePreviewClose);
-      browserWindow.parent.removeEventListener("resize", positionPreview);
-      browserWindow.parent.removeEventListener("scroll", positionPreview);
+      browserWindow.removeEventListener("resize", positionPreview);
+      browserWindow.removeEventListener("scroll", positionPreview);
       closePreview();
     };
   }, []);

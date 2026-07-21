@@ -48,7 +48,7 @@ function OverlayLab() {
           </div>
         </Dialog.Portal>
       </Dialog>
-      <p class="boundary-note">The dashed edge is the microfrontend viewport.</p>
+      <p class="boundary-note">The dashed edge is the microfrontend rendering boundary.</p>
     </main>
   );
 }

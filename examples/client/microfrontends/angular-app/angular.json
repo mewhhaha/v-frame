@@ -15,6 +15,7 @@
             "outputPath": "dist/angular-app",
             "index": "src/index.html",
             "browser": "src/main.ts",
+            "baseHref": "/frontends/angular/",
             "tsConfig": "tsconfig.app.json",
             "polyfills": ["zone.js"],
             "assets": [],

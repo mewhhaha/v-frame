@@ -293,35 +293,6 @@ test("keeps innerHTML scripts inert while running dynamic scripts and reporting 
   });
 });
 
-test("reports a cross-origin inline runtime failure against the virtual document URL", async ({ page }) => {
-  await installBundle(page);
-
-  const failure = await page.evaluate(async (source) => {
-    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-    const reported = new Promise<{ phase: string; fatal: boolean; url: string }>((resolve) => {
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{
-          phase: string;
-          fatal: boolean;
-          url: string;
-        }>).detail;
-        if (detail.phase === "runtime") {
-          resolve({ phase: detail.phase, fatal: detail.fatal, url: detail.url });
-        }
-      });
-    });
-    frame.src = source;
-    document.querySelector("#host")?.append(frame);
-    return reported;
-  }, `${fixture.corsOrigin}/documents/runtime-error.html`);
-
-  expect(failure).toEqual({
-    phase: "runtime",
-    fatal: false,
-    url: `${fixture.corsOrigin}/documents/runtime-error.html`,
-  });
-});
-
 test("rewrites dynamic inline and linked styles without crossing the shadow boundary", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "styles", `${fixture.origin}/documents/styles.html`);
@@ -564,7 +535,7 @@ test("reports but does not perform canceled link and form navigation", async ({ 
   expect(await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }))).toEqual(hostHistory);
 });
 
-test("keeps the current document visible while a link destination loads", async ({ page }) => {
+test("promotes an allowed same-context link to the host", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "staged-navigation", `${fixture.origin}/documents/history.html`);
   await expect.poll(() => frame.evaluate(
@@ -582,18 +553,11 @@ test("keeps the current document visible while a link destination loads", async 
     child.document.body.append(link);
   });
 
-  await frame.locator("#slow-document-link").click();
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("loading");
-  expect(await frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/history.html`);
-  await expect(frame.locator("#slow-document-link")).toHaveText("Slow document");
-  await expect(frame.locator("#slow-copy")).toHaveText("Slow document");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+  await Promise.all([
+    page.waitForURL(`${fixture.origin}/documents/slow.html`),
+    frame.locator("#slow-document-link").click(),
+  ]);
+  await expect(page.locator("#slow-copy")).toHaveText("Slow document");
 });
 
 test("gates modified primary and middle link activations before opening a new context", async ({ page }) => {
@@ -737,7 +701,8 @@ test("uses submitter overrides and replacement query data for gated GET form win
   );
 });
 
-test("forwards host resize and scroll state then stops child timers when disposed", async ({ page }) => {
+test("uses the page viewport and frame scroll state then stops child timers when disposed", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
   await installBundle(page);
   const frame = await mountFrame(page, "viewport", `${fixture.origin}/documents/viewport.html`);
   await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
@@ -746,9 +711,35 @@ test("forwards host resize and scroll state then stops child timers when dispose
     element.setAttribute("style", "width: 320px; height: 120px;");
     element.scrollTop = 40;
   });
-  await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { resize: number } }).__viewportEvents.resize)).toBeGreaterThan(0);
+  const resizeEventsBeforePageResize = await childValue(frame, (window) => (
+    window as Window & { __viewportEvents: { resize: number } }
+  ).__viewportEvents.resize);
+  await page.setViewportSize({ width: 760, height: 520 });
+  await expect.poll(() => childValue(frame, (window) => (
+    window as Window & { __viewportEvents: { resize: number } }
+  ).__viewportEvents.resize)).toBeGreaterThan(resizeEventsBeforePageResize);
   await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { scroll: number } }).__viewportEvents.scroll)).toBeGreaterThan(0);
   expect(await childValue(frame, (window) => window.scrollY)).toBe(40);
+  const childViewport = await childValue(frame, (window) => ({
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    outerHeight: window.outerHeight,
+    outerWidth: window.outerWidth,
+    visualHeight: window.visualViewport?.height ?? null,
+    visualWidth: window.visualViewport?.width ?? null,
+    widthMediaMatches: window.matchMedia(`(width: ${window.innerWidth}px)`).matches,
+  }));
+  const pageViewport = await page.evaluate(() => ({
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    outerHeight: window.outerHeight,
+    outerWidth: window.outerWidth,
+    visualHeight: window.visualViewport?.height ?? null,
+    visualWidth: window.visualViewport?.width ?? null,
+    widthMediaMatches: window.matchMedia(`(width: ${window.innerWidth}px)`).matches,
+  }));
+  expect(childViewport).toEqual(pageViewport);
+  expect(childViewport.innerWidth).not.toBe(320);
   await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { ticks: number } }).__viewportEvents.ticks)).toBeGreaterThan(2);
 
   const teardown = await page.evaluate(async () => {
@@ -872,24 +863,6 @@ test("emits bubbling composed lifecycle details and a fatal entry error", async 
     },
     invalidStatus: "error",
   });
-});
-
-test("uses CORS responses and applies include credentials to entry and child fetches", async ({ page }) => {
-  await page.context().addCookies([{
-    name: "contract_credentials",
-    value: "include",
-    url: fixture.corsOrigin,
-    sameSite: "Lax",
-  }]);
-  await installBundle(page);
-  const included = await mountFrame(page, "cors-included", `${fixture.corsOrigin}/documents/cors.html`, "include");
-  const sameOrigin = await mountFrame(page, "cors-same-origin", `${fixture.corsOrigin}/documents/cors.html`);
-  const omitted = await mountFrame(page, "cors-omitted", `${fixture.corsOrigin}/documents/cors.html`, "omit");
-
-  await expect(included.locator("#credential-result")).toHaveText("included");
-  await expect(sameOrigin.locator("#credential-result")).toHaveText("omitted");
-  await expect(omitted.locator("#credential-result")).toHaveText("omitted");
-  expect(fixture.corsRequests.filter((path) => path === "/api/credentialed")).toHaveLength(3);
 });
 
 test("closes dialog form submissions natively without emitting navigation", async ({ page }) => {

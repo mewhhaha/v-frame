@@ -13,3 +13,14 @@ await build({
   sourcemap: true,
   legalComments: "external",
 });
+
+await build({
+  entryPoints: ["src/gateway.ts"],
+  outfile: "dist/gateway.js",
+  bundle: true,
+  format: "esm",
+  platform: "neutral",
+  target: "es2022",
+  sourcemap: true,
+  legalComments: "external",
+});

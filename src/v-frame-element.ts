@@ -1,4 +1,9 @@
-import { createRealm, type RealmFailure, type VFrameRealm } from "./realm.js";
+import {
+  connectRealmIframe,
+  createRealm,
+  type RealmFailure,
+  type VFrameRealm,
+} from "./realm.js";
 import { VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { VFrameStatus } from "./types.js";
@@ -290,6 +295,18 @@ export class VFrameElement extends HTMLElementBase {
       url: requestedURL.href,
     });
 
+    if (requestedURL.origin !== this.ownerDocument.location.origin) {
+      const error = new TypeError(
+        `v-frame route ${requestedURL.href} must share host origin ${this.ownerDocument.location.origin}`,
+      );
+      this.#finishFailedLoad(generation, controller, previous, {
+        phase: "entry",
+        url: requestedURL.href,
+        error,
+      });
+      throw error;
+    }
+
     let fatalRealmFailure: RealmFailure | null = null;
     let entryResolved = false;
     let failureURL = requestedURL.href;
@@ -297,19 +314,37 @@ export class VFrameElement extends HTMLElementBase {
     const fatalRealm = new Promise<never>((_resolve, reject) => {
       rejectFatalRealm = reject;
     });
+    const pendingRealm = { iframe: null as HTMLIFrameElement | null };
+    let realmConnectionFailed = false;
+    const connectRealm = (url: string) => connectRealmIframe(
+      this.#root,
+      controller.signal,
+      url,
+    ).then((iframe) => {
+      pendingRealm.iframe = iframe;
+      return iframe;
+    }).catch((error: unknown) => {
+      realmConnectionFailed = true;
+      throw error;
+    });
 
     try {
       let source: string;
       let finalURL: string;
+      let iframe: HTMLIFrameElement;
       if (load.adoptedMarkup === null) {
-        const response = await fetch(requestedURL, {
+        const entryResponse = fetch(requestedURL, {
           credentials: this.credentials,
           signal: controller.signal,
         });
+        const [response, connectedIframe] = await Promise.all([
+          entryResponse,
+          connectRealm(requestedURL.href),
+        ]);
+        iframe = connectedIframe;
         if (!response.ok || response.type === "opaque") {
           throw entryFetchError(requestedURL.href, response);
         }
-
         source = await response.text();
         this.#assertCurrentGeneration(generation, controller.signal);
         const responseURL = parseEntryURL(
@@ -321,11 +356,22 @@ export class VFrameElement extends HTMLElementBase {
         }
         finalURL = responseURL.href;
       } else {
+        iframe = await connectRealm(requestedURL.href);
         source = load.adoptedMarkup.source;
         finalURL = requestedURL.href;
       }
       entryResolved = true;
       failureURL = finalURL;
+      if (new URL(finalURL).origin !== this.ownerDocument.location.origin) {
+        throw new TypeError(
+          `v-frame route ${finalURL} must share host origin ${this.ownerDocument.location.origin}`,
+        );
+      }
+      if (finalURL !== requestedURL.href) {
+        iframe.remove();
+        pendingRealm.iframe = null;
+        iframe = await connectRealm(finalURL);
+      }
       const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
       historySession.replaceCurrentURL(finalURL);
       if (previous.realm === null) {
@@ -341,6 +387,7 @@ export class VFrameElement extends HTMLElementBase {
       const realm = await createRealm({
         host: this,
         shadowRoot: this.#root,
+        iframe,
         markup: load.adoptedMarkup === null
           ? { kind: "document", source }
           : {
@@ -381,32 +428,25 @@ export class VFrameElement extends HTMLElementBase {
           const allowed = this.#dispatchNavigate(detail);
           return allowed && ownsController();
         },
-        onDocumentNavigation: (detail, mode) => {
+        onShellNavigation: (detail) => {
           if (!ownsController()) {
             return false;
           }
-          const allowed = this.#dispatchNavigate(detail);
-          if (!allowed || !ownsController()) {
-            return false;
+          const allowed = this.#dispatchNavigate(detail) && ownsController();
+          if (allowed) {
+            this.ownerDocument.defaultView?.location.assign(detail.to);
           }
-          const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
-          queueMicrotask(() => {
-            if (!ownsController()) {
-              return;
-            }
-            this.#observeLoad(this.#startLoad({
-              source: detail.to,
-              adoptedMarkup: null,
-              historySession: nextSession,
-              stageMarkup: this.#realm !== null,
-            }));
-          });
-          return true;
+          return allowed;
         },
-        onDocumentTraversal: (nextSession) => {
+        onNativeLocationNavigation: (detail) => {
           if (!ownsController()) {
             return;
           }
+          if (this.#dispatchNavigate(detail) && ownsController()) {
+            this.ownerDocument.defaultView?.location.assign(detail.to);
+            return;
+          }
+          const nextSession = historySession.clone();
           queueMicrotask(() => {
             if (!ownsController()) {
               return;
@@ -435,6 +475,7 @@ export class VFrameElement extends HTMLElementBase {
           rejectFatalRealm(failure.error);
         },
       });
+      pendingRealm.iframe = null;
       candidateRealm = realm;
 
       if (this.#generation !== generation || controller.signal.aborted) {
@@ -464,6 +505,7 @@ export class VFrameElement extends HTMLElementBase {
         url: this.#currentURL ?? finalURL,
       });
     } catch (error) {
+      pendingRealm.iframe?.remove();
       if (
         this.#generation !== generation ||
         controller.signal.aborted ||
@@ -473,7 +515,9 @@ export class VFrameElement extends HTMLElementBase {
       }
 
       const failure = fatalRealmFailure ?? {
-        phase: entryResolved ? "bootstrap" as const : "entry" as const,
+        phase: realmConnectionFailed || entryResolved
+          ? "bootstrap" as const
+          : "entry" as const,
         url: failureURL,
         error,
       };
