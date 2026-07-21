@@ -64,6 +64,8 @@ export interface PrepareMarkupOptions {
   window: VFrameWindow;
   document: Document;
   source: string;
+  createHTML(source: string): string;
+  createScriptURL(source: string): string;
   pageURL: string;
   nonce: string;
   fetchStylesheet(url: string): Promise<string>;
@@ -444,10 +446,9 @@ function resolveMarkupBaseURL(
   fallbackURL: string,
 ): string {
   for (const base of root.querySelectorAll("base[href]")) {
-    try {
-      return new URL(base.getAttribute("href") ?? "", fallbackURL).href;
-    } catch {
-      continue;
+    const resolvedBase = URL.parse(base.getAttribute("href") ?? "", fallbackURL);
+    if (resolvedBase !== null) {
+      return resolvedBase.href;
     }
   }
 
@@ -533,10 +534,9 @@ export function absolutizeSrcset(source: string, baseURL: string): string {
       continue;
     }
 
-    try {
-      reference = new URL(reference, baseURL).href;
-    } catch {
-      // Native srcset reflection retains candidates with malformed URLs.
+    const resolvedReference = URL.parse(reference, baseURL);
+    if (resolvedReference !== null) {
+      reference = resolvedReference.href;
     }
     candidates.push(descriptor === "" ? reference : `${reference} ${descriptor}`);
   }
@@ -582,6 +582,7 @@ export function isURLAttribute(
 function absolutizeElementAttributes(
   element: Element,
   baseURL: string,
+  createScriptURL: PrepareMarkupOptions["createScriptURL"],
 ): void {
   for (const attribute of Array.from(element.attributes)) {
     if (!isURLAttribute(element, attribute.localName, attribute.namespaceURI)) {
@@ -593,17 +594,21 @@ function absolutizeElementAttributes(
       continue;
     }
 
-    try {
-      const absoluteValue = new URL(value, baseURL).href;
+    const absoluteURL = URL.parse(value, baseURL);
+    if (absoluteURL !== null) {
+      const absoluteValue = absoluteURL.href;
       if (absoluteValue !== value) {
         if (attribute.namespaceURI === null) {
-          element.setAttribute(attribute.name, absoluteValue);
+          element.setAttribute(
+            attribute.name,
+            element.localName === "script" && attribute.localName === "src"
+              ? createScriptURL(absoluteValue)
+              : absoluteValue,
+          );
         } else {
           element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
         }
       }
-    } catch {
-      continue;
     }
   }
 
@@ -709,7 +714,10 @@ function neutralizeNoscriptContent(root: Element): void {
 export async function prepareMarkup(options: PrepareMarkupOptions): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
   const neutralized = neutralizeStyleMarkup(options.source);
-  const parsed = parser.parseFromString(neutralized.source, "text/html");
+  const parsed = parser.parseFromString(
+    options.createHTML(neutralized.source),
+    "text/html",
+  );
   const parsedRoot = parsed.documentElement;
   const parsedHead = parsed.head;
   const parsedBody = parsed.body;
@@ -761,7 +769,11 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
       element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
         ? options.pageURL
         : baseURL;
-    absolutizeElementAttributes(element, attributeBaseURL);
+    absolutizeElementAttributes(
+      element,
+      attributeBaseURL,
+      options.createScriptURL,
+    );
   }
 
   const stylesheetContext = createStylesheetContext(
@@ -815,7 +827,10 @@ export async function prepareAdoptedMarkup(
   options: PrepareMarkupOptions,
 ): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
-  const parsed = parser.parseFromString(options.source, "text/html");
+  const parsed = parser.parseFromString(
+    options.createHTML(options.source),
+    "text/html",
+  );
   const html = parsed.body.querySelector(":scope > v-html") as HTMLElement | null;
   const head = html?.querySelector(":scope > v-head") as HTMLElement | null;
   const body = html?.querySelector(":scope > v-body") as HTMLElement | null;
@@ -899,7 +914,11 @@ export async function prepareAdoptedMarkup(
       element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
         ? options.pageURL
         : baseURL;
-    absolutizeElementAttributes(element, attributeBaseURL);
+    absolutizeElementAttributes(
+      element,
+      attributeBaseURL,
+      options.createScriptURL,
+    );
   }
 
   const stylesheetContext = createStylesheetContext(

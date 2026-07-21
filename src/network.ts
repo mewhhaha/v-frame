@@ -6,6 +6,7 @@ export interface NetworkPatchOptions {
   signal: AbortSignal;
   credentials: VFrameCredentials;
   getBaseURL(): string;
+  createHTML(source: string): string;
 }
 
 interface NativeEventListenerRegistration {
@@ -300,6 +301,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       fetch: nativeFetch,
       generationSignal: options.signal,
       getBaseURL: options.getBaseURL,
+      createHTML: options.createHTML,
       registerActive(request) {
         activeRequests.add(request);
       },

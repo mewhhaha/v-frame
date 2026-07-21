@@ -26,6 +26,7 @@ export interface CredentiallessXMLHttpRequestOptions {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
   generationSignal: AbortSignal;
   getBaseURL(): string;
+  createHTML(source: string): string;
   registerActive(request: DisposableRequest): void;
   unregisterActive(request: DisposableRequest): void;
 }
@@ -751,7 +752,11 @@ export function createCredentiallessXMLHttpRequest(
         // legacy default mode only ever exposes XML documents.
         if (this.#responseType === "document" || xmlResponse) {
           const documentMimeType: DOMParserSupportedType = xmlResponse ? "application/xml" : "text/html";
-          let document: Document | null = new window.DOMParser().parseFromString(text, documentMimeType);
+          const source = xmlResponse ? text : options.createHTML(text);
+          let document: Document | null = new window.DOMParser().parseFromString(
+            source,
+            documentMimeType,
+          );
           if (xmlResponse && document.querySelector("parsererror") !== null) {
             // A failed XML parse yields null, not the parser's error markup.
             document = null;

@@ -105,6 +105,46 @@ test("keeps an empty source idle and recreates its realm after reconnection", as
   });
 });
 
+test("exposes each lifecycle value as an exclusive custom element state", async ({ page }) => {
+  await installBundle(page);
+
+  const states = await page.evaluate(async (origin) => {
+    const frame = document.createElement("v-frame") as HTMLElement & {
+      src: string;
+      status: string;
+    };
+    const matchingStates = () => ["idle", "loading", "ready", "error"].filter(
+      (state) => frame.matches(`:state(${state})`),
+    );
+    frame.src = "";
+    document.querySelector("#host")?.append(frame);
+    const idle = matchingStates();
+
+    const loaded = new Promise<void>((resolveLoaded) => {
+      frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
+    });
+    frame.src = `${origin}/documents/slow.html`;
+    const loading = matchingStates();
+    await loaded;
+    const ready = matchingStates();
+
+    const failed = new Promise<void>((resolveFailed) => {
+      frame.addEventListener("v-frame-error", () => resolveFailed(), { once: true });
+    });
+    frame.src = "https://cross-origin.invalid/application";
+    await failed;
+    return { idle, loading, ready, error: matchingStates(), status: frame.status };
+  }, fixture.origin);
+
+  expect(states).toEqual({
+    idle: ["idle"],
+    loading: ["loading"],
+    ready: ["ready"],
+    error: ["error"],
+    status: "error",
+  });
+});
+
 test("binds a frame without src to shell location and history", async ({ page }) => {
   await page.goto(`${fixture.origin}/documents/bound-shell.html`);
   await page.evaluate(async (bundleURL) => {

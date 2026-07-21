@@ -11,6 +11,13 @@ export type VFrameWindow = Window & typeof globalThis;
 
 export type VFrameCredentials = "omit" | "same-origin" | "include";
 
+export interface VFrameTrustedTypesPolicy {
+  readonly name: string;
+  createHTML(source: string): string;
+  createScript(source: string): string;
+  createScriptURL(source: string): string;
+}
+
 export type VFrameErrorPhase =
   | "entry"
   | "bootstrap"

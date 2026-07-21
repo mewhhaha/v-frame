@@ -1,5 +1,6 @@
 import {
   connectRealmIframe,
+  type ConnectedRealmIframe,
   createRealm,
   type RealmFailure,
   type VFrameRealm,
@@ -14,6 +15,7 @@ import type {
   VFrameLoadEventDetail,
   VFrameNavigateEventDetail,
   VFrameStatus as VFrameStatusValue,
+  VFrameTrustedTypesPolicy,
 } from "./types.js";
 
 const HTMLElementBase = (
@@ -51,6 +53,7 @@ export class VFrameElement extends HTMLElementBase {
   static readonly observedAttributes = ["src", "credentials", "nonce"];
 
   readonly #root: ShadowRoot;
+  readonly #internals: ElementInternals;
   #status: VFrameStatusValue = VFrameStatus.Idle;
   #currentURL: string | null = null;
   #realm: VFrameRealm | null = null;
@@ -64,9 +67,12 @@ export class VFrameElement extends HTMLElementBase {
   #adoptionAvailable = false;
   #adoptionConsumed = false;
   #nonce = "";
+  #trustedTypesPolicy: VFrameTrustedTypesPolicy | null = null;
 
   constructor() {
     super();
+    this.#internals = this.attachInternals();
+    this.#internals.states.add(this.#status);
     const declarativeRoot = this.shadowRoot;
     this.#root = declarativeRoot ?? this.attachShadow({ mode: "open" });
     this.#adoptionAvailable = declarativeRoot !== null;
@@ -116,6 +122,35 @@ export class VFrameElement extends HTMLElementBase {
     this.setAttribute("nonce", String(value));
   }
 
+  get trustedTypesPolicy(): VFrameTrustedTypesPolicy | null {
+    return this.#trustedTypesPolicy;
+  }
+
+  set trustedTypesPolicy(value: VFrameTrustedTypesPolicy | null) {
+    if (value === null) {
+      this.#trustedTypesPolicy = null;
+      return;
+    }
+    if (typeof value !== "object") {
+      throw new TypeError(
+        `v-frame trustedTypesPolicy must be null or an object, received ${String(value)}`,
+      );
+    }
+    if (typeof value.name !== "string" || value.name.trim() === "") {
+      throw new TypeError(
+        `v-frame trustedTypesPolicy.name must be a non-empty string, received ${JSON.stringify(value.name)}`,
+      );
+    }
+    for (const method of ["createHTML", "createScript", "createScriptURL"] as const) {
+      if (typeof value[method] !== "function") {
+        throw new TypeError(
+          `v-frame trustedTypesPolicy.${method} must be a function, received ${typeof value[method]}`,
+        );
+      }
+    }
+    this.#trustedTypesPolicy = value;
+  }
+
   get status(): VFrameStatusValue {
     return this.#status;
   }
@@ -132,6 +167,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#upgradeProperty("adopt");
     this.#upgradeProperty("credentials");
     this.#upgradeProperty("src");
+    this.#upgradeProperty("trustedTypesPolicy");
     this.#connected = true;
     const source = this.#loadSource();
     if (source === null) {
@@ -149,7 +185,9 @@ export class VFrameElement extends HTMLElementBase {
 
   // Own properties assigned before upgrade shadow the prototype accessors;
   // re-applying them through the setters restores reflection and validation.
-  #upgradeProperty(property: "src" | "adopt" | "credentials"): void {
+  #upgradeProperty(
+    property: "src" | "adopt" | "credentials" | "trustedTypesPolicy",
+  ): void {
     if (!Object.prototype.hasOwnProperty.call(this, property)) {
       return;
     }
@@ -220,7 +258,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#destroyRealm();
     this.#currentURL = null;
     this.#historySession = null;
-    this.#status = VFrameStatus.Idle;
+    this.#setStatus(VFrameStatus.Idle);
   }
 
   addEventListener<K extends keyof VFrameEventMap>(
@@ -292,7 +330,7 @@ export class VFrameElement extends HTMLElementBase {
       status: VFrameStatusValue;
     },
   ): Promise<void> {
-    this.#status = VFrameStatus.Loading;
+    this.#setStatus(VFrameStatus.Loading);
 
     let requestedURL: URL;
     try {
@@ -325,19 +363,20 @@ export class VFrameElement extends HTMLElementBase {
     let fatalRealmFailure: RealmFailure | null = null;
     let entryResolved = false;
     let failureURL = requestedURL.href;
-    let rejectFatalRealm: (error: unknown) => void = () => undefined;
-    const fatalRealm = new Promise<never>((_resolve, reject) => {
-      rejectFatalRealm = reject;
-    });
+    const {
+      promise: fatalRealm,
+      reject: rejectFatalRealm,
+    } = Promise.withResolvers<never>();
     const pendingRealm = { iframe: null as HTMLIFrameElement | null };
     let realmConnectionFailed = false;
     const connectRealm = (url: string) => connectRealmIframe(
       this.#root,
       controller.signal,
       url,
-    ).then((iframe) => {
-      pendingRealm.iframe = iframe;
-      return iframe;
+      this.#trustedTypesPolicy,
+    ).then((connection) => {
+      pendingRealm.iframe = connection.iframe;
+      return connection;
     }).catch((error: unknown) => {
       realmConnectionFailed = true;
       throw error;
@@ -346,17 +385,17 @@ export class VFrameElement extends HTMLElementBase {
     try {
       let source: string;
       let finalURL: string;
-      let iframe: HTMLIFrameElement;
+      let connection: ConnectedRealmIframe;
       if (load.adoptedMarkup === null) {
         const entryResponse = fetch(requestedURL, {
           credentials: this.credentials,
           signal: controller.signal,
         });
-        const [response, connectedIframe] = await Promise.all([
+        const [response, connectedRealm] = await Promise.all([
           entryResponse,
           connectRealm(requestedURL.href),
         ]);
-        iframe = connectedIframe;
+        connection = connectedRealm;
         if (!response.ok || response.type === "opaque") {
           throw entryFetchError(requestedURL.href, response);
         }
@@ -371,7 +410,7 @@ export class VFrameElement extends HTMLElementBase {
         }
         finalURL = responseURL.href;
       } else {
-        iframe = await connectRealm(requestedURL.href);
+        connection = await connectRealm(requestedURL.href);
         source = load.adoptedMarkup.source;
         finalURL = requestedURL.href;
       }
@@ -383,9 +422,9 @@ export class VFrameElement extends HTMLElementBase {
         );
       }
       if (finalURL !== requestedURL.href) {
-        iframe.remove();
+        connection.iframe.remove();
         pendingRealm.iframe = null;
-        iframe = await connectRealm(finalURL);
+        connection = await connectRealm(finalURL);
       }
       const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
       historySession.replaceCurrentURL(finalURL);
@@ -402,7 +441,8 @@ export class VFrameElement extends HTMLElementBase {
       const realm = await createRealm({
         host: this,
         shadowRoot: this.#root,
-        iframe,
+        iframe: connection.iframe,
+        trustedTypes: connection.trustedTypes,
         markup: load.adoptedMarkup === null
           ? { kind: "document", source }
           : {
@@ -517,7 +557,7 @@ export class VFrameElement extends HTMLElementBase {
       this.#currentURL = finalURL;
       activated = true;
       realm.reveal();
-      this.#status = VFrameStatus.Ready;
+      this.#setStatus(VFrameStatus.Ready);
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
         url: this.#currentURL ?? finalURL,
       });
@@ -572,7 +612,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#realmController = previous.realmController;
     this.#historySession = previous.historySession;
     this.#currentURL = previous.url;
-    this.#status = previous.status;
+    this.#setStatus(previous.status);
     this.#dispatchError({ ...failure, fatal: false });
   }
 
@@ -603,7 +643,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#historySession = null;
     this.#realmGeneration = 0;
     this.#currentURL = null;
-    this.#status = VFrameStatus.Error;
+    this.#setStatus(VFrameStatus.Error);
     this.#dispatchError({ ...failure, fatal: true });
   }
 
@@ -622,6 +662,12 @@ export class VFrameElement extends HTMLElementBase {
     for (const child of Array.from(this.#root.children)) {
       child.remove();
     }
+  }
+
+  #setStatus(status: VFrameStatusValue): void {
+    this.#status = status;
+    this.#internals.states.clear();
+    this.#internals.states.add(status);
   }
 
   #consumeAdoptedMarkup(): { source: string; previewNodes: readonly Node[] } | null {

@@ -30,6 +30,7 @@ import type {
   VFrameCredentials,
   VFrameErrorPhase,
   VFrameNavigateEventDetail,
+  VFrameTrustedTypesPolicy,
   VFrameWindow,
 } from "./types.js";
 
@@ -162,6 +163,7 @@ export interface CreateRealmOptions {
   host: HTMLElement;
   shadowRoot: ShadowRoot;
   iframe: HTMLIFrameElement;
+  trustedTypes: RealmTrustedTypes;
   markup:
     | { kind: "document"; source: string }
     | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
@@ -188,6 +190,24 @@ export interface VFrameRealm {
   dispose(): void;
 }
 
+export interface RealmTrustedTypes {
+  createHTML(source: string): string;
+  createScript(source: string): string;
+  createScriptURL(source: string): string;
+}
+
+export interface ConnectedRealmIframe {
+  iframe: HTMLIFrameElement;
+  trustedTypes: RealmTrustedTypes;
+}
+
+interface TrustedTypePolicyFactoryLike {
+  createPolicy(
+    name: string,
+    policy: Omit<VFrameTrustedTypesPolicy, "name">,
+  ): Omit<VFrameTrustedTypesPolicy, "name">;
+}
+
 function abortError(): DOMException {
   return new DOMException("The v-frame load was superseded", "AbortError");
 }
@@ -196,7 +216,8 @@ export async function connectRealmIframe(
   shadowRoot: ShadowRoot,
   signal: AbortSignal,
   locationURL: string,
-): Promise<HTMLIFrameElement> {
+  trustedTypesPolicy: VFrameTrustedTypesPolicy | null,
+): Promise<ConnectedRealmIframe> {
   if (signal.aborted) {
     throw abortError();
   }
@@ -213,6 +234,8 @@ export async function connectRealmIframe(
   iframe.style.setProperty("opacity", "0", "important");
   iframe.style.setProperty("pointer-events", "none", "important");
   iframe.src = locationURL;
+
+  let realmTrustedTypes: RealmTrustedTypes | null = null;
 
   await new Promise<void>((resolve, reject) => {
     let replacementDocumentOpened = false;
@@ -257,8 +280,45 @@ export async function connectRealmIframe(
             return;
           }
           try {
+            if (trustedTypesPolicy === null) {
+              realmTrustedTypes = {
+                createHTML: (source) => source,
+                createScript: (source) => source,
+                createScriptURL: (source) => source,
+              };
+            } else {
+              const policyRules = {
+                createHTML: (source: string) => trustedTypesPolicy.createHTML(source),
+                createScript: (source: string) => trustedTypesPolicy.createScript(source),
+                createScriptURL: (source: string) => trustedTypesPolicy.createScriptURL(source),
+              };
+              const factory = (
+                realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
+              ).trustedTypes;
+              if (factory === undefined) {
+                realmTrustedTypes = policyRules;
+              } else {
+                try {
+                  const policy = factory.createPolicy(
+                    trustedTypesPolicy.name,
+                    policyRules,
+                  );
+                  realmTrustedTypes = {
+                    createHTML: (source) => policy.createHTML(source) as unknown as string,
+                    createScript: (source) => policy.createScript(source) as unknown as string,
+                    createScriptURL: (source) =>
+                      policy.createScriptURL(source) as unknown as string,
+                  };
+                } catch (error) {
+                  throw new Error(
+                    `v-frame could not create Trusted Types policy ${JSON.stringify(trustedTypesPolicy.name)} for ${realmWindow.location.href}`,
+                    { cause: error },
+                  );
+                }
+              }
+            }
             document.open();
-            document.write("<!doctype html>");
+            document.write(realmTrustedTypes.createHTML("<!doctype html>"));
             document.close();
             // Firefox completes the replacement document asynchronously; wait
             // so application handlers cannot observe that bootstrap lifecycle.
@@ -298,7 +358,11 @@ export async function connectRealmIframe(
     throw abortError();
   }
 
-  return iframe;
+  if (realmTrustedTypes === null) {
+    iframe.remove();
+    throw new Error(`v-frame route ${locationURL} did not initialize its execution realm`);
+  }
+  return { iframe, trustedTypes: realmTrustedTypes };
 }
 
 interface InternalStyles {
@@ -663,6 +727,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       window,
       document,
       source: options.markup.source,
+      createHTML: options.trustedTypes.createHTML,
+      createScriptURL: options.trustedTypes.createScriptURL,
       pageURL: options.pageURL,
       nonce: options.getNonce(),
       fetchStylesheet: options.fetchStylesheet,
@@ -712,10 +778,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         const authoredHref = markup?.authoredURLAttributes.get(base)?.get("href") ??
           base.getAttribute("href") ??
           "";
-        try {
-          return new URL(authoredHref, currentURL).href;
-        } catch {
-          continue;
+        const resolvedBase = window.URL.parse(authoredHref, currentURL);
+        if (resolvedBase !== null) {
+          return resolvedBase.href;
         }
       }
       return currentURL;
@@ -771,6 +836,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       signal: options.signal,
       credentials: options.credentials,
       getBaseURL: getDocumentBaseURL,
+      createHTML: options.trustedTypes.createHTML,
     });
     bootstrapDisposers.push(networkDispose);
     const viewport = installViewportPatches(
@@ -1337,6 +1403,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       authoredStyleAttributes: markup.authoredStyleAttributes,
       inlineStyleSelectorAttribute: markup.inlineStyleSelectorAttribute,
       inlineStyleSheet: markup.inlineStyleSheet,
+      createHTML: options.trustedTypes.createHTML,
+      createScript: options.trustedTypes.createScript,
       updateTopLayerViewport: internalStyles.updateTopLayerViewport,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
@@ -1395,6 +1463,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       signal: options.signal,
       credentials: options.credentials,
       executionOrigin: options.host.ownerDocument.location.origin,
+      createScript: options.trustedTypes.createScript,
+      createScriptURL: options.trustedTypes.createScriptURL,
       getNonce: options.getNonce,
       getCurrentURL: () => currentURL,
       getNativeCurrentScript: () =>

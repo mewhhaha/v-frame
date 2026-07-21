@@ -308,6 +308,8 @@ export interface DocumentFacadeOptions {
   authoredStyleAttributes: Map<Element, string>;
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
+  createHTML(source: string): string;
+  createScript(source: string): string;
   updateTopLayerViewport(x: number, y: number): void;
   getNonce(): string;
   getBaseURL(): string;
@@ -847,7 +849,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   });
 
   const styleDeclarationDocument = new window.DOMParser().parseFromString(
-    "<!doctype html><html><body></body></html>",
+    options.createHTML("<!doctype html><html><body></body></html>"),
     "text/html",
   );
 
@@ -1653,7 +1655,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     if (nonce !== "") {
       companion.nonce = nonce;
     }
-    companion.text = `globalThis[${JSON.stringify(completionName)}](function(event) {\n${source}\n});`;
+    companion.text = options.createScript(
+      `globalThis[${JSON.stringify(completionName)}](function(event) {\n${source}\n});`,
+    );
     try {
       nativeAppendChild.call(privateHead, companion);
     } catch (error) {
@@ -1707,11 +1711,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
             const baseURL = isBaseElement(element)
               ? options.getCurrentURL()
               : options.getBaseURL();
-            try {
-              return new URL(value, baseURL).href;
-            } catch {
-              return value;
-            }
+            return window.URL.parse(value, baseURL)?.href ?? value;
           },
           set(value: string) {
             setVirtualAttribute(element, attributeName, String(value));
@@ -1844,11 +1844,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         value.trim() !== "" &&
         !value.trim().toLowerCase().startsWith("javascript:")
       ) {
-        try {
-          value = new URL(value, baseURL).href;
-        } catch {
-          // Native attribute reflection preserves malformed URL text.
-        }
+        value = window.URL.parse(value, baseURL)?.href ?? value;
       }
       if (isHTMLScriptElement(element) && protectedScriptAttributes.has(element) && attributeName === "src") {
         protectedScriptAttributes.get(element)?.set("src", value);
@@ -2078,7 +2074,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   const parseFragment = (markup: string): DocumentFragment => {
     const template = nativeCreateElement.call(document, "template") as HTMLTemplateElement;
-    nativeInnerHTML.set?.call(template, markup);
+    nativeInnerHTML.set?.call(template, options.createHTML(markup));
     const fragment = template.content;
     const parsedElements = Array.from(fragment.querySelectorAll("*")).reverse();
     for (const parsedElement of parsedElements) {
@@ -2616,11 +2612,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     set(this: Element, markup: string) {
       if (!virtualNodes.has(this)) {
-        nativeInnerHTML.set?.call(this, markup);
+        nativeInnerHTML.set?.call(this, options.createHTML(String(markup)));
         return;
       }
       if (isHTMLTemplateElement(this)) {
-        nativeInnerHTML.set?.call(this, String(markup));
+        nativeInnerHTML.set?.call(this, options.createHTML(String(markup)));
         markVirtualNode(this.content);
         return;
       }
@@ -2634,7 +2630,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       get: nativeOuterHTML.get,
       set(this: Element, markup: string) {
         if (!virtualNodes.has(this)) {
-          nativeOuterHTML.set?.call(this, markup);
+          nativeOuterHTML.set?.call(this, options.createHTML(String(markup)));
           return;
         }
         if (this.parentNode === null) {
@@ -3058,11 +3054,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       physicalValue.trim() !== "" &&
       !physicalValue.trim().toLowerCase().startsWith("javascript:")
     ) {
-      try {
-        physicalValue = new URL(physicalValue, baseURL).href;
-      } catch {
-        // Native attribute reflection accepts malformed and non-hierarchical URL text.
-      }
+      physicalValue = window.URL.parse(physicalValue, baseURL)?.href ?? physicalValue;
     }
 
     if (

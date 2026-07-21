@@ -633,7 +633,20 @@ test("applies properties assigned before upgrade through their setters", async (
     const frame = document.createElement("v-frame") as HTMLElement & {
       src: string;
       status: string;
+      trustedTypesPolicy: {
+        name: string;
+        createHTML(source: string): string;
+        createScript(source: string): string;
+        createScriptURL(source: string): string;
+      };
     };
+    const trustedTypesPolicy = {
+      name: "pre-upgrade-frame",
+      createHTML: (source: string) => source,
+      createScript: (source: string) => source,
+      createScriptURL: (source: string) => source,
+    };
+    frame.trustedTypesPolicy = trustedTypesPolicy;
     frame.src = `${origin}/documents/first.html`;
     document.querySelector("#host")?.append(frame);
 
@@ -646,6 +659,8 @@ test("applies properties assigned before upgrade through their setters", async (
     const reflected = {
       src: frame.getAttribute("src"),
       ownSrc: Object.prototype.hasOwnProperty.call(frame, "src"),
+      policyPreserved: frame.trustedTypesPolicy === trustedTypesPolicy,
+      ownPolicy: Object.prototype.hasOwnProperty.call(frame, "trustedTypesPolicy"),
     };
     await loaded;
     return { ...reflected, status: frame.status };
@@ -654,6 +669,8 @@ test("applies properties assigned before upgrade through their setters", async (
   expect(result).toEqual({
     src: `${fixture.origin}/documents/first.html`,
     ownSrc: false,
+    policyPreserved: true,
+    ownPolicy: false,
     status: "ready",
   });
 });

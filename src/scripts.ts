@@ -49,6 +49,8 @@ export interface ScriptRunnerOptions {
   signal: AbortSignal;
   credentials: VFrameCredentials;
   executionOrigin: string;
+  createScript(source: string): string;
+  createScriptURL(source: string): string;
   getNonce(): string;
   getCurrentURL(): string;
   getNativeCurrentScript(): HTMLScriptElement | null;
@@ -113,6 +115,8 @@ export class ScriptRunner {
   readonly #signal: AbortSignal;
   readonly #credentials: VFrameCredentials;
   readonly #executionOrigin: string;
+  readonly #createScript: (source: string) => string;
+  readonly #createScriptURL: (source: string) => string;
   readonly #getNonce: () => string;
   readonly #getCurrentURL: () => string;
   readonly #getNativeCurrentScript: () => HTMLScriptElement | null;
@@ -139,6 +143,8 @@ export class ScriptRunner {
     this.#signal = options.signal;
     this.#credentials = options.credentials;
     this.#executionOrigin = options.executionOrigin;
+    this.#createScript = options.createScript;
+    this.#createScriptURL = options.createScriptURL;
     this.#getNonce = options.getNonce;
     this.#getCurrentURL = options.getCurrentURL;
     this.#getNativeCurrentScript = options.getNativeCurrentScript;
@@ -508,7 +514,9 @@ export class ScriptRunner {
         if (nonce !== "") {
           observer.nonce = nonce;
         }
-        observer.text = `import(${JSON.stringify(source)}).then(globalThis[${JSON.stringify(fulfilledName)}], globalThis[${JSON.stringify(rejectedName)}]);`;
+        observer.text = this.#createScript(
+          `import(${JSON.stringify(source)}).then(globalThis[${JSON.stringify(fulfilledName)}], globalThis[${JSON.stringify(rejectedName)}]);`,
+        );
 
         Object.defineProperty(this.#window, fulfilledName, {
           configurable: true,
@@ -566,7 +574,13 @@ export class ScriptRunner {
       }
       const attributeValue = pseudoScript.getAttribute(attributeName);
       if (attributeValue !== null) {
-        this.#native.setAttribute(companion, attributeName, attributeValue);
+        this.#native.setAttribute(
+          companion,
+          attributeName,
+          attributeName === "src"
+            ? this.#createScriptURL(attributeValue)
+            : attributeValue,
+        );
       }
     }
 
@@ -609,9 +623,11 @@ export class ScriptRunner {
       : null;
 
     if (!external) {
-      companion.text = inlineModule
-        ? `${pseudoScript.text}\n;globalThis[${JSON.stringify(completionName)}]();`
-        : pseudoScript.text;
+      companion.text = this.#createScript(
+        inlineModule
+          ? `${pseudoScript.text}\n;globalThis[${JSON.stringify(completionName)}]();`
+          : pseudoScript.text,
+      );
     }
 
     const settlementCallbacks: { fail?: (error?: unknown) => void } = {};

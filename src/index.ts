@@ -14,6 +14,7 @@ export type {
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
   VFrameStatus as VFrameStatusValue,
+  VFrameTrustedTypesPolicy,
 } from "./types.js";
 
 declare global {

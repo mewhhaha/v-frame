@@ -72,6 +72,34 @@ executed scripts and generated styles. Set it before loading when the host CSP
 requires a script or style nonce. Changing it does not itself reload the
 element.
 
+When the host and gateway marker enforce Trusted Types, assign an explicit
+policy definition before connecting the element:
+
+```ts
+import type { VFrameTrustedTypesPolicy } from "v-frame";
+
+const trustedTypesPolicy: VFrameTrustedTypesPolicy = {
+  name: "orders-frame",
+  createHTML: (source) => source,
+  createScript: (source) => source,
+  createScriptURL: (source) => source,
+};
+
+const frame = document.createElement("v-frame");
+frame.trustedTypesPolicy = trustedTypesPolicy;
+frame.src = "/applications/orders/";
+document.body.append(frame);
+```
+
+Allow that name in both policies with `trusted-types orders-frame` and enable
+enforcement with `require-trusted-types-for 'script'`. `v-frame` creates the
+native policy inside each hidden execution realm, so the returned trusted
+values have the correct realm and CSP. The callbacks also run on browsers
+without Trusted Types for consistent transformations. The identity rules above
+are appropriate only for application code already trusted to execute; use
+stricter rules when the source needs validation. A changed definition applies
+when the next realm is created and does not reload an active frame by itself.
+
 ### Adopt server-rendered content
 
 Use `adopt` when a server has already composed a materialized widget into the
@@ -129,6 +157,10 @@ The readonly properties are:
 - `contentWindow`: the execution iframe's `Window`, or `null` before the realm
   exists or after it is torn down. It can become available while `status` is
   still `"loading"` during script bootstrap.
+
+Each `status` value is also exposed as an exclusive custom-element state, so
+hosts can style `v-frame:state(idle)`, `:state(loading)`, `:state(ready)`, and
+`:state(error)` without mirroring the property into attributes.
 
 `reload()` returns a promise that reloads `currentURL`, or the selected entry
 route before the first document becomes active, when the element is connected

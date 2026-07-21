@@ -11,6 +11,8 @@ interface FixtureServer {
 
 const nonce = "module-style-csp-nonce";
 const nextNonce = "module-style-csp-next-nonce";
+const contentSecurityPolicy = `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'nonce-${nextNonce}'; object-src 'none'`;
+const trustedTypesContentSecurityPolicy = `${contentSecurityPolicy}; trusted-types v-frame-test; require-trusted-types-for 'script'`;
 let fixture: FixtureServer;
 
 function html(body: string, head = ""): string {
@@ -22,14 +24,14 @@ function reply(
   status: number,
   contentType: string,
   body: string,
-  includeCSP = false,
+  responseContentSecurityPolicy?: string,
 ): void {
   response.writeHead(status, {
     "cache-control": "no-store",
     "content-type": contentType,
-    ...(includeCSP ? {
-      "content-security-policy": `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'nonce-${nextNonce}'; object-src 'none'`,
-    } : {}),
+    ...(responseContentSecurityPolicy === undefined ? {} : {
+      "content-security-policy": responseContentSecurityPolicy,
+    }),
   });
   response.end(body);
 }
@@ -56,6 +58,13 @@ function documentSource(pathname: string): string | undefined {
           <script id="literal-script" type="application/json">{"literal":"<style> style="}</script>`,
         `<style id="initial-style">@import url("../styles/imported.css"); #initial-inline { --style-literal: "<style> & style="; color: rgb(11, 12, 13); } #cascade-style-target { color: rgb(141, 142, 143); } #cascade-important-target { color: rgb(171, 172, 173) !important; }</style><link rel="stylesheet" href="../styles/linked.css">`,
       );
+    case "/documents/trusted-types.html":
+      return html(
+        `<output id="trusted-html">Trusted source</output>
+          <button id="trusted-handler" onclick="this.dataset.inlineHandler = 'ran'">Run handler</button>
+          <script src="../modules/trusted-types.js"></script>
+          <script>document.body.insertAdjacentHTML("beforeend", '<output id="trusted-fragment">Trusted source</output>');</script>`,
+      );
     default:
       return undefined;
   }
@@ -81,6 +90,8 @@ window.addEventListener("load", () => window.__externalModuleEvents.push("load:"
       return 'import "./missing-dependency.js";';
     case "/modules/evaluation-failure.js":
       return 'throw new Error("external module evaluation failure");';
+    case "/modules/trusted-types.js":
+      return 'document.querySelector("#trusted-html").dataset.externalScript = "ran";';
     default:
       return undefined;
   }
@@ -106,8 +117,17 @@ async function closeServer(server: Server): Promise<void> {
 async function startFixtureServer(): Promise<FixtureServer> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
+    const realmContentSecurityPolicy = pathname === "/documents/trusted-types.html"
+      ? trustedTypesContentSecurityPolicy
+      : undefined;
+    if (serveRealmMarker(
+      request,
+      response,
+      realmContentSecurityPolicy === undefined
+        ? {}
+        : { "content-security-policy": realmContentSecurityPolicy },
+    )) return;
     if (pathname === "/") {
       reply(
         response,
@@ -116,7 +136,19 @@ async function startFixtureServer(): Promise<FixtureServer> {
         html(
           '<div id="host"></div><script type="module" nonce="module-style-csp-nonce">import { defineVFrame } from "/dist/index.js"; defineVFrame();</script>',
         ),
-        true,
+        contentSecurityPolicy,
+      );
+      return;
+    }
+    if (pathname === "/trusted-types") {
+      reply(
+        response,
+        200,
+        "text/html",
+        html(
+          '<div id="host"></div><script type="module" nonce="module-style-csp-nonce">import { defineVFrame } from "/dist/index.js"; defineVFrame();</script>',
+        ),
+        trustedTypesContentSecurityPolicy,
       );
       return;
     }
@@ -220,6 +252,109 @@ test("runs an external module with a relative import and top-level await before 
     },
   });
   expect(await page.evaluate(() => "__externalModuleState" in window)).toBe(false);
+});
+
+test("loads documents and scripts through an explicit Trusted Types policy", async ({ page }) => {
+  await page.goto(`${fixture.origin}/trusted-types`);
+  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+
+  const frame = page.locator("v-frame");
+  await page.evaluate(({ frameNonce, source }) => {
+    const element = document.createElement("v-frame") as HTMLElement & {
+      nonce: string;
+      src: string;
+      trustedTypesPolicy: {
+        name: string;
+        createHTML(source: string): string;
+        createScript(source: string): string;
+        createScriptURL(source: string): string;
+      };
+    };
+    element.nonce = frameNonce;
+    element.trustedTypesPolicy = {
+      name: "v-frame-test",
+      createHTML: (htmlSource) => htmlSource.replaceAll(
+        "Trusted source",
+        "Trusted HTML policy applied",
+      ),
+      createScript: (scriptSource) => `${scriptSource}\n;globalThis.__trustedScriptPolicyApplied = true;`,
+      createScriptURL: (scriptURL) => scriptURL,
+    };
+    element.src = source;
+    document.querySelector("#host")?.append(element);
+  }, {
+    frameNonce: nonce,
+    source: `${fixture.origin}/documents/trusted-types.html`,
+  });
+
+  await expect.poll(() => frame.evaluate((element) => (
+    element as { status: string }
+  ).status)).toBe("ready");
+  await expect(frame.locator("#trusted-html")).toHaveText("Trusted HTML policy applied");
+  await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted HTML policy applied");
+  await frame.locator("#trusted-handler").click();
+  expect(await childValue(frame, (window) => ({
+    externalScript: window.document.querySelector("#trusted-html")?.getAttribute(
+      "data-external-script",
+    ),
+    trustedScriptPolicyApplied: (
+      window as typeof window & { __trustedScriptPolicyApplied?: boolean }
+    ).__trustedScriptPolicyApplied,
+    inlineHandler: window.document.querySelector("#trusted-handler")?.getAttribute(
+      "data-inline-handler",
+    ),
+  }))).toEqual({
+    externalScript: "ran",
+    trustedScriptPolicyApplied: true,
+    inlineHandler: "ran",
+  });
+});
+
+test("reports a fatal bootstrap error when Trusted Types enforcement has no policy", async ({
+  browserName,
+  page,
+}) => {
+  test.skip(browserName !== "chromium", "Trusted Types enforcement is unavailable");
+  await page.goto(`${fixture.origin}/trusted-types`);
+  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+
+  const failure = await page.evaluate(async ({ frameNonce, source }) => {
+    const frame = document.createElement("v-frame") as HTMLElement & {
+      nonce: string;
+      src: string;
+      status: string;
+    };
+    frame.nonce = frameNonce;
+    const failed = new Promise<{ phase: string; fatal: boolean; errorName: string }>(
+      (resolveFailed) => {
+        frame.addEventListener("v-frame-error", (event) => {
+          const detail = (event as CustomEvent<{
+            phase: string;
+            fatal: boolean;
+            error: { name?: string };
+          }>).detail;
+          resolveFailed({
+            phase: detail.phase,
+            fatal: detail.fatal,
+            errorName: detail.error.name ?? "",
+          });
+        }, { once: true });
+      },
+    );
+    frame.src = source;
+    document.querySelector("#host")?.append(frame);
+    return { ...await failed, status: frame.status };
+  }, {
+    frameNonce: nonce,
+    source: `${fixture.origin}/documents/trusted-types.html`,
+  });
+
+  expect(failure).toEqual({
+    phase: "bootstrap",
+    fatal: true,
+    errorName: "TypeError",
+    status: "error",
+  });
 });
 
 for (const [name, pathname] of [
