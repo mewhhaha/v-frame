@@ -61,6 +61,7 @@ test("keeps an empty source idle and recreates its realm after reconnection", as
       status: string;
       src: string;
     };
+    frame.src = "";
     document.querySelector("#host")?.append(frame);
     const initially = {
       status: frame.status,
@@ -102,6 +103,59 @@ test("keeps an empty source idle and recreates its realm after reconnection", as
     currentURL: `${fixture.origin}/documents/reconnect.html`,
     recreatedWindow: true,
   });
+});
+
+test("binds a frame without src to shell location and history", async ({ page }) => {
+  await page.goto(`${fixture.origin}/documents/bound-shell.html`);
+  await page.evaluate(async (bundleURL) => {
+    const bundle = await import(bundleURL);
+    bundle.defineVFrame();
+    (window as Window & typeof globalThis & { __unpatchedPushState?: History["pushState"] })
+      .__unpatchedPushState = history.pushState;
+    document.querySelector("#host")?.append(document.createElement("v-frame"));
+  }, `${fixture.origin}/dist/index.js`);
+  const frame = page.locator("v-frame");
+  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+
+  expect(await childValue(frame, (window) => ({
+    href: window.location.href,
+    pathname: window.location.pathname,
+  }))).toEqual({
+    href: `${fixture.origin}/documents/bound-shell.html`,
+    pathname: "/documents/bound-shell.html",
+  });
+
+  await childValue(frame, (window) => {
+    window.history.pushState({ owner: "child" }, "", "/documents/bound-child");
+  });
+  await expect(page).toHaveURL(`${fixture.origin}/documents/bound-child`);
+  await expect.poll(() => frame.evaluate((element) => (
+    element as { currentURL: string | null }
+  ).currentURL)).toBe(`${fixture.origin}/documents/bound-child`);
+
+  await page.evaluate(() => {
+    history.replaceState({ owner: "host" }, "", "/documents/bound-host");
+  });
+  await expect.poll(() => childValue(frame, (window) => ({
+    href: window.location.href,
+    state: window.history.state,
+    events: (window as Window & typeof globalThis & { __boundPopStates: unknown[] })
+      .__boundPopStates,
+  }))).toEqual({
+    href: `${fixture.origin}/documents/bound-host`,
+    state: { owner: "host" },
+    events: [{ owner: "host" }],
+  });
+
+  expect(await frame.evaluate((element) => {
+    const childHistory = (element as HTMLElement & { contentWindow: Window }).contentWindow.history;
+    element.remove();
+    childHistory.back();
+    return history.pushState === (
+      window as Window & typeof globalThis & { __unpatchedPushState: History["pushState"] }
+    ).__unpatchedPushState;
+  })).toBe(true);
+  await expect(page).toHaveURL(`${fixture.origin}/documents/bound-host`);
 });
 
 test("keeps only the latest rapid source load and exposes redirect final URLs", async ({ page }) => {

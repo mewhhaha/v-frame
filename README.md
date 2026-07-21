@@ -36,10 +36,25 @@ different constructor already owns that tag.
 ></v-frame>
 ```
 
-`src` is resolved against the host document's base URL and must resolve to a
+Providing `src` creates an unbound frame with independent soft history. It is
+resolved against the host document's base URL and must resolve to a
 same-origin `http:` or `https:` gateway route. Setting or changing `src` on a
 connected element starts a load. An invalid, cross-origin, or unsupported URL
 produces a fatal `v-frame-error` with phase `entry`.
+
+Omitting `src` creates a frame bound to the shell, matching Web Fragments'
+default:
+
+```html
+<v-frame></v-frame>
+```
+
+The current shell URL is then both the entry route and the URL visible to the
+child. Child History methods operate on shell history, while host history
+changes and browser traversal are mirrored back into the child. The gateway
+must return the application document for a normal fetch of that URL, its realm
+marker for an iframe request, and the composed shell for top-level navigation.
+Use an explicit empty `src=""` to keep a connected frame idle.
 
 The gateway route can proxy an application deployed on another origin, but
 the URL exposed to the browser and the child application must be same-origin
@@ -110,14 +125,15 @@ The readonly properties are:
 
 - `status`: `"idle"`, `"loading"`, `"ready"`, or `"error"`.
 - `currentURL`: the fetched response's final URL while a realm is active, then
-  the current virtual-history URL; otherwise `null`.
+  the selected bound or unbound history URL; otherwise `null`.
 - `contentWindow`: the execution iframe's `Window`, or `null` before the realm
   exists or after it is torn down. It can become available while `status` is
   still `"loading"` during script bootstrap.
 
-`reload()` returns a promise that reloads `currentURL`, or `src` before the
-first document becomes active, when the element is connected and has a
-non-empty `src`. Otherwise it resets the element to `idle` and resolves.
+`reload()` returns a promise that reloads `currentURL`, or the selected entry
+route before the first document becomes active, when the element is connected
+and is not opted out with `src=""`. Otherwise it resets the element to `idle`
+and resolves.
 Reload keeps the current document visible until the replacement is ready. A
 failed reload restores the current realm and reports a non-fatal error.
 Changing `src` explicitly starts a new history session instead.
@@ -166,12 +182,20 @@ are fetched and converted to styles. Page scripts execute in an invisible
 same-origin iframe, with patched document, network, history, and selected
 window APIs that operate on the reconstructed page.
 
-The hidden iframe requests the gateway marker at `src`, so its native
-`Location`, `document.URL`, and `document.documentURI` start at the public
-application route. The virtual History implementation mirrors its current URL
-into the iframe's native history while keeping soft history independent from
-the shell. Hard `Location` transitions return to the gateway and are promoted
-to the host document after `v-frame-navigate` is allowed. Browsers
+Import maps are installed in the execution iframe in document order before
+deferred modules run. Custom elements created after their child registry
+definition, through `document.createElement()` or HTML mutation APIs such as
+`innerHTML`, are constructed by that child registry and remain isolated
+between frames. Initial declarative custom elements are adopted into the host
+document before scripts define them, so browsers cannot upgrade those
+existing nodes through the child registry.
+
+The hidden iframe requests the gateway marker at the selected entry route. In
+bound mode its native `Location`, `document.URL`, `document.documentURI`, and
+History API mirror the shell. With `src`, those APIs start at the public
+application route and soft history remains independent. Hard `Location`
+transitions return to the gateway and are promoted to the host document after
+`v-frame-navigate` is allowed. Browsers
 expose no interception event when a `javascript:` Location URL executes and
 completes without a string,
 so that code can run in the existing document without producing a fatal error.
@@ -202,7 +226,8 @@ a `runtime` failure.
 ## Gateway and Location
 
 The `v-frame/gateway` entry point exports `serveVFrameRoute()`. Every public
-application route used by `src` must provide the same contract:
+application route selected by `src` or bound navigation must provide the same
+contract:
 
 ```ts
 import { serveVFrameRoute } from "v-frame/gateway";
@@ -213,12 +238,14 @@ return serveVFrameRoute({
     "Content-Security-Policy": "script-src 'self' 'nonce-host'; style-src 'self' 'nonce-host'",
   },
   loadDocument: () => application.fetch(request),
+  loadShell: () => shell.fetch(request),
 });
 ```
 
 For an iframe navigation, the helper returns a fixed marker document without
 calling `loadDocument()`. For an ordinary fetch, it returns the application
-response with `V-Frame-Gateway: 1`. Both responses include
+response with `V-Frame-Gateway: 1`. When optional `loadShell` is present, a
+top-level document request returns that composed shell instead. Responses include
 `Vary: Sec-Fetch-Dest` so a shared cache cannot serve one representation for
 the other. The iframe request must reach the gateway at the same public URL as
 `src`. Cross-origin `src` values are rejected; proxy remote deployments behind
@@ -230,10 +257,11 @@ including the same nonce passed to the component. Do not send a
 `frame-ancestors` policy or framing header that prevents the marker from
 loading in the same-origin host.
 
-The hidden iframe requests that marker alongside the ordinary entry fetch,
-giving its native `Location` the application route. Same-context links, GET
-forms, and `window.open(..., "_self")` are promoted to the host document after
-an allowed `v-frame-navigate` event. A direct `location.assign()`,
+The hidden iframe requests that marker alongside the ordinary entry fetch.
+An unbound frame keeps that application route as its native `Location`; a
+bound frame is synchronized to the shell before scripts run. Same-context
+links, GET forms, and `window.open(..., "_self")` are promoted to the host
+document after an allowed `v-frame-navigate` event. A direct `location.assign()`,
 `location.href` change, or `location.reload()` first destroys the child realm,
 then the marker load is promoted to the host. Canceling that event reconstructs
 the previous frame.
@@ -247,22 +275,21 @@ recover its destination and therefore ends the frame with a fatal navigation
 error. Cross-origin `<a>` and GET form destinations do not have that limitation
 because their defaults are intercepted before navigation.
 
-The server must separately decide what a top-level application route means.
+For an unbound frame, the server must separately decide what a top-level
+application route means.
 It can render the composed shell there, redirect to a canonical shell URL, or
 leave the application standalone. The gateway helper deliberately does not
-invent that product-level mapping. `history.pushState()` and
-`history.replaceState()` remain frame-local; `v-frame` does not bind the two
-session-history stacks.
+invent that product-level mapping. History remains frame-local with `src`; it
+mutates shell history when `src` is omitted.
 
 ## How this differs from Web Fragments
 
 `v-frame` and [Web Fragments](https://github.com/web-fragments/web-fragments)
 use the same broad composition shape: application DOM lives in a shadow root
-while its scripts execute in a hidden, same-origin iframe. They do not provide
-the same routing contract. `v-frame` deliberately keeps each embedded
-application's soft history separate from the shell. Web Fragments provides a
-broader gateway and makes a
-fragment without `src` *bound* to the shell's location and history by default.
+while its scripts execute in a hidden, same-origin iframe. They use the same
+routing split: a fragment without `src` is bound to shell location and
+history, while a fragment with `src` keeps independent soft history. Web
+Fragments provides a broader gateway around that model.
 
 This comparison was checked against Web Fragments
 [`eb44af6`](https://github.com/web-fragments/web-fragments/tree/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb).
@@ -275,10 +302,10 @@ Upstream behavior may change.
 | Behavior | `v-frame` | Web Fragments | Practical impact |
 | --- | --- | --- | --- |
 | Execution iframe startup | Requests a marker from the same-origin public application route in parallel with the application document. | Requests the public fragment route in an iframe; the gateway returns a small initialization document so the iframe has that native URL. | Both require an additional small bootstrap request per realm. |
-| Default navigation model | Every frame has an independent virtual URL and history. | A fragment without `src` shares the shell URL and history. A fragment with `src` is unbound and has independent history. | A router inside `v-frame` does not automatically become the shell router. |
-| `history.pushState()` and `replaceState()` | Update `currentURL` and the frame's session-history stack. They do not update the address bar or shell history. | In a bound fragment, operate on shell history. In an unbound fragment, operate on an independent stack. | Deep links, analytics, and browser back/forward integration require an explicit host routing contract with `v-frame`. |
+| Default navigation model | A frame without `src` shares shell URL/history; a frame with `src` is unbound. | The same bound/unbound split. | Existing embeds can stay independent while shell-routed apps need no host synchronization glue. |
+| `history.pushState()` and `replaceState()` | Operate on shell history in bound mode and an independent stack in unbound mode. | The same mode-dependent ownership. | Bound routers update the address bar and participate in browser back/forward. |
 | Direct `Location` mutation | Promotes hard navigation, reload, and direct hash changes to the shell; canceled navigation rebuilds the child, and replace degrades to assign. | In a bound fragment, hard navigation or reload is propagated to the shell. | Common Location code works, but the server contract is mandatory and replace semantics cannot be preserved. |
-| Links and forms | Promotes same-context HTTP(S) links, `_self` windows, and GET forms to the shell. Same-document link fragments remain frame-local. Non-GET forms remain unsupported. | Native navigation is backed by the gateway and, for bound fragments, the shell route. | Both require the shell to define the destination route. |
+| Links and forms | Promotes same-context HTTP(S) links, `_self` windows, and GET forms to the shell. Fragment links update the selected history and scroll inside the frame. Non-GET forms remain unsupported. | Native navigation is backed by the gateway and, for bound fragments, the shell route. | Both require the shell to define the destination route. |
 | Route requests | Adds only the iframe/document distinction and a version header; proxying remains the host's responsibility. | Route patterns let the gateway proxy fragment documents, assets, and data through the shell origin. | The `v-frame` gateway is smaller, but independently deployed applications still need host routing or proxy infrastructure. |
 | Top-level document navigation | Outside `v-frame`; the host decides how a frame route maps to a shell route. | The gateway distinguishes iframe, soft-navigation, asset, and top-level document requests and can pierce a server-rendered fragment into the shell. | A `v-frame` deployment must implement its own hard-navigation fallback and route mapping. |
 | Server-rendered startup | The host materializes Declarative Shadow DOM and marks the frame `adopt`. Activation makes a small marker request but does not refetch application HTML. | The gateway can fetch and pierce registered fragments into the shell response, then the client portals and activates them. | `v-frame` keeps SSR composition host-owned and framework-agnostic. |
@@ -292,19 +319,16 @@ navigation to control the whole page.
 
 ### Navigation pitfalls
 
-An SPA router using only the History API can maintain internal state inside a
-`v-frame`:
+An SPA router in a bound frame updates shell history directly:
 
 ```js
 history.pushState({ orderId: 42 }, "", "/orders/42");
 ```
 
-After this call, `frame.currentURL` and the child `history` reflect
-`/orders/42`, but the browser address bar and host history do not. No document
-is fetched. `push`, `replace`, and `traverse` navigation events are
-observational and cannot be canceled. Mechanically mirroring them into host
-history creates two stacks that can diverge, so define which application owns
-each route and synchronize semantic route changes instead.
+After this call, the address bar, `frame.currentURL`, and child history all
+reflect `/orders/42`; no document is fetched. With `src`, the same call remains
+inside the frame's independent history. `push`, `replace`, and `traverse`
+navigation events are observational and cannot be canceled.
 
 Hard-navigation code promotes its destination to the host document:
 
@@ -359,10 +383,8 @@ gateway must proxy the document, assets, and APIs for which the application
 expects same-origin resolution. Storage, cookies, and service workers belong
 to the public host origin, not the upstream deployment origin.
 
-In short, `v-frame` is suited to embedded applications whose navigation is
-internal or coordinated explicitly with the host. Web Fragments' bound mode is
-closer to a transparent replacement for an application that expects to own the
-page URL, browser history, hard navigation, and server routing.
+In short, omit `src` for an application that owns the page URL and browser
+history; provide `src` for an independently routed embedded application.
 
 ## Dynamic CSSOM
 
@@ -429,8 +451,7 @@ React, Vue, or other framework compatibility.
 `v-frame` deliberately does not provide a full browser-document environment.
 In particular, v1 excludes:
 
-- child-defined custom elements;
-- import maps;
+- initial declarative elements defined only in the child custom-element registry;
 - `document.open()` and `document.write()`, including parser-interleaving
   semantics;
 - direct mutation of the `Document` child list and preservation of source
@@ -442,13 +463,15 @@ In particular, v1 excludes:
 - upstream-origin service workers;
 - native iframe viewport semantics.
 
-Links, forms, `window.open`, and virtual `history` operations are intercepted
-to report `v-frame-navigate`. Same-document history changes update
-`currentURL` without fetching, while allowed same-context HTTP(S) links,
+Links, forms, `window.open`, and `history` operations are intercepted to report
+`v-frame-navigate`. Same-document history changes update `currentURL` without
+fetching and also update shell history in bound mode, while allowed
+same-context HTTP(S) links,
 `window.open(..., "_self")`, GET forms, and direct Location navigation promote
 to the host.
 A `_blank` link or GET form may open a native window only after its navigation
-event is allowed. Virtual `history.go()` and `history.go(0)` remain no-ops;
+event is allowed. In unbound mode, `history.go()` and `history.go(0)` remain
+no-ops;
 a direct `location.reload()` promotes to the host.
 Middle-button and Ctrl/Meta/Shift link activations use the same gated `_blank`
 behavior. Link and submit defaults run after event propagation, so

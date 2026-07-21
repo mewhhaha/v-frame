@@ -13,7 +13,7 @@ import {
   installDocumentFacade,
   type DocumentFacade,
 } from "./document-facade.js";
-import { VirtualHistory, VirtualHistorySession } from "./history.js";
+import { BoundHistory, VirtualHistory, VirtualHistorySession } from "./history.js";
 import {
   V_FRAME_GATEWAY_VERSION,
   V_FRAME_REALM_MARKER,
@@ -167,6 +167,7 @@ export interface CreateRealmOptions {
     | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
   pageURL: string;
   historySession: VirtualHistorySession;
+  boundNavigation: boolean;
   stageMarkup: boolean;
   credentials: VFrameCredentials;
   signal: AbortSignal;
@@ -604,20 +605,21 @@ function installViewportPatches(
   const resizeListener = () => {
     window.dispatchEvent(new window.Event("resize"));
   };
-  hostWindow.addEventListener("resize", resizeListener);
-  let disposed = false;
   const scrollListener = () => {
-    if (!disposed) {
-      dispatchScrollEvent();
-    }
+    dispatchScrollEvent();
   };
-  host.addEventListener("scroll", scrollListener, { passive: true });
+  const listenerLifetime = new AbortController();
+  hostWindow.addEventListener("resize", resizeListener, {
+    signal: listenerLifetime.signal,
+  });
+  host.addEventListener("scroll", scrollListener, {
+    passive: true,
+    signal: listenerLifetime.signal,
+  });
 
   return {
     dispose() {
-      disposed = true;
-      hostWindow.removeEventListener("resize", resizeListener);
-      host.removeEventListener("scroll", scrollListener);
+      listenerLifetime.abort();
       for (const [name, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (window as unknown as Record<PropertyKey, unknown>)[name];
@@ -642,6 +644,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     if (window === null || document === null) {
       throw new Error("The connected iframe has no same-origin execution realm");
     }
+    const hostListenerLifetime = new AbortController();
+    const childListenerLifetime = new window.AbortController();
+    bootstrapDisposers.push(() => hostListenerLifetime.abort());
+    bootstrapDisposers.push(() => childListenerLifetime.abort());
 
     const nativeCurrentScriptGetter = Object.getOwnPropertyDescriptor(
       window.Document.prototype,
@@ -738,17 +744,25 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       facade?.rebaseURLs();
     };
 
-    const history = new VirtualHistory({
-      window,
-      session: options.historySession,
-      getBaseURL: getDocumentBaseURL,
-      onNavigate: options.onNavigate,
-      onURLChange(url) {
-        currentURL = url;
-        updateDocumentBaseURL();
-        options.onURLChange(url);
-      },
-    });
+    const historyURLChanged = (url: string) => {
+      currentURL = url;
+      updateDocumentBaseURL();
+      options.onURLChange(url);
+    };
+    const history = options.boundNavigation
+      ? new BoundHistory({
+        window,
+        hostWindow: options.host.ownerDocument.defaultView!,
+        onNavigate: options.onNavigate,
+        onURLChange: historyURLChanged,
+      })
+      : new VirtualHistory({
+        window,
+        session: options.historySession,
+        getBaseURL: getDocumentBaseURL,
+        onNavigate: options.onNavigate,
+        onURLChange: historyURLChanged,
+      });
     history.install();
     bootstrapDisposers.push(() => history.dispose());
 
@@ -1765,9 +1779,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
       navigationInstalled = true;
-      options.shadowRoot.addEventListener("click", suppressLinkDefault, true);
-      options.shadowRoot.addEventListener("auxclick", suppressLinkDefault, true);
-      options.shadowRoot.addEventListener("submit", suppressSubmitDefault, true);
+      const navigationListenerOptions = {
+        capture: true,
+        signal: hostListenerLifetime.signal,
+      };
+      options.shadowRoot.addEventListener("click", suppressLinkDefault, navigationListenerOptions);
+      options.shadowRoot.addEventListener("auxclick", suppressLinkDefault, navigationListenerOptions);
+      options.shadowRoot.addEventListener("submit", suppressSubmitDefault, navigationListenerOptions);
       window.HTMLFormElement.prototype.submit = function submit(): void {
         formSubmission(this, null);
       };
@@ -1922,15 +1940,25 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
     };
 
-    hostView?.addEventListener("beforeunload", hostBeforeUnloadListener, true);
-    bootstrapDisposers.push(() => {
-      hostView?.removeEventListener("beforeunload", hostBeforeUnloadListener, true);
+    hostView?.addEventListener("beforeunload", hostBeforeUnloadListener, {
+      capture: true,
+      signal: hostListenerLifetime.signal,
     });
-    window.addEventListener("error", runtimeErrorListener);
-    window.addEventListener("unhandledrejection", rejectionListener);
-    window.addEventListener("popstate", trustedPopStateListener);
-    window.addEventListener("hashchange", trustedHashChangeListener);
-    iframe.addEventListener("load", iframeNavigationListener);
+    window.addEventListener("error", runtimeErrorListener, {
+      signal: childListenerLifetime.signal,
+    });
+    window.addEventListener("unhandledrejection", rejectionListener, {
+      signal: childListenerLifetime.signal,
+    });
+    window.addEventListener("popstate", trustedPopStateListener, {
+      signal: childListenerLifetime.signal,
+    });
+    window.addEventListener("hashchange", trustedHashChangeListener, {
+      signal: childListenerLifetime.signal,
+    });
+    iframe.addEventListener("load", iframeNavigationListener, {
+      signal: hostListenerLifetime.signal,
+    });
 
     let adoptedMarkupRevealed = options.markup.kind !== "adopted";
     const revealAdoptedMarkup = (): void => {
@@ -1968,16 +1996,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
         disposed = true;
         options.signal.removeEventListener("abort", runtime.dispose);
+        hostListenerLifetime.abort();
+        childListenerLifetime.abort();
         mutationObserver.disconnect();
-        options.shadowRoot.removeEventListener("click", suppressLinkDefault, true);
-        options.shadowRoot.removeEventListener("auxclick", suppressLinkDefault, true);
-        options.shadowRoot.removeEventListener("submit", suppressSubmitDefault, true);
-        hostView?.removeEventListener("beforeunload", hostBeforeUnloadListener, true);
-        window.removeEventListener("error", runtimeErrorListener);
-        window.removeEventListener("unhandledrejection", rejectionListener);
-        window.removeEventListener("popstate", trustedPopStateListener);
-        window.removeEventListener("hashchange", trustedHashChangeListener);
-        iframe?.removeEventListener("load", iframeNavigationListener);
         window.HTMLFormElement.prototype.submit = nativeFormSubmit;
         history.dispose();
         viewport.dispose();

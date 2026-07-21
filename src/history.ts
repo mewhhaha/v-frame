@@ -10,6 +10,81 @@ interface HistoryEntry {
   state: unknown;
 }
 
+type HostHistoryChange = "push" | "replace";
+
+interface HostHistoryObserver {
+  callbacks: Set<(change: HostHistoryChange) => void>;
+  pushStateDescriptor: PropertyDescriptor | undefined;
+  replaceStateDescriptor: PropertyDescriptor | undefined;
+}
+
+const hostHistoryObservers = new WeakMap<Window, HostHistoryObserver>();
+
+function observeHostHistory(
+  hostWindow: Window,
+  callback: (change: HostHistoryChange) => void,
+): () => void {
+  let observer = hostHistoryObservers.get(hostWindow);
+  if (observer === undefined) {
+    const history = hostWindow.history;
+    const nativePushState = history.pushState;
+    const nativeReplaceState = history.replaceState;
+    observer = {
+      callbacks: new Set(),
+      pushStateDescriptor: Object.getOwnPropertyDescriptor(history, "pushState"),
+      replaceStateDescriptor: Object.getOwnPropertyDescriptor(history, "replaceState"),
+    };
+    hostHistoryObservers.set(hostWindow, observer);
+    const notify = (change: HostHistoryChange) => {
+      for (const registeredCallback of observer?.callbacks ?? []) {
+        registeredCallback(change);
+      }
+    };
+    Object.defineProperties(history, {
+      pushState: {
+        configurable: true,
+        writable: true,
+        value: function pushState(this: History, _state: unknown, _unused: string) {
+          Reflect.apply(nativePushState, this, arguments);
+          if (this === history) {
+            notify("push");
+          }
+        },
+      },
+      replaceState: {
+        configurable: true,
+        writable: true,
+        value: function replaceState(this: History, _state: unknown, _unused: string) {
+          Reflect.apply(nativeReplaceState, this, arguments);
+          if (this === history) {
+            notify("replace");
+          }
+        },
+      },
+    });
+  }
+
+  observer.callbacks.add(callback);
+  return () => {
+    observer?.callbacks.delete(callback);
+    if (observer === undefined || observer.callbacks.size !== 0) {
+      return;
+    }
+    const history = hostWindow.history;
+    if (observer.pushStateDescriptor === undefined) {
+      delete (history as unknown as Record<string, unknown>).pushState;
+    } else {
+      Object.defineProperty(history, "pushState", observer.pushStateDescriptor);
+    }
+    if (observer.replaceStateDescriptor === undefined) {
+      delete (history as unknown as Record<string, unknown>).replaceState;
+    } else {
+      Object.defineProperty(history, "replaceState", observer.replaceStateDescriptor);
+    }
+    hostHistoryObservers.delete(hostWindow);
+  };
+}
+
 export class VirtualHistorySession {
   readonly #entries: HistoryEntry[];
   #index: number;
@@ -102,6 +177,271 @@ export interface VirtualHistoryOptions {
   getBaseURL(): string;
   onNavigate(detail: VFrameNavigateEventDetail): boolean;
   onURLChange(url: string): void;
+}
+
+export interface BoundHistoryOptions {
+  window: VFrameWindow;
+  hostWindow: Window;
+  onNavigate(detail: VFrameNavigateEventDetail): boolean;
+  onURLChange(url: string): void;
+}
+
+export class BoundHistory {
+  readonly #window: VFrameWindow;
+  readonly #childHistory: History;
+  readonly #hostWindow: Window;
+  readonly #nativeChildReplaceState: History["replaceState"];
+  readonly #onNavigate: BoundHistoryOptions["onNavigate"];
+  readonly #onURLChange: BoundHistoryOptions["onURLChange"];
+  readonly #listenerLifetime = new AbortController();
+  #currentURL: string;
+  #originatingHostChange = false;
+  #disposed = false;
+
+  constructor(options: BoundHistoryOptions) {
+    this.#window = options.window;
+    this.#childHistory = options.window.history;
+    this.#hostWindow = options.hostWindow;
+    this.#nativeChildReplaceState = options.window.history.replaceState.bind(
+      options.window.history,
+    );
+    this.#onNavigate = options.onNavigate;
+    this.#onURLChange = options.onURLChange;
+    this.#currentURL = options.hostWindow.location.href;
+  }
+
+  install(): void {
+    const boundHistory = this;
+    Object.defineProperties(this.#window.History.prototype, {
+      length: {
+        configurable: true,
+        get(this: History) {
+          boundHistory.#assertReceiver(this);
+          return boundHistory.#hostWindow.history.length;
+        },
+      },
+      state: {
+        configurable: true,
+        get(this: History) {
+          boundHistory.#assertReceiver(this);
+          return boundHistory.#hostWindow.history.state;
+        },
+      },
+      scrollRestoration: {
+        configurable: true,
+        get(this: History) {
+          boundHistory.#assertReceiver(this);
+          return boundHistory.#hostWindow.history.scrollRestoration;
+        },
+        set(this: History, value: ScrollRestoration) {
+          boundHistory.#assertReceiver(this);
+          if (boundHistory.#disposed) {
+            return;
+          }
+          boundHistory.#hostWindow.history.scrollRestoration = value;
+        },
+      },
+      pushState: {
+        configurable: true,
+        writable: true,
+        value: function pushState(this: History, state: unknown, unused: string) {
+          boundHistory.#assertReceiver(this);
+          boundHistory.#assertRequiredArguments("pushState", arguments.length, 2);
+          boundHistory.#changeHostHistory(
+            "push",
+            state,
+            unused,
+            arguments[2] as string | URL | null | undefined,
+          );
+        },
+      },
+      replaceState: {
+        configurable: true,
+        writable: true,
+        value: function replaceState(this: History, state: unknown, unused: string) {
+          boundHistory.#assertReceiver(this);
+          boundHistory.#assertRequiredArguments("replaceState", arguments.length, 2);
+          boundHistory.#changeHostHistory(
+            "replace",
+            state,
+            unused,
+            arguments[2] as string | URL | null | undefined,
+          );
+        },
+      },
+      back: {
+        configurable: true,
+        writable: true,
+        value(this: History) {
+          boundHistory.#assertReceiver(this);
+          if (!boundHistory.#disposed) {
+            boundHistory.#hostWindow.history.back();
+          }
+        },
+      },
+      forward: {
+        configurable: true,
+        writable: true,
+        value(this: History) {
+          boundHistory.#assertReceiver(this);
+          if (!boundHistory.#disposed) {
+            boundHistory.#hostWindow.history.forward();
+          }
+        },
+      },
+      go: {
+        configurable: true,
+        writable: true,
+        value(this: History, delta?: number) {
+          boundHistory.#assertReceiver(this);
+          if (!boundHistory.#disposed) {
+            boundHistory.#hostWindow.history.go(delta);
+          }
+        },
+      },
+    });
+
+    const stopObserving = observeHostHistory(this.#hostWindow, () => {
+      this.#synchronizeFromHost(!this.#originatingHostChange);
+    });
+    this.#listenerLifetime.signal.addEventListener("abort", stopObserving, {
+      once: true,
+    });
+    this.#hostWindow.addEventListener("popstate", () => {
+      if (this.#disposed) {
+        return;
+      }
+      const from = this.#currentURL;
+      const to = this.#hostWindow.location.href;
+      this.#onNavigate({
+        from,
+        to,
+        kind: "traverse",
+        state: this.#hostWindow.history.state,
+      });
+      this.#synchronizeFromHost(true);
+    }, { signal: this.#listenerLifetime.signal });
+    this.#synchronizeFromHost(false);
+  }
+
+  navigateFragment(url: string, state: unknown = null): boolean {
+    if (this.#disposed) {
+      return false;
+    }
+    const from = this.#currentURL;
+    const to = new this.#window.URL(url, from).href;
+    if (!this.#onNavigate({ from, to, kind: "fragment", state })) {
+      return false;
+    }
+    this.#originatingHostChange = true;
+    try {
+      this.#hostWindow.history.pushState(state, "", to);
+    } finally {
+      this.#originatingHostChange = false;
+    }
+    this.#dispatchActivationEvents(from);
+    return true;
+  }
+
+  restoreMirroredURL(): void {
+    if (!this.#disposed) {
+      this.#mirrorHostEntry();
+    }
+  }
+
+  dispose(): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#disposed = true;
+    this.#listenerLifetime.abort();
+  }
+
+  #changeHostHistory(
+    change: HostHistoryChange,
+    state: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    if (this.#disposed) {
+      return;
+    }
+    const to = resolveHistoryURL(
+      url,
+      this.#hostWindow.location.href,
+      this.#hostWindow.location.href,
+      this.#window,
+    );
+    const nextState = this.#window.structuredClone(state);
+    this.#onNavigate({
+      from: this.#currentURL,
+      to,
+      kind: change,
+      state: nextState,
+    });
+    if (this.#disposed) {
+      return;
+    }
+    this.#originatingHostChange = true;
+    try {
+      this.#hostWindow.history[change === "push" ? "pushState" : "replaceState"](
+        nextState,
+        unused,
+        url,
+      );
+    } finally {
+      this.#originatingHostChange = false;
+    }
+  }
+
+  #synchronizeFromHost(dispatchEvents: boolean): void {
+    if (this.#disposed) {
+      return;
+    }
+    const previousURL = this.#currentURL;
+    this.#currentURL = this.#hostWindow.location.href;
+    this.#mirrorHostEntry();
+    this.#onURLChange(this.#currentURL);
+    if (dispatchEvents) {
+      this.#dispatchActivationEvents(previousURL);
+    }
+  }
+
+  #mirrorHostEntry(): void {
+    this.#nativeChildReplaceState(
+      this.#hostWindow.history.state,
+      "",
+      this.#hostWindow.location.href,
+    );
+  }
+
+  #dispatchActivationEvents(previousURL: string): void {
+    this.#window.dispatchEvent(new this.#window.PopStateEvent("popstate", {
+      state: this.#hostWindow.history.state,
+    }));
+    const previousHash = new this.#window.URL(previousURL).hash;
+    const currentHash = new this.#window.URL(this.#currentURL).hash;
+    if (previousHash !== currentHash) {
+      this.#window.dispatchEvent(new this.#window.HashChangeEvent("hashchange", {
+        oldURL: previousURL,
+        newURL: this.#currentURL,
+      }));
+    }
+  }
+
+  #assertReceiver(receiver: History): void {
+    if (receiver !== this.#childHistory) {
+      throw new this.#window.TypeError("Illegal invocation");
+    }
+  }
+
+  #assertRequiredArguments(method: string, actual: number, required: number): void {
+    if (actual < required) {
+      throw new this.#window.TypeError(
+        `Failed to execute '${method}' on 'History': ${required} arguments required, but only ${actual} present.`,
+      );
+    }
+  }
 }
 
 export class VirtualHistory {

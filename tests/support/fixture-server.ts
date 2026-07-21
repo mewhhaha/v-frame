@@ -111,6 +111,38 @@ function pageFor(path: string) {
           await new Promise((resolve) => setTimeout(resolve, 25));
           document.querySelector('#module-result').textContent = 'module settled';
         </script>`);
+    case "/documents/import-map.html":
+      return html(`<output id="import-map-result">pending</output>
+        <script type="importmap">
+          { "imports": { "fixture-message": "../assets/import-map-message.js" } }
+        </script>
+        <script type="module">
+          import { message } from 'fixture-message';
+          document.querySelector('#import-map-result').textContent = message;
+        </script>`);
+    case "/documents/child-custom-elements.html":
+      return html(`<div id="dynamic-root"></div>
+        <script>
+          const label = new URL(location.href).searchParams.get('label');
+          class ChildGreeting extends HTMLElement {
+            connectedCallback() {
+              this.textContent = label;
+            }
+          }
+          customElements.define('child-greeting', ChildGreeting);
+          const dynamic = document.createElement('child-greeting');
+          dynamic.id = 'dynamic';
+          document.querySelector('#dynamic-root').append(dynamic);
+          document.querySelector('#dynamic-root').insertAdjacentHTML(
+            'beforeend',
+            '<child-greeting id="parsed"></child-greeting>',
+          );
+          window.__childCustomElementState = {
+            dynamic: dynamic instanceof ChildGreeting,
+            parsed: document.querySelector('#parsed') instanceof ChildGreeting,
+            ownerDocument: dynamic.ownerDocument === document,
+          };
+        </script>`);
     case "/documents/script-order.html":
       return html(`<script id="classic-inline">
           window.__scriptEvents = [];
@@ -251,6 +283,9 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     }
     if (path === "/assets/dynamic-second.js") {
       return reply(response, 200, "text/javascript", "window.__dynamicExternalEvents.push('second');");
+    }
+    if (path === "/assets/import-map-message.js") {
+      return reply(response, 200, "text/javascript", "export const message = 'resolved through import map';");
     }
     if (path === "/assets/imported-supports.css") {
       return reply(response, 200, "text/css", ".imported { color: rgb(13, 14, 15); }");
@@ -419,6 +454,21 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
         "text/html",
         contractHTML('<div id="host"></div><p id="host-isolated">Host CSS</p>', '<style>#host-isolated { color: rgb(91, 92, 93); }</style>'),
       );
+    }
+    if (path === "/documents/bound-shell.html") {
+      if (request.headers["sec-fetch-dest"] === "document") {
+        return contractReply(
+          response,
+          200,
+          "text/html",
+          contractHTML('<div id="host"></div>'),
+        );
+      }
+      return contractReply(response, 200, "text/html", contractHTML(`<output id="bound-result">bound</output>
+        <script>
+          window.__boundPopStates = [];
+          window.addEventListener('popstate', (event) => window.__boundPopStates.push(event.state));
+        </script>`));
     }
     if (path === "/dist/index.js") {
       if (!existsSync(distFile)) {

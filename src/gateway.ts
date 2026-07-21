@@ -8,6 +8,7 @@ export interface VFrameRouteOptions {
   request: Request;
   realmHeaders?: HeadersInit;
   loadDocument(): Response | Promise<Response>;
+  loadShell?(): Response | Promise<Response>;
 }
 
 function varyByFetchDestination(headers: Headers): void {
@@ -37,7 +38,12 @@ export async function serveVFrameRoute(options: VFrameRouteOptions): Promise<Res
     );
   }
 
-  const documentResponse = await options.loadDocument();
+  const documentResponse = await (
+    options.request.headers.get("Sec-Fetch-Dest") === "document" &&
+      options.loadShell !== undefined
+      ? options.loadShell()
+      : options.loadDocument()
+  );
   const headers = new Headers(documentResponse.headers);
   headers.set(V_FRAME_GATEWAY_HEADER, V_FRAME_GATEWAY_VERSION);
   varyByFetchDestination(headers);

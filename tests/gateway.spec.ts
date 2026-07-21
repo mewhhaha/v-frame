@@ -53,6 +53,27 @@ test("advertises ordinary fragment documents without changing their response", a
   expect(await response.text()).toBe("application document");
 });
 
+test("serves the composed shell for a bound top-level navigation", async () => {
+  let applicationLoads = 0;
+  const response = await serveVFrameRoute({
+    request: new Request("https://host.test/orders/42", {
+      headers: { "Sec-Fetch-Dest": "document" },
+    }),
+    loadDocument() {
+      applicationLoads += 1;
+      return new Response("application document");
+    },
+    loadShell: () => new Response("composed shell", {
+      headers: { "X-Shell": "true" },
+    }),
+  });
+
+  expect(applicationLoads).toBe(0);
+  expect(response.headers.get("X-Shell")).toBe("true");
+  expect(response.headers.get("Vary")).toBe("Sec-Fetch-Dest");
+  expect(await response.text()).toBe("composed shell");
+});
+
 test("preserves an existing wildcard cache variance", async () => {
   const response = await serveVFrameRoute({
     request: new Request("https://host.test/widgets/orders", {

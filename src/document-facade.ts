@@ -833,9 +833,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       refreshTopLayerViewportStyle();
     }
   };
-  options.html.addEventListener("beforetoggle", refreshOpeningTopLayer, true);
-  hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle);
-  hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, true);
+  const topLayerListenerLifetime = new AbortController();
+  options.html.addEventListener("beforetoggle", refreshOpeningTopLayer, {
+    capture: true,
+    signal: topLayerListenerLifetime.signal,
+  });
+  hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle, {
+    signal: topLayerListenerLifetime.signal,
+  });
+  hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, {
+    capture: true,
+    signal: topLayerListenerLifetime.signal,
+  });
 
   const styleDeclarationDocument = new window.DOMParser().parseFromString(
     "<!doctype html><html><body></body></html>",
@@ -2071,6 +2080,37 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     const template = nativeCreateElement.call(document, "template") as HTMLTemplateElement;
     nativeInnerHTML.set?.call(template, markup);
     const fragment = template.content;
+    const parsedElements = Array.from(fragment.querySelectorAll("*")).reverse();
+    for (const parsedElement of parsedElements) {
+      const customizedName = parsedElement.getAttribute("is");
+      const customName = customizedName !== null &&
+          window.customElements.get(customizedName) !== undefined
+        ? customizedName
+        : parsedElement.localName;
+      if (window.customElements.get(customName) === undefined) {
+        continue;
+      }
+      const creationOptions = customName === customizedName
+        ? { is: customName }
+        : undefined;
+      const customElement = nativeCreateElement.call(
+        document,
+        parsedElement.localName,
+        creationOptions,
+      );
+      for (const attribute of Array.from(parsedElement.attributes)) {
+        nativeSetAttributeNS.call(
+          customElement,
+          attribute.namespaceURI,
+          attribute.name,
+          attribute.value,
+        );
+      }
+      while (parsedElement.firstChild !== null) {
+        nativeAppendChild.call(customElement, parsedElement.firstChild);
+      }
+      nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
+    }
     hostDocument.adoptNode(fragment);
     markVirtualNode(fragment);
     return fragment;
@@ -2091,6 +2131,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     if (
       type !== "" &&
       type !== "module" &&
+      type !== "importmap" &&
       type !== "text/javascript" &&
       type !== "application/javascript" &&
       type !== "application/x-ecmascript" &&
@@ -4434,9 +4475,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     dispose() {
       disposed = true;
-      options.html.removeEventListener("beforetoggle", refreshOpeningTopLayer, true);
-      hostWindow?.removeEventListener("resize", refreshTopLayerViewportStyle);
-      hostWindow?.removeEventListener("scroll", refreshTopLayerViewportStyle, true);
+      topLayerListenerLifetime.abort();
       if (selectionChangeTimer !== undefined) {
         window.clearTimeout(selectionChangeTimer);
         selectionChangeTimer = undefined;

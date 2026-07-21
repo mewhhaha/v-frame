@@ -56,7 +56,9 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   await installBundle(page);
   const frame = await mountFrame(page, `${fixture.origin}/documents/first.html`);
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element) => (
+    element as HTMLElement & { status: string }
+  ).status)).toBe("ready");
   await expect(frame.locator("main#first")).toContainText("First document");
   await expect(frame.locator("v-html > v-head")).toHaveCount(1);
   await expect(frame.locator("v-html > v-body")).toHaveCount(1);
@@ -71,6 +73,58 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   });
   expect(state.currentURL).toBe(`${fixture.origin}/documents/first.html`);
   expect(state.hasContentWindow).toBe(true);
+});
+
+test("resolves bare module specifiers through a document import map", async ({ page }) => {
+  await installBundle(page);
+  const frame = await mountFrame(page, `${fixture.origin}/documents/import-map.html`);
+
+  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect(frame.locator("#import-map-result")).toHaveText("resolved through import map");
+});
+
+test("keeps child custom element definitions isolated between frames", async ({ page }) => {
+  await installBundle(page);
+  await page.evaluate((origin) => {
+    for (const label of ["first child", "second child"]) {
+      const frame = document.createElement("v-frame");
+      frame.setAttribute("src", `${origin}/documents/child-custom-elements.html?label=${encodeURIComponent(label)}`);
+      document.querySelector("#host")?.append(frame);
+    }
+  }, fixture.origin);
+  const frames = page.locator("v-frame");
+
+  await expect.poll(() => frames.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLElement & { status: string }).status)
+  )).toEqual(["ready", "ready"]);
+  await expect(frames.nth(0).locator("#dynamic")).toHaveText("first child");
+  await expect(frames.nth(0).locator("#parsed")).toHaveText("first child");
+  await expect(frames.nth(1).locator("#dynamic")).toHaveText("second child");
+  await expect(frames.nth(1).locator("#parsed")).toHaveText("second child");
+
+  expect(await frames.evaluateAll((elements) => {
+    type ChildWindow = Window & typeof globalThis & {
+      __childCustomElementState: {
+        dynamic: boolean;
+        parsed: boolean;
+        ownerDocument: boolean;
+      };
+    };
+    const first = (elements[0] as HTMLElement & { contentWindow: ChildWindow }).contentWindow;
+    const second = (elements[1] as HTMLElement & { contentWindow: ChildWindow }).contentWindow;
+    return {
+      firstState: first.__childCustomElementState,
+      secondState: second.__childCustomElementState,
+      isolatedConstructors:
+        first.customElements.get("child-greeting") !== second.customElements.get("child-greeting"),
+      absentFromHost: customElements.get("child-greeting") === undefined,
+    };
+  })).toEqual({
+    firstState: { dynamic: true, parsed: true, ownerDocument: true },
+    secondState: { dynamic: true, parsed: true, ownerDocument: true },
+    isolatedConstructors: true,
+    absentFromHost: true,
+  });
 });
 
 test("adopts server-rendered shadow content without fetching the entry document", async ({ page }) => {

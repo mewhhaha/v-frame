@@ -1,7 +1,7 @@
 import type { NativeDocumentHandles, DocumentFacade } from "./document-facade.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
-type ScriptCategory = "classic" | "module" | "inert";
+type ScriptCategory = "classic" | "module" | "importmap" | "inert";
 
 export interface ScriptFailure {
   url: string;
@@ -60,6 +60,9 @@ function scriptCategory(script: HTMLScriptElement): ScriptCategory {
   const type = script.getAttribute("type")?.trim().toLowerCase() ?? "";
   if (type === "module") {
     return "module";
+  }
+  if (type === "importmap") {
+    return "importmap";
   }
   if (
     type === "" ||
@@ -612,7 +615,7 @@ export class ScriptRunner {
     }
 
     const settlementCallbacks: { fail?: (error?: unknown) => void } = {};
-    if (!needsSettlement) {
+    if (category === "classic" && !needsSettlement) {
       let failureReported = false;
       const candidate: InlineClassicCandidate = {
         fail: (failure) => {

@@ -44,6 +44,7 @@ interface FrameLoad {
   adoptedMarkup: AdoptedMarkup | null;
   historySession: VirtualHistorySession | null;
   stageMarkup: boolean;
+  boundNavigation: boolean;
 }
 
 export class VFrameElement extends HTMLElementBase {
@@ -132,15 +133,18 @@ export class VFrameElement extends HTMLElementBase {
     this.#upgradeProperty("credentials");
     this.#upgradeProperty("src");
     this.#connected = true;
-    if (this.src.trim() !== "") {
-      const adoptedMarkup = this.#consumeAdoptedMarkup();
-      this.#observeLoad(this.#startLoad({
-        source: this.src,
-        adoptedMarkup,
-        historySession: null,
-        stageMarkup: adoptedMarkup !== null,
-      }));
+    const source = this.#loadSource();
+    if (source === null) {
+      return;
     }
+    const adoptedMarkup = this.#consumeAdoptedMarkup();
+    this.#observeLoad(this.#startLoad({
+      source,
+      adoptedMarkup,
+      historySession: null,
+      stageMarkup: adoptedMarkup !== null,
+      boundNavigation: !this.hasAttribute("src"),
+    }));
   }
 
   // Own properties assigned before upgrade shadow the prototype accessors;
@@ -173,31 +177,42 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
 
-    if (this.src.trim() === "") {
+    const source = this.#loadSource();
+    if (source === null) {
       this.#resetToIdle();
       return;
     }
 
     this.#observeLoad(this.#startLoad({
-      source: this.src,
+      source,
       adoptedMarkup: null,
       historySession: null,
       stageMarkup: false,
+      boundNavigation: !this.hasAttribute("src"),
     }));
   }
 
   reload(): Promise<void> {
-    if (!this.isConnected || this.src.trim() === "") {
+    const source = this.#loadSource();
+    if (!this.isConnected || source === null) {
       this.#resetToIdle();
       return Promise.resolve();
     }
 
     return this.#startLoad({
-      source: this.#currentURL ?? this.src,
+      source: this.#currentURL ?? source,
       adoptedMarkup: null,
       historySession: this.#historySession?.clone() ?? null,
       stageMarkup: this.#realm !== null,
+      boundNavigation: !this.hasAttribute("src"),
     });
+  }
+
+  #loadSource(): string | null {
+    if (!this.hasAttribute("src")) {
+      return this.ownerDocument.location.href;
+    }
+    return this.src.trim() === "" ? null : this.src;
   }
 
   #resetToIdle(): void {
@@ -397,6 +412,7 @@ export class VFrameElement extends HTMLElementBase {
           },
         pageURL: finalURL,
         historySession,
+        boundNavigation: load.boundNavigation,
         stageMarkup: load.stageMarkup,
         credentials: this.credentials,
         signal: controller.signal,
@@ -456,6 +472,7 @@ export class VFrameElement extends HTMLElementBase {
               adoptedMarkup: null,
               historySession: nextSession,
               stageMarkup: this.#realm !== null,
+              boundNavigation: load.boundNavigation,
             }));
           });
         },
