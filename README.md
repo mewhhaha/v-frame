@@ -323,10 +323,15 @@ routing split: a fragment without `src` is bound to shell location and
 history, while a fragment with `src` keeps independent soft history. Web
 Fragments provides a broader gateway around that model.
 
-This comparison was checked against Web Fragments
+This comparison was rechecked on July 21, 2026 against the current Web
+Fragments default branch,
 [`eb44af6`](https://github.com/web-fragments/web-fragments/tree/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb).
 The relevant implementation is in its
-[`reframed.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/reframed/reframed.ts)
+[`reframed.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/reframed/reframed.ts),
+[`script-execution.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/reframed/script-execution.ts),
+[`iframe-patches.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/reframed/iframe-patches.ts),
+[`main-patches.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/reframed/main-patches.ts),
+[`web-fragment-host.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/elements/web-fragment-host.ts),
 and
 [`web.ts`](https://github.com/web-fragments/web-fragments/blob/eb44af6d36559df2cf00b2cd2bcb16ae3ecbdabb/packages/web-fragments/src/gateway/middleware/web.ts).
 Upstream behavior may change.
@@ -339,9 +344,54 @@ Upstream behavior may change.
 | Direct `Location` mutation | Promotes hard navigation, reload, and direct hash changes to the shell; canceled navigation rebuilds the child, and replace degrades to assign. | In a bound fragment, hard navigation or reload is propagated to the shell. | Common Location code works, but the server contract is mandatory and replace semantics cannot be preserved. |
 | Links and forms | Promotes same-context HTTP(S) links, `_self` windows, and GET forms to the shell. Fragment links update the selected history and scroll inside the frame. Non-GET forms remain unsupported. | Native navigation is backed by the gateway and, for bound fragments, the shell route. | Both require the shell to define the destination route. |
 | Route requests | Adds only the iframe/document distinction and a version header; proxying remains the host's responsibility. | Route patterns let the gateway proxy fragment documents, assets, and data through the shell origin. | The `v-frame` gateway is smaller, but independently deployed applications still need host routing or proxy infrastructure. |
+| Fragment identity | Bound frames fetch the shell URL without an application identifier. | Every fragment has a `fragment-id`, forwarded as `X-Web-Fragment-Id`. | A gateway cannot distinguish two bound `v-frame` applications that share the same shell URL without host-specific routing. |
 | Top-level document navigation | Outside `v-frame`; the host decides how a frame route maps to a shell route. | The gateway distinguishes iframe, soft-navigation, asset, and top-level document requests and can pierce a server-rendered fragment into the shell. | A `v-frame` deployment must implement its own hard-navigation fallback and route mapping. |
-| Server-rendered startup | The host materializes Declarative Shadow DOM and marks the frame `adopt`. Activation makes a small marker request but does not refetch application HTML. | The gateway can fetch and pierce registered fragments into the shell response, then the client portals and activates them. | `v-frame` keeps SSR composition host-owned and framework-agnostic. |
+| HTML delivery | Buffers the application document, then neutralizes and parses it before connecting application nodes. | Streams client-rendered HTML into the shadow tree through `writable-dom`. | `v-frame` deliberately pays a first-render latency cost for controlled parsing; Web Fragments can reveal a streaming response sooner. |
+| Execution-context resources | Executes classic and module scripts and forwards import maps into the iframe. Resource-hint links and `speculationrules` are not forwarded. | Also forwards `preload`, `prefetch`, and `modulepreload` links and executes `speculationrules` in the iframe. | A `v-frame` application's resource hints can be ineffective or associated with the wrong document context. |
+| Document load | Marks the document complete after initial scripts and bootstrap-created external scripts settle. It does not wait for initial images. | Waits for initial images to load or error before setting complete and dispatching `load`. | `v-frame` can fire `load` earlier than the same application would in a normal document. |
+| Host patching | Patches the child realm and document facade, and restores its bound host-history hooks when disposed. | Also patches host `Node` and `Element` insertion methods globally and installs host-history patches once. | `v-frame` avoids permanent host DOM prototype changes at the cost of implementing more behavior in its own facade. |
+| Server-rendered startup | The host materializes Declarative Shadow DOM and marks the frame `adopt`. Activation serializes and reparses that preview into a staged live tree without refetching application HTML. | The gateway can pierce a fragment into the shell response, then the client portals the live fragment host and prefers an atomic DOM move when available. | `v-frame` keeps SSR composition host-owned, but focus, selection, form state, and scroll changed before activation are not preserved by the reparse. |
 | Viewport APIs | `inner*`, `outer*`, `visualViewport`, and `matchMedia()` follow the host page. Scrolling remains local to the frame. | Viewport measurements and media matching follow the host page. | Application layout code sees the page viewport without making `scrollTo()` move the shell. |
+| Browser coverage | Chromium and Firefox are tested; WebKit is best-effort. | Its browser suite includes Chromium, Firefox, and WebKit, with feature-specific skips and caveats. | WebKit compatibility should be earned with tests rather than inferred from the shared architecture. |
+
+### What to borrow from Web Fragments
+
+These are directions, not compatibility promises. Each needs a focused change
+and browser tests before it becomes part of the `v-frame` contract.
+
+| Priority | Inspiration | Direction for `v-frame` |
+| --- | --- | --- |
+| Next | Execution-context resource hints | Forward `preload`, `prefetch`, and `modulepreload` links to the iframe and support `speculationrules`, while retaining inert logical nodes in the visible tree. Cover load/error forwarding, CSP, and teardown. |
+| Next | More native load timing | Keep `readyState` at `interactive` until initial images settle, then dispatch `load`. Define behavior for images inserted during bootstrap before extending the barrier to other resource types. |
+| Next | Optional fragment identity | Add an optional application identifier that the entry request can forward to a gateway. This should solve overlapping bound routes without making a registry mandatory for simple embeds. |
+| Later | State-preserving SSR activation | Test focus, text selection, changed form controls, and element scroll across activation. Prefer lifecycle-preserving DOM moves where browser support permits them; otherwise transfer only state with defined semantics. |
+| Maintenance | Teardown and browser evidence | Add a Chromium `WeakRef`/forced-GC regression for destroyed realms and run the behavioral suite in WebKit before claiming support. Existing cancellation and timer teardown tests remain the baseline. |
+| Optional package | Production gateway composition | A companion layer could add route registration, proxying, SSR fallback, redirect handling, and selected response-header forwarding. Those concerns do not need to enlarge the core element. |
+
+Observer constructors, `navigator` members, and other cross-realm objects should
+be evaluated with small compatibility tests. Web Fragments delegates several
+of them to the host realm; `v-frame` should only do the same where native child
+objects produce an observable application bug.
+
+### What not to copy
+
+- Do not globally intercept host `Node` or `Element` insertion methods. Such
+  patches affect unrelated shell code and make multiple runtimes, frameworks,
+  and browser extensions share hidden mutable behavior.
+- Do not require a fragment registry or full proxy gateway for every frame.
+  The current same-origin marker contract is sufficient when the host already
+  owns routing; richer composition belongs in an optional integration layer.
+- Do not adopt a streaming DOM writer until it can preserve `v-frame`'s
+  neutralization, Trusted Types boundary, stylesheet rewriting, and parsing
+  fidelity. Streaming is valuable, but changing the parser is a security and
+  correctness decision rather than a transport optimization.
+- Do not copy the stylesheet-cloning workaround used while portaling an SSR
+  host. `v-frame` currently swaps a staged tree instead of moving that host,
+  and the workaround has known `@import`, cross-origin CSSOM, and cascade-order
+  limitations.
+- Do not replace child-realm observers, constructors, or `navigator` wholesale
+  with host objects. Preserve isolation unless a tested web-platform mismatch
+  requires a narrower bridge.
 
 Web Fragments' unbound mode is not equivalent to a normal standalone browser
 document either. In the compared revision, soft history is independent, but a
