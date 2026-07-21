@@ -2,7 +2,6 @@ import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface ObservedRequest {
   body: string;
@@ -82,7 +81,6 @@ async function startNetworkFixture(): Promise<NetworkFixture> {
   let origin = "";
 
   const primary = createServer(async (request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = requestPath(request);
     if (path === "/") {
       reply(response, 200, "text/html", '<!doctype html><div id="host"></div>');

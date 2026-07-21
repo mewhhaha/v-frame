@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface CSSNativeSemanticsFixture {
   origin: string;
@@ -116,7 +115,6 @@ async function startFixture(): Promise<CSSNativeSemanticsFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const requests: string[] = [];
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
     requests.push(pathname);
 

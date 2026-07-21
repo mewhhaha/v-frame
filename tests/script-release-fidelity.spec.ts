@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface FixtureServer {
   origin: string;
@@ -130,13 +129,15 @@ async function startFixtureServer(): Promise<FixtureServer> {
   const pendingTeardownResponses = new Map<string, Set<ServerResponse>>();
   const releasedTeardownTokens = new Set<string>();
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response, {
-      "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-    })) return;
     const requestURL = new URL(request.url ?? "/", "http://fixture.invalid");
     const { pathname, searchParams } = requestURL;
     if (pathname === "/") {
-      reply(response, 200, "text/html", html('<div id="host"></div>'));
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
+        "content-type": "text/html",
+      });
+      response.end(html('<div id="host"></div>'));
       return;
     }
     if (pathname === "/dist/index.js") {

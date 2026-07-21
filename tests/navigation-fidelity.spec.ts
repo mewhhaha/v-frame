@@ -315,18 +315,155 @@ test("documents javascript Location evaluation without document replacement as u
   });
 });
 
-test("promotes a direct Location hash change to the host", async ({ page }) => {
+test("loads links and GET forms while preserving guest document history", async ({ page }) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(async (bundleURL) => {
+    const bundle = await import(bundleURL);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  await page.evaluate((source) => {
+    const frame = document.createElement("v-frame");
+    frame.id = "document-navigation-frame";
+    frame.setAttribute("src", source);
+    document.querySelector("#host")?.append(frame);
+  }, `${fixture.origin}/documents/first.html`);
+
+  const frame = page.locator("#document-navigation-frame");
+  await expect(frame.locator("#first")).toContainText("First document");
+  await frame.locator("#next").click();
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html`);
+  expect(await frame.getAttribute("src")).toBe(`${fixture.origin}/documents/first.html`);
+  expect(await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    return child?.history.length;
+  })).toBe(2);
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.back();
+  });
+  await expect(frame.locator("#first")).toContainText("First document");
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const form = child?.document.createElement("form");
+    if (child === null || child === undefined || form === undefined) {
+      throw new Error("The restored document has no child window");
+    }
+    form.id = "document-navigation-form";
+    form.method = "get";
+    form.action = "/documents/second.html?from=form";
+    const input = child.document.createElement("input");
+    input.name = "query";
+    input.value = "fixture";
+    const submit = child.document.createElement("button");
+    submit.textContent = "Submit";
+    form.append(input, submit);
+    child.document.body.append(form);
+  });
+  await frame.locator("#document-navigation-form button").click();
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.back();
+  });
+  await expect(frame.locator("#first")).toContainText("First document");
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.history.forward();
+  });
+  await expect(frame.locator("#second")).toHaveText("Second document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+});
+
+test("restores the live guest when a document navigation fails", async ({ page }) => {
   const frame = await mountFrame(page);
-  await Promise.all([
-    page.waitForURL(`${fixture.origin}/documents/application.html#direct-hash`),
-    frame.evaluate((element) => {
-      const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
-      if (child === null) {
-        throw new Error("The navigation frame has no child window");
-      }
-      child.location.hash = "direct-hash";
-    }),
-  ]);
+  const originalWindow = await frame.evaluateHandle((element) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow);
+  const failure = frame.evaluate((element) => new Promise<{
+    fatal: boolean;
+    phase: string;
+    status: string;
+    url: string;
+  }>((resolve) => {
+    element.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{
+        fatal: boolean;
+        phase: string;
+        url: string;
+      }>).detail;
+      resolve({
+        fatal: detail.fatal,
+        phase: detail.phase,
+        status: (element as HTMLElement & { status: string }).status,
+        url: detail.url,
+      });
+    }, { once: true });
+  }));
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const link = child?.document.createElement("a");
+    if (child === null || child === undefined || link === undefined) {
+      throw new Error("The navigation frame has no child window");
+    }
+    link.id = "failed-document-link";
+    link.href = "/documents/broken.html";
+    link.textContent = "Broken document";
+    child.document.body.append(link);
+  });
+  await frame.locator("#failed-document-link").click();
+
+  expect(await failure).toEqual({
+    fatal: false,
+    phase: "entry",
+    status: "ready",
+    url: `${fixture.origin}/documents/broken.html`,
+  });
+  await expect(frame.locator("#load")).toHaveText("Load");
+  expect(await frame.evaluate((element, previousWindow) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow === previousWindow, originalWindow)).toBe(true);
+});
+
+test("keeps a direct Location hash change inside the guest", async ({ page }) => {
+  const frame = await mountFrame(page);
+  const result = await frame.evaluate(async (element) => {
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: Window | null;
+      currentURL: string;
+    };
+    const child = controlledFrame.contentWindow;
+    if (child === null) {
+      throw new Error("The navigation frame has no child window");
+    }
+    const events: string[] = [];
+    child.addEventListener("popstate", () => events.push("popstate"));
+    child.addEventListener("hashchange", () => events.push("hashchange"));
+    child.location.hash = "direct-hash";
+    await new Promise((resolve) => child.setTimeout(resolve, 0));
+    return {
+      currentURL: controlledFrame.currentURL,
+      events,
+      href: child.location.href,
+    };
+  });
+
+  expect(result).toEqual({
+    currentURL: `${fixture.origin}/documents/application.html#direct-hash`,
+    events: ["popstate", "hashchange"],
+    href: `${fixture.origin}/documents/application.html#direct-hash`,
+  });
+  expect(page.url()).toBe(`${fixture.origin}/`);
 });
 
 test("restores the virtual URL when the host cancels a direct hash change", async ({ page }) => {

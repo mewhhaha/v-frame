@@ -3,7 +3,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createServer as createTCPServer } from "node:net";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface XHRFixture {
   origin: string;
@@ -34,7 +33,6 @@ async function startXHRFixture(): Promise<XHRFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   let origin = "";
   const primary = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = requestPath(request);
     if (path === "/") return reply(response, 200, "text/html", page('<div id="host"></div>'));
     if (path === "/dist/index.js") {

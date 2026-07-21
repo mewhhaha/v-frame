@@ -15,12 +15,13 @@ await build({
 });
 
 await build({
-  entryPoints: ["src/gateway.ts"],
-  outfile: "dist/gateway.js",
+  entryPoints: ["src/register.ts"],
+  outfile: "dist/register.js",
   bundle: true,
   format: "esm",
-  platform: "neutral",
+  platform: "browser",
   target: "es2022",
   sourcemap: true,
   legalComments: "external",
+  external: ["./index.js"],
 });

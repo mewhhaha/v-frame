@@ -5,7 +5,10 @@ import {
   type RealmFailure,
   type VFrameRealm,
 } from "./realm.js";
-import { VirtualHistorySession } from "./history.js";
+import {
+  type DocumentHistoryMode,
+  VirtualHistorySession,
+} from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { VFrameStatus } from "./types.js";
 import type {
@@ -14,8 +17,10 @@ import type {
   VFrameEventMap,
   VFrameLoadEventDetail,
   VFrameNavigateEventDetail,
+  VFrameNavigation,
   VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
+  VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
 
 const HTMLElementBase = (
@@ -49,8 +54,23 @@ interface FrameLoad {
   boundNavigation: boolean;
 }
 
+function identityTrustedTypesPolicy(name: string): VFrameTrustedTypesPolicyDefinition {
+  return {
+    name,
+    createHTML: (source) => source,
+    createScript: (source) => source,
+    createScriptURL: (source) => source,
+  };
+}
+
 export class VFrameElement extends HTMLElementBase {
-  static readonly observedAttributes = ["src", "credentials", "nonce"];
+  static readonly observedAttributes = [
+    "src",
+    "credentials",
+    "navigation",
+    "nonce",
+    "trusted-types-policy",
+  ];
 
   readonly #root: ShadowRoot;
   readonly #internals: ElementInternals;
@@ -67,7 +87,7 @@ export class VFrameElement extends HTMLElementBase {
   #adoptionAvailable = false;
   #adoptionConsumed = false;
   #nonce = "";
-  #trustedTypesPolicy: VFrameTrustedTypesPolicy | null = null;
+  #trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null = null;
 
   constructor() {
     super();
@@ -114,6 +134,19 @@ export class VFrameElement extends HTMLElementBase {
     this.setAttribute("credentials", value);
   }
 
+  get navigation(): VFrameNavigation {
+    return this.getAttribute("navigation") === "host" ? "host" : "guest";
+  }
+
+  set navigation(value: VFrameNavigation) {
+    if (value !== "guest" && value !== "host") {
+      throw new TypeError(
+        `v-frame navigation must be "guest" or "host", received ${JSON.stringify(value)}`,
+      );
+    }
+    this.setAttribute("navigation", value);
+  }
+
   get nonce(): string {
     return this.#nonce;
   }
@@ -123,12 +156,21 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   get trustedTypesPolicy(): VFrameTrustedTypesPolicy | null {
-    return this.#trustedTypesPolicy;
+    return this.#trustedTypesPolicy ?? this.getAttribute("trusted-types-policy");
   }
 
   set trustedTypesPolicy(value: VFrameTrustedTypesPolicy | null) {
     if (value === null) {
       this.#trustedTypesPolicy = null;
+      this.removeAttribute("trusted-types-policy");
+      return;
+    }
+    if (typeof value === "string") {
+      if (value.trim() === "") {
+        throw new TypeError("v-frame trustedTypesPolicy must not be an empty string");
+      }
+      this.#trustedTypesPolicy = null;
+      this.setAttribute("trusted-types-policy", value);
       return;
     }
     if (typeof value !== "object") {
@@ -149,6 +191,7 @@ export class VFrameElement extends HTMLElementBase {
       }
     }
     this.#trustedTypesPolicy = value;
+    this.removeAttribute("trusted-types-policy");
   }
 
   get status(): VFrameStatusValue {
@@ -166,6 +209,7 @@ export class VFrameElement extends HTMLElementBase {
   connectedCallback(): void {
     this.#upgradeProperty("adopt");
     this.#upgradeProperty("credentials");
+    this.#upgradeProperty("navigation");
     this.#upgradeProperty("src");
     this.#upgradeProperty("trustedTypesPolicy");
     this.#connected = true;
@@ -179,14 +223,14 @@ export class VFrameElement extends HTMLElementBase {
       adoptedMarkup,
       historySession: null,
       stageMarkup: adoptedMarkup !== null,
-      boundNavigation: !this.hasAttribute("src"),
+      boundNavigation: this.navigation === "host",
     }));
   }
 
   // Own properties assigned before upgrade shadow the prototype accessors;
   // re-applying them through the setters restores reflection and validation.
   #upgradeProperty(
-    property: "src" | "adopt" | "credentials" | "trustedTypesPolicy",
+    property: "src" | "adopt" | "credentials" | "navigation" | "trustedTypesPolicy",
   ): void {
     if (!Object.prototype.hasOwnProperty.call(this, property)) {
       return;
@@ -211,6 +255,9 @@ export class VFrameElement extends HTMLElementBase {
       this.#nonce = nativeNonceDescriptor?.get?.call(this) ?? newValue ?? "";
       return;
     }
+    if (name === "trusted-types-policy" && this.#trustedTypesPolicy !== null) {
+      return;
+    }
     if (oldValue === newValue || !this.#connected) {
       return;
     }
@@ -226,7 +273,7 @@ export class VFrameElement extends HTMLElementBase {
       adoptedMarkup: null,
       historySession: null,
       stageMarkup: false,
-      boundNavigation: !this.hasAttribute("src"),
+      boundNavigation: this.navigation === "host",
     }));
   }
 
@@ -242,15 +289,20 @@ export class VFrameElement extends HTMLElementBase {
       adoptedMarkup: null,
       historySession: this.#historySession?.clone() ?? null,
       stageMarkup: this.#realm !== null,
-      boundNavigation: !this.hasAttribute("src"),
+      boundNavigation: this.navigation === "host",
     });
   }
 
   #loadSource(): string | null {
-    if (!this.hasAttribute("src")) {
-      return this.ownerDocument.location.href;
+    return !this.hasAttribute("src") || this.src.trim() === "" ? null : this.src;
+  }
+
+  #effectiveTrustedTypesPolicy(): VFrameTrustedTypesPolicyDefinition | null {
+    if (this.#trustedTypesPolicy !== null) {
+      return this.#trustedTypesPolicy;
     }
-    return this.src.trim() === "" ? null : this.src;
+    const name = this.getAttribute("trusted-types-policy")?.trim() ?? "";
+    return name === "" ? null : identityTrustedTypesPolicy(name);
   }
 
   #resetToIdle(): void {
@@ -360,20 +412,15 @@ export class VFrameElement extends HTMLElementBase {
       throw error;
     }
 
-    let fatalRealmFailure: RealmFailure | null = null;
     let entryResolved = false;
     let failureURL = requestedURL.href;
-    const {
-      promise: fatalRealm,
-      reject: rejectFatalRealm,
-    } = Promise.withResolvers<never>();
     const pendingRealm = { iframe: null as HTMLIFrameElement | null };
     let realmConnectionFailed = false;
     const connectRealm = (url: string) => connectRealmIframe(
       this.#root,
       controller.signal,
       url,
-      this.#trustedTypesPolicy,
+      this.#effectiveTrustedTypesPolicy(),
     ).then((connection) => {
       pendingRealm.iframe = connection.iframe;
       return connection;
@@ -422,9 +469,13 @@ export class VFrameElement extends HTMLElementBase {
         );
       }
       if (finalURL !== requestedURL.href) {
-        connection.iframe.remove();
-        pendingRealm.iframe = null;
-        connection = await connectRealm(finalURL);
+        const realmWindow = connection.iframe.contentWindow;
+        if (realmWindow === null) {
+          throw new Error(
+            `v-frame redirect ${requestedURL.href} to ${finalURL} lost its execution realm`,
+          );
+        }
+        realmWindow.history.replaceState(null, "", finalURL);
       }
       const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
       historySession.replaceCurrentURL(finalURL);
@@ -432,8 +483,6 @@ export class VFrameElement extends HTMLElementBase {
         this.#currentURL = finalURL;
       }
 
-      let activated = false;
-      let candidateRealm: VFrameRealm | null = null;
       const ownsController = () =>
         this.#generation === generation &&
         (this.#loadController === controller || this.#realmController === controller) &&
@@ -484,6 +533,45 @@ export class VFrameElement extends HTMLElementBase {
           const allowed = this.#dispatchNavigate(detail);
           return allowed && ownsController();
         },
+        onDocumentNavigation: (
+          detail: VFrameNavigateEventDetail,
+          mode: DocumentHistoryMode,
+        ) => {
+          if (!ownsController() || !this.#dispatchNavigate(detail) || !ownsController()) {
+            return false;
+          }
+          const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
+          queueMicrotask(() => {
+            if (!ownsController()) {
+              return;
+            }
+            this.#observeLoad(this.#startLoad({
+              source: detail.to,
+              adoptedMarkup: null,
+              historySession: nextSession,
+              stageMarkup: this.#realm !== null,
+              boundNavigation: false,
+            }));
+          });
+          return true;
+        },
+        onDocumentTraversal: (nextSession) => {
+          if (!ownsController()) {
+            return;
+          }
+          queueMicrotask(() => {
+            if (!ownsController()) {
+              return;
+            }
+            this.#observeLoad(this.#startLoad({
+              source: nextSession.currentURL,
+              adoptedMarkup: null,
+              historySession: nextSession,
+              stageMarkup: this.#realm !== null,
+              boundNavigation: false,
+            }));
+          });
+        },
         onShellNavigation: (detail) => {
           if (!ownsController()) {
             return false;
@@ -494,15 +582,24 @@ export class VFrameElement extends HTMLElementBase {
           }
           return allowed;
         },
-        onNativeLocationNavigation: (detail) => {
+        onNativeLocationNavigation: (detail, mode) => {
           if (!ownsController()) {
             return;
           }
-          if (this.#dispatchNavigate(detail) && ownsController()) {
-            this.ownerDocument.defaultView?.location.assign(detail.to);
+          if (load.boundNavigation) {
+            const hostLocation = this.ownerDocument.defaultView?.location;
+            if (mode === "replace") {
+              hostLocation?.replace(detail.to);
+            } else if (mode === "reload") {
+              hostLocation?.reload();
+            } else {
+              hostLocation?.assign(detail.to);
+            }
             return;
           }
-          const nextSession = historySession.clone();
+          const nextSession = mode === "reload"
+            ? historySession.clone()
+            : historySession.forkDocumentNavigation(detail.to, mode);
           queueMicrotask(() => {
             if (!ownsController()) {
               return;
@@ -521,19 +618,8 @@ export class VFrameElement extends HTMLElementBase {
             this.#dispatchError({ ...failure, fatal: false });
           }
         },
-        onFatal: (failure) => {
-          if (!ownsController()) {
-            return;
-          }
-          fatalRealmFailure = failure;
-          if (activated && this.#realm === candidateRealm) {
-            this.#failGeneration(generation, failure);
-          }
-          rejectFatalRealm(failure.error);
-        },
       });
       pendingRealm.iframe = null;
-      candidateRealm = realm;
 
       if (this.#generation !== generation || controller.signal.aborted) {
         realm.dispose();
@@ -544,7 +630,7 @@ export class VFrameElement extends HTMLElementBase {
         this.#loadingRealm = realm;
       }
 
-      await Promise.race([realm.executeInitialScripts(), fatalRealm]);
+      await realm.executeInitialScripts();
       this.#assertCurrentGeneration(generation, controller.signal);
       previous.realm?.dispose();
       previous.realmController?.abort();
@@ -555,7 +641,6 @@ export class VFrameElement extends HTMLElementBase {
       this.#historySession = historySession;
       this.#realmGeneration = generation;
       this.#currentURL = finalURL;
-      activated = true;
       realm.reveal();
       this.#setStatus(VFrameStatus.Ready);
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
@@ -571,7 +656,7 @@ export class VFrameElement extends HTMLElementBase {
         return;
       }
 
-      const failure = fatalRealmFailure ?? {
+      const failure = {
         phase: realmConnectionFailed || entryResolved
           ? "bootstrap" as const
           : "entry" as const,

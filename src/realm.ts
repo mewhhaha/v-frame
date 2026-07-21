@@ -13,11 +13,12 @@ import {
   installDocumentFacade,
   type DocumentFacade,
 } from "./document-facade.js";
-import { BoundHistory, VirtualHistory, VirtualHistorySession } from "./history.js";
 import {
-  V_FRAME_GATEWAY_VERSION,
-  V_FRAME_REALM_MARKER,
-} from "./gateway-contract.js";
+  BoundHistory,
+  type DocumentHistoryMode,
+  VirtualHistory,
+  VirtualHistorySession,
+} from "./history.js";
 import {
   prepareAdoptedMarkup,
   prepareMarkup,
@@ -30,7 +31,7 @@ import type {
   VFrameCredentials,
   VFrameErrorPhase,
   VFrameNavigateEventDetail,
-  VFrameTrustedTypesPolicy,
+  VFrameTrustedTypesPolicyDefinition,
   VFrameWindow,
 } from "./types.js";
 
@@ -177,10 +178,17 @@ export interface CreateRealmOptions {
   fetchStylesheet(url: string): Promise<string>;
   onURLChange(url: string): void;
   onNavigate(detail: VFrameNavigateEventDetail): boolean;
+  onDocumentNavigation(
+    detail: VFrameNavigateEventDetail,
+    mode: DocumentHistoryMode,
+  ): boolean;
+  onDocumentTraversal(session: VirtualHistorySession): void;
   onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
-  onNativeLocationNavigation(detail: VFrameNavigateEventDetail): void;
+  onNativeLocationNavigation(
+    detail: VFrameNavigateEventDetail,
+    mode: NativeLocationNavigationMode,
+  ): void;
   onError(failure: RealmFailure): void;
-  onFatal(failure: RealmFailure): void;
 }
 
 export interface VFrameRealm {
@@ -202,11 +210,21 @@ export interface ConnectedRealmIframe {
 }
 
 interface TrustedTypePolicyFactoryLike {
+  readonly emptyHTML: unknown;
   createPolicy(
     name: string,
-    policy: Omit<VFrameTrustedTypesPolicy, "name">,
-  ): Omit<VFrameTrustedTypesPolicy, "name">;
+    policy: Omit<VFrameTrustedTypesPolicyDefinition, "name">,
+  ): Omit<VFrameTrustedTypesPolicyDefinition, "name">;
 }
+
+type NativeLocationNavigationMode = "push" | "replace" | "reload";
+
+type NavigationWindow = VFrameWindow & {
+  readonly NavigateEvent: typeof NavigateEvent;
+  readonly navigation: Navigation;
+};
+
+type NavigateInterceptOptions = Parameters<NavigateEvent["intercept"]>[0];
 
 function abortError(): DOMException {
   return new DOMException("The v-frame load was superseded", "AbortError");
@@ -216,7 +234,7 @@ export async function connectRealmIframe(
   shadowRoot: ShadowRoot,
   signal: AbortSignal,
   locationURL: string,
-  trustedTypesPolicy: VFrameTrustedTypesPolicy | null,
+  trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null,
 ): Promise<ConnectedRealmIframe> {
   if (signal.aborted) {
     throw abortError();
@@ -233,110 +251,114 @@ export async function connectRealmIframe(
   iframe.style.setProperty("border", "0", "important");
   iframe.style.setProperty("opacity", "0", "important");
   iframe.style.setProperty("pointer-events", "none", "important");
-  iframe.src = locationURL;
+  const hostWindow = shadowRoot.ownerDocument.defaultView;
+  const hostTrustedTypes = (
+    hostWindow as (Window & { trustedTypes?: TrustedTypePolicyFactoryLike }) | null
+  )?.trustedTypes;
+  try {
+    iframe.srcdoc = (hostTrustedTypes?.emptyHTML ?? "") as string;
+  } catch (error) {
+    throw new Error("v-frame could not create its empty srcdoc execution realm", {
+      cause: error,
+    });
+  }
 
   let realmTrustedTypes: RealmTrustedTypes | null = null;
 
   await new Promise<void>((resolve, reject) => {
     let replacementDocumentOpened = false;
     const loaded = () => {
-      if (!replacementDocumentOpened) {
-        const document = iframe.contentDocument;
-        const realmWindow = iframe.contentWindow;
-        if (document === null || realmWindow === null) {
-          cleanup();
-          iframe.remove();
-          reject(new Error("The connected iframe has no same-origin initial realm"));
-          return;
-        }
-        if (
-          document.querySelector(
-            `meta[name="${V_FRAME_REALM_MARKER}"][content="${V_FRAME_GATEWAY_VERSION}"]`,
-          ) === null
-        ) {
-          cleanup();
-          iframe.remove();
-          reject(new Error(
-            `v-frame route ${locationURL} did not return the gateway realm marker`,
-          ));
-          return;
-        }
-        if (
-          realmWindow.location.href !== locationURL
-        ) {
-          const resolvedURL = realmWindow.location.href;
-          cleanup();
-          iframe.remove();
-          reject(new Error(
-            `v-frame route ${locationURL} resolved its iframe marker to ${resolvedURL}`,
-          ));
-          return;
-        }
-
-        replacementDocumentOpened = true;
-        // document.open() keeps the current URL without making another request.
-        queueMicrotask(() => {
-          if (signal.aborted) {
-            return;
-          }
-          try {
-            if (trustedTypesPolicy === null) {
-              realmTrustedTypes = {
-                createHTML: (source) => source,
-                createScript: (source) => source,
-                createScriptURL: (source) => source,
-              };
-            } else {
-              const policyRules = {
-                createHTML: (source: string) => trustedTypesPolicy.createHTML(source),
-                createScript: (source: string) => trustedTypesPolicy.createScript(source),
-                createScriptURL: (source: string) => trustedTypesPolicy.createScriptURL(source),
-              };
-              const factory = (
-                realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
-              ).trustedTypes;
-              if (factory === undefined) {
-                realmTrustedTypes = policyRules;
-              } else {
-                try {
-                  const policy = factory.createPolicy(
-                    trustedTypesPolicy.name,
-                    policyRules,
-                  );
-                  realmTrustedTypes = {
-                    createHTML: (source) => policy.createHTML(source) as unknown as string,
-                    createScript: (source) => policy.createScript(source) as unknown as string,
-                    createScriptURL: (source) =>
-                      policy.createScriptURL(source) as unknown as string,
-                  };
-                } catch (error) {
-                  throw new Error(
-                    `v-frame could not create Trusted Types policy ${JSON.stringify(trustedTypesPolicy.name)} for ${realmWindow.location.href}`,
-                    { cause: error },
-                  );
-                }
-              }
-            }
-            document.open();
-            document.write(realmTrustedTypes.createHTML("<!doctype html>"));
-            document.close();
-            // Firefox completes the replacement document asynchronously; wait
-            // so application handlers cannot observe that bootstrap lifecycle.
-            realmWindow.setTimeout(() => {
-              cleanup();
-              resolve();
-            }, 0);
-          } catch (error) {
-            cleanup();
-            iframe.remove();
-            reject(error);
-          }
-        });
+      if (replacementDocumentOpened) {
+        return;
+      }
+      const document = iframe.contentDocument;
+      const realmWindow = iframe.contentWindow as NavigationWindow | null;
+      if (document === null || realmWindow === null) {
+        cleanup();
+        iframe.remove();
+        reject(new Error("The connected iframe has no same-origin srcdoc realm"));
+        return;
+      }
+      if (
+        !("navigation" in realmWindow) ||
+        !("NavigateEvent" in realmWindow) ||
+        typeof realmWindow.navigation?.addEventListener !== "function" ||
+        typeof realmWindow.NavigateEvent?.prototype?.intercept !== "function"
+      ) {
+        cleanup();
+        iframe.remove();
+        reject(new Error(
+          "v-frame requires Navigation API support to isolate native Location changes",
+        ));
         return;
       }
 
-      cleanup();
-      resolve();
+      replacementDocumentOpened = true;
+      queueMicrotask(() => {
+        if (signal.aborted) {
+          return;
+        }
+        try {
+          if (trustedTypesPolicy === null) {
+            realmTrustedTypes = {
+              createHTML: (source) => source,
+              createScript: (source) => source,
+              createScriptURL: (source) => source,
+            };
+          } else {
+            const policyRules = {
+              createHTML: (source: string) => trustedTypesPolicy.createHTML(source),
+              createScript: (source: string) => trustedTypesPolicy.createScript(source),
+              createScriptURL: (source: string) => trustedTypesPolicy.createScriptURL(source),
+            };
+            const factory = (
+              realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
+            ).trustedTypes;
+            if (factory === undefined) {
+              realmTrustedTypes = policyRules;
+            } else {
+              try {
+                const policy = factory.createPolicy(
+                  trustedTypesPolicy.name,
+                  policyRules,
+                );
+                realmTrustedTypes = {
+                  createHTML: (source) => policy.createHTML(source) as unknown as string,
+                  createScript: (source) => policy.createScript(source) as unknown as string,
+                  createScriptURL: (source) =>
+                    policy.createScriptURL(source) as unknown as string,
+                };
+              } catch (error) {
+                throw new Error(
+                  `v-frame could not create Trusted Types policy ${JSON.stringify(trustedTypesPolicy.name)} for ${locationURL}`,
+                  { cause: error },
+                );
+              }
+            }
+          }
+          document.open();
+          document.write(realmTrustedTypes.createHTML("<!doctype html>"));
+          document.close();
+          realmWindow.setTimeout(() => {
+            try {
+              realmWindow.history.replaceState(null, "", locationURL);
+              cleanup();
+              resolve();
+            } catch (error) {
+              cleanup();
+              iframe.remove();
+              reject(new Error(
+                `v-frame could not initialize its execution realm at ${locationURL}`,
+                { cause: error },
+              ));
+            }
+          }, 0);
+        } catch (error) {
+          cleanup();
+          iframe.remove();
+          reject(error);
+        }
+      });
     };
     const aborted = () => {
       cleanup();
@@ -360,7 +382,7 @@ export async function connectRealmIframe(
 
   if (realmTrustedTypes === null) {
     iframe.remove();
-    throw new Error(`v-frame route ${locationURL} did not initialize its execution realm`);
+    throw new Error(`v-frame did not initialize its execution realm at ${locationURL}`);
   }
   return { iframe, trustedTypes: realmTrustedTypes };
 }
@@ -753,7 +775,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     let currentURL = options.pageURL;
     let disposed = false;
-    let fatalReported = false;
     let navigationInstalled = false;
     let scriptRunner: ScriptRunner | null = null;
     let facade: DocumentFacade | null = null;
@@ -766,13 +787,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const connectedLinksAwaitingObservation = new WeakSet<HTMLLinkElement>();
     const isConnectedToRealm = (node: Node): boolean => markup?.html.contains(node) ?? false;
 
-    const reportFatal = (failure: RealmFailure) => {
-      if (disposed || fatalReported) {
-        return;
-      }
-      fatalReported = true;
-      options.onFatal(failure);
-    };
     const getDocumentBaseURL = (): string => {
       for (const base of markup?.html.querySelectorAll("base[href]") ?? []) {
         const authoredHref = markup?.authoredURLAttributes.get(base)?.get("href") ??
@@ -827,6 +841,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         getBaseURL: getDocumentBaseURL,
         onNavigate: options.onNavigate,
         onURLChange: historyURLChanged,
+        onDocumentTraversal: options.onDocumentTraversal,
       });
     history.install();
     bootstrapDisposers.push(() => history.dispose());
@@ -1675,7 +1690,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
 
       if (method === "get") {
-        options.onShellNavigation(detail);
+        if (options.boundNavigation) {
+          options.onShellNavigation(detail);
+        } else {
+          options.onDocumentNavigation(detail, "push");
+        }
         return;
       }
 
@@ -1773,7 +1792,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           kind: "link",
           state: null,
         } satisfies VFrameNavigateEventDetail;
-        options.onShellNavigation(detail);
+        if (options.boundNavigation) {
+          options.onShellNavigation(detail);
+        } else {
+          options.onDocumentNavigation(detail, "push");
+        }
         return;
       }
       if (!history.navigateFragment(targetURL.href)) {
@@ -1859,6 +1882,67 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       window.HTMLFormElement.prototype.submit = function submit(): void {
         formSubmission(this, null);
       };
+
+      const navigationWindow = window as NavigationWindow;
+      const navigateEventPrototype = navigationWindow.NavigateEvent.prototype;
+      const interceptDescriptor = Object.getOwnPropertyDescriptor(
+        navigateEventPrototype,
+        "intercept",
+      );
+      const nativeIntercept = navigateEventPrototype.intercept;
+      const guestInterceptions = new WeakSet<NavigateEvent>();
+      Object.defineProperty(navigateEventPrototype, "intercept", {
+        ...interceptDescriptor,
+        configurable: true,
+        writable: true,
+        value: function intercept(
+          this: NavigateEvent,
+          interceptOptions?: NavigateInterceptOptions,
+        ): void {
+          nativeIntercept.call(this, interceptOptions);
+          guestInterceptions.add(this);
+        },
+      });
+      navigationWindow.navigation.addEventListener("navigate", (event) => {
+        if (!event.isTrusted || event.destination.sameDocument) {
+          return;
+        }
+
+        const detail = {
+          from: currentURL,
+          to: event.destination.url,
+          kind: "window",
+          state: null,
+        } satisfies VFrameNavigateEventDetail;
+        const mode = event.navigationType === "push" ||
+            event.navigationType === "replace" ||
+            event.navigationType === "reload"
+          ? event.navigationType
+          : "replace";
+        if (!options.onNavigate(detail)) {
+          event.preventDefault();
+          return;
+        }
+        if (!event.canIntercept) {
+          event.preventDefault();
+          options.onNativeLocationNavigation(detail, mode);
+          return;
+        }
+
+        nativeIntercept.call(event, {
+          handler() {
+            if (guestInterceptions.has(event)) {
+              if (history instanceof VirtualHistory) {
+                history.adoptNativeNavigation(detail.to, mode);
+              } else {
+                historyURLChanged(detail.to);
+              }
+              return;
+            }
+            options.onNativeLocationNavigation(detail, mode);
+          },
+        });
+      }, { signal: childListenerLifetime.signal });
     };
 
     Object.defineProperty(window, "open", {
@@ -1889,7 +1973,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // events and scroll-to-anchor behavior as a link click.
         const fragment = isSameDocumentFragment(currentURL, targetURL.href);
         if (!fragment) {
-          const allowed = options.onShellNavigation(detail);
+          const allowed = options.boundNavigation
+            ? options.onShellNavigation(detail)
+            : options.onDocumentNavigation(detail, "push");
           return allowed ? window : null;
         }
         if (!history.navigateFragment(targetURL.href)) {
@@ -1931,56 +2017,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const rejectionListener = (event: PromiseRejectionEvent) => {
       options.onError({ phase: "runtime", url: currentURL, error: event.reason });
     };
-    // Reloading or leaving the host page unloads every child realm too. The
-    // host's beforeunload reaches us first, so only an independently loaded
-    // child marker is promoted back to the host.
-    const hostView = options.host.ownerDocument.defaultView;
-    let hostUnloadUnderway = false;
-    const hostBeforeUnloadListener = () => {
-      hostUnloadUnderway = true;
-      hostView?.setTimeout(() => {
-        hostUnloadUnderway = false;
-      }, 0);
-    };
-    const iframeNavigationListener = () => {
-      if (hostUnloadUnderway) {
-        return;
-      }
-      let targetURL: string;
-      let markerPresent: boolean;
-      try {
-        targetURL = window.location.href;
-        markerPresent = window.document.querySelector(
-          `meta[name="${V_FRAME_REALM_MARKER}"][content="${V_FRAME_GATEWAY_VERSION}"]`,
-        ) !== null;
-      } catch (error) {
-        reportFatal({
-          phase: "navigation",
-          url: currentURL,
-          error: new window.DOMException(
-            `v-frame native Location left the same-origin gateway route from ${currentURL}: ${String(error)}`,
-            "SecurityError",
-          ),
-        });
-        return;
-      }
-      if (!markerPresent) {
-        reportFatal({
-          phase: "navigation",
-          url: targetURL,
-          error: new Error(
-            `v-frame route ${targetURL} did not return the gateway realm marker`,
-          ),
-        });
-        return;
-      }
-      options.onNativeLocationNavigation({
-        from: currentURL,
-        to: targetURL,
-        kind: "window",
-        state: null,
-      });
-    };
     const trustedHashChangeListener = (event: HashChangeEvent) => {
       if (!event.isTrusted) {
         return;
@@ -1993,12 +2029,16 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       if (nativeURL.hash === "" && event.newURL.endsWith("#")) {
         virtualURL.href += "#";
       }
-      if (!options.onShellNavigation({
+      const detail = {
         from: currentURL,
         to: virtualURL.href,
         kind: "fragment",
         state: null,
-      })) {
+      } satisfies VFrameNavigateEventDetail;
+      const allowed = options.boundNavigation
+        ? options.onShellNavigation(detail)
+        : history instanceof VirtualHistory && history.navigateNativeFragment(virtualURL.href);
+      if (!allowed) {
         history.restoreMirroredURL();
       }
     };
@@ -2010,10 +2050,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
     };
 
-    hostView?.addEventListener("beforeunload", hostBeforeUnloadListener, {
-      capture: true,
-      signal: hostListenerLifetime.signal,
-    });
     window.addEventListener("error", runtimeErrorListener, {
       signal: childListenerLifetime.signal,
     });
@@ -2026,10 +2062,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     window.addEventListener("hashchange", trustedHashChangeListener, {
       signal: childListenerLifetime.signal,
     });
-    iframe.addEventListener("load", iframeNavigationListener, {
-      signal: hostListenerLifetime.signal,
-    });
-
     let adoptedMarkupRevealed = options.markup.kind !== "adopted";
     const revealAdoptedMarkup = (): void => {
       if (adoptedMarkupRevealed || disposed || options.signal.aborted) {

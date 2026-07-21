@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface FixtureServer {
   origin: string;
@@ -157,7 +156,6 @@ async function closeServer(server: Server): Promise<void> {
 async function startFixtureServer(): Promise<FixtureServer> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
     if (pathname === "/") {
       reply(response, 200, "text/html", html('<div id="host"></div>'));

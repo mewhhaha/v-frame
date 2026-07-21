@@ -2,7 +2,6 @@ import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface CompatibilityFixture {
   origin: string;
@@ -37,7 +36,6 @@ function closeServer(server: Server): Promise<void> {
 async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const host = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = pathname(request);
     if (path === "/") return reply(response, 200, "text/html", documentPage('<div id="host"></div>'));
     if (path === "/dist/index.js") {
@@ -156,9 +154,10 @@ test("reconstructs a source that declares restrictive CSP and framing headers", 
   );
 });
 
-test("promotes an allowed same-context GET form to the host", async ({ page }) => {
+test("loads an allowed same-context GET form inside the guest", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "native-form", `${fixture.origin}/documents/native-form.html`);
+  const hostURL = page.url();
   await page.evaluate(() => {
     document.querySelector("#native-form")?.addEventListener("v-frame-navigate", (event) => {
       const detail = (event as CustomEvent<{ kind: string; to: string }>).detail;
@@ -169,11 +168,12 @@ test("promotes an allowed same-context GET form to the host", async ({ page }) =
     });
   });
 
-  await Promise.all([
-    page.waitForURL(`${fixture.origin}/documents/form-target.html?query=compatibility`),
-    frame.locator("#native-form button").click(),
-  ]);
-  await expect(page.locator("#form-target")).toHaveText("Form destination");
+  await frame.locator("#native-form button").click();
+  await expect(frame.locator("#form-target")).toHaveText("Form destination");
+  await expect.poll(() => frame.evaluate((element) =>
+    (element as HTMLElement & { currentURL: string | null }).currentURL
+  )).toBe(`${fixture.origin}/documents/form-target.html?query=compatibility`);
+  expect(page.url()).toBe(hostURL);
   expect(await page.evaluate(() => JSON.parse(
     sessionStorage.getItem("compatibility-navigation") ?? "null",
   ))).toEqual({

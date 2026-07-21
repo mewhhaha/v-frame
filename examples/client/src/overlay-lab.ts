@@ -1,4 +1,4 @@
-import { defineVFrame } from "v-frame";
+import "v-frame/register";
 import "./overlay-lab.css";
 
 interface OverlaySurface {
@@ -13,8 +13,6 @@ const overlaySurfaces: readonly OverlaySurface[] = [
   { framework: "solid", library: "Kobalte", src: "/frontends/solid/?surface=overlays" },
   { framework: "qwik", library: "Qwik UI Headless", src: "/frontends/qwik/?surface=overlays" },
 ];
-
-defineVFrame();
 
 const frameworkGrid = document.getElementById("framework-grid");
 const resetFramesButton = document.getElementById("reset-frames");

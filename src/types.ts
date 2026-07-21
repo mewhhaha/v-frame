@@ -11,12 +11,16 @@ export type VFrameWindow = Window & typeof globalThis;
 
 export type VFrameCredentials = "omit" | "same-origin" | "include";
 
-export interface VFrameTrustedTypesPolicy {
+export type VFrameNavigation = "guest" | "host";
+
+export interface VFrameTrustedTypesPolicyDefinition {
   readonly name: string;
   createHTML(source: string): string;
   createScript(source: string): string;
   createScriptURL(source: string): string;
 }
+
+export type VFrameTrustedTypesPolicy = string | VFrameTrustedTypesPolicyDefinition;
 
 export type VFrameErrorPhase =
   | "entry"

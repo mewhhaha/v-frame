@@ -6,6 +6,9 @@ playwright-report
 test-results
 .angular
 .wrangler
-examples/ssr/workers/*/public
-examples/ssr/workers/qwik/server
-examples/ssr/workers/host/generated
+examples/ssr/apps/qwik/src/manifest.generated.js
+examples/ssr/apps/react-router/.react-router
+examples/ssr/apps/react-router/build
+examples/ssr/apps/react-router/*.tsbuildinfo
+examples/ssr/apps/solid/.output
+examples/ssr/apps/solid/.vinxi

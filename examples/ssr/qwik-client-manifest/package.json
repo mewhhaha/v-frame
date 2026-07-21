@@ -1,7 +1,0 @@
-{
-  "name": "v-frame-qwik-client-manifest",
-  "private": true,
-  "version": "1.0.0",
-  "type": "module",
-  "exports": "./index.js"
-}

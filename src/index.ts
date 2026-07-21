@@ -12,9 +12,11 @@ export type {
   VFrameLoadEventDetail,
   VFrameLoadStartEventDetail,
   VFrameNavigateEventDetail,
+  VFrameNavigation,
   VFrameNavigationKind,
   VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
+  VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
 
 declare global {

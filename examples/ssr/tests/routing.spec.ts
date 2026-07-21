@@ -1,13 +1,19 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const widgetEntryPaths = new Set([
+  "/widgets/angular/dashboard",
   "/widgets/qwik/catalog",
   "/widgets/qwik/inventory",
   "/widgets/react-router/activity",
   "/widgets/react-router/brief",
   "/widgets/react-router/plugins",
   "/widgets/react-router/research",
+  "/widgets/solid/signals",
 ]);
+
+function angularFrame(page: Page): Locator {
+  return page.locator('v-frame[data-frame-id="angular"]');
+}
 
 function reactFrame(page: Page): Locator {
   return page.locator('v-frame[data-frame-id="react-router"]');
@@ -15,6 +21,10 @@ function reactFrame(page: Page): Locator {
 
 function topLevelQwikFrame(page: Page): Locator {
   return page.locator('v-frame[data-frame-id="qwik"]');
+}
+
+function solidFrame(page: Page): Locator {
+  return page.locator('v-frame[data-frame-id="solid"]');
 }
 
 function nestedQwikFrame(page: Page): Locator {
@@ -41,9 +51,10 @@ async function expectLoadedWithoutRouting(frame: Locator): Promise<void> {
 }
 
 async function openWikipediaPreview(page: Page): Promise<void> {
+  await expectReady(reactFrame(page));
   const popover = reactFrame(page).locator(".preview-popover");
   await expect(popover).toHaveCount(1);
-  await reactFrame(page).getByRole("button", { name: "blue–green deployment" }).hover();
+  await reactFrame(page).getByRole("button", { name: "blue–green deployment" }).focus();
   await expect(popover).toBeVisible();
   await expect(
     nestedQwikFrame(page).getByRole("heading", { name: "Blue–green deployment" }),
@@ -61,7 +72,7 @@ async function expectHostRoutes(
   await expect(page.locator("#host-route")).toHaveText(routes);
 }
 
-test("activates composed frames through the gateway without entry document fetches", async ({ page }) => {
+test("activates composed frames without entry or realm requests", async ({ page }) => {
   const entryFetches: string[] = [];
   const realmRequests: string[] = [];
   page.on("request", (request) => {
@@ -86,13 +97,58 @@ test("activates composed frames through the gateway without entry document fetch
   await openWikipediaPreview(page);
   await expectHostRoutes(page, "react-router /activity; qwik /inventory");
   expect(entryFetches).toEqual([]);
-  expect(realmRequests.sort()).toEqual([
-    "/widgets/qwik/inventory",
-    "/widgets/qwik/inventory",
-    "/widgets/qwik/inventory",
-    "/widgets/qwik/inventory",
-    "/widgets/react-router/activity",
-  ]);
+  expect(realmRequests).toEqual([]);
+});
+
+test("preserves the Qwik composer presentation after client navigation", async ({ page }) => {
+  await page.goto("/");
+  await expectReady(topLevelQwikFrame(page));
+
+  const serverRenderedPresentation = await topLevelQwikFrame(page).evaluate((frame) => {
+    const disclaimer = frame.shadowRoot?.querySelector(".composer-widget > p");
+    if (disclaimer === null || disclaimer === undefined) {
+      throw new Error("The server-rendered Qwik composer has no disclaimer");
+    }
+
+    const style = getComputedStyle(disclaimer);
+    return {
+      color: style.color,
+      fontSize: style.fontSize,
+      margin: style.margin,
+      textAlign: style.textAlign,
+    };
+  });
+  expect(serverRenderedPresentation).toEqual({
+    color: "rgb(115, 115, 115)",
+    fontSize: "10px",
+    margin: "0px",
+    textAlign: "center",
+  });
+
+  await page.locator(".host-sidebar").getByRole("link", { name: "Usage" }).click();
+  await expect(page).toHaveURL("/usage");
+  await expect(
+    topLevelQwikFrame(page).getByRole("heading", { name: "Usage", exact: true }),
+  ).toBeVisible();
+  await page.locator(".host-sidebar").getByRole("link", { name: "Platform migration" }).click();
+  await expect(page).toHaveURL("/");
+  await expectReady(topLevelQwikFrame(page));
+
+  const clientLoadedPresentation = await topLevelQwikFrame(page).evaluate((frame) => {
+    const disclaimer = frame.shadowRoot?.querySelector(".composer-widget > p");
+    if (disclaimer === null || disclaimer === undefined) {
+      throw new Error("The client-loaded Qwik composer has no disclaimer");
+    }
+
+    const style = getComputedStyle(disclaimer);
+    return {
+      color: style.color,
+      fontSize: style.fontSize,
+      margin: style.margin,
+      textAlign: style.textAlign,
+    };
+  });
+  expect(clientLoadedPresentation).toEqual(serverRenderedPresentation);
 });
 
 test("maps a top-level widget route back to its composed shell route", async ({ page }) => {
@@ -103,6 +159,52 @@ test("maps a top-level widget route back to its composed shell route", async ({ 
     reactFrame(page).getByRole("heading", { name: "Customer research conversation" }),
   ).toBeVisible();
   await expect(topLevelQwikFrame(page).getByRole("textbox", { name: "Message Relay" })).toBeVisible();
+});
+
+test("hydrates the server-rendered Angular application", async ({ page }) => {
+  await page.goto("/angular");
+  await expectLoadedWithoutRouting(angularFrame(page));
+  await expect(
+    angularFrame(page).getByRole("heading", { name: "Delivery readiness" }),
+  ).toBeVisible();
+
+  const reviewButton = angularFrame(page).getByRole("button", { name: /Record review/ });
+  await reviewButton.click();
+  await expect(reviewButton).toHaveText(/Record review · 1/);
+});
+
+test("hydrates the server-rendered SolidStart application", async ({ page }) => {
+  await page.goto("/solid");
+  await expectLoadedWithoutRouting(solidFrame(page));
+  await expect(
+    solidFrame(page).getByRole("heading", { name: "Signal review" }),
+  ).toBeVisible();
+
+  const reviewButton = solidFrame(page).getByRole("button", { name: /Reviewed signals/ });
+  await reviewButton.click();
+  await expect(reviewButton).toHaveText("Reviewed signals: 1");
+});
+
+test("loads the Angular application during host navigation", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".host-sidebar").getByRole("link", { name: /Delivery/ }).click();
+
+  await expect(page).toHaveURL("/angular");
+  await expectLoadedWithoutRouting(angularFrame(page));
+  await expect(
+    angularFrame(page).getByRole("heading", { name: "Delivery readiness" }),
+  ).toBeVisible();
+});
+
+test("loads the SolidStart application during host navigation", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".host-sidebar").getByRole("link", { name: /Signals/ }).click();
+
+  await expect(page).toHaveURL("/solid");
+  await expectLoadedWithoutRouting(solidFrame(page));
+  await expect(
+    solidFrame(page).getByRole("heading", { name: "Signal review" }),
+  ).toBeVisible();
 });
 
 test("hydrates a staged React transcript without recovery", async ({ page }) => {
@@ -198,6 +300,7 @@ test("marks only navigation entries as the current page after SPA navigation", a
 
 test("shows the Wikipedia preview only while its term is hovered or focused", async ({ page }) => {
   await page.goto("/");
+  await expectReady(reactFrame(page));
   await expectReady(nestedQwikFrame(page));
 
   const trigger = reactFrame(page).getByRole("button", { name: "blue–green deployment" });
@@ -470,6 +573,7 @@ test("back navigation stages a fresh page composition", async ({ page }) => {
 
 test("keeps the nested Wikipedia route local to the transcript", async ({ page }) => {
   await page.goto("/");
+  await expectReady(reactFrame(page));
   await expectReady(nestedQwikFrame(page));
   await openWikipediaPreview(page);
   await expect(topLevelQwikFrame(page).getByRole("textbox", { name: "Message Relay" })).toBeVisible();
@@ -598,9 +702,9 @@ test("renders framework routes directly without a host session", async ({ page }
   expect(await page.evaluate(() => document.compatMode)).toBe("CSS1Compat");
   expect(await page.evaluate(() => sessionStorage.getItem("v-frame:routing-session"))).toBeNull();
 
-  await page.goto("http://127.0.0.1:44501/plugins");
+  await page.goto("http://127.0.0.1:44501/widgets/react-router/plugins");
   await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible();
-  await expect(page).toHaveURL("http://127.0.0.1:44501/plugins");
+  await expect(page).toHaveURL("http://127.0.0.1:44501/widgets/react-router/plugins");
   await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
     "content",
     "width=device-width, initial-scale=1",
@@ -609,25 +713,55 @@ test("renders framework routes directly without a host session", async ({ page }
   expect(await page.evaluate(() => sessionStorage.getItem("v-frame:routing-session"))).toBeNull();
 });
 
-test("keeps React client modules same-origin for protocol-relative basenames", async ({ request }) => {
+test("uses the mounted React Router base for client modules", async ({ request }) => {
   const response = await request.get(
-    "http://127.0.0.1:44501/document?route=%2Factivity&base=%2F%2Fexample.invalid",
+    "http://127.0.0.1:44501/widgets/react-router/activity",
   );
   expect(response.ok()).toBe(true);
 
   const markup = await response.text();
-  expect(markup).toContain('src="/assets/react-router-widget-client.js"');
-  expect(markup).not.toContain("example.invalid");
+  expect(markup).toContain('href="/widgets/react-router/assets/');
+  expect(markup).not.toContain('href="/assets/');
 });
 
 test("marks framework-rendered documents as non-cacheable", async ({ request }) => {
-  const [reactResponse, qwikResponse] = await Promise.all([
-    request.get("http://127.0.0.1:44501/document?route=%2Factivity"),
+  const [angularResponse, qwikResponse, reactResponse, solidResponse] = await Promise.all([
+    request.get("http://127.0.0.1:44503/widgets/angular/dashboard"),
     request.get("http://127.0.0.1:44502/document?route=%2Finventory"),
+    request.get("http://127.0.0.1:44501/widgets/react-router/activity"),
+    request.get("http://127.0.0.1:44504/widgets/solid/signals"),
   ]);
 
+  expect(angularResponse.headers()["cache-control"]).toBe("no-store");
   expect(reactResponse.headers()["cache-control"]).toBe("no-store");
   expect(qwikResponse.headers()["cache-control"]).toBe("no-store");
+  expect(solidResponse.headers()["cache-control"]).toBe("no-store");
+});
+
+test("composes ordinary framework documents into adopted shadow markup", async ({ request }) => {
+  const [angularDocument, qwikDocument, reactDocument, solidDocument, hostDocument] = await Promise.all([
+    request.get("http://127.0.0.1:44503/widgets/angular/dashboard"),
+    request.get("http://127.0.0.1:44502/document?route=%2Finventory"),
+    request.get("http://127.0.0.1:44501/widgets/react-router/activity"),
+    request.get("http://127.0.0.1:44504/widgets/solid/signals"),
+    request.get("http://127.0.0.1:44500/"),
+  ]);
+
+  for (const response of [angularDocument, qwikDocument, reactDocument, solidDocument]) {
+    const markup = await response.text();
+    const normalizedMarkup = markup.toLowerCase();
+    expect(normalizedMarkup).toContain("<!doctype html><html");
+    expect(normalizedMarkup).toContain("<head>");
+    expect(normalizedMarkup).toContain("<body>");
+    expect(normalizedMarkup).not.toContain("<v-html");
+  }
+
+  const composedMarkup = await hostDocument.text();
+  expect(composedMarkup).toContain('<template shadowrootmode="open"');
+  expect(composedMarkup).toContain("<v-html");
+  expect(composedMarkup).toContain("<v-head");
+  expect(composedMarkup).toContain("<v-body");
+  expect(composedMarkup).toContain('type="application/vnd.v-frame"');
 });
 
 test("reloads a history target when the replacement routing channel fails", async ({ page }) => {

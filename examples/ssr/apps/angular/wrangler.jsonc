@@ -1,0 +1,17 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "v-frame-example-angular-widget",
+  "main": "./dist/server/server.mjs",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist/browser",
+    "html_handling": "none"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

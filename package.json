@@ -11,9 +11,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./gateway": {
-      "types": "./dist/gateway.d.ts",
-      "import": "./dist/gateway.js"
+    "./register": {
+      "types": "./dist/register.d.ts",
+      "import": "./dist/register.js"
     }
   },
   "files": [
@@ -21,7 +21,10 @@
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/register.js",
+    "./src/register.ts"
+  ],
   "scripts": {
     "build": "pnpm typecheck && node esbuild.mjs && tsc --emitDeclarationOnly",
     "prepack": "pnpm build",

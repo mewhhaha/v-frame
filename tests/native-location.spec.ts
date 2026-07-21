@@ -2,16 +2,10 @@ import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import {
-  V_FRAME_GATEWAY_HEADER,
-  V_FRAME_GATEWAY_VERSION,
-  V_FRAME_REALM_MARKER,
-} from "../src/gateway-contract.js";
 
 interface NativeLocationFixture {
   origin: string;
   requests: Array<{ destination: string; path: string }>;
-  entryAndMarkerOverlapped(): boolean;
   close(): Promise<void>;
 }
 
@@ -42,38 +36,7 @@ function closeServer(server: Server): Promise<void> {
 
 async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
   const requests: NativeLocationFixture["requests"] = [];
-  let pendingParallelEntry: ServerResponse | null = null;
-  let parallelFallback: ReturnType<typeof setTimeout> | null = null;
-  let parallelMarkerRequested = false;
-  let parallelRequestsOverlapped = false;
   const bundle = resolve(process.cwd(), "dist/index.js");
-  const finishParallelEntry = () => {
-    if (pendingParallelEntry === null) {
-      return;
-    }
-
-    parallelRequestsOverlapped = true;
-    if (parallelFallback !== null) {
-      clearTimeout(parallelFallback);
-      parallelFallback = null;
-    }
-    pendingParallelEntry.end('<main id="parallel-entry">Parallel entry</main></body></html>');
-    pendingParallelEntry = null;
-  };
-  const scheduleParallelFallback = () => {
-    if (parallelFallback !== null || pendingParallelEntry === null) {
-      return;
-    }
-    parallelFallback = setTimeout(() => {
-      parallelFallback = null;
-      if (pendingParallelEntry !== null) {
-        pendingParallelEntry.end(
-          '<main id="parallel-entry">Parallel entry</main></body></html>',
-        );
-        pendingParallelEntry = null;
-      }
-    }, 1_000);
-  };
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://fixture.test");
     const destination = String(request.headers["sec-fetch-dest"] ?? "");
@@ -111,48 +74,6 @@ async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
       createReadStream(bundle).pipe(response);
       return;
     }
-    if (url.pathname === "/routes/parallel.html" && destination === "iframe") {
-      parallelMarkerRequested = true;
-      finishParallelEntry();
-      return reply(
-        response,
-        200,
-        "text/html",
-        `<!doctype html><meta name="${V_FRAME_REALM_MARKER}" content="${V_FRAME_GATEWAY_VERSION}">`,
-        {
-          "Vary": "Sec-Fetch-Dest",
-          [V_FRAME_GATEWAY_HEADER]: V_FRAME_GATEWAY_VERSION,
-        },
-      );
-    }
-    if (url.pathname === "/routes/parallel.html") {
-      response.writeHead(200, {
-        "content-type": "text/html",
-        "cache-control": "no-store",
-        "vary": "Sec-Fetch-Dest",
-        [V_FRAME_GATEWAY_HEADER]: V_FRAME_GATEWAY_VERSION,
-      });
-      response.write("<!doctype html><html><body>");
-      pendingParallelEntry = response;
-      if (parallelMarkerRequested) {
-        finishParallelEntry();
-        return;
-      }
-      scheduleParallelFallback();
-      return;
-    }
-    if (url.pathname.startsWith("/routes/") && destination === "iframe") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        `<!doctype html><meta name="${V_FRAME_REALM_MARKER}" content="${V_FRAME_GATEWAY_VERSION}">`,
-        {
-          "Vary": "Sec-Fetch-Dest",
-          [V_FRAME_GATEWAY_HEADER]: V_FRAME_GATEWAY_VERSION,
-        },
-      );
-    }
     if (url.pathname === "/routes/entry.html") {
       return reply(
         response,
@@ -165,7 +86,6 @@ async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
               location.assign('/routes/destination.html');
             });
           </script>`),
-        { [V_FRAME_GATEWAY_HEADER]: V_FRAME_GATEWAY_VERSION },
       );
     }
     if (url.pathname === "/routes/destination.html") {
@@ -173,9 +93,9 @@ async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
         '<main id="shell-destination">Top-level destination</main>',
       ));
     }
-    if (url.pathname === "/ungated/entry.html") {
+    if (url.pathname === "/ordinary/entry.html") {
       return reply(response, 200, "text/html", page(
-        '<main id="ungated-entry">Ungated entry</main>',
+        '<main id="ordinary-entry">Ordinary entry</main>',
       ));
     }
     return reply(response, 404, "text/plain", `No fixture for ${url.pathname}`);
@@ -191,7 +111,6 @@ async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
-    entryAndMarkerOverlapped: () => parallelRequestsOverlapped,
     close: () => closeServer(server),
   };
 }
@@ -228,7 +147,9 @@ async function mountFrame(
   return frame;
 }
 
-test("uses an advertised route as the native realm Location", async ({ page: pageInstance }) => {
+test("uses the guest route as native Location without an iframe request", async ({
+  page: pageInstance,
+}) => {
   const requestStart = fixture.requests.length;
   const frame = await mountFrame(pageInstance);
 
@@ -239,57 +160,152 @@ test("uses an advertised route as the native realm Location", async ({ page: pag
   const routeRequests = fixture.requests.slice(requestStart).filter(
     (request) => request.path === "/routes/entry.html",
   );
-  expect(routeRequests).toHaveLength(2);
-  expect(routeRequests.map((request) => request.destination).sort()).toEqual([
-    "empty",
-    "iframe",
-  ]);
+  expect(routeRequests).toEqual([{ destination: "empty", path: "/routes/entry.html" }]);
 });
 
-test("loads the entry response and realm marker concurrently", async ({ page: pageInstance }) => {
-  const frame = await mountFrame(pageInstance, "/routes/parallel.html");
+test("loads an ordinary same-origin route", async ({ page: pageInstance }) => {
+  const frame = await mountFrame(pageInstance, "/ordinary/entry.html");
 
-  await expect(frame.locator("#parallel-entry")).toHaveText("Parallel entry");
-  expect(fixture.entryAndMarkerOverlapped()).toBe(true);
+  await expect(frame.locator("#ordinary-entry")).toHaveText("Ordinary entry");
 });
 
-test("rejects a route that does not return the realm marker", async ({ page: pageInstance }) => {
-  await pageInstance.goto(fixture.origin);
-  await pageInstance.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  const failure = await pageInstance.evaluate(async () => {
-    const frame = document.createElement("v-frame") as HTMLElement & { status: string };
-    const reported = new Promise<{ message: string; phase: string }>((resolve) => {
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ error: Error; phase: string }>).detail;
-        resolve({ message: detail.error.message, phase: detail.phase });
-      }, { once: true });
-    });
-    frame.setAttribute("src", "/ungated/entry.html");
-    document.querySelector("#host")?.append(frame);
-    return { failure: await reported, status: frame.status };
-  });
-
-  expect(failure).toEqual({
-    failure: {
-      message: `v-frame route ${fixture.origin}/ungated/entry.html did not return the gateway realm marker`,
-      phase: "bootstrap",
-    },
-    status: "error",
-  });
-});
-
-test("promotes direct Location navigation to the host document", async ({ page: pageInstance }) => {
+test("preserves replace semantics for native Location navigation", async ({
+  page: pageInstance,
+}) => {
   const frame = await mountFrame(pageInstance);
+  await frame.evaluate((element) => new Promise<void>((resolve) => {
+    element.addEventListener("v-frame-load", () => resolve(), { once: true });
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.location.replace("/routes/destination.html");
+  }));
+
+  await expect(frame.locator("#shell-destination")).toHaveText("Top-level destination");
+  expect(await frame.evaluate((element) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow?.history.length)).toBe(1);
+});
+
+test("loads direct Location navigation inside the guest", async ({ page: pageInstance }) => {
+  const frame = await mountFrame(pageInstance);
+  await frame.locator("#hard-navigation").click();
+
+  await expect(frame.locator("#shell-destination")).toHaveText("Top-level destination");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string | null }).currentURL,
+  )).toBe(`${fixture.origin}/routes/destination.html`);
+  expect(pageInstance.url()).toBe(`${fixture.origin}/`);
+});
+
+test("lets a guest Navigation interceptor own same-document routing", async ({
+  page: pageInstance,
+}) => {
+  const requestStart = fixture.requests.length;
+  const frame = await mountFrame(pageInstance);
+  const originalWindow = await frame.evaluateHandle((element) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow);
+  await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.navigation.addEventListener("navigate", (event) => {
+      if (!event.destination.url.endsWith("/routes/spa.html")) {
+        return;
+      }
+      event.intercept({
+        handler() {
+          child.document.querySelector("#native-entry")!.textContent = "Guest SPA route";
+        },
+      });
+    });
+    child?.location.assign("/routes/spa.html");
+  });
+
+  await expect(frame.locator("#native-entry")).toHaveText("Guest SPA route");
+  await expect.poll(() => frame.evaluate((element) => (
+    element as HTMLElement & { currentURL: string | null }
+  ).currentURL)).toBe(`${fixture.origin}/routes/spa.html`);
+  expect(await frame.evaluate((element, previousWindow) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow === previousWindow, originalWindow)).toBe(true);
+  expect(fixture.requests.slice(requestStart).some(
+    (request) => request.path === "/routes/spa.html",
+  )).toBe(false);
+});
+
+test("honors guest cancellation of native Location navigation", async ({
+  page: pageInstance,
+}) => {
+  const frame = await mountFrame(pageInstance);
+  const originalWindow = await frame.evaluateHandle((element) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow);
+  const loadStarted = await frame.evaluate(async (element) => {
+    let started = false;
+    element.addEventListener("v-frame-loadstart", () => {
+      started = true;
+    }, { once: true });
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.navigation.addEventListener("navigate", (event) => {
+      event.preventDefault();
+    }, { once: true });
+    child?.location.assign("/routes/destination.html");
+    await new Promise((resolve) => child?.setTimeout(resolve, 0));
+    return started;
+  });
+
+  expect(loadStarted).toBe(false);
+  expect(await frame.evaluate((element, previousWindow) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    return {
+      currentURL: (element as HTMLElement & { currentURL: string | null }).currentURL,
+      retainedWindow: child === previousWindow,
+    };
+  }, originalWindow)).toEqual({
+    currentURL: `${fixture.origin}/routes/entry.html`,
+    retainedWindow: true,
+  });
+});
+
+test("reloads the guest without adding a document history entry", async ({
+  page: pageInstance,
+}) => {
+  const frame = await mountFrame(pageInstance);
+  const originalWindow = await frame.evaluateHandle((element) => (
+    element as HTMLElement & { contentWindow: Window | null }
+  ).contentWindow);
+  await frame.evaluate((element) => new Promise<void>((resolve) => {
+    element.addEventListener("v-frame-load", () => resolve(), { once: true });
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    child?.location.reload();
+  }));
+
+  expect(await frame.evaluate((element, previousWindow) => {
+    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    return {
+      historyLength: child?.history.length,
+      replacedWindow: child !== previousWindow,
+    };
+  }, originalWindow)).toEqual({
+    historyLength: 1,
+    replacedWindow: true,
+  });
+  expect(pageInstance.url()).toBe(`${fixture.origin}/`);
+});
+
+test("promotes direct Location navigation in explicit host mode", async ({ page: pageInstance }) => {
+  const frame = await mountFrame(pageInstance);
+  await frame.evaluate((element) => new Promise<void>((resolve) => {
+    element.addEventListener("v-frame-load", () => resolve(), { once: true });
+    element.setAttribute("navigation", "host");
+  }));
   await frame.locator("#hard-navigation").click();
 
   await expect(pageInstance).toHaveURL(`${fixture.origin}/routes/destination.html`);
   await expect(pageInstance.locator("#shell-destination")).toHaveText("Top-level destination");
 });
 
-test("rebuilds the route-backed realm when direct navigation is canceled", async ({ page: pageInstance }) => {
+test("keeps the current realm when direct navigation is canceled", async ({
+  page: pageInstance,
+}) => {
   const frame = await mountFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle((element) => (
     element as HTMLElement & { contentWindow: Window | null }
@@ -308,11 +324,13 @@ test("rebuilds the route-backed realm when direct navigation is canceled", async
   )).toBe("ready");
   expect(await frame.evaluate((element, previousWindow) => (
     element as HTMLElement & { contentWindow: Window | null }
-  ).contentWindow !== previousWindow, originalWindow)).toBe(true);
+  ).contentWindow === previousWindow, originalWindow)).toBe(true);
   expect(pageInstance.url()).toBe(`${fixture.origin}/`);
 });
 
-test("activates adopted markup with only the iframe gateway request", async ({ page: pageInstance }) => {
+test("activates adopted markup without requesting its source route", async ({
+  page: pageInstance,
+}) => {
   const requestStart = fixture.requests.length;
   await pageInstance.goto(`${fixture.origin}/adopted`);
   const frame = pageInstance.locator("#adopted-native-frame");
@@ -323,5 +341,5 @@ test("activates adopted markup with only the iframe gateway request", async ({ p
   )).toBe("ready");
   expect(fixture.requests.slice(requestStart).filter(
     (request) => request.path === "/routes/entry.html",
-  )).toEqual([{ destination: "iframe", path: "/routes/entry.html" }]);
+  )).toEqual([]);
 });

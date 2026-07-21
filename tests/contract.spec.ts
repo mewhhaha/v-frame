@@ -51,7 +51,29 @@ async function childValue<T>(
   }, expression.toString()) as Promise<T>;
 }
 
-test("keeps an empty source idle and recreates its realm after reconnection", async ({ page }) => {
+test("registers one launchpad constructor across the side-effect and API entry points", async ({ page }) => {
+  await page.goto(fixture.origin);
+
+  const registration = await page.evaluate(async ({ apiURL, registerURL }) => {
+    await import(registerURL);
+    const registered = customElements.get("v-frame");
+    const api = await import(apiURL);
+    return {
+      constructorName: registered?.name,
+      sharedConstructor: api.defineVFrame() === registered,
+    };
+  }, {
+    apiURL: `${fixture.origin}/dist/index.js`,
+    registerURL: `${fixture.origin}/dist/register.js`,
+  });
+
+  expect(registration).toEqual({
+    constructorName: "VFrameElement",
+    sharedConstructor: true,
+  });
+});
+
+test("keeps a missing source idle and recreates its realm after reconnection", async ({ page }) => {
   await installBundle(page);
 
   const state = await page.evaluate(async (origin) => {
@@ -61,7 +83,6 @@ test("keeps an empty source idle and recreates its realm after reconnection", as
       status: string;
       src: string;
     };
-    frame.src = "";
     document.querySelector("#host")?.append(frame);
     const initially = {
       status: frame.status,
@@ -145,14 +166,17 @@ test("exposes each lifecycle value as an exclusive custom element state", async 
   });
 });
 
-test("binds a frame without src to shell location and history", async ({ page }) => {
+test("binds an explicit host-navigation frame to shell location and history", async ({ page }) => {
   await page.goto(`${fixture.origin}/documents/bound-shell.html`);
   await page.evaluate(async (bundleURL) => {
     const bundle = await import(bundleURL);
     bundle.defineVFrame();
     (window as Window & typeof globalThis & { __unpatchedPushState?: History["pushState"] })
       .__unpatchedPushState = history.pushState;
-    document.querySelector("#host")?.append(document.createElement("v-frame"));
+    const frame = document.createElement("v-frame");
+    frame.setAttribute("navigation", "host");
+    frame.setAttribute("src", location.href);
+    document.querySelector("#host")?.append(frame);
   }, `${fixture.origin}/dist/index.js`);
   const frame = page.locator("v-frame");
   await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
@@ -629,7 +653,7 @@ test("reports but does not perform canceled link and form navigation", async ({ 
   expect(await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }))).toEqual(hostHistory);
 });
 
-test("promotes an allowed same-context link to the host", async ({ page }) => {
+test("loads an allowed same-context link inside the guest", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "staged-navigation", `${fixture.origin}/documents/history.html`);
   await expect.poll(() => frame.evaluate(
@@ -647,11 +671,12 @@ test("promotes an allowed same-context link to the host", async ({ page }) => {
     child.document.body.append(link);
   });
 
-  await Promise.all([
-    page.waitForURL(`${fixture.origin}/documents/slow.html`),
-    frame.locator("#slow-document-link").click(),
-  ]);
-  await expect(page.locator("#slow-copy")).toHaveText("Slow document");
+  await frame.locator("#slow-document-link").click();
+  await expect(frame.locator("#slow-copy")).toHaveText("Slow document");
+  await expect.poll(() => frame.evaluate(
+    (element) => (element as HTMLElement & { currentURL: string | null }).currentURL,
+  )).toBe(`${fixture.origin}/documents/slow.html`);
+  expect(page.url()).toBe(`${fixture.origin}/`);
 });
 
 test("gates modified primary and middle link activations before opening a new context", async ({ page }) => {

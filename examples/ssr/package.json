@@ -4,39 +4,21 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "pnpm run build:v-frame && pnpm run build:react-router && pnpm run build:qwik",
-    "build:v-frame": "esbuild client/register-v-frame.ts --bundle --platform=browser --format=iife --target=es2022 --minify --outfile=workers/host/generated/v-frame-inline.txt",
-    "build:react-router": "esbuild workers/react-router/src/client.tsx --bundle --platform=browser --format=esm --target=es2022 --minify --define:process.env.NODE_ENV='\"production\"' --outfile=workers/react-router/public/assets/react-router-widget-client.js",
-    "build:qwik": "vite build -c workers/qwik/vite.config.ts && vite build -c workers/qwik/vite.config.ts --ssr src/index.tsx",
-    "predev": "pnpm --workspace-root run build && pnpm run build",
-    "dev": "pnpm run dev:workers",
-    "dev:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --env= --port 43500 --inspector-port 43600 -c workers/host/wrangler.jsonc\" \"wrangler dev --env= --port 43501 --inspector-port 43601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --env= --port 43502 --inspector-port 43602 -c workers/qwik/wrangler.jsonc\"",
-    "types": "wrangler types worker-configuration.d.ts -c workers/host/wrangler.jsonc -c workers/react-router/wrangler.jsonc -c workers/qwik/wrangler.jsonc",
-    "typecheck": "tsc --noEmit",
-    "test:workers": "concurrently -k -n host,react-router,qwik \"wrangler dev --env test --port 44500 --inspector-port 44600 -c workers/host/wrangler.jsonc\" \"wrangler dev --env test --port 44501 --inspector-port 44601 -c workers/react-router/wrangler.jsonc\" \"wrangler dev --env test --port 44502 --inspector-port 44602 -c workers/qwik/wrangler.jsonc\"",
+    "build": "pnpm --workspace-root run build && pnpm run build:apps",
+    "build:apps": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run build",
+    "dev": "pnpm run build && wrangler dev --port 43500 --inspector-port 43600 -c apps/host/wrangler.jsonc -c apps/react-router/build/server/wrangler.json -c apps/qwik/wrangler.jsonc -c apps/angular/wrangler.jsonc -c apps/solid/wrangler.jsonc",
+    "types": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run types",
+    "typecheck": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run typecheck",
+    "test:workers": "pnpm run build && concurrently -k -n host,react-router,qwik,angular,solid \"wrangler dev --port 44500 --inspector-port 44600 -c apps/host/wrangler.jsonc\" \"wrangler dev --port 44501 --inspector-port 44601 -c apps/react-router/build/server/wrangler.json\" \"wrangler dev --port 44502 --inspector-port 44602 -c apps/qwik/wrangler.jsonc\" \"wrangler dev --port 44503 --inspector-port 44603 -c apps/angular/wrangler.jsonc\" \"wrangler dev --port 44504 --inspector-port 44604 -c apps/solid/wrangler.jsonc\"",
     "test:routing": "playwright test -c playwright.config.ts",
     "check": "pnpm run build && pnpm run types && pnpm run typecheck && pnpm run test:routing && pnpm run check:deploy",
-    "check:deploy": "wrangler deploy --env= --dry-run -c workers/react-router/wrangler.jsonc && wrangler deploy --env= --dry-run -c workers/qwik/wrangler.jsonc && wrangler deploy --env= --dry-run -c workers/host/wrangler.jsonc",
-    "predeploy": "pnpm --workspace-root run build && pnpm run build",
-    "deploy": "pnpm run deploy:components && wrangler deploy --env= -c workers/host/wrangler.jsonc",
-    "deploy:components": "wrangler deploy --env= -c workers/qwik/wrangler.jsonc && wrangler deploy --env= -c workers/react-router/wrangler.jsonc"
+    "check:deploy": "wrangler deploy --dry-run -c apps/react-router/build/server/wrangler.json && wrangler deploy --dry-run -c apps/qwik/wrangler.jsonc && wrangler deploy --dry-run -c apps/angular/wrangler.jsonc && wrangler deploy --dry-run -c apps/solid/wrangler.jsonc && wrangler deploy --dry-run -c apps/host/wrangler.jsonc",
+    "deploy": "pnpm run build && pnpm run deploy:apps && wrangler deploy -c apps/host/wrangler.jsonc",
+    "deploy:apps": "wrangler deploy -c apps/qwik/wrangler.jsonc && wrangler deploy -c apps/angular/wrangler.jsonc && wrangler deploy -c apps/solid/wrangler.jsonc && wrangler deploy -c apps/react-router/build/server/wrangler.json"
   },
   "devDependencies": {
-    "@types/node": "26.1.1",
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
+    "@playwright/test": "1.61.1",
     "concurrently": "10.0.3",
-    "esbuild": "0.28.1",
-    "typescript": "7.0.2",
-    "vite": "7.3.6",
-    "wrangler": "4.112.0"
-  },
-  "dependencies": {
-    "@builder.io/qwik": "1.20.0",
-    "@comp0/react": "0.1.0-next.11",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "react-router": "7.17.0",
-    "v-frame-qwik-client-manifest": "file:./qwik-client-manifest"
+    "wrangler": "4.113.0"
   }
 }

@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface CSSFailureFixture {
   origin: string;
@@ -54,7 +53,6 @@ function stylesheetFor(path: string): string | undefined {
 async function startFixture(): Promise<CSSFailureFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = new URL(request.url ?? "/", "http://fixture.test").pathname;
     if (path === "/") {
       return reply(response, 200, "text/html", documentWith('<div id="host"></div>', ""));

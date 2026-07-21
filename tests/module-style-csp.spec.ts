@@ -2,7 +2,6 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./support/gateway-fixture.js";
 
 interface FixtureServer {
   origin: string;
@@ -118,16 +117,6 @@ async function startFixtureServer(): Promise<FixtureServer> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
-    const realmContentSecurityPolicy = pathname === "/documents/trusted-types.html"
-      ? trustedTypesContentSecurityPolicy
-      : undefined;
-    if (serveRealmMarker(
-      request,
-      response,
-      realmContentSecurityPolicy === undefined
-        ? {}
-        : { "content-security-policy": realmContentSecurityPolicy },
-    )) return;
     if (pathname === "/") {
       reply(
         response,
@@ -308,6 +297,37 @@ test("loads documents and scripts through an explicit Trusted Types policy", asy
     trustedScriptPolicyApplied: true,
     inlineHandler: "ran",
   });
+});
+
+test("uses a named identity Trusted Types policy without callback boilerplate", async ({
+  browserName,
+  page,
+}) => {
+  test.skip(browserName !== "chromium", "Trusted Types enforcement is unavailable");
+  await page.goto(`${fixture.origin}/trusted-types`);
+  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+
+  const frame = page.locator("v-frame");
+  await page.evaluate(({ frameNonce, source }) => {
+    const element = document.createElement("v-frame") as HTMLElement & {
+      nonce: string;
+      src: string;
+      trustedTypesPolicy: string;
+    };
+    element.nonce = frameNonce;
+    element.trustedTypesPolicy = "v-frame-test";
+    element.src = source;
+    document.querySelector("#host")?.append(element);
+  }, {
+    frameNonce: nonce,
+    source: `${fixture.origin}/documents/trusted-types.html`,
+  });
+
+  await expect.poll(() => frame.evaluate((element) => (
+    element as { status: string }
+  ).status)).toBe("ready");
+  await expect(frame.locator("#trusted-html")).toHaveText("Trusted source");
+  await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted source");
 });
 
 test("reports a fatal bootstrap error when Trusted Types enforcement has no policy", async ({

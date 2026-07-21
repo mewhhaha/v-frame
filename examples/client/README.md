@@ -34,7 +34,9 @@ examples/client/
 ```
 
 Each microfrontend app builds independently to its own `dist/` and has no
-runtime dependency on the host or on each other. The React host uses the
+runtime dependency on the host, `v-frame`, or on each other. Their links,
+History calls, and document navigation remain guest-owned; the host only
+chooses which launchpad element is visible. The React host uses the
 headless dialog and button primitives from `@comp0/react`; each frontend keeps
 its own framework and visual state.
 
@@ -49,15 +51,14 @@ its own framework and visual state.
 | react-app | 43174 | `microfrontends/react-app/dist` |
 
 The microfrontends remain independently served on ports 43171–43174, while the
-host exposes them through same-origin `/frontends/*` gateway routes. Vite
-proxies ordinary document and asset requests to the owning server and returns
-the `v-frame` realm marker for iframe requests. The built applications use
+host exposes them through same-origin `/frontends/*` routes. Vite proxies
+document and asset requests to the owning server. The built applications use
 matching base paths so their assets continue through the correct proxy.
 
 This same-origin public route is required even when the application is
-deployed elsewhere. It gives the hidden execution iframe its real application
-URL and lets direct `Location` navigation reach the gateway before application
-code can execute in the wrong document.
+deployed elsewhere. It gives guest Location, relative URLs, storage, and
+network calls one consistent public origin; `v-frame` itself requires no
+special proxy response or iframe route.
 
 Angular CLI 21 requires Node 22.22.3+, 24.15+, or 26+. Use the repository's
 Node 26 default to build every microfrontend.

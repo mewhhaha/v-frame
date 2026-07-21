@@ -1,0 +1,16 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "v-frame-example-react-router-widget",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "binding": "ASSETS" },
+  "services": [
+    { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

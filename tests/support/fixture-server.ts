@@ -1,7 +1,6 @@
 import { createReadStream, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { serveRealmMarker } from "./gateway-fixture.js";
 
 export interface FixtureServer {
   origin: string;
@@ -253,7 +252,6 @@ export async function startFixtureServer(): Promise<FixtureServer> {
   const requests: string[] = [];
   const distFile = resolve(process.cwd(), "dist/index.js");
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = pathname(request);
     requests.push(path);
 
@@ -442,8 +440,8 @@ function closeContractServer(server: Server): Promise<void> {
 export async function startContractFixtureServers(): Promise<ContractFixtureServers> {
   const requests: string[] = [];
   const distFile = resolve(process.cwd(), "dist/index.js");
+  const registerFile = resolve(process.cwd(), "dist/register.js");
   const server = createServer((request, response) => {
-    if (serveRealmMarker(request, response)) return;
     const path = contractPathname(request);
     requests.push(path);
 
@@ -476,6 +474,14 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
       }
       response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
       createReadStream(distFile).pipe(response);
+      return;
+    }
+    if (path === "/dist/register.js") {
+      if (!existsSync(registerFile)) {
+        return contractReply(response, 404, "text/plain", "Register build output not found");
+      }
+      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      createReadStream(registerFile).pipe(response);
       return;
     }
     if (path === "/documents/slow.html") {

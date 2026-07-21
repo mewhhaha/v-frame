@@ -1,9 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { defineVFrame } from "v-frame";
+import "v-frame/register";
 import { App } from "./App";
-
-defineVFrame();
 
 const container = document.getElementById("root");
 if (!container) {

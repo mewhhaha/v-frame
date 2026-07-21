@@ -1,0 +1,30 @@
+{
+  "name": "example-ssr-react-router",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "preview": "vite preview",
+    "typecheck": "react-router typegen && tsc -b",
+    "types": "wrangler types worker-configuration.d.ts"
+  },
+  "dependencies": {
+    "@comp0/react": "0.1.0-next.11",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router": "8.2.0",
+    "v-frame": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.46.0",
+    "@react-router/dev": "8.2.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/node": "26.1.1",
+    "typescript": "6.0.3",
+    "vite": "7.3.6",
+    "wrangler": "4.113.0"
+  }
+}

@@ -1,164 +1,157 @@
-# Server-composed SSR widgets
+# SSR with independent framework applications
 
-This example uses a server-rendered host sidebar to compose independently
-deployed SSR applications into `<v-frame>` page and widget surfaces before the
-page is delivered. The dark Relay shell exposes three recent threads, Plugins,
-and Usage through host-owned SPA navigation. React Router owns the
-transcript and plugins routes. Each transcript includes a nested Qwik Wikipedia preview
-shown from an annotated term on hover or keyboard focus. A sibling Qwik
-composer or usage frontend and a Qwik account menu remain independent surfaces.
-The host mounts only the page frontends required by the current section. Thread
-pages own a React transcript and Qwik composer, Plugins owns one React frame,
-and Usage owns one Qwik frame.
+This example shows a host composing four independently built guest documents
+into server-rendered `v-frame` elements:
 
-The workspace reads as one product by default. **Show composition** reveals
-the host, React Router, and Qwik ownership boundaries and keeps that view active
-while moving between the server-rendered host pages.
+- React Router renders and hydrates with its framework-mode SSR build;
+- Qwik renders and resumes with the Qwik Vite optimizer;
+- Angular renders and hydrates with the Angular application builder; and
+- Solid renders and hydrates with SolidStart.
 
-The Wikipedia preview uses a manual native popover. Its nested Qwik
-`<v-frame>` is promoted into the browser's top layer, so the preview can
-cross the outer React frame's clipping boundary without moving overlay
-ownership into the host.
+The guests are ordinary applications. Each owns its routes, HTML document,
+browser entry, framework dependencies, Worker, and asset paths. None imports a
+host API or emits `v-frame` markup. The host is the only application that knows
+about composition.
 
-The React Router application uses its
-normal `StaticRouter`/`hydrateRoot` lifecycle, and the Qwik application uses its
-normal optimizer-generated snapshot, Qwikloader, and resumable QRLs. The public
-host requests only the page Workers required for the initial route through
-Cloudflare service bindings and streams each response into a declarative shadow
-root. The React Router Worker requests a second Qwik preview through its own
-service binding and nests it one level deeper.
-
-The hydrated React surface uses the headless `@comp0/react` button primitive;
-the host and Qwik surfaces remain framework-native.
-
-```text
-                          ┌─ React Router SSR Worker ── Qwik SSR Worker
-browser ← host HTML ← host Worker
-                          └─ Qwik SSR Worker
-```
-
-The delivered HTML already contains the active page widget bodies and the
-account widget:
-
-```html
-<v-frame adopt src="/widgets/react-router/activity">
-  <template shadowrootmode="open">
-    <v-html>
-      <v-head>…prepared widget styles…</v-head>
-      <v-body>…React Router SSR output…</v-body>
-    </v-html>
-  </template>
-</v-frame>
-```
-
-It also contains the minified `v-frame` runtime. Serializable declarative
-shadow roots preserve the nested Qwik preview while the outer React Router
-widget is adopted into its live tree. Activation does not fetch the application
-document again, but makes one small iframe request per realm
-to establish and verify its public route. The host answers those requests
-directly without invoking a widget service binding. The nested preview is
-present in both the visible server preview and the staged live React tree, so
-its handoff performs two marker requests before the preview copy is removed.
-
-React Router network documents leave the nested Qwik custom element empty in
-the server markup and let it load through its own `src`. This keeps the nested
-shadow tree outside React's hydration comparison during SPA navigation, while
-the initial host response remains fully server composed.
-
-Declarative Shadow DOM makes that content visible while the document is still
-being parsed. The host response also contains a self-registering `v-frame`
-runtime immediately after the composed markup, so activation does not wait for
-an external component-module request. `adopt` uses `src` as the widget's native
-and logical URL but does not fetch its application HTML. It keeps the server preview visible while a laid-out,
-non-interactive live tree starts in the isolated realm. React hydrates that tree
-and Qwik installs its loader before `v-frame` reveals it with a single
-synchronous swap. The staged tree matches the preview, so the reveal does not
-repaint and the widgets can activate concurrently.
-
-The public widget routes use `serveVFrameRoute()` from `v-frame/gateway`.
-Iframe requests receive a fixed marker document, ordinary `v-frame` fetches
-receive the framework document plus the gateway version header, and top-level
-widget document requests redirect to the corresponding canonical host route.
-This lets direct child `Location` navigation fall back to a complete composed
-document. The existing BroadcastChannel protocol remains the preferred soft
-navigation path because it stages the next composition without a page reload.
-
-Host SPA navigation gives each destination composition a fresh routing session
-and loads its required `v-frame` applications in a hidden staging surface. The
-current composition remains mounted and visible until every destination frame
-emits `v-frame-load`. One synchronous commit then updates the URL and shell,
-reveals the staged composition, and removes the outgoing frames. No inactive
-page application survives the handoff; only the host-owned account frontend
-persists between pages. A staging failure falls back to document navigation.
-
-## Why the preview is materialized
-
-An adopted response is not an arbitrary full HTML document. It is the
-materialized shadow representation that `v-frame` normally creates in the
-browser:
-
-- `html`, `head`, and `body` are represented by `v-html`, `v-head`, and
-  `v-body`.
-- CSS is already scoped for those shell elements.
-- Asset URLs should be absolute, or resolvable against `src` during activation.
-- Client scripts are inert during HTML parsing. Mark them with
-  `type="application/vnd.v-frame" data-v-frame-script`; if the authored script
-  was a module, also set `data-v-frame-type="module"`. `v-frame` restores the
-  authored type only inside its private execution realm.
-
-The framework Workers expose `/preview` for server composition and `/document`
-for mounted network reloads. Their ordinary standalone routes remain available
-at `/activity`, `/research`, `/brief`, and `/plugins` for React Router and at
-`/inventory` and `/catalog`
-for Qwik. In a larger application, the preview form can be produced by a
-resource route, a Qwik City endpoint, or a small adapter beside an existing SSR
-entry point.
-
-## Routing communication
-
-`BroadcastChannel` is origin/storage-partition scoped, not browser-tab scoped.
-The host therefore creates a fresh random ID for each top-level document,
-stores it in `sessionStorage` under `v-frame:routing-session`, and names the
-channel `v-frame:routing:v1:<session-id>`. The child applications only join an
-existing ID, so they remain ordinary standalone applications when opened
-directly. A fresh ID also avoids inheriting a copied `sessionStorage` value from
-an opener tab.
-
-Messages use a small versioned protocol. A top-level child sends
-`navigate-request`; the host validates the frame and route, then stages the
-matching host composition. A destination gets a new channel ID so its handshake
-cannot reroute the still-visible outgoing application. After commit, a targeted
-`route-change` completes the new frames' handshake. The nested Qwik widget
-intentionally has no host routing identity, so its Wikipedia preview cannot
-change the sibling Qwik widget's route. The ID prevents unrelated tabs from
-receiving one another's messages, but it is coordination rather than an
-authorization boundary. Host links remain ordinary document links when the
-session or channel APIs are unavailable.
-
-## Run locally
+## Run it
 
 From the repository root:
 
 ```sh
 pnpm install
-pnpm --filter example-ssr run dev
+pnpm --filter example-ssr dev
 ```
 
-Open http://localhost:43500. The host runs on port 43500. The same applications
-run standalone at http://localhost:43501/activity and
-http://localhost:43502/inventory. Their inspector ports are 43600–43602.
+Open http://localhost:43500. The command builds `v-frame` and all five
+applications, then runs the host with the four guests as local auxiliary
+Workers.
 
-The development command first builds the inline `v-frame` runtime, the
-browser-side React bundle, and Qwik's client and server optimizer outputs, then
-starts all three Workers.
+The host exposes standalone guest documents at these same-origin paths:
 
-## Validate and deploy
+```text
+/widgets/react-router/activity
+/widgets/qwik/inventory
+/widgets/angular/dashboard
+/widgets/solid/signals
+```
+
+Direct visits return complete documents. Visits to `/`, `/usage`, `/angular`,
+and `/solid` return host documents whose guest markup is already present in
+Declarative Shadow DOM.
+
+## Application layout
+
+```text
+examples/ssr/
+├── apps/
+│   ├── host/           Vite + Cloudflare Worker
+│   ├── react-router/   React Router framework mode + Cloudflare Vite plugin
+│   ├── qwik/           Qwik + Vite + Cloudflare Worker
+│   ├── angular/        Angular application builder + Angular SSR
+│   └── solid/          SolidStart + Cloudflare module preset
+├── shared/
+│   ├── materialize-v-frame.ts
+│   └── routing.ts
+├── tests/
+└── package.json
+```
+
+Every directory under `apps` is a workspace package that can be built and
+tested on its own. The top-level package only orchestrates them.
+
+## Build the applications normally
+
+The guests use their framework-owned production build commands:
 
 ```sh
-pnpm --filter example-ssr run check
-pnpm --filter example-ssr run deploy
+pnpm --filter example-ssr-react-router build # react-router build
+pnpm --filter example-ssr-qwik build         # vite client and SSR builds
+pnpm --filter example-ssr-angular build      # ng build
+pnpm --filter example-ssr-solid build        # vinxi build
 ```
 
-`check` regenerates binding types, type-checks all three Workers, and performs a
-dry-run deployment for each configuration. `deploy` publishes the two widget
-Workers first and then the public host.
+React Router uses `@cloudflare/vite-plugin`, so its deployable Worker
+configuration is generated at `apps/react-router/build/server/wrangler.json`.
+Angular writes browser and server output to `apps/angular/dist`. SolidStart
+writes its Cloudflare module and browser assets to `apps/solid/.output`. Qwik
+keeps its checked-in Worker configuration pointed at its Vite output.
+
+Build the whole composition with:
+
+```sh
+pnpm --filter example-ssr build
+```
+
+## Connect the Workers
+
+The host has one service binding for each guest. Local development supplies
+the generated React Router configuration alongside the checked-in
+configurations:
+
+```sh
+wrangler dev \
+  -c apps/host/wrangler.jsonc \
+  -c apps/react-router/build/server/wrangler.json \
+  -c apps/qwik/wrangler.jsonc \
+  -c apps/angular/wrangler.jsonc \
+  -c apps/solid/wrangler.jsonc
+```
+
+The first configuration is public. The others satisfy the host's service
+bindings without making the guest deployments depend on host code.
+
+## Compose a guest response
+
+For a host route, the Worker requests the guest's ordinary HTML through its
+service binding. [`materialize-v-frame.ts`](./shared/materialize-v-frame.ts)
+then:
+
+- changes `html`, `head`, and `body` into materializable document elements;
+- rewrites inline CSS selectors and URLs for the public guest URL;
+- makes guest scripts inert while the host response is parsed; and
+- preserves framework hydration and resume metadata.
+
+The host inserts that transformed stream into Declarative Shadow DOM:
+
+```html
+<v-frame adopt src="/widgets/angular/dashboard">
+  <template shadowrootmode="open" shadowrootserializable>
+    <v-html>
+      <v-head><!-- Angular document head --></v-head>
+      <v-body><!-- Angular SSR output and client entry --></v-body>
+    </v-html>
+  </template>
+</v-frame>
+```
+
+When `v-frame/register` loads, the element activates the preserved scripts in
+the guest realm. React Router hydrates, Qwik resumes, Angular hydrates with
+event replay, and SolidStart hydrates its signals through their normal client
+entries.
+
+The example keeps critical guest CSS inline so the server-rendered shadow tree
+is styled before activation. Browser bundles use explicit mounted bases so
+their hashed chunks remain same-origin and pass through the host proxy.
+
+## Routing
+
+Each guest's Location and History APIs remain scoped to that guest. React and
+Qwik additionally demonstrate optional shell coordination through the small,
+versioned `BroadcastChannel` contract in [`routing.ts`](./shared/routing.ts).
+Angular and Solid need no host-specific routing code; they simply run at their
+mounted base paths.
+
+## Verify and deploy
+
+```sh
+pnpm --filter example-ssr check
+pnpm --filter example-ssr deploy
+```
+
+`check` builds all applications, regenerates Worker binding types, type-checks,
+runs Chromium and Firefox integration tests, and performs a dry-run deploy for
+every Worker. The browser tests exercise server composition and interactive
+hydration in all four guest frameworks.
+
+`deploy` publishes the guest Workers before the public host so every service
+binding resolves when the host becomes active.
