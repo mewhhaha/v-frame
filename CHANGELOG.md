@@ -45,8 +45,12 @@ from.
   Playwright suite on chromium and firefox, and a second job — gated on the
   first — running `examples/ssr`'s routing suite, which is the only place the
   navigation API is exercised against four real frameworks.
-- Typechecking for `tests/`, `bench/` and `examples/*/tests/` through
-  `tsconfig.test.json`.
+- Typechecking for `tests/`, `bench/`, `examples/*/tests/` and the client
+  example's React host through `tsconfig.test.json`. The host is the only example
+  source no build typechecks — the `example-ssr` job's build does the framework
+  applications as a side effect — and it resolves `v-frame` by package name, so
+  the project maps that name to `src/` rather than to declarations `dist/` does
+  not have until after `typecheck` has run.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
   threshold, currently 68,000 bytes against a measured 65,882.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,

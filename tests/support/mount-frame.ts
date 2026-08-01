@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import type { VFrameElement } from "../../src/index.js";
 
 /** The `v-frame-error` detail, minus the non-serializable error itself. */
 export interface FrameFailure {
@@ -7,9 +8,8 @@ export interface FrameFailure {
   fatal: boolean;
 }
 
-interface FrameElement extends HTMLElement {
-  src: string;
-  status: string;
+/** The real element plus the failure log `mountFrame` stashes on it. */
+interface FrameElement extends VFrameElement {
   failures: FrameFailure[];
 }
 

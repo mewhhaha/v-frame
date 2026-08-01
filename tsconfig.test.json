@@ -8,7 +8,17 @@
     "rootDir": ".",
     // The fixture servers run on Node, so the specs need the Node globals that
     // the browser-only root project deliberately leaves out.
-    "types": ["node"]
+    "types": ["node"],
+    // The client example's host is React, and nothing else in this project is
+    // JSX, so the setting is free to be the one that host needs.
+    "jsx": "react-jsx",
+    // That host imports the package by its public name. `dist/` is built after
+    // typecheck runs, so resolve the name to the sources instead of to the
+    // declarations that do not exist yet.
+    "paths": {
+      "v-frame": ["./src/index.ts"],
+      "v-frame/register": ["./src/register.ts"]
+    }
   },
   // Specs that import src/ pull the css-tree subpath declarations in with them,
   // and an ambient declaration file is only visible when the project lists it.
@@ -16,6 +26,9 @@
     "src/css-tree-subpaths.d.ts",
     "tests/**/*.ts",
     "bench/**/*.ts",
-    "examples/*/tests/**/*.ts"
+    "examples/*/tests/**/*.ts",
+    "examples/client/src/**/*.ts",
+    "examples/client/src/**/*.tsx",
+    "examples/client/vite.config.ts"
   ]
 }
