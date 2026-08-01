@@ -3,7 +3,6 @@ import { renderToStream } from "@builder.io/qwik/server";
 import { manifest } from "./manifest.generated.js";
 import {
   isWidgetRoute,
-  type RoutingFrameId,
   type WikipediaArticleKey,
   type WidgetRoute,
   widgetStyle,
@@ -32,10 +31,6 @@ function requestedRoute(url: URL, pathname: WidgetEndpoint): WidgetRoute {
   return route !== null && isWidgetRoute(route) ? route : "/inventory";
 }
 
-function requestedFrameId(url: URL): RoutingFrameId {
-  return url.searchParams.get("frameId") === "qwik" ? "qwik" : "";
-}
-
 function requestedSurface(url: URL): "definition" | "page" | "profile" {
   const surface = url.searchParams.get("surface");
   if (surface === "definition" || surface === "profile") return surface;
@@ -54,7 +49,6 @@ async function renderWidget(url: URL, pathname: WidgetEndpoint): Promise<string>
     <WorkspaceWidget
       articleKey={requestedArticle(url)}
       initialRoute={requestedRoute(url, pathname)}
-      routingFrameId={requestedFrameId(url)}
       surface={requestedSurface(url)}
     />,
     {

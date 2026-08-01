@@ -18,7 +18,6 @@
     ".react-router/types/**/*",
     "app/**/*",
     "workers/**/*",
-    "worker-configuration.d.ts",
-    "../../shared/routing.ts"
+    "worker-configuration.d.ts"
   ]
 }

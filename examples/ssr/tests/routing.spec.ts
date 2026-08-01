@@ -60,8 +60,34 @@ async function expectLoadedWithoutRouting(frame: Locator): Promise<void> {
     .toBe("ready");
 }
 
+// The shell confirms a frontend's route as soon as it loads, which says nothing about
+// the framework inside having hydrated or resumed; each application's own marker does.
+async function expectHydrated(frame: Locator): Promise<void> {
+  await expectReady(frame);
+  await expect(frame.locator("v-html").first()).toHaveAttribute(
+    "data-react-hydrated",
+    "true",
+  );
+}
+
+async function expectResumed(frame: Locator): Promise<void> {
+  await expectReady(frame);
+  await expect(frame.locator("v-html").first()).toHaveAttribute(
+    "data-qwik-router-ready",
+    "true",
+  );
+}
+
+async function navigateFrame(frame: Locator, route: string): Promise<void> {
+  await frame.evaluate((element, url) => {
+    return (element as HTMLElement & { navigate(url: string): Promise<void> }).navigate(
+      url,
+    );
+  }, route);
+}
+
 async function openWikipediaPreview(page: Page): Promise<void> {
-  await expectReady(reactFrame(page));
+  await expectHydrated(reactFrame(page));
   const popover = reactFrame(page).locator(".preview-popover");
   await expect(popover).toHaveCount(1);
   await reactFrame(page).getByRole("button", { name: "blue–green deployment" }).focus();
@@ -350,7 +376,7 @@ test("shows the Wikipedia preview only while its term is hovered or focused", as
   page,
 }) => {
   await page.goto("/");
-  await expectReady(reactFrame(page));
+  await expectHydrated(reactFrame(page));
   await expectReady(nestedQwikFrame(page));
 
   const trigger = reactFrame(page).getByRole("button", { name: "blue–green deployment" });
@@ -547,11 +573,15 @@ test("waits for every top-level frame instead of nested load events", async ({
   const composerRequested = new Promise<void>((resolve) => {
     recordComposerRequest = resolve;
   });
-  await page.route("**/widgets/qwik/inventory?frameId=qwik", async (route) => {
-    recordComposerRequest();
-    await composerReleased;
-    await route.continue();
-  });
+  // Only the composer, never the nested Wikipedia preview at the same path.
+  await page.route(
+    (url) => url.pathname === "/widgets/qwik/inventory" && url.search === "",
+    async (route) => {
+      recordComposerRequest();
+      await composerReleased;
+      await route.continue();
+    },
+  );
 
   await page
     .locator(".host-sidebar")
@@ -730,41 +760,11 @@ test("host paths own initial frontend lifetimes", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("ignores malformed routing messages and accepts a valid route", async ({ page }) => {
+test("follows a frontend that routes itself into the owning page", async ({ page }) => {
   await page.goto("/");
   await expectReady(reactFrame(page));
 
-  const navigation = page.waitForURL("**/plugins");
-  await page.evaluate(() => {
-    const sessionId = sessionStorage.getItem("v-frame:routing-session");
-    if (sessionId === null) throw new Error("Routing session was not initialized");
-    const channel = new BroadcastChannel(`v-frame:routing:v1:${sessionId}`);
-    const validMessage = {
-      protocol: "v-frame-routing",
-      version: 1,
-      sessionId,
-      messageId: crypto.randomUUID(),
-      source: "react-router",
-      target: "host",
-      kind: "navigate-request",
-      route: "/plugins",
-      mode: "push",
-    };
-    channel.postMessage({ ...validMessage, messageId: "not-a-uuid" });
-    channel.postMessage({
-      ...validMessage,
-      route: "/unknown",
-      messageId: crypto.randomUUID(),
-    });
-    channel.postMessage({
-      ...validMessage,
-      source: "unknown",
-      messageId: crypto.randomUUID(),
-    });
-    channel.postMessage(validMessage);
-    setTimeout(() => channel.close(), 100);
-  });
-  await navigation;
+  await navigateFrame(reactFrame(page), "/widgets/react-router/plugins");
 
   await expect(page).toHaveURL("/plugins");
   await expect.poll(() => routeParameter(page, "react-router")).toBeNull();
@@ -772,32 +772,105 @@ test("ignores malformed routing messages and accepts a valid route", async ({ pa
   await expect(topLevelQwikFrame(page)).toHaveCount(0);
 });
 
-test("processes a routing message identifier only once", async ({ page }) => {
-  await page.goto("/");
-  await expectReady(topLevelQwikFrame(page));
+test("keeps a staged frontend on the route its destination page owns", async ({
+  page,
+}) => {
+  await page.goto("/plugins");
+  await expectReady(reactFrame(page));
 
-  const navigation = page.waitForURL("**/usage");
-  await page.evaluate(() => {
-    const sessionId = sessionStorage.getItem("v-frame:routing-session");
-    if (sessionId === null) throw new Error("Routing session was not initialized");
-    const channel = new BroadcastChannel(`v-frame:routing:v1:${sessionId}`);
-    const messageId = crypto.randomUUID();
-    const routingMessage = {
-      protocol: "v-frame-routing",
-      version: 1,
-      sessionId,
-      messageId,
-      source: "qwik",
-      target: "host",
-      kind: "navigate-request",
-      route: "/catalog",
-      mode: "push",
-    };
-    channel.postMessage(routingMessage);
-    channel.postMessage({ ...routingMessage, route: "/inventory" });
-    setTimeout(() => channel.close(), 100);
+  let releaseComposer: () => void = () => {};
+  let recordComposerRequest: () => void = () => {};
+  const composerReleased = new Promise<void>((resolve) => {
+    releaseComposer = resolve;
   });
-  await navigation;
+  const composerRequested = new Promise<void>((resolve) => {
+    recordComposerRequest = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === "/widgets/qwik/inventory" && url.search === "",
+    async (route) => {
+      recordComposerRequest();
+      await composerReleased;
+      await route.continue();
+    },
+  );
+
+  await page
+    .locator(".host-sidebar")
+    .getByRole("link", { name: "Platform migration" })
+    .click();
+  await composerRequested;
+  const stagedReactFrame = page.locator(
+    '.navigation-stage v-frame[data-frame-id="react-router"]',
+  );
+  await expect
+    .poll(() =>
+      stagedReactFrame.evaluate((frame) => {
+        return (frame as HTMLElement & { status: string }).status;
+      }),
+    )
+    .toBe("ready");
+
+  await navigateFrame(stagedReactFrame, "/widgets/react-router/plugins");
+
+  // The shell owns the staged route, so it moves the frontend back instead of
+  // following it, and the page the visitor sees never moves.
+  await expect
+    .poll(() =>
+      stagedReactFrame.evaluate((frame) => {
+        return (frame as HTMLElement & { currentURL: string | null }).currentURL;
+      }),
+    )
+    .toContain("/widgets/react-router/activity");
+  await expect(page).toHaveURL("/plugins");
+  await expect(reactFrame(page).getByRole("heading", { name: "Plugins" })).toBeVisible();
+
+  releaseComposer();
+  await expect(page).toHaveURL("/");
+  await expect(
+    reactFrame(page).getByRole("heading", { name: "Migration conversation" }),
+  ).toBeVisible();
+});
+
+test("moves a frontend to another route without reloading it", async ({ page }) => {
+  await page.goto("/");
+  await expectResumed(topLevelQwikFrame(page));
+  const documentRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") {
+      documentRequests.push(new URL(request.url()).pathname);
+    }
+  });
+
+  let releaseUsage: () => void = () => {};
+  let recordUsageRequest: () => void = () => {};
+  const usageReleased = new Promise<void>((resolve) => {
+    releaseUsage = resolve;
+  });
+  const usageRequested = new Promise<void>((resolve) => {
+    recordUsageRequest = resolve;
+  });
+  await page.route("**/widgets/qwik/catalog*", async (route) => {
+    recordUsageRequest();
+    await usageReleased;
+    await route.continue();
+  });
+
+  await navigateFrame(topLevelQwikFrame(page), "/widgets/qwik/catalog");
+
+  // The guest routed itself onto the new URL in place, before the shell finished
+  // staging the page that owns it.
+  await usageRequested;
+  try {
+    await expect(
+      page
+        .locator("[data-host-composition]:not(.navigation-stage)")
+        .locator('v-frame[data-frame-id="qwik"]')
+        .getByRole("heading", { name: "Usage", exact: true }),
+    ).toBeVisible();
+  } finally {
+    releaseUsage();
+  }
 
   await expect(page).toHaveURL("/usage");
   await expect.poll(() => routeParameter(page, "qwik")).toBeNull();
@@ -805,41 +878,10 @@ test("processes a routing message identifier only once", async ({ page }) => {
   await expect(
     topLevelQwikFrame(page).getByRole("heading", { name: "Usage", exact: true }),
   ).toBeVisible();
+  expect(documentRequests).toEqual([]);
 });
 
-test("rejects messages from a routing session replaced by reload", async ({ page }) => {
-  await page.goto("/");
-  const previousSessionId = await page.evaluate(() =>
-    sessionStorage.getItem("v-frame:routing-session"),
-  );
-  await page.reload();
-  await expectReady(topLevelQwikFrame(page));
-  await page.evaluate((sessionId) => {
-    if (sessionId === null)
-      throw new Error("Previous routing session was not initialized");
-    const channel = new BroadcastChannel(`v-frame:routing:v1:${sessionId}`);
-    channel.postMessage({
-      protocol: "v-frame-routing",
-      version: 1,
-      sessionId,
-      messageId: crypto.randomUUID(),
-      source: "qwik",
-      target: "host",
-      kind: "navigate-request",
-      route: "/catalog",
-      mode: "push",
-    });
-    setTimeout(() => channel.close(), 0);
-  }, previousSessionId);
-
-  await page.waitForTimeout(100);
-  await expect.poll(() => routeParameter(page, "qwik")).toBeNull();
-  await expect(
-    topLevelQwikFrame(page).getByRole("textbox", { name: "Message Relay" }),
-  ).toBeVisible();
-});
-
-test("renders framework routes directly without a host session", async ({ page }) => {
+test("renders framework routes directly outside the host shell", async ({ page }) => {
   await page.goto("http://127.0.0.1:44502/catalog");
   await expect(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
   await expect(page).toHaveURL("http://127.0.0.1:44502/catalog");
@@ -848,9 +890,6 @@ test("renders framework routes directly without a host session", async ({ page }
     "width=device-width, initial-scale=1",
   );
   expect(await page.evaluate(() => document.compatMode)).toBe("CSS1Compat");
-  expect(
-    await page.evaluate(() => sessionStorage.getItem("v-frame:routing-session")),
-  ).toBeNull();
 
   await page.goto("http://127.0.0.1:44501/widgets/react-router/plugins");
   await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible();
@@ -860,9 +899,6 @@ test("renders framework routes directly without a host session", async ({ page }
     "width=device-width, initial-scale=1",
   );
   expect(await page.evaluate(() => document.compatMode)).toBe("CSS1Compat");
-  expect(
-    await page.evaluate(() => sessionStorage.getItem("v-frame:routing-session")),
-  ).toBeNull();
 });
 
 test("uses the mounted React Router base for client modules", async ({ request }) => {
@@ -919,56 +955,4 @@ test("composes ordinary framework documents into adopted shadow markup", async (
   expect(composedMarkup).toContain("<v-head");
   expect(composedMarkup).toContain("<v-body");
   expect(composedMarkup).toContain('type="application/vnd.v-frame"');
-});
-
-test("reloads a history target when the replacement routing channel fails", async ({
-  page,
-}) => {
-  await page.goto("/plugins");
-  await expectReady(reactFrame(page));
-  await page.evaluate(() => {
-    Object.defineProperty(globalThis, "BroadcastChannel", {
-      configurable: true,
-      value: undefined,
-    });
-  });
-
-  await page.locator(".host-sidebar").getByRole("link", { name: "Usage" }).click();
-  await expect(page).toHaveURL("/usage");
-  await expect(
-    topLevelQwikFrame(page).getByRole("heading", { name: "Usage", exact: true }),
-  ).toBeVisible();
-  await page.evaluate(() =>
-    document.documentElement.setAttribute("data-document-marker", "usage"),
-  );
-
-  await page.goBack();
-  await expect(page).toHaveURL("/plugins");
-  await expect(reactFrame(page).getByRole("heading", { name: "Plugins" })).toBeVisible();
-  await expect(page.locator("html")).not.toHaveAttribute("data-document-marker", "usage");
-});
-
-test("falls back to document navigation when BroadcastChannel is unavailable", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(globalThis, "BroadcastChannel", {
-      configurable: true,
-      value: undefined,
-    });
-  });
-  await page.goto("/");
-  await expectLoadedWithoutRouting(topLevelQwikFrame(page));
-  await expectLoadedWithoutRouting(nestedQwikFrame(page));
-
-  const navigationPromise = page.waitForNavigation();
-  await page.locator(".host-sidebar").getByRole("link", { name: "Usage" }).click();
-  await navigationPromise;
-  await expect(page).toHaveURL("/usage");
-  await expect(
-    topLevelQwikFrame(page).getByRole("heading", { name: "Usage", exact: true }),
-  ).toBeVisible();
-  expect(
-    await page.evaluate(() => sessionStorage.getItem("v-frame:routing-session")),
-  ).toBeNull();
 });

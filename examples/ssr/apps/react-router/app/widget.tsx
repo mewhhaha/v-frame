@@ -2,12 +2,6 @@ import { Button } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 
-import { useWidgetRouteAdapter } from "./routing";
-
-export const widgetRoutes = ["/activity", "/research", "/brief", "/plugins"] as const;
-
-export type WidgetRoute = (typeof widgetRoutes)[number];
-
 interface TranscriptStep {
   detail: string;
   title: string;
@@ -91,10 +85,6 @@ const threadTranscripts = {
     ],
   },
 } as const satisfies Record<string, ThreadTranscript>;
-
-export function isWidgetRoute(value: string): value is WidgetRoute {
-  return (widgetRoutes as readonly string[]).includes(value);
-}
 
 function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
   const [responseSaved, setResponseSaved] = useState(false);
@@ -343,13 +333,7 @@ function PluginsPage() {
   );
 }
 
-export interface ReleaseActivityWidgetProps {
-  routingFrameId: string;
-}
-
-export function ReleaseActivityWidget({ routingFrameId }: ReleaseActivityWidgetProps) {
-  useWidgetRouteAdapter(routingFrameId);
-
+export function ReleaseActivityWidget() {
   return (
     <main className="activity-widget">
       <Routes>

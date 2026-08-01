@@ -1,18 +1,11 @@
 /** @jsxImportSource @builder.io/qwik */
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
-import {
-  isRoutingMessage,
-  openRoutingChannel,
-  postRoutingMessage,
-  routingProtocol,
-  routingSessionId,
-  routingVersion,
-} from "../../../shared/routing";
-
 export type WidgetRoute = "/inventory" | "/catalog";
-export type RoutingFrameId = "" | "qwik";
 export type WikipediaArticleKey = "brief" | "migration" | "research";
+
+/** Where the host mounts this application; standalone visits have no prefix. */
+const widgetBasePath = "/widgets/qwik";
 
 const wikipediaArticles = {
   migration: {
@@ -39,103 +32,42 @@ export function isWidgetRoute(value: string): value is WidgetRoute {
   return value === "/inventory" || value === "/catalog";
 }
 
+/** Reads this application's own route out of whichever path it is mounted at. */
+export function routeFromPathname(pathname: string): WidgetRoute | null {
+  const route = pathname.startsWith(widgetBasePath)
+    ? pathname.slice(widgetBasePath.length)
+    : pathname;
+  return isWidgetRoute(route) ? route : null;
+}
+
 export interface WorkspaceWidgetProps {
   articleKey: WikipediaArticleKey;
   initialRoute: WidgetRoute;
-  routingFrameId: RoutingFrameId;
   surface: "definition" | "page" | "profile";
 }
 
 export const WorkspaceWidget = component$(
-  ({ articleKey, initialRoute, routingFrameId, surface }: WorkspaceWidgetProps) => {
+  ({ articleKey, initialRoute, surface }: WorkspaceWidgetProps) => {
     const currentRoute = useSignal<WidgetRoute>(initialRoute);
     const draftMessage = useSignal("");
     const messageStatus = useSignal("Relay can make mistakes. Check important details.");
-    const pendingRouteReady = useSignal<WidgetRoute>();
-    const routeSurface = useSignal<HTMLElement>();
 
+    // An ordinary client-side router. The shell moves this application with
+    // `frame.navigate()`, which arrives here as a popstate at the new URL.
     useVisibleTask$(
       ({ cleanup }) => {
-        if (routingFrameId === "") return;
-        const sessionId = routingSessionId();
-        if (sessionId === null) return;
-        const channel = openRoutingChannel(sessionId);
-        if (channel === null) return;
-
-        const receiveRouteChange = (event: MessageEvent<unknown>) => {
-          if (event.origin !== location.origin || !isRoutingMessage(event.data)) return;
-          const message = event.data;
-          if (
-            message.sessionId !== sessionId ||
-            message.source !== "host" ||
-            message.target !== routingFrameId ||
-            message.kind !== "route-change" ||
-            message.route === undefined ||
-            !isWidgetRoute(message.route)
-          )
-            return;
-          if (currentRoute.value === message.route) {
-            postRoutingMessage(channel, {
-              protocol: routingProtocol,
-              version: routingVersion,
-              sessionId,
-              source: routingFrameId,
-              target: "host",
-              kind: "route-ready",
-              route: message.route,
-            });
-            return;
-          }
-
-          routeSurface.value = undefined;
-          currentRoute.value = message.route;
-          pendingRouteReady.value = message.route;
+        const followLocation = () => {
+          const route = routeFromPathname(location.pathname);
+          if (route !== null) currentRoute.value = route;
         };
 
-        channel.addEventListener("message", receiveRouteChange);
-        const didPostHello = postRoutingMessage(channel, {
-          protocol: routingProtocol,
-          version: routingVersion,
-          sessionId,
-          source: routingFrameId,
-          target: "host",
-          kind: "hello",
-        });
-        if (!didPostHello) {
-          channel.removeEventListener("message", receiveRouteChange);
-          channel.close();
-          return;
-        }
-
+        addEventListener("popstate", followLocation);
+        // Resumption is asynchronous, so publish when this router starts listening.
+        document.documentElement.dataset.qwikRouterReady = "true";
         cleanup(() => {
-          channel.removeEventListener("message", receiveRouteChange);
-          channel.close();
+          removeEventListener("popstate", followLocation);
+          delete document.documentElement.dataset.qwikRouterReady;
         });
-      },
-      { strategy: "document-ready" },
-    );
-
-    useVisibleTask$(
-      ({ track }) => {
-        const requestedRoute = track(() => pendingRouteReady.value);
-        const renderedSurface = track(() => routeSurface.value);
-        if (requestedRoute === undefined || renderedSurface === undefined) return;
-
-        const sessionId = routingSessionId();
-        if (sessionId === null) return;
-        const channel = openRoutingChannel(sessionId);
-        if (channel === null) return;
-        const didPostRouteReady = postRoutingMessage(channel, {
-          protocol: routingProtocol,
-          version: routingVersion,
-          sessionId,
-          source: routingFrameId,
-          target: "host",
-          kind: "route-ready",
-          route: requestedRoute,
-        });
-        channel.close();
-        if (didPostRouteReady) pendingRouteReady.value = undefined;
       },
       { strategy: "document-ready" },
     );
@@ -181,7 +113,7 @@ export const WorkspaceWidget = component$(
 
     if (currentRoute.value === "/catalog") {
       return (
-        <main ref={routeSurface} class="usage-widget" aria-labelledby="usage-title">
+        <main class="usage-widget" aria-labelledby="usage-title">
           <header class="usage-heading">
             <div>
               <h2 id="usage-title">Usage</h2>
@@ -238,7 +170,6 @@ export const WorkspaceWidget = component$(
 
     return (
       <form
-        ref={routeSurface}
         class="composer-widget"
         onSubmit$={(event: SubmitEvent) => {
           event.preventDefault();
