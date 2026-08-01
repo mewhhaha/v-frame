@@ -52,6 +52,17 @@ from.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
   the `src/css.ts` rewriters, `absolutizeSrcset`, and `VirtualHistorySession`.
   180 tests that run in about a tenth of a second, without a browser.
+- A Kobalte-backed case in `tests/overlays.spec.ts`. The lab's own surfaces are
+  positioned from the rects the facade reports, which is the repository checking
+  its own arithmetic; this case hands that job to Kobalte's popover, and through
+  it to `@floating-ui/dom` — third-party code written without any knowledge of
+  v-frame — with the anchor 14 px clear of a clipped frame's bottom edge. It
+  asserts the content's position on the host's screen and that the only
+  difference between the facade's coordinate space and that screen is the
+  frame's own origin. The guest module (`tests/support/kobalte-overlay-lab.js`)
+  is bundled by esbuild when the spec starts, resolving Kobalte from the copy
+  `examples/client` already pins, so the root suite keeps its single pinned
+  version, needs no framework build step, and gains about 30 ms.
 - A benchmark for per-node marking (`pnpm bench`) and its findings note,
   [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md). Marking
   is measurably expensive; no optimization was applied, so the decision is now

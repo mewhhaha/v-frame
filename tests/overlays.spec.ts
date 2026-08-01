@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { bundleRoute, type HTTPFixture, startHTTPFixture } from "./support/http-fixture";
+import { bundleKobalteLab } from "./support/kobalte-bundle";
 import { frameFailures, installBundle, mountFrame } from "./support/mount-frame";
 
 /**
@@ -137,14 +138,43 @@ const overlayLabDocument = `<!doctype html><html><head><style>
     </script>
   </body></html>`;
 
+/** The gutter Kobalte is configured with in tests/support/kobalte-overlay-lab.js. */
+const KOBALTE_GUTTER = 8;
+
+/**
+ * The same shapes again, but positioned by a third-party engine instead of by the fixture:
+ * Kobalte's popover drives @floating-ui/dom, which interrogates the facade for the
+ * trigger's rect, the offset parent, computed styles and scroll offsets, and then writes a
+ * transform that has to land the content beside the trigger on the host's screen.
+ *
+ * The anchor deliberately sits near the clipping boundary: 150 px of padding above a 28 px
+ * trigger leaves 62 px below it inside a 240 px frame, so the 40 px content and its gutter
+ * only stay inside the card while those rects are right to within 14 px.
+ */
+const kobalteLabDocument = `<!doctype html><html><head><style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #101010; color: #f5f5f5; font: 14px system-ui, sans-serif; }
+      .kobalte-lab { padding: 150px 0 0 24px; }
+      .lab-button { min-height: 28px; padding: 4px 10px; border: 0; border-radius: 6px; background: #303030; color: #f5f5f5; font: inherit; }
+      .overlay-content { width: 140px; height: 40px; padding: 8px; background: #242424; color: #f5f5f5; }
+    </style></head><body>
+    <main class="kobalte-lab" id="kobalte-root"></main>
+    <script type="module" src="/assets/kobalte-overlay-lab.js"></script>
+  </body></html>`;
+
 let fixture: HTTPFixture;
 
-function startFixture(): Promise<HTTPFixture> {
+async function startFixture(): Promise<HTTPFixture> {
   return startHTTPFixture({
     routes: {
       "/": '<!doctype html><div id="host"></div>',
       "/dist/index.js": bundleRoute,
       "/documents/overlay-lab.html": overlayLabDocument,
+      "/documents/kobalte-lab.html": kobalteLabDocument,
+      "/assets/kobalte-overlay-lab.js": {
+        type: "text/javascript",
+        body: await bundleKobalteLab(),
+      },
     },
   });
 }
@@ -162,10 +192,13 @@ test.beforeEach(async ({ page }) => {
 });
 
 /** Every lab card is a deliberately clipped viewport, the way a host lays a widget out. */
-async function mountOverlayFrame(page: Page, id: string, left: number): Promise<Locator> {
+async function mountClippedFrame(
+  page: Page,
+  card: { id: string; left: number; document: string },
+): Promise<Locator> {
   const frame = await mountFrame(page, {
-    src: `${fixture.origin}/documents/overlay-lab.html`,
-    id,
+    src: `${fixture.origin}${card.document}`,
+    id: card.id,
   });
   await frame.evaluate((element, cardLeft) => {
     element.style.cssText = [
@@ -176,8 +209,12 @@ async function mountOverlayFrame(page: Page, id: string, left: number): Promise<
       "height: 240px",
       "overflow: hidden",
     ].join(";");
-  }, left);
+  }, card.left);
   return frame;
+}
+
+function mountOverlayFrame(page: Page, id: string, left: number): Promise<Locator> {
+  return mountClippedFrame(page, { id, left, document: "/documents/overlay-lab.html" });
 }
 
 test("the overlay surface mounts into the virtual body without errors", async ({
@@ -268,6 +305,75 @@ test("a native popover lands beside its trigger in the top layer", async ({ page
   }
   expect(popoverBounds.x).toBeCloseTo(triggerBounds.x, 0);
   expect(popoverBounds.y).toBeCloseTo(triggerBounds.y + triggerBounds.height + 8, 0);
+});
+
+test("Kobalte's positioning engine anchors a popover through the facade", async ({
+  page,
+}) => {
+  const frame = await mountClippedFrame(page, {
+    id: "kobalte-frame",
+    left: 240,
+    document: "/documents/kobalte-lab.html",
+  });
+  const trigger = frame.locator('[data-testid="kobalte-trigger"]');
+  const content = frame.locator('[data-testid="kobalte-content"]');
+
+  await trigger.click();
+  await expect(content).toBeVisible();
+
+  const frameBounds = await frame.boundingBox();
+  const triggerBounds = await trigger.boundingBox();
+  const contentBounds = await content.boundingBox();
+  if (frameBounds === null || triggerBounds === null || contentBounds === null) {
+    throw new Error("The Kobalte overlay bounds are missing");
+  }
+
+  // On the host's screen the content is one gutter below the trigger and flush with its
+  // left edge, which is what "bottom-start" means to anyone looking at the page.
+  expect(contentBounds.x).toBeCloseTo(triggerBounds.x, 0);
+  expect(contentBounds.y).toBeCloseTo(
+    triggerBounds.y + triggerBounds.height + KOBALTE_GUTTER,
+    0,
+  );
+  // And it is still inside the clipped card, which it only clears by 14 px.
+  expect(contentBounds.y + contentBounds.height).toBeLessThan(
+    frameBounds.y + frameBounds.height,
+  );
+
+  const measured = await frame.evaluate((element) => {
+    const shadow = element.shadowRoot;
+    const triggerNode = shadow?.querySelector('[data-testid="kobalte-trigger"]');
+    const contentNode = shadow?.querySelector('[data-testid="kobalte-content"]');
+    if (!triggerNode || !contentNode) {
+      throw new Error("The Kobalte overlay is missing from the frame's shadow tree");
+    }
+    // Guest nodes carry the child realm's prototypes, so an ordinary call reaches the
+    // facade — the rects the positioning engine itself was answered with — while the host
+    // realm's own implementation reports where the browser actually put the content.
+    return {
+      facadeTrigger: triggerNode.getBoundingClientRect().toJSON(),
+      facadeContent: contentNode.getBoundingClientRect().toJSON(),
+      hostContent: Element.prototype.getBoundingClientRect.call(contentNode).toJSON(),
+    };
+  });
+
+  // The engine did its arithmetic in the facade's frame-local space...
+  expect(measured.facadeContent.top).toBeCloseTo(
+    measured.facadeTrigger.bottom + KOBALTE_GUTTER,
+    0,
+  );
+  // ...and the only difference between that space and the screen is the frame's origin,
+  // which is the translation a third-party engine never learns about.
+  expect(measured.hostContent.left - measured.facadeContent.left).toBeCloseTo(
+    frameBounds.x,
+    0,
+  );
+  expect(measured.hostContent.top - measured.facadeContent.top).toBeCloseTo(
+    frameBounds.y,
+    0,
+  );
+
+  expect(await frameFailures(frame)).toEqual([]);
 });
 
 test("a portalled modal cycles focus and restores its trigger", async ({ page }) => {

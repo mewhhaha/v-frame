@@ -78,3 +78,7 @@ This section is a demonstration, not a test. The overlay lifecycle, focus, porta
 containment, and top-layer positioning contracts are asserted by
 `tests/overlays.spec.ts` in the repository root, which runs on every build in Chromium
 and Firefox.
+
+That suite also bundles one Kobalte popover of its own, resolving `@kobalte/core` and
+`solid-js` from this microfrontend's `node_modules` so there is a single pinned
+version of each. Bumping them, or moving them, changes what the root suite tests.
