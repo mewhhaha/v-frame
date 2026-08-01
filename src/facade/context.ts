@@ -36,6 +36,48 @@ export interface DocumentFacadeOptions {
   onConnectedNodes(nodes: readonly Node[]): void;
 }
 
+export interface PatchRegistry {
+  patch(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void;
+  restorePatches(): void;
+}
+
+/**
+ * Remembers what the facade overwrote on the realm's prototypes so that
+ * dispose() can put it back. Restoring drains the record newest-first: a key
+ * patched more than once has to end up with the descriptor it had before the
+ * first patch, and unwinding has to be idempotent, so a second run finds
+ * nothing left rather than replaying the record in the wrong order.
+ */
+export function createPatchRegistry(): PatchRegistry {
+  const patchedDescriptors: Array<{
+    target: object;
+    key: PropertyKey;
+    descriptor: PropertyDescriptor | undefined;
+  }> = [];
+
+  return {
+    patch(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void {
+      patchedDescriptors.push({
+        target,
+        key,
+        descriptor: Object.getOwnPropertyDescriptor(target, key),
+      });
+      Object.defineProperty(target, key, { configurable: true, ...descriptor });
+    },
+    restorePatches(): void {
+      let patched = patchedDescriptors.pop();
+      while (patched !== undefined) {
+        if (patched.descriptor === undefined) {
+          delete (patched.target as Record<PropertyKey, unknown>)[patched.key];
+        } else {
+          Object.defineProperty(patched.target, patched.key, patched.descriptor);
+        }
+        patched = patchedDescriptors.pop();
+      }
+    },
+  };
+}
+
 export interface NativeDocumentHandles {
   privateHead: HTMLHeadElement;
   createElement<K extends keyof HTMLElementTagNameMap>(name: K): HTMLElementTagNameMap[K];
@@ -52,6 +94,12 @@ export type FacadeContext = ReturnType<typeof createFacadeContext>;
 // Scripts created before nodes.ts installs the real execution hook stay inert,
 // which is what the facade did before the hook was assigned.
 function ignoreConnectedScript(_script: HTMLScriptElement): void {
+  return undefined;
+}
+
+// Nothing writes an attribute through the facade before nodes.ts assigns the
+// real marker: the Element patches that route here are installed after it.
+function ignoreVirtualAttribute(_attribute: Attr): void {
   return undefined;
 }
 
@@ -200,11 +248,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const cssomMutatedStyleElements = new WeakSet<Element>();
   const authoredLinkRelValues = new WeakMap<HTMLLinkElement, string | null>();
   const logicalEventTargets = new WeakMap<Event, EventTarget>();
-  const patchedDescriptors: Array<{
-    target: object;
-    key: PropertyKey;
-    descriptor: PropertyDescriptor | undefined;
-  }> = [];
+  const { patch, restorePatches } = createPatchRegistry();
 
   const isBaseElement = (element: Element): boolean =>
     isHTMLElementNamed(element, "base");
@@ -229,24 +273,6 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
       "The about:blank execution document has no usable head, body, or HTML parser",
     );
   }
-
-  const patch = (target: object, key: PropertyKey, descriptor: PropertyDescriptor) => {
-    patchedDescriptors.push({
-      target,
-      key,
-      descriptor: Object.getOwnPropertyDescriptor(target, key),
-    });
-    Object.defineProperty(target, key, { configurable: true, ...descriptor });
-  };
-  const restorePatches = (): void => {
-    for (const patched of patchedDescriptors.reverse()) {
-      if (patched.descriptor === undefined) {
-        delete (patched.target as Record<PropertyKey, unknown>)[patched.key];
-      } else {
-        Object.defineProperty(patched.target, patched.key, patched.descriptor);
-      }
-    }
-  };
 
   const viewportOrigin = (): { x: number; y: number } => {
     const hostRect = options.host.getBoundingClientRect();
@@ -402,6 +428,9 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     // Reassigned by nodes.ts once script execution is wired up; the attribute
     // facades reach dynamic scripts through this slot.
     executeConnectedScript: ignoreConnectedScript,
+    // Reassigned by nodes.ts once marking exists; the attribute facade reaches
+    // the Attr nodes its writes create through this slot.
+    markVirtualAttribute: ignoreVirtualAttribute,
     patch,
     restorePatches,
     getVirtualBoundingClientRect,

@@ -48,10 +48,11 @@ from.
 - Typechecking for `tests/`, `bench/` and `examples/*/tests/` through
   `tsconfig.test.json`.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
-  threshold, currently 68,000 bytes against a measured 65,642.
+  threshold, currently 68,000 bytes against a measured 65,755.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
-  the `src/css.ts` rewriters, `absolutizeSrcset`, and `VirtualHistorySession`.
-  180 tests that run in about a tenth of a second, without a browser.
+  the `src/css.ts` rewriters, `absolutizeSrcset`, `VirtualHistorySession`, and
+  the facade's prototype-patch registry. 183 tests that run in about a tenth of a
+  second, without a browser.
 - A Kobalte-backed case in `tests/overlays.spec.ts`. The lab's own surfaces are
   positioned from the rects the facade reports, which is the repository checking
   its own arithmetic; this case hands that job to Kobalte's popover, and through
@@ -93,7 +94,7 @@ from.
 - The published bundles are minified, and `css-tree` is imported through its
   `parser`, `generator`, and `walker` subpaths so the unused lexer tables are no
   longer shipped. Measured by `pnpm size`, which minifies and gzips
-  `src/index.ts` in memory, that is 97,514 bytes down to 65,642 — a third of the
+  `src/index.ts` in memory, that is 97,514 bytes down to 65,755 — a third of the
   payload. Every byte count in this entry comes from that command, so it is
   reproducible rather than remembered.
 - A guest node no longer carries the facade on itself. `ownerDocument` and
@@ -155,3 +156,24 @@ from.
   than demonstrating usage, so it now runs in CI on chromium and firefox.
 - The generated Cloudflare `worker-configuration.d.ts` files are no longer
   tracked; each example application regenerates them with `wrangler types`.
+
+### Fixed
+
+- An attribute written to an element that is already in the virtual tree now
+  produces a marked `Attr` node. Marking only ever walked an element's
+  attributes while marking the element itself, so an attribute set afterwards
+  answered `baseURI` with the host page's URL on both engines, and on Gecko
+  answered `ownerDocument` with the host document — Gecko binds the `Attr` to
+  the node document the element was adopted into, so the realm's `Attr.prototype`
+  is not on its chain.
+- `dispose()` no longer leaves the nodes it restored registered with the
+  facade's `FinalizationRegistry`. The registration held one dead cell per
+  marked node for as long as the host kept the disposed element around.
+- Unwinding the facade's prototype patches twice no longer reinstalls them. The
+  record was reversed in place rather than drained, so a second run replayed it
+  oldest-first and left the first patch of any twice-patched key installed. The
+  realm's `dispose()` guards against running twice, so this was latent rather
+  than observed; `tests/unit/facade-patches.test.ts` now pins it directly.
+- [`docs/api.md`](./docs/api.md) claimed `reload()` cannot run before
+  `v-frame-load`. It can, and it never rejects; only `navigate`, `back`,
+  `forward` and `go` need a live guest.

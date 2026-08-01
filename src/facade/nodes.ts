@@ -192,7 +192,9 @@ export function installNodeFacade(
       nodeFacadeDescriptors.set(node, previousDescriptors);
       const reference = new WeakRef(node);
       facadedNodes.add(reference);
-      collectedFacadedNodes.register(node, reference);
+      // The node is its own unregister token so that dispose() can drop the
+      // registration along with the descriptors it restores.
+      collectedFacadedNodes.register(node, reference, node);
     }
     for (const property of Reflect.ownKeys(descriptors)) {
       if (!previousDescriptors.has(property)) {
@@ -234,6 +236,21 @@ export function installNodeFacade(
     }
   };
 
+  // An attribute node has no children and no attributes of its own, so joining
+  // the virtual-node set is the whole of marking one. Attribute writes sit on
+  // the insertion path, so this skips the recursive descent markVirtualNode
+  // would otherwise run for a node that can never have descendants.
+  const markVirtualAttribute = (attribute: Attr): void => {
+    if (virtualNodes.has(attribute)) {
+      return;
+    }
+    virtualNodes.add(attribute);
+    if (!nodeIdentityIsPrototypeWide || !(attribute instanceof window.Node)) {
+      installForeignNodeFacade(attribute);
+    }
+  };
+  context.markVirtualAttribute = markVirtualAttribute;
+
   const markVirtualNode = (node: Node): void => {
     const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
@@ -245,7 +262,7 @@ export function installNodeFacade(
 
     if (isElementNode(node)) {
       for (const attribute of Array.from(node.attributes)) {
-        markVirtualNode(attribute);
+        markVirtualAttribute(attribute);
       }
       rememberAuthoredURLAttributes(node);
       if (newlyVirtual) {
@@ -1158,9 +1175,16 @@ export function installNodeFacade(
   const dispose = (): void => {
     for (const reference of facadedNodes) {
       const node = reference.deref();
-      const descriptors =
-        node === undefined ? undefined : nodeFacadeDescriptors.get(node);
-      if (node === undefined || descriptors === undefined) {
+      if (node === undefined) {
+        continue;
+      }
+      // A node the guest still holds outlives the facade, and its registration
+      // would keep a WeakRef alive in the registry until the node itself is
+      // collected — for a large guest that is one dead cell per marked node,
+      // held for as long as the host keeps the disposed element around.
+      collectedFacadedNodes.unregister(node);
+      const descriptors = nodeFacadeDescriptors.get(node);
+      if (descriptors === undefined) {
         continue;
       }
       for (const [property, descriptor] of descriptors) {

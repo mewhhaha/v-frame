@@ -118,6 +118,18 @@ export function installAttributeFacade(
   } = style;
   const { eventAttributeName, compileEventAttribute, setElementHandler } = events;
 
+  // Writing an attribute creates a fresh Attr node, and nothing re-marks a
+  // subtree just because one of its attributes changed. An unmarked Attr
+  // answers with native identity — baseURI from the host page on both engines,
+  // and on Gecko ownerDocument from the host document, because Gecko binds the
+  // Attr to the node document the element was adopted into. So every physical
+  // write on a virtual element hands the node it produced back to marking.
+  const markWrittenAttribute = (element: Element, attribute: Attr | null): void => {
+    if (attribute !== null && virtualNodes.has(element)) {
+      context.markVirtualAttribute(attribute);
+    }
+  };
+
   const physicalURLAttributeValues = new WeakMap<Element, Map<string, string | null>>();
   const urlAttributeKey = (
     element: Element,
@@ -161,8 +173,10 @@ export function installAttributeFacade(
   ): void => {
     if (attributeName === "xlink:href") {
       nativeSetAttributeNS.call(element, XLINK_NAMESPACE, attributeName, value);
+      markWrittenAttribute(element, element.getAttributeNodeNS(XLINK_NAMESPACE, "href"));
     } else {
       nativeSetAttribute.call(element, attributeName, value);
+      markWrittenAttribute(element, element.getAttributeNode(attributeName));
     }
     rememberPhysicalURLAttribute(element, attributeName, value);
   };
@@ -598,6 +612,7 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
+    markWrittenAttribute(element, element.getAttributeNode(qualifiedName));
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
@@ -692,6 +707,7 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttributeNS.call(element, namespace, qualifiedName, value);
+    markWrittenAttribute(element, element.getAttributeNodeNS(namespace, localName));
   }
 
   function removeVirtualAttributeNS(

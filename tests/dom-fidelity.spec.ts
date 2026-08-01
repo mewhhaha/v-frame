@@ -130,6 +130,63 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
   });
 });
 
+test("marks attribute nodes created after their element joined the virtual tree", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    // Authored before insertion, so the marking pass over the subtree sees it.
+    const early = virtualDocument.createElement("a");
+    early.setAttribute("data-early", "authored");
+    root.append(early);
+
+    // Authored after insertion, which no later marking pass ever revisits.
+    const late = virtualDocument.createElement("a");
+    root.append(late);
+    late.setAttribute("data-late", "plain");
+    late.setAttribute("href", "late/link.html");
+    late.setAttributeNS("http://example.test/ns", "ex:late", "namespaced");
+
+    const attributeNodes = [
+      early.getAttributeNode("data-early"),
+      late.getAttributeNode("data-late"),
+      late.getAttributeNode("href"),
+      late.getAttributeNodeNS("http://example.test/ns", "late"),
+    ];
+
+    return {
+      resolved: attributeNodes.every((attribute) => attribute !== null),
+      ownerDocuments: attributeNodes.map(
+        (attribute) => attribute?.ownerDocument === virtualDocument,
+      ),
+      baseURIs: attributeNodes.map((attribute) => attribute?.baseURI),
+      hostBaseURI: document.baseURI,
+    };
+  });
+
+  const guestBaseURI = `${fixture.origin}/documents/dom.html`;
+  expect(result).toEqual({
+    resolved: true,
+    ownerDocuments: [true, true, true, true],
+    baseURIs: [guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI],
+    hostBaseURI: `${fixture.origin}/`,
+  });
+});
+
 test("scopes shell selectors and root translation to the connected virtual tree", async ({
   page,
 }) => {

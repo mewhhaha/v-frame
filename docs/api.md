@@ -99,8 +99,11 @@ v-frame:state(error) {
 
 All four return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
-None of them can run before `v-frame-load`, because the first guest is not live
-until then.
+None of those three can run before `v-frame-load`, because the first guest is
+not live until then. `reload()` is the exception: it never rejects. On a
+connected frame with a `src` it starts a fresh load whether or not a guest is
+live yet, and on an idle frame it returns the element to `status === "idle"`
+and resolves.
 
 ```ts
 await frame.reload();
