@@ -10,9 +10,7 @@
   --line: rgba(255, 255, 255, 0.1);
   --accent: #fff;
   --composition-host: #f59e0b;
-  --composition-angular: #ef4444;
-  --composition-solid: #3b82f6;
-  --composition-qwik: #8b5cf6;
+  --composition-guest: #3b82f6;
 }
 
 * {
@@ -124,7 +122,6 @@ summary:focus-visible {
   color: var(--text);
 }
 
-.new-thread,
 .host-link {
   display: flex;
   width: 100%;
@@ -142,10 +139,6 @@ summary:focus-visible {
   font-weight: 400;
   text-align: left;
 }
-.new-thread {
-  background: #1f1f1f;
-}
-.new-thread:hover,
 .host-link:hover {
   background: var(--surface);
 }
@@ -195,31 +188,6 @@ summary:focus-visible {
   gap: 0.08rem;
   margin: 0;
   padding: 0;
-}
-.navigation-group {
-  margin-top: 1.3rem;
-}
-.navigation-label {
-  margin: 0 0 0.35rem;
-  padding: 0 0.65rem;
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.account-surface {
-  position: relative;
-  min-width: 0;
-  margin-top: auto;
-  padding-top: 0.35rem;
-  border-top: 1px solid var(--line);
-}
-.account-frame {
-  display: block;
-  width: 100%;
-  height: 3.4rem;
-  border: 0;
-  overflow: visible;
 }
 
 .host-content {
@@ -293,13 +261,10 @@ summary:focus-visible {
 }
 .composition-swatches span:first-child {
   margin-left: 0;
-  background: var(--composition-angular);
-}
-.composition-swatches span:nth-child(2) {
-  background: var(--composition-solid);
+  background: var(--composition-host);
 }
 .composition-swatches span:last-child {
-  background: var(--composition-qwik);
+  background: var(--composition-guest);
 }
 
 .frame-viewport {
@@ -323,31 +288,9 @@ summary:focus-visible {
 .frame-slot-inactive {
   display: none;
 }
-.composer-surface {
-  position: relative;
-  width: min(calc(100% - 2rem), 48rem);
-  height: 6.6rem;
-  flex: none;
-  margin: 0 auto 1rem;
-  border: 1px solid #333;
-  border-radius: 1.5rem;
-  background: var(--surface);
-  overflow: hidden;
-}
-.composer-frame {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-}
-.page-shell-standalone .frame-viewport {
-  width: min(100%, 58rem);
-}
 
 .host-app[data-composition-visible] .host-sidebar::before,
-.host-app[data-composition-visible] .frame-viewport::before,
-.host-app[data-composition-visible] .composer-surface::before,
-.host-app[data-composition-visible] .account-surface::before {
+.host-app[data-composition-visible] .frame-viewport::before {
   position: absolute;
   z-index: 4;
   border: 2px solid var(--composition-color);
@@ -358,9 +301,7 @@ summary:focus-visible {
   pointer-events: none;
 }
 .host-app[data-composition-visible] .host-sidebar::after,
-.host-app[data-composition-visible] .frame-viewport::after,
-.host-app[data-composition-visible] .composer-surface::after,
-.host-app[data-composition-visible] .account-surface::after {
+.host-app[data-composition-visible] .frame-viewport::after {
   position: absolute;
   z-index: 5;
   top: 0.45rem;
@@ -377,16 +318,8 @@ summary:focus-visible {
 .host-app[data-composition-visible] .host-sidebar {
   --composition-color: var(--composition-host);
 }
-.host-app[data-composition-visible] .frame-viewport[data-frontend="angular"] {
-  --composition-color: var(--composition-angular);
-}
-.host-app[data-composition-visible] .frame-viewport[data-frontend="solid"] {
-  --composition-color: var(--composition-solid);
-}
-.host-app[data-composition-visible] .frame-viewport[data-frontend="qwik"],
-.host-app[data-composition-visible] .composer-surface,
-.host-app[data-composition-visible] .account-surface {
-  --composition-color: var(--composition-qwik);
+.host-app[data-composition-visible] .frame-viewport {
+  --composition-color: var(--composition-guest);
 }
 
 .mobile-navigation {
@@ -470,11 +403,6 @@ summary:focus-visible {
   }
   .composition-swatches {
     display: none;
-  }
-  .composer-surface {
-    width: calc(100% - 1rem);
-    height: 6.25rem;
-    margin-bottom: 0.5rem;
   }
 }
 

@@ -2,74 +2,39 @@ import { Button, Dialog, DialogContent, DialogTrigger } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { VFrameStatus } from "v-frame";
 import type { VFrameElement, VFrameErrorEventDetail, VFrameStatusValue } from "v-frame";
-import { microfrontends, type MicrofrontendKey } from "./microfrontends";
 import "./App.css";
 
+/**
+ * The guest is one independently built Solid application, reached through the single
+ * same-origin route the host proxies to it. That public route is what gives the guest a
+ * consistent Location, relative URLs, storage and network origin; `v-frame` itself needs
+ * no special proxy response.
+ */
+const solidFrontend = "/frontends/solid/";
+
 const hostSections = {
-  new: {
-    label: "New thread",
-    frontend: "angular",
-    url: `${microfrontends.angular.url}?thread=new`,
+  plugins: {
+    label: "Plugins",
+    url: `${solidFrontend}?surface=plugins`,
   },
   library: {
     label: "Library",
-    frontend: "solid",
-    url: `${microfrontends.solid.url}?surface=library`,
+    url: `${solidFrontend}?surface=library`,
   },
-  plugins: {
-    label: "Plugins",
-    frontend: "solid",
-    url: `${microfrontends.solid.url}?surface=plugins`,
+  overlays: {
+    label: "Overlays",
+    url: `${solidFrontend}?surface=overlays`,
   },
-  usage: {
-    label: "Usage",
-    frontend: "qwik",
-    url: microfrontends.qwik.url,
-  },
-  migration: {
-    label: "Platform migration",
-    frontend: "angular",
-    url: `${microfrontends.angular.url}?thread=migration`,
-  },
-  research: {
-    label: "Customer research",
-    frontend: "angular",
-    url: `${microfrontends.angular.url}?thread=research`,
-  },
-  brief: {
-    label: "Weekly brief",
-    frontend: "angular",
-    url: `${microfrontends.angular.url}?thread=brief`,
-  },
-} as const satisfies Record<
-  string,
-  {
-    frontend: MicrofrontendKey;
-    label: string;
-    url: string;
-  }
->;
+} as const satisfies Record<string, { label: string; url: string }>;
 
 type HostSectionKey = keyof typeof hostSections;
 
 const allSections = Object.keys(hostSections) as HostSectionKey[];
-const utilitySections: HostSectionKey[] = ["library", "plugins", "usage"];
-const threadSections: HostSectionKey[] = ["migration", "research", "brief"];
-
-const frontendLabels: Record<MicrofrontendKey, string> = {
-  angular: "Angular",
-  solid: "Solid",
-  qwik: "Qwik",
-};
 
 const navigationMarks: Record<HostSectionKey, string> = {
-  new: "+",
-  library: "▱",
   plugins: "⌘",
-  usage: "◫",
-  migration: "P",
-  research: "S",
-  brief: "D",
+  library: "▱",
+  overlays: "◫",
 };
 
 interface HostNavigationProps {
@@ -92,9 +57,7 @@ function HostLink({
         {navigationMarks[section]}
       </span>
       <span className="host-link-label">{hostSections[section].label}</span>
-      <span className="host-link-owner">
-        {frontendLabels[hostSections[section].frontend]}
-      </span>
+      <span className="host-link-owner">Solid</span>
     </Button>
   );
 }
@@ -103,7 +66,7 @@ function HostNavigation({ activeSection, onSelect }: HostNavigationProps) {
   return (
     <nav className="host-navigation" aria-label="Relay navigation">
       <ul className="utility-navigation" role="list">
-        {utilitySections.map((section) => (
+        {allSections.map((section) => (
           <li key={section}>
             <HostLink
               activeSection={activeSection}
@@ -113,33 +76,18 @@ function HostNavigation({ activeSection, onSelect }: HostNavigationProps) {
           </li>
         ))}
       </ul>
-      <div className="navigation-group">
-        <p className="navigation-label">Recent</p>
-        <ul role="list">
-          {threadSections.map((section) => (
-            <li key={section}>
-              <HostLink
-                activeSection={activeSection}
-                onSelect={onSelect}
-                section={section}
-              />
-            </li>
-          ))}
-        </ul>
-      </div>
     </nav>
   );
 }
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<HostSectionKey>("new");
+  const [activeSection, setActiveSection] = useState<HostSectionKey>("plugins");
   const [compositionVisible, setCompositionVisible] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [status, setStatus] = useState<VFrameStatusValue>(VFrameStatus.Idle);
   const frameElementsRef = useRef(new Map<HostSectionKey, VFrameElement>());
-  const activeSectionRef = useRef<HostSectionKey>("new");
-  const compositionVisibleRef = useRef(false);
+  const activeSectionRef = useRef<HostSectionKey>("plugins");
 
   useEffect(() => {
     const removeListeners = allSections.map((section) => {
@@ -151,10 +99,6 @@ export function App() {
         setStatus(VFrameStatus.Loading);
       };
       const handleLoad = () => {
-        frame.shadowRoot
-          ?.querySelector("app-root")
-          ?.toggleAttribute("data-composition-visible", compositionVisibleRef.current);
-
         if (section !== activeSectionRef.current) return;
         setStatus(VFrameStatus.Ready);
       };
@@ -180,15 +124,6 @@ export function App() {
     return () => removeListeners.forEach((removeListener) => removeListener());
   }, []);
 
-  useEffect(() => {
-    compositionVisibleRef.current = compositionVisible;
-    for (const frame of frameElementsRef.current.values()) {
-      frame.shadowRoot
-        ?.querySelector("app-root")
-        ?.toggleAttribute("data-composition-visible", compositionVisible);
-    }
-  }, [activeSection, compositionVisible]);
-
   const selectSection = (nextSection: HostSectionKey) => {
     if (nextSection === activeSectionRef.current) return;
 
@@ -202,8 +137,6 @@ export function App() {
   };
 
   const activeTarget = hostSections[activeSection];
-  const activeFrontend = activeTarget.frontend;
-  const frontendOwner = microfrontends[activeFrontend].owner;
 
   return (
     <div
@@ -226,20 +159,7 @@ export function App() {
             </svg>
           </Button>
         </div>
-        <Button className="new-thread" onClick={() => selectSection("new")}>
-          <span aria-hidden="true">＋</span>
-          <span className="host-link-label">New thread</span>
-          <span className="host-link-owner">Angular</span>
-        </Button>
         <HostNavigation activeSection={activeSection} onSelect={selectSection} />
-        <div className="account-surface" data-composition-label="Qwik account frontend">
-          <v-frame
-            className="account-frame"
-            src={microfrontends.qwik.profileUrl}
-            aria-label="Account menu microfrontend"
-            credentials="omit"
-          />
-        </div>
       </aside>
 
       <div className="host-content">
@@ -259,21 +179,12 @@ export function App() {
                   <Button className="mobile-close">Close</Button>
                 </form>
               </div>
-              <Button className="new-thread" onClick={() => selectSection("new")}>
-                ＋ New thread
-              </Button>
               <HostNavigation activeSection={activeSection} onSelect={selectSection} />
             </DialogContent>
           </Dialog>
         </header>
 
-        <main
-          className={
-            activeFrontend === "angular"
-              ? "page-shell"
-              : "page-shell page-shell-standalone"
-          }
-        >
+        <main className="page-shell">
           <header className="conversation-header">
             <Button
               className="sidebar-toggle"
@@ -292,7 +203,6 @@ export function App() {
               <span className="composition-swatches" aria-hidden="true">
                 <span />
                 <span />
-                <span />
               </span>
               {compositionVisible ? "Hide frontends" : "Show frontends"}
             </Button>
@@ -300,10 +210,9 @@ export function App() {
 
           <section
             className="frame-viewport"
-            aria-label={`${microfrontends[activeFrontend].label} microfrontend`}
+            aria-label="Solid microfrontend"
             aria-busy={status === VFrameStatus.Loading}
-            data-composition-label={frontendOwner}
-            data-frontend={activeFrontend}
+            data-composition-label="Solid frontend"
           >
             {allSections.map((section) => (
               <v-frame
@@ -325,20 +234,6 @@ export function App() {
               />
             ))}
           </section>
-          {activeFrontend === "angular" ? (
-            <section
-              className="composer-surface"
-              aria-label="Message composer"
-              data-composition-label="Qwik composer frontend"
-            >
-              <v-frame
-                className="composer-frame"
-                src={microfrontends.qwik.composerUrl}
-                aria-label="Message composer microfrontend"
-                credentials="omit"
-              />
-            </section>
-          ) : null}
         </main>
       </div>
     </div>

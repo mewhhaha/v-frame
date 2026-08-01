@@ -6,10 +6,9 @@
   "scripts": {
     "dev": "pnpm run build:mfe && concurrently -n host,mfe \"vite\" \"pnpm run serve:mfe\"",
     "build": "vite build",
-    "build:mfe": "pnpm --filter example-mfe-angular --filter example-mfe-solid --filter example-mfe-qwik --filter example-mfe-react run build",
-    "serve:mfe": "concurrently -n angular,solid,qwik,react \"node scripts/serve-static.mjs microfrontends/angular-app/dist/angular-app/browser 43171\" \"node scripts/serve-static.mjs microfrontends/solid-app/dist 43172\" \"node scripts/serve-static.mjs microfrontends/qwik-app/dist 43173\" \"node scripts/serve-static.mjs microfrontends/react-app/dist 43174\"",
-    "preview": "vite preview",
-    "test:overlays": "playwright test -c playwright.config.ts"
+    "build:mfe": "pnpm --filter example-mfe-solid run build",
+    "serve:mfe": "node scripts/serve-static.mjs microfrontends/solid-app/dist 43172",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@comp0/react": "0.1.0-next.11",
