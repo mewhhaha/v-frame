@@ -109,6 +109,115 @@ export function sendResponse(
   setTimeout(send, route.delay);
 }
 
+/** A one-shot promise the fixture re-arms so a repeated run waits for its own event. */
+interface Gate {
+  readonly reached: Promise<void>;
+  reach(): void;
+  arm(): void;
+}
+
+function createGate(): Gate {
+  let reach = (): void => undefined;
+  let reached = Promise.resolve();
+  const arm = () => {
+    reached = new Promise<void>((resolveReached) => {
+      reach = resolveReached;
+    });
+  };
+  arm();
+  return {
+    get reached() {
+      return reached;
+    },
+    reach: () => reach(),
+    arm,
+  };
+}
+
+/** A route whose response the test writes, at the moment the test chooses. */
+export interface ParkedRoute {
+  /** Install this under the path the test controls. */
+  route: RouteHandler;
+  /** Writes the parked response, waiting for the request when it has not arrived yet. */
+  release(): Promise<void>;
+  /** Drops a request the test never released, so closing the server is not stalled. */
+  abandon(): void;
+}
+
+/**
+ * Holds every request for a path until the test releases it. Tests that assert an ordering
+ * use this instead of racing response delays against the browser's own scheduling.
+ */
+export function parkRoute(
+  answer: RouteResponse,
+  fixtureHeaders: Record<string, string> = {},
+): ParkedRoute {
+  const requested = createGate();
+  let parked: ServerResponse | null = null;
+
+  const park: RouteHandler = (_request, response) => {
+    if (parked !== null) {
+      return { status: 409, type: "text/plain", body: "Duplicate parked request" };
+    }
+    parked = response;
+    // A page that closes before the release must not leave a stale socket behind.
+    response.on("close", () => {
+      if (parked === response) parked = null;
+    });
+    requested.reach();
+    return undefined;
+  };
+
+  return {
+    route: park,
+    // The release can be asked for before the request has raced its way in, so it waits
+    // for the request instead of failing.
+    release: async () => {
+      await requested.reached;
+      const response = parked;
+      if (response === null) {
+        throw new Error("The parked request was already answered");
+      }
+      parked = null;
+      requested.arm();
+      sendResponse(response, answer, fixtureHeaders);
+    },
+    abandon: () => {
+      parked?.destroy();
+      parked = null;
+    },
+  };
+}
+
+/** A route that answers immediately and reports when its bytes have gone out. */
+export interface GatedRoute {
+  route: RouteHandler;
+  /**
+   * Resolves once this response's body has been flushed to the socket, so a parked
+   * response released after it cannot reach the browser first.
+   */
+  readonly served: Promise<void>;
+  /** Re-arms the gate once the waiting test has consumed `served`. */
+  rearm(): void;
+}
+
+export function gateRoute(answer: RouteResponse): GatedRoute {
+  const served = createGate();
+  // "finish" fires once the body has been flushed to the socket, which is the only point
+  // at which this response is provably ahead of one released afterwards.
+  const serve: RouteHandler = (_request, response) => {
+    response.on("finish", served.reach);
+    return answer;
+  };
+  return {
+    route: serve,
+    get served() {
+      return served.reached;
+    },
+    rearm: served.arm,
+  };
+}
+
 async function serveRoute(
   route: Route,
   request: IncomingMessage,

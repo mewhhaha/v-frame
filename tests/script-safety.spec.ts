@@ -2,13 +2,18 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
   bundleRoute,
   htmlDocument as documentSource,
+  gateRoute,
   type HTTPFixture,
+  parkRoute,
   type RouteResponse,
   startHTTPFixture,
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
 
 const nonce = "fixture-nonce";
+const contentSecurityPolicy = {
+  "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
+};
 let fixture: HTTPFixture;
 
 const legacyJavaScriptTypes = [
@@ -236,24 +241,35 @@ function script(body: string): RouteResponse {
   return { type: "text/javascript", body };
 }
 
+const fragmentOrderFirst = parkRoute(
+  script('window.__fragmentExternalEvents.push("first");'),
+  contentSecurityPolicy,
+);
+const fragmentOrderSecond = gateRoute(
+  script('window.__fragmentExternalEvents.push("second");'),
+);
+
+/**
+ * The guarantee is insertion order despite arrival order, so the first fragment script
+ * answers only once the second one's response has already gone out.
+ */
+async function invertFragmentScriptArrival(): Promise<void> {
+  await fragmentOrderSecond.served;
+  await fragmentOrderFirst.release();
+  fragmentOrderSecond.rearm();
+}
+
 function startFixtureServer(): Promise<HTTPFixture> {
   return startHTTPFixture({
-    headers: {
-      "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-    },
+    headers: contentSecurityPolicy,
     routes: {
       "/": documentSource('<div id="host"></div>'),
       "/dist/index.js": bundleRoute,
       "/late-external.js": script(
         "window.__lateExternal = (window.__lateExternal ?? 0) + 1;",
       ),
-      "/fragment-order-first.js": {
-        ...script('window.__fragmentExternalEvents.push("first");'),
-        delay: 50,
-      },
-      "/fragment-order-second.js": script(
-        'window.__fragmentExternalEvents.push("second");',
-      ),
+      "/fragment-order-first.js": fragmentOrderFirst.route,
+      "/fragment-order-second.js": fragmentOrderSecond.route,
       ...pages,
     },
   });
@@ -264,6 +280,9 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // A parked request keeps its socket open, which would otherwise stall the close of a
+  // server whose test failed before releasing it.
+  fragmentOrderFirst.abandon();
   await fixture.close();
 });
 
@@ -573,6 +592,7 @@ test("executes eligible scripts inserted through fragments once in document orde
     foreignRanInChild: false,
     foreignRanInHost: false,
   });
+  await invertFragmentScriptArrival();
   await expect
     .poll(() =>
       childValue(

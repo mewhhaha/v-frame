@@ -12,6 +12,7 @@ test suite. Each entry says what throws, why it has to, and what to do instead.
 | [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close) | `NotSupportedError` |
 | [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets) | `NotSupportedError` |
 | [Direct child mutation of `document`](#direct-child-mutation-of-document) | `NotSupportedError` |
+| [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late |
 | [CSSOM `@import` rules](#cssom-import-rules) | `NotSupportedError` |
 | [Non-`GET` form submission](#non-get-form-submission) | `v-frame-error`, navigation dropped |
 | [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank) | Navigation dropped |
@@ -120,6 +121,42 @@ document.head.append(meta);
 document.body.append(root);
 ```
 
+## Node identity after an unintercepted write
+
+**Does not throw.** A node that one of these writes puts inside a *connected*
+guest element is marked a microtask later rather than synchronously:
+
+- the text node the `textContent` setter creates,
+- `insertAdjacentText`,
+- `setHTMLUnsafe`.
+
+Until the realm's `MutationObserver` callback runs — the next microtask
+checkpoint — the new node is not in the virtual-node set, so the realm's
+identity accessors do not answer for it: `ownerDocument` and `baseURI` report the
+host document's, `getRootNode()` reports the frame's shadow root rather than the
+virtual document, and any URL attribute `setHTMLUnsafe` brought with it has not
+been rebased yet. Read the identity of such a node after a microtask, or
+insert it through an API the facade does intercept — `appendChild`,
+`insertBefore`, `replaceChild`, `append`, `prepend`, `replaceChildren`, `before`,
+`after`, `replaceWith`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, or
+`insertAdjacentElement` — all of which mark synchronously.
+
+**Why.** The facade marks a node when it intercepts the write that inserts it,
+and these three are not intercepted: `insertAdjacentText` and `setHTMLUnsafe` are
+not patched at all, and the patched `textContent` setter hands the string to the
+native setter, which creates the text node itself. What finds them is the realm's
+`MutationObserver`, which watches the shell with `subtree: true` and hands every
+added node back to marking, and observer callbacks are microtasks.
+
+Marking used to also repair these nodes synchronously, as a side effect of
+re-walking any marked subtree that was re-parented. That walk is now skipped for
+a subtree that is already marked and still in the tree, which is what makes
+re-parenting about 3.8x cheaper — see [round two of the marking
+benchmark](./node-marking-benchmark.md#round-two--re-parenting) — so on a
+connected subtree the observer is the only repair left. A *detached* subtree is
+still walked in full when it is inserted, so building a tree offline and then
+inserting it marks everything in it synchronously, before any observer runs.
+
 ## CSSOM `@import` rules
 
 **Throws** a `NotSupportedError` `DOMException` from `CSSStyleSheet.insertRule()`
@@ -223,9 +260,11 @@ past some size that rate is itself the reason not to use `v-frame`.
 virtual-node set that the realm's prototype accessors are gated on, plus the
 attribute, URL and event-handler work marking has always done. The facade cannot
 decide a node is virtual without touching it, so activation walks the whole guest
-tree and every later insertion walks the inserted subtree. Plain host DOM does
+tree and every later insertion walks the subtree it inserts. Plain host DOM does
 none of that, and Blink never materializes a JS wrapper for a node nobody has
-touched.
+touched. Moving a subtree that is already in the tree is the one case that
+escapes: it was marked when it arrived, and none of the answers marking installs
+depend on where it hangs.
 
 **Activation** — fetch, parse and insert the whole guest, both columns including
 the fetch and the parse. "Plain host DOM" is the same markup fetched,
@@ -252,18 +291,29 @@ optimization below, are in
 already there, because marking is per inserted subtree rather than per document.
 Two 60 Hz frames per thousand rows is the budget to plan against.
 
+**Re-parenting a settled subtree** — what a list does when it reorders rows —
+runs about 3–4x cheaper than it used to, bringing 1,000 moves of a hundred-node
+subtree from roughly 50–80x the cost of plain host DOM down to roughly 12–20x.
+Marking does not run again for a subtree that is already marked and still
+connected, so this no longer scales with how big the moved subtree is. The
+absolute milliseconds move with machine load — run `pnpm bench` for a figure on
+your own hardware; the ratio is what holds across runs.
+
 **Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
 marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
-in the host document, which never gets JS wrappers for its nodes at all.
+in the host document, which never gets JS wrappers for its nodes at all. This one
+is chromium-only; see [below](#what-firefox-costs).
 
-Answering `ownerDocument` and `baseURI` from the realm's `Node.prototype` instead
-of from own accessors on every node cut the marginal activation cost by about 30%
-(19.3 µs per element to 13.6) and the retained heap by about 86% (52 MB to 7.5 at
-50,000 elements). That is the whole of the improvement so far, and the numbers
-above are the post-improvement ones. What is left is the walk. Visiting every
-node once is irreducible for this design; re-walking a subtree each time it is
-re-parented is not, and is the largest untried item, but no version of this
-runtime has activated a large guest cheaply and none is planned.
+Two rounds of work produced the numbers above. Answering `ownerDocument` and
+`baseURI` from the realm's `Node.prototype` instead of from own accessors on every
+node cut the marginal activation cost by about 30% (19.3 µs per element to 13.6)
+and the retained heap by about 86% (52 MB to 7.5 at 50,000 elements). Skipping the
+walk for a subtree that is already marked and still connected then made
+re-parenting about 3.8x cheaper, without moving activation or insertion.
+
+What is left is the walk itself, and it is not going away: visiting every node
+once is irreducible for this design. No version of this runtime has activated a
+large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front
@@ -282,8 +332,50 @@ of nodes at once, an `<iframe>` pays the browser's own parser and no facade at
 all, and is the cheaper tool; the overlay and layout advantages in [the
 README](../README.md#what-you-are-trading) are what you would be giving up.
 
-Only chromium is measured. Firefox correctness is covered by the test suite, but
-no comparable numbers were taken there.
+### What firefox costs
+
+The tables above are chromium. Firefox pays the same shape of cost and more of
+it: the same guests, the same harness, the same machine, `pnpm bench` measuring
+both engines in one run.
+
+| guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
+| --- | --- | --- | --- | --- |
+| 1,000 | 37 ms | 35 ms | 2.3 ms | 2 ms |
+| 5,000 | 83 ms | 92 ms | 4.7 ms | 7 ms |
+| 20,000 | 276 ms | 340 ms | 17 ms | 23 ms |
+| 50,000 | 694 ms | 846 ms | 33 ms | 52 ms |
+
+Firefox 151.0 and chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D,
+2026-08-01. All four columns come from one `pnpm bench` run, so they are
+comparable to each other; they are a *different* run from the chromium table
+above, which is why individual cells differ from it by 20–30% — that is the
+run-to-run spread, and it is why the ratio rather than any cell is the figure to
+read.
+
+Across the runs taken that day the marginal activation cost was consistently
+higher on firefox than on chromium, but by an unstable margin — measurements
+ranged from about 1.03x to 1.24x. Read it as *firefox is somewhat dearer, never
+dramatically so*; the sample is too noisy to support a specific multiple.
+
+Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
+chromium's 32–44** across the two runs — very close to double — and still flat in
+the size of the tree already there. Re-parenting is the narrower one, 66–96 ms
+against 57–91 ms, because the work the gate skips is skipped in both engines.
+
+Every firefox reading above is a whole millisecond, and that is the clock rather
+than a coincidence: 20 consecutive `performance.now()` calls in a Playwright
+firefox page all return integers, where chromium returns tenths of a microsecond.
+The coarsening is invisible in the 50,000-element cells and dominant in the
+host-DOM ones, where the true value is a couple of milliseconds.
+
+**Retained heap is not measured on firefox at all.** The reading needs a
+collected heap size, which Playwright can only get through CDP's
+`Runtime.getHeapUsage`; `performance.measureUserAgentSpecificMemory` is
+chromium-only as well. What firefox retains for a large guest is therefore
+unknown, and the 7.5 MB above should not be read as a cross-engine number. That
+guest nodes are *released* rather than retained is covered on both engines by
+[`tests/node-retention.spec.ts`](../tests/node-retention.spec.ts), which counts
+survivors rather than bytes.
 
 ## What is *not* a limitation
 

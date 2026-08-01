@@ -79,6 +79,17 @@ test("runs classic, deferred, and async scripts with their current script and re
   await installBundle(page, fixture.origin);
   const frame = await mountDocument(page, "/documents/script-order.html");
 
+  // The async script is parked, so it lands after the deferred one because the test says
+  // so rather than because a response delay outran the browser's scheduling.
+  await expect
+    .poll(() => childValue(frame, (window) => (window as any).__scriptEvents))
+    .toEqual([
+      "classic-inline:classic-inline:loading",
+      "classic-external:classic-external:loading",
+      "defer-external:deferred-external:interactive",
+    ]);
+  await fixture.releaseAsyncScript();
+
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
     .toBe("ready");

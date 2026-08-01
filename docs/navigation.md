@@ -180,9 +180,11 @@ await frame.reload();
 ```
 
 `reload()` refetches the current guest URL. The current content stays visible
-until its replacement is ready; a failed reload restores the current guest and
-emits a nonfatal `v-frame-error`. Assigning `src` does the same thing for a
-different URL, and discards the guest's history session.
+until its replacement is ready; a failed reload restores the current guest,
+emits a nonfatal `v-frame-error`, and rejects with the same error — see
+[API](./api.md#element-methods) for how it settles in every case. Assigning
+`src` does the same thing for a different URL, and discards the guest's history
+session.
 
 ## What does not navigate
 

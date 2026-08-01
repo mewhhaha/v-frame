@@ -130,6 +130,252 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
   });
 });
 
+test("marks attribute nodes created after their element joined the virtual tree", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    // Authored before insertion, so the marking pass over the subtree sees it.
+    const early = virtualDocument.createElement("a");
+    early.setAttribute("data-early", "authored");
+    root.append(early);
+
+    // Authored after insertion, which no later marking pass ever revisits.
+    const late = virtualDocument.createElement("a");
+    root.append(late);
+    late.setAttribute("data-late", "plain");
+    late.setAttribute("href", "late/link.html");
+    late.setAttributeNS("http://example.test/ns", "ex:late", "namespaced");
+
+    const attributeNodes = [
+      early.getAttributeNode("data-early"),
+      late.getAttributeNode("data-late"),
+      late.getAttributeNode("href"),
+      late.getAttributeNodeNS("http://example.test/ns", "late"),
+    ];
+
+    return {
+      resolved: attributeNodes.every((attribute) => attribute !== null),
+      ownerDocuments: attributeNodes.map(
+        (attribute) => attribute?.ownerDocument === virtualDocument,
+      ),
+      baseURIs: attributeNodes.map((attribute) => attribute?.baseURI),
+      hostBaseURI: document.baseURI,
+    };
+  });
+
+  const guestBaseURI = `${fixture.origin}/documents/dom.html`;
+  expect(result).toEqual({
+    resolved: true,
+    ownerDocuments: [true, true, true, true],
+    baseURIs: [guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI],
+    hostBaseURI: `${fixture.origin}/`,
+  });
+});
+
+test("marks attribute nodes written past the facade on a node already in the tree", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    const guest = virtualDocument.createElement("span");
+    root.append(guest);
+
+    // The writes the facade never sees: the host page's own Element.prototype,
+    // used on a node it holds a reference to, and the reflected setters that
+    // never reach setAttribute at all. The element is marked and in the tree,
+    // so no later marking pass revisits it.
+    Element.prototype.setAttribute.call(guest, "data-outside", "written");
+    Element.prototype.setAttributeNS.call(
+      guest,
+      "http://example.test/ns",
+      "ex:outside",
+      "namespaced",
+    );
+    guest.id = "reflected";
+    guest.classList.add("reflected");
+
+    // Adopted from the host page rather than authored in the guest, then given
+    // an attribute by a reflected setter, which the facade the adoption
+    // installed on it does not cover either.
+    const adopted = document.createElement("span");
+    virtualDocument.adoptNode(adopted);
+    root.append(adopted);
+    adopted.id = "adopted";
+
+    const attributeNodes = [
+      guest.getAttributeNode("data-outside"),
+      guest.getAttributeNodeNS("http://example.test/ns", "outside"),
+      guest.getAttributeNode("id"),
+      Array.from(guest.attributes).find((attribute) => attribute.name === "class") ??
+        null,
+      adopted.getAttributeNode("id"),
+    ];
+
+    // Read in the same task as the writes: the marking has to be synchronous,
+    // not a mutation record delivered a microtask later.
+    return {
+      resolved: attributeNodes.every((attribute) => attribute !== null),
+      ownerDocuments: attributeNodes.map(
+        (attribute) => attribute?.ownerDocument === virtualDocument,
+      ),
+      baseURIs: attributeNodes.map((attribute) => attribute?.baseURI),
+      hostBaseURI: document.baseURI,
+    };
+  });
+
+  const guestBaseURI = `${fixture.origin}/documents/dom.html`;
+  expect(result).toEqual({
+    resolved: true,
+    ownerDocuments: [true, true, true, true, true],
+    baseURIs: [guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI],
+    hostBaseURI: `${fixture.origin}/`,
+  });
+});
+
+test("keeps a re-parented subtree virtual without walking it again", async ({ page }) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    const branch = virtualDocument.createElement("section");
+    branch.innerHTML =
+      '<article><a href="moved/link.html">moved</a><img src="moved/image.png"></article>';
+    root.append(branch);
+
+    // The move the optimization is about: everything below is already marked,
+    // and marking has to stay correct without re-descending into it.
+    const destination = virtualDocument.createElement("aside");
+    root.append(destination);
+    destination.append(branch);
+
+    const anchor = branch.querySelector("a") as HTMLAnchorElement;
+    const image = branch.querySelector("img") as HTMLImageElement;
+    const descendants = [branch, branch.firstElementChild, anchor, image];
+
+    // A node the guest adds through an API the facade does not intercept is
+    // reported to the realm's mutation observer, which is what lets the move
+    // above skip the walk. Read it after the observer has run.
+    anchor.insertAdjacentText("beforeend", " tail");
+    const unpatchedText = anchor.lastChild;
+
+    return new Promise<Record<string, unknown>>((settle) => {
+      setTimeout(() => {
+        settle({
+          ownerDocuments: descendants.every(
+            (node) => node?.ownerDocument === virtualDocument,
+          ),
+          roots: descendants.every((node) => node?.getRootNode() === virtualDocument),
+          baseURIs: descendants.every(
+            (node) => node?.baseURI === virtualDocument.baseURI,
+          ),
+          href: anchor.href,
+          src: image.src,
+          unpatchedTextOwner: unpatchedText?.ownerDocument === virtualDocument,
+        });
+      }, 0);
+    });
+  });
+
+  expect(result).toEqual({
+    ownerDocuments: true,
+    roots: true,
+    baseURIs: true,
+    href: `${fixture.origin}/documents/moved/link.html`,
+    src: `${fixture.origin}/documents/moved/image.png`,
+    unpatchedTextOwner: true,
+  });
+});
+
+test("marks a detached subtree that changed since it was last walked", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    // Marked once when it was created, then given children by two paths that do
+    // not mark what they create. Nothing observes a detached subtree, so the
+    // insertion below has to walk it again.
+    const detached = virtualDocument.createElement("section");
+    const labelled = virtualDocument.createElement("p");
+    labelled.textContent = "written";
+    detached.append(labelled);
+    const appended = virtualDocument.createElement("p");
+    detached.append(appended);
+    appended.insertAdjacentText("beforeend", "adjacent");
+    root.append(detached);
+
+    // Read synchronously: the walk on insertion is what has to have marked
+    // these, not the mutation observer a microtask later.
+    return {
+      writtenText: labelled.firstChild?.ownerDocument === virtualDocument,
+      adjacentText: appended.firstChild?.ownerDocument === virtualDocument,
+      writtenBase: labelled.firstChild?.baseURI === virtualDocument.baseURI,
+      adjacentBase: appended.firstChild?.baseURI === virtualDocument.baseURI,
+    };
+  });
+
+  expect(result).toEqual({
+    writtenText: true,
+    adjacentText: true,
+    writtenBase: true,
+    adjacentBase: true,
+  });
+});
+
 test("scopes shell selectors and root translation to the connected virtual tree", async ({
   page,
 }) => {

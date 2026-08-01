@@ -6,6 +6,7 @@
 // remembered, and has its scripts and inline handlers defused. Insertion,
 // cloning and markup parsing all funnel back through it.
 
+import { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { AttributeFacade } from "./attributes.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
@@ -60,6 +61,7 @@ export function installNodeFacade(
     nativeInsertData,
     nativeReplaceData,
     nativeGetAttribute,
+    nativeAttributes,
     nativeSetAttribute,
     nativeSetAttributeNS,
     nativeRemoveAttribute,
@@ -113,6 +115,9 @@ export function installNodeFacade(
     hasVirtualAttribute,
     hasVirtualAttributeNS,
     getVirtualAttributeNames,
+    getVirtualAttributeNode,
+    getVirtualAttributeNodeNS,
+    markAttributeNodes,
     setVirtualAttribute,
     removeVirtualAttribute,
     toggleVirtualAttribute,
@@ -154,17 +159,13 @@ export function installNodeFacade(
   // overwrote, which is why the previous ones are remembered at all. Holding the
   // nodes themselves to do it would make the facade a leak: a guest that churns
   // rows would retain every row it ever rendered for the lifetime of the frame.
-  // So the descriptors hang off a WeakMap and the restore list holds only weak
-  // references — a node nothing else can reach can no longer observe whether its
-  // descriptors came back, and the registry drops its slot once it is collected.
-  const nodeFacadeDescriptors = new WeakMap<
+  // A node nothing else can reach can no longer observe whether its descriptors
+  // came back, so the record holds its nodes weakly and dispose() restores the
+  // survivors.
+  const nodeFacadeDescriptors = new EnumerableWeakMap<
     Node,
     Map<PropertyKey, PropertyDescriptor | undefined>
   >();
-  const facadedNodes = new Set<WeakRef<Node>>();
-  const collectedFacadedNodes = new FinalizationRegistry<WeakRef<Node>>((reference) => {
-    facadedNodes.delete(reference);
-  });
 
   const protectScript = (script: HTMLScriptElement): void => {
     if (protectedScriptAttributes.has(script)) {
@@ -190,9 +191,6 @@ export function installNodeFacade(
     if (previousDescriptors === undefined) {
       previousDescriptors = new Map();
       nodeFacadeDescriptors.set(node, previousDescriptors);
-      const reference = new WeakRef(node);
-      facadedNodes.add(reference);
-      collectedFacadedNodes.register(node, reference);
     }
     for (const property of Reflect.ownKeys(descriptors)) {
       if (!previousDescriptors.has(property)) {
@@ -234,7 +232,22 @@ export function installNodeFacade(
     }
   };
 
-  const markVirtualNode = (node: Node): void => {
+  // An attribute node has no children and no attributes of its own, so joining
+  // the virtual-node set is the whole of marking one. Attribute writes sit on
+  // the insertion path, so this skips the recursive descent markVirtualNode
+  // would otherwise run for a node that can never have descendants.
+  const markVirtualAttribute = (attribute: Attr): void => {
+    if (virtualNodes.has(attribute)) {
+      return;
+    }
+    virtualNodes.add(attribute);
+    if (!nodeIdentityIsPrototypeWide || !(attribute instanceof window.Node)) {
+      installForeignNodeFacade(attribute);
+    }
+  };
+  context.markVirtualAttribute = markVirtualAttribute;
+
+  const markVirtualSubtree = (node: Node): void => {
     const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
       virtualNodes.add(node);
@@ -245,7 +258,7 @@ export function installNodeFacade(
 
     if (isElementNode(node)) {
       for (const attribute of Array.from(node.attributes)) {
-        markVirtualNode(attribute);
+        markVirtualAttribute(attribute);
       }
       rememberAuthoredURLAttributes(node);
       if (newlyVirtual) {
@@ -280,12 +293,33 @@ export function installNodeFacade(
     }
 
     for (const child of Array.from(node.childNodes)) {
-      markVirtualNode(child);
+      markVirtualSubtree(child);
     }
 
     if (isElementNode(node) && isHTMLTemplateElement(node)) {
-      markVirtualNode(node.content);
+      markVirtualSubtree(node.content);
     }
+  };
+
+  // Everything marking does is a statement about the node itself, never about
+  // where it hangs: the virtual-node set the realm's identity accessors read,
+  // the authored attribute records, the defused scripts and inline handlers.
+  // Re-parenting changes none of those answers, and the base URL — the one
+  // input that is not per-node — is rebased across the whole tree by
+  // rebaseURLs() when it changes. So a subtree that is already marked and still
+  // inside the virtual tree costs nothing to move.
+  //
+  // The gate is connectedness rather than an "already walked" flag because the
+  // realm's mutation observer watches the shell subtree and hands every node
+  // added under it back to marking on its own. Nothing watches a detached
+  // subtree, so anything the guest put inside one since the last walk — a text
+  // node from the textContent setter, the result of a DOM API the facade does
+  // not intercept — is only found by walking it again.
+  const markVirtualNode = (node: Node): void => {
+    if (virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
+      return;
+    }
+    markVirtualSubtree(node);
   };
 
   const installScrollFacade = (element: HTMLElement) => {
@@ -679,6 +713,21 @@ export function installNodeFacade(
           writable: true,
           value: () => getVirtualAttributeNames(element),
         },
+        // A foreign element resolves these on the host realm's prototype, where
+        // the facade's patches are not, so the Attr nodes it hands out would
+        // never reach marking.
+        getAttributeNode: {
+          configurable: true,
+          writable: true,
+          value: (qualifiedName: string) =>
+            getVirtualAttributeNode(element, qualifiedName),
+        },
+        getAttributeNodeNS: {
+          configurable: true,
+          writable: true,
+          value: (namespaceURI: string | null, localName: string) =>
+            getVirtualAttributeNodeNS(element, namespaceURI, localName),
+        },
         setAttribute: {
           configurable: true,
           writable: true,
@@ -710,6 +759,17 @@ export function installNodeFacade(
             setVirtualAttributeNS(element, namespace, qualifiedName, value),
         },
       };
+      const nativeAttributesGetter = nativeAttributes?.get;
+      if (nativeAttributesGetter !== undefined) {
+        descriptors.attributes = {
+          configurable: true,
+          get: () =>
+            markAttributeNodes(
+              element,
+              nativeAttributesGetter.call(element) as NamedNodeMap,
+            ),
+        };
+      }
       if (namespaceURI === HTML_NAMESPACE || namespaceURI === SVG_NAMESPACE) {
         descriptors.style = {
           configurable: true,
@@ -1156,13 +1216,7 @@ export function installNodeFacade(
   };
 
   const dispose = (): void => {
-    for (const reference of facadedNodes) {
-      const node = reference.deref();
-      const descriptors =
-        node === undefined ? undefined : nodeFacadeDescriptors.get(node);
-      if (node === undefined || descriptors === undefined) {
-        continue;
-      }
+    for (const [node, descriptors] of nodeFacadeDescriptors) {
       for (const [property, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (node as unknown as Record<PropertyKey, unknown>)[property];
@@ -1170,9 +1224,12 @@ export function installNodeFacade(
           Object.defineProperty(node, property, descriptor);
         }
       }
-      nodeFacadeDescriptors.delete(node);
     }
-    facadedNodes.clear();
+    // A node the guest still holds outlives the facade, and clearing drops its
+    // finalization registration with it — for a large guest that would otherwise
+    // be one dead cell per marked node, held for as long as the host keeps the
+    // disposed element around.
+    nodeFacadeDescriptors.clear();
   };
 
   markVirtualNode(options.html);

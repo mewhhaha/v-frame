@@ -99,15 +99,36 @@ v-frame:state(error) {
 
 All four return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
-None of them can run before `v-frame-load`, because the first guest is not live
-until then.
+None of those three can run before `v-frame-load`, because the first guest is
+not live until then. `reload()` can: on a connected frame with a `src` it starts
+a fresh load whether or not a guest is live yet.
+
+`reload()` settles with the load it starts. It resolves when that load succeeds,
+and rejects with the same error the frame reports through `v-frame-error` when it
+fails: a `TypeError` for a `src` that is not an `http:` or `https:` URL, a
+`TypeError` for a cross-origin one, a `TypeError` naming the status for a
+response that is not `ok`, and the fetch's own error when the request fails at
+the network layer. Reloading a frame whose route 404s therefore rejects.
+
+Two cases resolve without starting a load at all: a disconnected element, and one
+with no `src`. Both return the element to `status === "idle"`. A load that a
+later one supersedes before it finishes also resolves.
 
 ```ts
-await frame.reload();
+try {
+  await frame.reload();
+} catch (error) {
+  // The failure the frame reports through `v-frame-error` as well.
+}
 ```
 
-The current content stays visible until its replacement is ready. A failed
-reload restores the current guest and emits a nonfatal `v-frame-error`.
+The current content stays visible until its replacement is ready. A reload that
+fails with a live guest to fall back on restores it and emits a nonfatal
+`v-frame-error`; one that fails without a guest to restore — a frame already in
+`status === "error"`, or one reloading before its first guest went live — emits
+a fatal `v-frame-error` and leaves the element in `status === "error"`.
+`tests/contract.spec.ts` pins how `reload()` itself settles; the fatal and
+nonfatal error paths are covered by the lifecycle tests in `tests/v-frame.spec.ts`.
 
 ## Events
 

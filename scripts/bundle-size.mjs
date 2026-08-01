@@ -3,8 +3,11 @@ import { gzipSync } from "node:zlib";
 
 // The budget exists so payload regressions surface in CI rather than in a
 // consumer's network tab. Ratchet it down whenever the bundle genuinely shrinks.
-// Set at 68,000 against a measured 65,183 bytes, so one small addition can land
-// and be judged on its merits instead of failing CI on the first byte.
+// The headroom over what this script reports is deliberate, so one small
+// addition can land and be judged on its merits instead of failing CI on the
+// first byte. The measured size deliberately lives in this script's output and
+// nowhere else: the copies that used to sit in this comment and in the
+// CHANGELOG were wrong three revisions running.
 const budgetBytes = 68_000;
 
 async function measureGzippedBundle() {
