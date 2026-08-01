@@ -9,7 +9,7 @@ import {
   type StylesheetContext,
   type StylesheetImportFailure,
 } from "./css.js";
-import { installDocumentFacade, type DocumentFacade } from "./document-facade.js";
+import { installDocumentFacade, type DocumentFacade } from "./facade/index.js";
 import {
   BoundHistory,
   type DocumentHistoryMode,

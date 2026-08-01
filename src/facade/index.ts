@@ -1,20 +1,28 @@
+// The facade is one closure split across modules: every part shares the context
+// and the parts reference each other in both directions, so composition happens
+// here rather than through imports between them.
+//
+// The order below is load-bearing. Creating a module only defines its
+// functions, except for style.ts, which emits the inline stylesheet, and
+// nodes.ts, which marks the shell tree — that marking has to see a finished
+// style, event and attribute facade. Everything that patches a realm prototype
+// waits for an explicit install call so that the patches still land in the
+// order they landed in when this was a single function.
+
+import { installAttributeFacade } from "./attributes.js";
+import { installCollectionFacade } from "./collections.js";
 import {
   createFacadeContext,
   type DocumentFacadeOptions,
   type NativeDocumentHandles,
-} from "./facade/context.js";
-import { installAttributeFacade } from "./facade/attributes.js";
-import { installCollectionFacade } from "./facade/collections.js";
-import { installNodeFacade } from "./facade/nodes.js";
-import { installDocumentProperties } from "./facade/document.js";
-import { installEventFacade } from "./facade/events.js";
-import { installStyleFacade } from "./facade/style.js";
-import { installSelectionFacade } from "./facade/selection.js";
+} from "./context.js";
+import { installDocumentProperties } from "./document.js";
+import { installEventFacade } from "./events.js";
+import { installNodeFacade } from "./nodes.js";
+import { installSelectionFacade } from "./selection.js";
+import { installStyleFacade } from "./style.js";
 
-export type {
-  DocumentFacadeOptions,
-  NativeDocumentHandles,
-} from "./facade/context.js";
+export type { DocumentFacadeOptions, NativeDocumentHandles } from "./context.js";
 
 export interface DocumentFacade {
   native: NativeDocumentHandles;
@@ -46,55 +54,24 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeSetAttribute,
     virtualNodes,
   } = context;
+
   const style = installStyleFacade(context);
-  const {
-    refreshInlineStyleSheet,
-    synchronizeStyleAttribute,
-    installPatches: installStylePatches,
-  } = style;
-
   const events = installEventFacade(context);
-  const {
-    eventForListener,
-    suppressEventDefault,
-    wasEventDefaultPrevented,
-    installHandlerProperties: installEventHandlerProperties,
-    installRelays: installEventRelays,
-    installPatches: installEventPatches,
-    dispose: disposeEventFacade,
-  } = events;
-
   const attributes = installAttributeFacade(context, style, events);
-  const {
-    rebaseElementURLs,
-    synchronizeURLAttribute,
-    installPatches: installAttributePatches,
-  } = attributes;
-
   const nodes = installNodeFacade(context, style, events, attributes);
-  const {
-    markVirtualNode,
-    installMutationPatches,
-    installNodePatches,
-    dispose: disposeNodeFacade,
-  } = nodes;
 
-  installEventHandlerProperties();
+  events.installHandlerProperties();
+  nodes.installMutationPatches();
+  events.installRelays();
+  events.installPatches();
+  attributes.installPatches();
+  style.installPatches();
+  nodes.installNodePatches();
 
-  installMutationPatches();
-
-  installEventRelays();
-
-  installEventPatches();
-
-  installAttributePatches();
-  installStylePatches();
-  installNodePatches();
   const collections = installCollectionFacade(context);
   collections.installPatches();
 
   const selectionFacade = installSelectionFacade(context, nodes);
-
   const { setReadyState, dispatchDocumentEvent } = installDocumentProperties(
     context,
     events,
@@ -120,28 +97,28 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       },
     },
     getSelection: () => selectionFacade.selection,
-    markVirtualTree: markVirtualNode,
+    markVirtualTree: nodes.markVirtualNode,
     rebaseURLs() {
       for (const element of options.authoredURLAttributes.keys()) {
         if (virtualNodes.has(element)) {
-          rebaseElementURLs(element);
+          attributes.rebaseElementURLs(element);
         }
       }
-      refreshInlineStyleSheet();
+      style.refreshInlineStyleSheet();
     },
-    synchronizeURLAttribute,
-    synchronizeStyleAttribute,
-    eventForListener,
-    suppressEventDefault,
-    wasEventDefaultPrevented,
+    synchronizeURLAttribute: attributes.synchronizeURLAttribute,
+    synchronizeStyleAttribute: style.synchronizeStyleAttribute,
+    eventForListener: events.eventForListener,
+    suppressEventDefault: events.suppressEventDefault,
+    wasEventDefaultPrevented: events.wasEventDefaultPrevented,
     setReadyState,
     dispatchDocumentEvent,
     dispose() {
       selectionFacade.dispose();
       context.dispose();
-      disposeEventFacade();
+      events.dispose();
       context.restorePatches();
-      disposeNodeFacade();
+      nodes.dispose();
     },
   };
 }

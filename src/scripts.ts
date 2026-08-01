@@ -1,4 +1,4 @@
-import type { NativeDocumentHandles, DocumentFacade } from "./document-facade.js";
+import type { NativeDocumentHandles, DocumentFacade } from "./facade/index.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
 type ScriptCategory = "classic" | "module" | "importmap" | "inert";
