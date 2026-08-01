@@ -374,6 +374,10 @@ test("keeps adopted preview visible until its initial module completes", async (
     return {
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
+      // The staging armor only overlays the two trees if its `display: grid`
+      // rule matches the host, which needs the functional `:host(...)` form —
+      // a bare `:host:not(...)` never matches the featureless shadow host.
+      hostDisplay: getComputedStyle(frameElement).display,
       liveOverlaysPreview: physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
       frameHeightMatchesPreview: frameRect.height === physicalRect(markup[0]!).height,
       copyPointerEvents: markup.map(
@@ -395,6 +399,7 @@ test("keeps adopted preview visible until its initial module completes", async (
     copyPointerEvents: ["auto", "none"],
     copyVisibilities: ["visible", "hidden"],
     displays: ["block", "block"],
+    hostDisplay: "grid",
     liveOverlaysPreview: true,
     frameHeightMatchesPreview: true,
     liveHeight: expect.any(Number),
