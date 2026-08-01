@@ -30,6 +30,11 @@ byte-identical in the two realms (served once, loaded by both), which is what dr
 `HeapProfiler.collectGarbage` over CDP, reported as the delta across the whole
 configuration. Every configuration is the median of three runs on a fresh page.
 
+A fourth measurement churns rather than grows: it creates 2,000 rows in a settled guest,
+removes them and drops every reference, and reports the heap that survives. That one reads
+twice, because the registries hold weak references and the first collection only clears
+them — the second collects what their finalizers released.
+
 "Marked objects" counts what marking actually walks: every element, every attribute node
 and every text node. The generated guest averages three of those per element.
 
@@ -136,25 +141,79 @@ nodes and so cannot be expressed as one prototype accessor.
 
 ## What still retains guest nodes
 
-`nodeFacadeDescriptors` no longer does: it is a `WeakMap` whose restore list holds
-`WeakRef`s that a `FinalizationRegistry` prunes, and `tests/node-retention.spec.ts` churns
-2,000 rows through a mounted guest and asserts none survive a forced collection. Three
-strong per-element registries remain, all narrower than the old one because they only
-admit elements with the relevant feature:
+Nothing per element. Five registries used to, and they now all hold their elements
+weakly:
 
+- `nodeFacadeDescriptors` (`src/facade/nodes.ts`) — the descriptors `dispose()` hands
+  back.
 - `options.authoredStyleAttributes` and `options.authoredURLAttributes`
-  (`src/markup.ts`) hold every element that carries a `style` attribute or a URL
-  attribute. Both are enumerated — the inline stylesheet is rebuilt from the first and
-  rebasing walks the second — so neither can simply become a `WeakMap`.
-- `elementHandlerTargets` and `virtualListenerTargets` (`src/facade/events.ts`) hold
-  elements while they have a handler property or a virtual listener, and drop them when
-  the last one goes away. A guest that churns rows carrying `onclick` grows.
+  (`src/markup.ts`) — the authored values the facade answers with instead of the
+  rebased physical ones. Both are enumerated, the first to rebuild the inline
+  stylesheet and the second to rebase on a base-URL change, which is why neither was a
+  plain `WeakMap` before.
+- `elementHandlerTargets` and `virtualListenerTargets` (`src/facade/events.ts`) — the
+  targets `dispose()` takes native listeners back off. Also enumerated, and only for
+  that.
+
+The shape they share is in `src/enumerable-weak.ts`: a `WeakMap` for the values, plus
+an insertion-ordered set of `WeakRef`s that a `FinalizationRegistry` prunes as the
+elements are collected. Enumeration walks the survivors, which is exactly what all
+four uses want — a rule for an element nobody can reach matches nothing, and a
+listener on an element nobody can reach does not need removing.
+
+### Churn — 2,000 rows created, removed and dropped
+
+A settled 1,000-element guest, then 4 cycles of 500 rows appended and removed, each row
+carrying a style attribute, a URL attribute, a handler property and a listener, with
+every reference dropped before the reading. Collected heap, median of three, from the
+`retention` table `pnpm bench` prints after the three above.
+
+| | strong registries | weak registries | host DOM |
+| --- | --- | --- | --- |
+| retained heap | 3,012 KB | 1,331 KB | 73 KB |
+| bytes per churned row | 1,542 | 681 | 37 |
+
+The number that actually answers the question is what a *second* churn costs, because a
+registry that holds its elements charges for every one of them and a high-water mark
+charges once. Repeating the same 2,000-row churn against one mounted guest, as deltas
+from before the first round:
+
+| rounds | strong registries | weak registries |
+| --- | --- | --- |
+| 1 (2,000 rows) | 3,011 KB | 1,329 KB |
+| 2 (4,000 rows) | 5,432 KB | 1,388 KB |
+| 3 (6,000 rows) | — | 1,494 KB |
+| 4 (8,000 rows) | — | 1,531 KB |
+| 5 (10,000 rows) | — | 1,653 KB |
+
+Strong: +2,421 KB for the second round, and it would have kept paying that. Weak: +59 KB,
+then +106, +37, +122 — about 40 bytes per row against 1,211, and flat rather than
+compounding. The strong columns stop at two rounds because the run does not finish: the
+rows it will not release make the next round quadratic (below).
+
+What the first round's 1,329 KB is made of was not identified. It is not the rows — every
+one of them is provably collected, which is what `tests/node-retention.spec.ts` asserts on
+both engines with `page.requestGC()`, and it reported all 2,000 alive against the strong
+registries. It is not the generated inline stylesheet either: forcing it to be rebuilt
+afterwards returns 10 KB of the 1,329. The shape of the numbers — paid once, roughly in
+proportion to the *peak* number of live rows and to how many registries each row entered
+(2,000 plain rows cost 525 KB, the same rows with a style attribute 930 KB) — fits the
+backing stores of the weak tables themselves growing to the high-water mark and not
+shrinking, but that was not confirmed.
+
+The churn is deliberately modest because every style-attribute write rebuilds the whole
+inline stylesheet from the elements the facade is still holding, so creating n inline-styled
+elements costs O(n²). Closing the registries shrinks the n that survives a collection but
+does not change the cost, and the same quadratic is why the churn in
+`tests/node-retention.spec.ts` styles only every tenth row. That is a separate problem and
+is untouched here.
 
 ## What this does not answer
 
-- Only chromium. Firefox has no equivalent CDP heap reading, and its own-property cost
-  model differs; the correctness of the change on firefox is covered by the suite, not by
-  this benchmark.
+- The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and
+  its own-property cost model differs; on firefox the retention is covered by
+  `tests/node-retention.spec.ts`, which runs on both engines through
+  `page.requestGC()`, not by this benchmark.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
 - Marking still re-walks a subtree on every insertion. `virtualNodes` short-circuits the

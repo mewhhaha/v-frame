@@ -5,6 +5,7 @@
 // event attributes are compiled in the realm before being installed as
 // listeners, and the shadow boundary stops guest events from leaking out.
 
+import { EnumerableWeakSet } from "../enumerable-weak.js";
 import {
   type ListenerRecord,
   ListenerRegistry,
@@ -79,8 +80,13 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   const elementHandlerValues = new WeakMap<Element, Map<string, EventListener | null>>();
   const elementHandlerWrappers = new WeakMap<Element, Map<string, EventListener>>();
   const virtualListenerRecords = new WeakMap<EventTarget, ListenerRecord[]>();
-  const elementHandlerTargets = new Set<Element>();
-  const virtualListenerTargets = new Set<EventTarget>();
+  // dispose() has to take the native listeners back off every target that still
+  // has one, which is the only reason the targets are enumerable at all. An
+  // element the guest has dropped does not need its listeners removed, so these
+  // hold their targets weakly rather than pinning every row that ever carried an
+  // onclick for the lifetime of the frame.
+  const elementHandlerTargets = new EnumerableWeakSet<Element>();
+  const virtualListenerTargets = new EnumerableWeakSet<EventTarget>();
   const mirroredEvents = new WeakMap<Event, Event>();
   const mirroredEventSources = new WeakMap<Event, Event>();
   const listenerEventSources = new WeakMap<Event, Event>();
@@ -708,12 +714,12 @@ export function installEventFacade(context: FacadeContext): EventFacade {
       options.shadowRoot.removeEventListener(type, relay);
     }
     boundaryEventRelays.clear();
-    for (const target of [...virtualListenerTargets]) {
+    for (const target of virtualListenerTargets) {
       for (const record of [...(virtualListenerRecords.get(target) ?? [])]) {
         removeVirtualListenerRecord(target, record);
       }
     }
-    for (const element of [...elementHandlerTargets]) {
+    for (const element of elementHandlerTargets) {
       for (const eventName of [...(elementHandlerWrappers.get(element)?.keys() ?? [])]) {
         removeElementHandler(element, eventName);
       }

@@ -23,17 +23,32 @@ import { installBundle } from "../tests/support/mount-frame.js";
 const GUEST_SIZES = [1_000, 5_000, 20_000, 50_000];
 /** Elements appended one by one into an already-mounted guest. */
 const INSERTION_COUNT = 1_000;
+/** The guest the churn measurement runs against; its size is not what is measured. */
+const CHURN_GUEST_SIZE = 1_000;
+/**
+ * Rows created, removed and dropped per cycle, and cycles. Kept modest because
+ * every style-attribute write rebuilds the whole inline stylesheet, so the churn
+ * costs time quadratically in the rows the facade is still holding.
+ */
+const CHURN_ROWS = 500;
+const CHURN_CYCLES = 4;
 /** Each configuration is sampled this many times and reported as a median. */
 const REPEATS = 3;
 
 interface BenchWindow extends Window {
   benchInsert(count: number): number;
+  benchChurn(rows: number, cycles: number): void;
   benchCountObjects(): number;
 }
 
 interface BenchFrame extends HTMLElement {
   src: string;
   readonly contentWindow: BenchWindow | null;
+}
+
+/** The churn measurement mounts in one evaluate and churns in another. */
+interface BenchHost extends Window {
+  benchGuest?: BenchWindow | null;
 }
 
 interface Sample {
@@ -73,6 +88,35 @@ window.benchInsert = (count) => {
     root.append(row);
   }
   return performance.now() - start;
+};
+
+// Creates rows, removes them and drops every reference to them, repeatedly. Each
+// row carries a style attribute, a URL attribute, a handler property and a
+// listener, which is what the facade's per-element registries admit an element
+// for. Nothing here is reachable when the loop ends, so a collected heap that
+// still grew is retention.
+window.benchChurn = (rows, cycles) => {
+  const root = document.querySelector("#bench-root");
+  if (root === null) throw new Error("bench root is missing");
+  const handler = () => undefined;
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    let created = [];
+    for (let index = 0; index < rows; index += 1) {
+      const row = document.createElement("a");
+      row.className = "bench-row";
+      row.setAttribute("href", "/row-" + index);
+      row.setAttribute("style", "color: rgb(1, 2, 3)");
+      row.onclick = handler;
+      row.addEventListener("pointerdown", handler);
+      row.append(document.createTextNode("churned " + index));
+      root.append(row);
+      created.push(row);
+    }
+    for (const row of created) {
+      row.remove();
+    }
+    created = [];
+  }
 };
 
 // Counts what marking walks — every element, attribute node and text node.
@@ -151,6 +195,16 @@ async function heapUsage(cdp: CDPSession): Promise<number> {
   await cdp.send("HeapProfiler.collectGarbage");
   const usage = await cdp.send("Runtime.getHeapUsage");
   return usage.usedSize;
+}
+
+/**
+ * What the churn measurement reads. Two passes, because the registries hold weak
+ * references: the first collection clears them, the second collects what their
+ * finalizers released.
+ */
+async function settledHeapUsage(cdp: CDPSession): Promise<number> {
+  await heapUsage(cdp);
+  return heapUsage(cdp);
 }
 
 function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap">> {
@@ -239,6 +293,79 @@ async function sampleHost(
   }
 }
 
+/**
+ * The churn measurement reads the heap between mounting and churning, and the heap
+ * reading comes from node over CDP, so mounting cannot be part of the same evaluate.
+ */
+function mountBenchFrame(page: Page, guestURL: string): Promise<void> {
+  return page.evaluate(async (url) => {
+    const frame = document.createElement("v-frame") as BenchFrame;
+    const loaded = new Promise<void>((settled) => {
+      frame.addEventListener("v-frame-load", () => settled(), { once: true });
+    });
+    const host = document.querySelector("#host");
+    if (host === null) throw new Error("host container is missing");
+
+    frame.src = url;
+    host.append(frame);
+    await loaded;
+    (window as BenchHost).benchGuest = frame.contentWindow;
+  }, guestURL);
+}
+
+function adoptBenchGuest(page: Page, guestURL: string): Promise<void> {
+  return page.evaluate(async (url) => {
+    const host = document.querySelector("#host");
+    if (host === null) throw new Error("host container is missing");
+    const source = await (await fetch(url)).text();
+    const parsed = new DOMParser().parseFromString(source, "text/html");
+    host.append(document.adoptNode(parsed.body));
+  }, guestURL);
+}
+
+const churnCounts = { rows: CHURN_ROWS, cycles: CHURN_CYCLES };
+
+/**
+ * Bytes of collected heap the churn leaves behind. Every row it creates is removed
+ * and dropped before the reading is taken, so anything still retained is the
+ * facade's own bookkeeping holding elements the guest no longer has.
+ */
+async function sampleFrameChurn(browser: Browser, origin: string): Promise<number> {
+  const page = await browser.newPage();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await installBundle(page, origin);
+    await mountBenchFrame(page, `${origin}${guestPath(CHURN_GUEST_SIZE)}`);
+    const before = await settledHeapUsage(cdp);
+    await page.evaluate((counts) => {
+      const guest = (window as BenchHost).benchGuest;
+      if (guest === undefined || guest === null) {
+        throw new Error("the settled frame has no realm window");
+      }
+      guest.benchChurn(counts.rows, counts.cycles);
+    }, churnCounts);
+    return (await settledHeapUsage(cdp)) - before;
+  } finally {
+    await page.close();
+  }
+}
+
+async function sampleHostChurn(browser: Browser, origin: string): Promise<number> {
+  const page = await browser.newPage();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.goto(`${origin}/baseline`);
+    await adoptBenchGuest(page, `${origin}${guestPath(CHURN_GUEST_SIZE)}`);
+    const before = await settledHeapUsage(cdp);
+    await page.evaluate((counts) => {
+      (window as unknown as BenchWindow).benchChurn(counts.rows, counts.cycles);
+    }, churnCounts);
+    return (await settledHeapUsage(cdp)) - before;
+  } finally {
+    await page.close();
+  }
+}
+
 function median(values: number[]): number {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = sorted[Math.floor(sorted.length / 2)];
@@ -261,6 +388,14 @@ async function repeat(take: () => Promise<Sample>): Promise<Sample> {
     samples.push(await take());
   }
   return medianSample(samples);
+}
+
+async function repeatHeap(take: () => Promise<number>): Promise<number> {
+  const samples: number[] = [];
+  for (let run = 0; run < REPEATS; run += 1) {
+    samples.push(await take());
+  }
+  return median(samples);
 }
 
 function ratio(frame: number, host: number): string {
@@ -330,6 +465,22 @@ function report(measurements: Measurement[]): void {
   );
 }
 
+function reportChurn(frameHeap: number, hostHeap: number): void {
+  const rows = CHURN_ROWS * CHURN_CYCLES;
+  console.log(
+    `\nretention — ${rows} rows created, removed and dropped in a ` +
+      `${CHURN_GUEST_SIZE}-element guest, collected heap`,
+  );
+  console.table([
+    {
+      rows,
+      "v-frame": kilobytes(frameHeap),
+      "host DOM": kilobytes(hostHeap),
+      "bytes/row": Math.round(frameHeap / rows),
+    },
+  ]);
+}
+
 async function main(): Promise<void> {
   if (!existsSync(resolve(process.cwd(), "dist/index.js"))) {
     throw new Error("dist/index.js is missing — run `pnpm build` first");
@@ -348,6 +499,10 @@ async function main(): Promise<void> {
       });
     }
     report(measurements);
+    reportChurn(
+      await repeatHeap(() => sampleFrameChurn(browser, fixture.origin)),
+      await repeatHeap(() => sampleHostChurn(browser, fixture.origin)),
+    );
   } finally {
     await browser.close();
     await fixture.close();

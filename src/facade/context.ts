@@ -4,6 +4,7 @@
 // native handles, the predicates and geometry every part needs, the state more
 // than one module reads, and the patch bookkeeping that dispose() unwinds.
 
+import type { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { VFrameWindow } from "../types.js";
 
 export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
@@ -17,8 +18,10 @@ export interface DocumentFacadeOptions {
   html: HTMLElement;
   head: HTMLElement;
   body: HTMLElement;
-  authoredURLAttributes: Map<Element, Map<string, string>>;
-  authoredStyleAttributes: Map<Element, string>;
+  // Weak on purpose: both admit every element carrying the feature, and a guest
+  // that churns such elements must not grow. See src/enumerable-weak.ts.
+  authoredURLAttributes: EnumerableWeakMap<Element, Map<string, string>>;
+  authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
   createHTML(source: string): string;

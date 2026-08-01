@@ -48,7 +48,7 @@ from.
 - Typechecking for `tests/`, `bench/` and `examples/*/tests/` through
   `tsconfig.test.json`.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
-  threshold, currently 68,000 bytes against a measured 65,755.
+  threshold, currently 68,000 bytes against a measured 65,882.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
   the `src/css.ts` rewriters, `absolutizeSrcset`, `VirtualHistorySession`, and
   the facade's prototype-patch registry. 183 tests that run in about a tenth of a
@@ -115,6 +115,27 @@ from.
   forced collection zero times, and a removed node the guest still references
   gets its native `ownerDocument` and `getRootNode` back when the frame goes
   away.
+- Nor does any of the facade's other per-element registries. The authored style
+  and URL attributes (`src/markup.ts`) and the handler and listener targets
+  (`src/facade/events.ts`) were strong `Map`s and `Set`s because each is
+  enumerated — the inline stylesheet is rebuilt from one, a base-URL change
+  rebases through another, and `dispose()` walks the last two — so a guest that
+  churned elements carrying a `style` attribute, a URL attribute or an `onclick`
+  still grew for the lifetime of the frame after the descriptor leak was closed.
+  All five now share one primitive with the descriptors
+  (`src/enumerable-weak.ts`): a `WeakMap` for the values behind an
+  insertion-ordered set of `WeakRef`s that a `FinalizationRegistry` prunes, so
+  enumeration walks the survivors. Measured by `pnpm bench`, which gained a
+  retention measurement for this, 2,000 rows created, removed and dropped in a
+  settled guest retain 1,331 KB instead of 3,012 KB; churning the same 2,000
+  again costs 59 KB more instead of 2,421 KB more, which is the point — the cost
+  is now a high-water mark rather than a per-row charge.
+- `tests/node-retention.spec.ts` runs on firefox as well as chromium, and churns
+  rows carrying one of everything a registry admits an element for. Forcing a
+  collection no longer needs a CDP session: `page.requestGC()` is
+  `HeapProfiler.collectGarbage` on chromium and the juggler `Heap.collectGarbage`
+  on firefox. Reading how many *bytes* survive is still chromium-only, which is
+  why `pnpm bench` keeps its CDP session.
 - Biome formats the repository, freezing the existing house style.
 - `examples/ssr` imports `v-frame/server` instead of reaching into `src/`, and
   routes host-driven navigation through the element's own API.

@@ -5,6 +5,7 @@ import {
   rewriteStylesheet,
   type StylesheetContext,
 } from "./css.js";
+import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameWindow } from "./types.js";
 
 const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
@@ -74,8 +75,8 @@ export interface PreparedMarkup {
   body: HTMLElement;
   baseURL: string;
   scripts: HTMLScriptElement[];
-  authoredURLAttributes: Map<Element, Map<string, string>>;
-  authoredStyleAttributes: Map<Element, string>;
+  authoredURLAttributes: EnumerableWeakMap<Element, Map<string, string>>;
+  authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
   stylesheetContext: StylesheetContext;
@@ -415,7 +416,7 @@ function restoreStyleMarkup(
 }
 
 function lowerStyleAttributes(
-  authoredStyleAttributes: Map<Element, string>,
+  authoredStyleAttributes: EnumerableWeakMap<Element, string>,
   head: Element,
   baseURL: string,
   selectorAttribute: string,
@@ -456,8 +457,10 @@ function resolveMarkupBaseURL(root: Element, fallbackURL: string): string {
   return fallbackURL;
 }
 
-function collectAuthoredURLAttributes(root: Element): Map<Element, Map<string, string>> {
-  const authoredURLAttributes = new Map<Element, Map<string, string>>();
+function collectAuthoredURLAttributes(
+  root: Element,
+): EnumerableWeakMap<Element, Map<string, string>> {
+  const authoredURLAttributes = new EnumerableWeakMap<Element, Map<string, string>>();
 
   for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
     const authoredAttributes = new Map<string, string>();
@@ -749,7 +752,7 @@ export async function prepareMarkup(
 
   neutralizeNoscriptContent(html);
   const authoredURLAttributes = collectAuthoredURLAttributes(html);
-  const authoredStyleAttributes = new Map<Element, string>();
+  const authoredStyleAttributes = new EnumerableWeakMap<Element, string>();
   for (const [element, authoredStyle] of parsedStyleAttributes) {
     const reconstructedElement =
       element === parsedRoot
@@ -893,7 +896,7 @@ export async function prepareAdoptedMarkup(
   neutralizeNoscriptContent(html);
   const baseURL = resolveMarkupBaseURL(html, options.pageURL);
   const authoredURLAttributes = collectAuthoredURLAttributes(html);
-  const authoredStyleAttributes = new Map<Element, string>();
+  const authoredStyleAttributes = new EnumerableWeakMap<Element, string>();
   for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
     const authoredStyle = element.getAttribute("style");
     if (authoredStyle !== null) {

@@ -6,6 +6,7 @@
 // remembered, and has its scripts and inline handlers defused. Insertion,
 // cloning and markup parsing all funnel back through it.
 
+import { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { AttributeFacade } from "./attributes.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
@@ -154,17 +155,13 @@ export function installNodeFacade(
   // overwrote, which is why the previous ones are remembered at all. Holding the
   // nodes themselves to do it would make the facade a leak: a guest that churns
   // rows would retain every row it ever rendered for the lifetime of the frame.
-  // So the descriptors hang off a WeakMap and the restore list holds only weak
-  // references — a node nothing else can reach can no longer observe whether its
-  // descriptors came back, and the registry drops its slot once it is collected.
-  const nodeFacadeDescriptors = new WeakMap<
+  // A node nothing else can reach can no longer observe whether its descriptors
+  // came back, so the record holds its nodes weakly and dispose() restores the
+  // survivors.
+  const nodeFacadeDescriptors = new EnumerableWeakMap<
     Node,
     Map<PropertyKey, PropertyDescriptor | undefined>
   >();
-  const facadedNodes = new Set<WeakRef<Node>>();
-  const collectedFacadedNodes = new FinalizationRegistry<WeakRef<Node>>((reference) => {
-    facadedNodes.delete(reference);
-  });
 
   const protectScript = (script: HTMLScriptElement): void => {
     if (protectedScriptAttributes.has(script)) {
@@ -190,11 +187,6 @@ export function installNodeFacade(
     if (previousDescriptors === undefined) {
       previousDescriptors = new Map();
       nodeFacadeDescriptors.set(node, previousDescriptors);
-      const reference = new WeakRef(node);
-      facadedNodes.add(reference);
-      // The node is its own unregister token so that dispose() can drop the
-      // registration along with the descriptors it restores.
-      collectedFacadedNodes.register(node, reference, node);
     }
     for (const property of Reflect.ownKeys(descriptors)) {
       if (!previousDescriptors.has(property)) {
@@ -1173,20 +1165,7 @@ export function installNodeFacade(
   };
 
   const dispose = (): void => {
-    for (const reference of facadedNodes) {
-      const node = reference.deref();
-      if (node === undefined) {
-        continue;
-      }
-      // A node the guest still holds outlives the facade, and its registration
-      // would keep a WeakRef alive in the registry until the node itself is
-      // collected — for a large guest that is one dead cell per marked node,
-      // held for as long as the host keeps the disposed element around.
-      collectedFacadedNodes.unregister(node);
-      const descriptors = nodeFacadeDescriptors.get(node);
-      if (descriptors === undefined) {
-        continue;
-      }
+    for (const [node, descriptors] of nodeFacadeDescriptors) {
       for (const [property, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (node as unknown as Record<PropertyKey, unknown>)[property];
@@ -1194,9 +1173,12 @@ export function installNodeFacade(
           Object.defineProperty(node, property, descriptor);
         }
       }
-      nodeFacadeDescriptors.delete(node);
     }
-    facadedNodes.clear();
+    // A node the guest still holds outlives the facade, and clearing drops its
+    // finalization registration with it — for a large guest that would otherwise
+    // be one dead cell per marked node, held for as long as the host keeps the
+    // disposed element around.
+    nodeFacadeDescriptors.clear();
   };
 
   markVirtualNode(options.html);

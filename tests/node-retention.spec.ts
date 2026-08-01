@@ -1,8 +1,15 @@
-// Marking a node makes the facade remember the descriptors it overwrote, so that
-// dispose() can hand them back. That bookkeeping used to hold the nodes strongly,
-// which meant a guest that churns rows grew for as long as the frame lived. These
-// tests pin the two halves of the contract that replaced it: a node the guest has
-// dropped is collectable, and a node the guest still holds is still restored.
+// The facade keeps several registries keyed by guest element: the descriptors
+// marking overwrote, the authored style and URL attributes rebasing has to answer
+// with, and the targets dispose() has to take native listeners back off. Every one
+// of them used to hold its elements strongly, which meant a guest that churns rows
+// grew for as long as the frame lived. These tests pin the two halves of the
+// contract that replaced them: a node the guest has dropped is collectable, and a
+// node the guest still holds is still restored.
+//
+// The churned rows therefore carry one of everything a registry admits an element
+// for — a URL attribute, a handler property, a listener, and a style attribute on
+// every tenth — so that a registry going back to strong keys fails here rather than
+// in a benchmark. Against the strong registries this reported all 2,000 rows alive.
 
 import { expect, test } from "@playwright/test";
 import {
@@ -16,6 +23,13 @@ import { installBundle, mountFrame } from "./support/mount-frame";
 /** Rows per churn cycle, and cycles — enough that a leak is unmistakable. */
 const ROWS_PER_CYCLE = 500;
 const CYCLES = 4;
+/**
+ * Every nth row carries a style attribute. Writing one rebuilds the whole inline
+ * stylesheet from the elements the facade is still holding, so styling all 2,000
+ * would make this test quadratic and time out; 200 is far more than enough for a
+ * strong registry to hold on to them.
+ */
+const STYLED_EVERY = 10;
 
 interface FrameElement extends HTMLElement {
   readonly contentWindow: (Window & typeof globalThis) | null;
@@ -44,15 +58,9 @@ test.afterAll(async () => {
 
 test("releases marked nodes once the guest has removed and dropped them", async ({
   page,
-  browserName,
 }) => {
-  // Only chromium can be told to collect; the retention it proves is not
-  // engine-specific, and the leak this guards was in the facade, not the engine.
-  test.skip(browserName !== "chromium", "forcing a collection needs a CDP session");
-
   await installBundle(page, fixture.origin);
   const frame = await mountFrame(page, { src: `${fixture.origin}/guest`, id: "churn" });
-  const cdp = await page.context().newCDPSession(page);
 
   const marked = await frame.evaluate(
     (element, churn) => {
@@ -62,12 +70,19 @@ test("releases marked nodes once the guest has removed and dropped them", async 
       if (root === null) throw new Error("the guest has no row container");
 
       const probes: Array<WeakRef<Node>> = [];
+      const handler = () => undefined;
       for (let cycle = 0; cycle < churn.cycles; cycle += 1) {
         let rows: Element[] = [];
         for (let index = 0; index < churn.rows; index += 1) {
-          const row = guest.document.createElement("div");
+          const row = guest.document.createElement("a");
           row.className = "row";
           row.setAttribute("data-index", String(index));
+          row.setAttribute("href", `/row-${index}`);
+          if (index % churn.styledEvery === 0) {
+            row.setAttribute("style", "color: rgb(1, 2, 3)");
+          }
+          row.onclick = handler;
+          row.addEventListener("pointerdown", handler);
           row.append(guest.document.createTextNode(`row ${index}`));
           root.append(row);
           rows.push(row);
@@ -81,16 +96,20 @@ test("releases marked nodes once the guest has removed and dropped them", async 
       (window as ProbeWindow).churnProbes = probes;
       return probes.length;
     },
-    { rows: ROWS_PER_CYCLE, cycles: CYCLES },
+    { rows: ROWS_PER_CYCLE, cycles: CYCLES, styledEvery: STYLED_EVERY },
   );
 
   expect(marked).toBe(ROWS_PER_CYCLE * CYCLES);
   expect(await page.locator("#host v-frame#churn").count()).toBe(1);
 
   // Two passes: the first clears the weak references, the second collects what
-  // their finalizers released.
-  await cdp.send("HeapProfiler.collectGarbage");
-  await cdp.send("HeapProfiler.collectGarbage");
+  // their finalizers released. `page.requestGC()` reaches both engines — it is
+  // `HeapProfiler.collectGarbage` over CDP on chromium and the juggler
+  // `Heap.collectGarbage` on firefox — so this case is not chromium-only. Only
+  // reading how many *bytes* are retained is, which is why `pnpm bench` still
+  // opens a CDP session and this test does not.
+  await page.requestGC();
+  await page.requestGC();
 
   const live = await page.evaluate(
     () =>
