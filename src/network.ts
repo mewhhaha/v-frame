@@ -1,4 +1,3 @@
-import { createCredentiallessXMLHttpRequest } from "./credentialless-xhr.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
 export interface NetworkPatchOptions {
@@ -6,7 +5,6 @@ export interface NetworkPatchOptions {
   signal: AbortSignal;
   credentials: VFrameCredentials;
   getBaseURL(): string;
-  createHTML(source: string): string;
 }
 
 interface NativeEventListenerRegistration {
@@ -339,132 +337,103 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     },
   });
 
-  if (options.credentials === "omit") {
-    const CredentiallessXMLHttpRequest = createCredentiallessXMLHttpRequest({
-      window,
-      fetch: nativeFetch,
-      generationSignal: options.signal,
-      getBaseURL: options.getBaseURL,
-      createHTML: options.createHTML,
-      registerActive(request) {
-        activeRequests.add(request);
-      },
-      unregisterActive(request) {
-        activeRequests.delete(request);
+  if (options.credentials === "include" && nativeXHRWithCredentialsSetter !== undefined) {
+    Object.defineProperty(NativeXMLHttpRequest.prototype, "withCredentials", {
+      ...nativeXHRWithCredentials,
+      set(value: boolean) {
+        Reflect.apply(nativeXHRWithCredentialsSetter, this, [value]);
+        nativeXHRCredentialsAssigned.add(this);
       },
     });
-    remember(window, "XMLHttpRequest");
-    Object.defineProperty(window, "XMLHttpRequest", {
-      configurable: true,
-      writable: true,
-      value: CredentiallessXMLHttpRequest,
-    });
-  } else {
+  }
+  patchNativeEventTarget(
+    NativeXMLHttpRequest.prototype,
+    nativeXHRAddEventListener,
+    nativeXHRRemoveEventListener,
+  );
+  patchNativeEventTarget(
+    NativeXMLHttpRequestUpload.prototype,
+    nativeXHRUploadAddEventListener,
+    nativeXHRUploadRemoveEventListener,
+  );
+  NativeXMLHttpRequest.prototype.open = function open(...argumentsList: unknown[]): void {
+    if (argumentsList.length < 2) {
+      throw new window.TypeError("XMLHttpRequest.open requires method and URL arguments");
+    }
+
+    const previousRequest = activeXHRSends.get(this);
+    const nativeArguments = [...argumentsList];
+    try {
+      nativeArguments[1] = resolveNetworkURL(
+        window,
+        argumentsList[1],
+        options.getBaseURL(),
+      );
+    } catch {
+      throw new window.DOMException(
+        `XMLHttpRequest could not resolve URL ${JSON.stringify(String(argumentsList[1]))} against ${JSON.stringify(options.getBaseURL())}`,
+        "SyntaxError",
+      );
+    }
+    Reflect.apply(nativeXHROpen, this, nativeArguments);
+    if (previousRequest !== undefined) {
+      activeRequests.delete(previousRequest);
+      if (activeXHRSends.get(this) === previousRequest) {
+        activeXHRSends.delete(this);
+      }
+    }
+    registerNativeXHR(this);
+    nativeXHRAsync.set(
+      this,
+      argumentsList[2] === undefined ? true : Boolean(argumentsList[2]),
+    );
+  };
+
+  NativeXMLHttpRequest.prototype.send = function send(
+    body?: Document | XMLHttpRequestBodyInit | null,
+  ): void {
     if (
       options.credentials === "include" &&
-      nativeXHRWithCredentialsSetter !== undefined
+      nativeXHRWithCredentialsSetter !== undefined &&
+      !nativeXHRCredentialsAssigned.has(this)
     ) {
-      Object.defineProperty(NativeXMLHttpRequest.prototype, "withCredentials", {
-        ...nativeXHRWithCredentials,
-        set(value: boolean) {
-          Reflect.apply(nativeXHRWithCredentialsSetter, this, [value]);
-          nativeXHRCredentialsAssigned.add(this);
-        },
-      });
+      Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
     }
-    patchNativeEventTarget(
-      NativeXMLHttpRequest.prototype,
-      nativeXHRAddEventListener,
-      nativeXHRRemoveEventListener,
-    );
-    patchNativeEventTarget(
-      NativeXMLHttpRequestUpload.prototype,
-      nativeXHRUploadAddEventListener,
-      nativeXHRUploadRemoveEventListener,
-    );
-    NativeXMLHttpRequest.prototype.open = function open(
-      ...argumentsList: unknown[]
-    ): void {
-      if (argumentsList.length < 2) {
-        throw new window.TypeError(
-          "XMLHttpRequest.open requires method and URL arguments",
-        );
+    nativeXHRUploads.set(this.upload, this);
+    const inFlightRequest = activeXHRSends.get(this);
+    const request = inFlightRequest ?? registerNativeXHR(this);
+    const unregisterRequest = () => {
+      this.removeEventListener("loadstart", listenForLoadStart);
+      activeRequests.delete(request);
+      if (activeXHRSends.get(this) === request) {
+        activeXHRSends.delete(this);
       }
-
-      const previousRequest = activeXHRSends.get(this);
-      const nativeArguments = [...argumentsList];
-      try {
-        nativeArguments[1] = resolveNetworkURL(
-          window,
-          argumentsList[1],
-          options.getBaseURL(),
-        );
-      } catch {
-        throw new window.DOMException(
-          `XMLHttpRequest could not resolve URL ${JSON.stringify(String(argumentsList[1]))} against ${JSON.stringify(options.getBaseURL())}`,
-          "SyntaxError",
-        );
-      }
-      Reflect.apply(nativeXHROpen, this, nativeArguments);
-      if (previousRequest !== undefined) {
-        activeRequests.delete(previousRequest);
-        if (activeXHRSends.get(this) === previousRequest) {
-          activeXHRSends.delete(this);
-        }
-      }
-      registerNativeXHR(this);
-      nativeXHRAsync.set(
-        this,
-        argumentsList[2] === undefined ? true : Boolean(argumentsList[2]),
-      );
     };
-
-    NativeXMLHttpRequest.prototype.send = function send(
-      body?: Document | XMLHttpRequestBodyInit | null,
-    ): void {
-      if (
-        options.credentials === "include" &&
-        nativeXHRWithCredentialsSetter !== undefined &&
-        !nativeXHRCredentialsAssigned.has(this)
-      ) {
-        Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
-      }
-      nativeXHRUploads.set(this.upload, this);
-      const inFlightRequest = activeXHRSends.get(this);
-      const request = inFlightRequest ?? registerNativeXHR(this);
-      const unregisterRequest = () => {
-        this.removeEventListener("loadstart", listenForLoadStart);
-        activeRequests.delete(request);
-        if (activeXHRSends.get(this) === request) {
-          activeXHRSends.delete(this);
-        }
-      };
-      const listenForCompletion = () =>
-        this.addEventListener("loadend", unregisterRequest, { once: true });
-      const listenForLoadStart = () => {
-        if (activeXHRSends.get(this) === request) {
-          listenForCompletion();
-        }
-      };
-      if (nativeXHRAsync.get(this) === false) {
+    const listenForCompletion = () =>
+      this.addEventListener("loadend", unregisterRequest, { once: true });
+    const listenForLoadStart = () => {
+      if (activeXHRSends.get(this) === request) {
         listenForCompletion();
-      } else {
-        this.addEventListener("loadstart", listenForLoadStart, { once: true });
-      }
-      try {
-        nativeXHRSend.call(this, body);
-      } catch (error) {
-        // A send() rejected mid-flight (InvalidStateError) must not strip the
-        // live request's teardown tracking.
-        if (inFlightRequest === undefined) {
-          unregisterRequest();
-        } else {
-          this.removeEventListener("loadstart", listenForLoadStart);
-        }
-        throw error;
       }
     };
-  }
+    if (nativeXHRAsync.get(this) === false) {
+      listenForCompletion();
+    } else {
+      this.addEventListener("loadstart", listenForLoadStart, { once: true });
+    }
+    try {
+      nativeXHRSend.call(this, body);
+    } catch (error) {
+      // A send() rejected mid-flight (InvalidStateError) must not strip the
+      // live request's teardown tracking.
+      if (inFlightRequest === undefined) {
+        unregisterRequest();
+      } else {
+        this.removeEventListener("loadstart", listenForLoadStart);
+      }
+      throw error;
+    }
+  };
 
   const wrapConstructor = (
     key: "WebSocket" | "EventSource" | "Worker" | "SharedWorker",
@@ -613,22 +582,20 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   return () => {
     options.signal.removeEventListener("abort", disposeNetwork);
     disposeNetwork();
-    if (options.credentials !== "omit") {
-      NativeXMLHttpRequest.prototype.open = nativeXHROpen;
-      NativeXMLHttpRequest.prototype.send = nativeXHRSend;
-      NativeXMLHttpRequest.prototype.addEventListener = nativeXHRAddEventListener;
-      NativeXMLHttpRequest.prototype.removeEventListener = nativeXHRRemoveEventListener;
-      NativeXMLHttpRequestUpload.prototype.addEventListener =
-        nativeXHRUploadAddEventListener;
-      NativeXMLHttpRequestUpload.prototype.removeEventListener =
-        nativeXHRUploadRemoveEventListener;
-      if (nativeXHRWithCredentials !== undefined) {
-        Object.defineProperty(
-          NativeXMLHttpRequest.prototype,
-          "withCredentials",
-          nativeXHRWithCredentials,
-        );
-      }
+    NativeXMLHttpRequest.prototype.open = nativeXHROpen;
+    NativeXMLHttpRequest.prototype.send = nativeXHRSend;
+    NativeXMLHttpRequest.prototype.addEventListener = nativeXHRAddEventListener;
+    NativeXMLHttpRequest.prototype.removeEventListener = nativeXHRRemoveEventListener;
+    NativeXMLHttpRequestUpload.prototype.addEventListener =
+      nativeXHRUploadAddEventListener;
+    NativeXMLHttpRequestUpload.prototype.removeEventListener =
+      nativeXHRUploadRemoveEventListener;
+    if (nativeXHRWithCredentials !== undefined) {
+      Object.defineProperty(
+        NativeXMLHttpRequest.prototype,
+        "withCredentials",
+        nativeXHRWithCredentials,
+      );
     }
 
     for (const [key, descriptor] of originals) {

@@ -853,7 +853,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       signal: options.signal,
       credentials: options.credentials,
       getBaseURL: getDocumentBaseURL,
-      createHTML: options.trustedTypes.createHTML,
     });
     bootstrapDisposers.push(networkDispose);
     const viewport = installViewportPatches(

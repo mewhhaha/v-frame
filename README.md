@@ -310,9 +310,16 @@ frame.addEventListener("v-frame-navigate", (event) => {
 | `src` | None | Same-origin guest document URL. An empty or missing value keeps the frame idle. |
 | `adopt` | `false` | Activates initial Declarative Shadow DOM instead of fetching `src`. |
 | `navigation` | `"guest"` | Use `"host"` when the shell owns guest navigation. |
-| `credentials` | `"same-origin"` | Entry and stylesheet fetch mode: `"omit"`, `"same-origin"`, or `"include"`. |
+| `credentials` | `"same-origin"` | Credential mode for the entry document and stylesheet requests v-frame issues: `"omit"`, `"same-origin"`, or `"include"`. |
 | `nonce` | `""` | CSP nonce applied to executed scripts and generated styles. |
 | `trusted-types-policy` | None | Name of an identity Trusted Types policy allowed by the host CSP. |
+
+`credentials` covers the requests `v-frame` itself makes — the entry document and
+the stylesheets it resolves — and supplies the default mode for guest requests
+that do not choose one. It is not a security boundary and does not constrain the
+guest's own network calls: the guest shares the host origin, so it can pass any
+`credentials` to `fetch`, set `withCredentials` on an `XMLHttpRequest`, or read
+`document.cookie` whenever it likes.
 
 Readonly element properties:
 
