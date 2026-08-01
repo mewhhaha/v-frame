@@ -1,7 +1,12 @@
-import { expect, test, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { expect, test } from "@playwright/test";
+import type { ServerResponse } from "node:http";
+import {
+  bundleRoute,
+  type Route,
+  sendResponse,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 interface PendingStylesheet {
   requested: Promise<void>;
@@ -23,17 +28,20 @@ interface Failure {
   fatal: boolean;
 }
 
-let fixture: DynamicStylesheetFixture;
+/** Stylesheets whose responses a test releases by hand, to open a revision race. */
+const delayedStylesheets = [
+  "/styles/inline-first.css",
+  "/styles/inline-observer.css",
+  "/styles/inline-clear.css",
+  "/styles/inline-stale-failure.css",
+  "/styles/final-failure.css",
+  "/styles/removal.css",
+  "/styles/teardown.css",
+  "/styles/link-first.css",
+  "/styles/link-reconnect.css",
+];
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  source: string,
-): void {
-  response.writeHead(status, { "cache-control": "no-store", "content-type": type });
-  response.end(source);
-}
+let fixture: DynamicStylesheetFixture;
 
 function pendingStylesheet(): PendingStylesheet {
   let resolveRequested: (() => void) | undefined;
@@ -49,94 +57,51 @@ function pendingStylesheet(): PendingStylesheet {
   };
 }
 
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
-  });
+/**
+ * Parks the request instead of answering it, unless the browser is preloading the
+ * stylesheet, in which case it gets an immediate empty sheet.
+ */
+function holdStylesheet(pathname: string, delayed: PendingStylesheet): Route {
+  return (request, response) => {
+    if (request.headers["sec-fetch-dest"] === "style") {
+      return { type: "text/css", body: "" };
+    }
+    if (delayed.response !== null) {
+      return {
+        status: 409,
+        type: "text/plain",
+        body: `Duplicate delayed request for ${pathname}`,
+      };
+    }
+    delayed.response = response;
+    delayed.resolveRequested();
+    return undefined;
+  };
 }
 
 async function startFixture(): Promise<DynamicStylesheetFixture> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const requestCounts = new Map<string, number>();
-  const pending = new Map([
-    ["/styles/inline-first.css", pendingStylesheet()],
-    ["/styles/inline-observer.css", pendingStylesheet()],
-    ["/styles/inline-clear.css", pendingStylesheet()],
-    ["/styles/inline-stale-failure.css", pendingStylesheet()],
-    ["/styles/final-failure.css", pendingStylesheet()],
-    ["/styles/removal.css", pendingStylesheet()],
-    ["/styles/teardown.css", pendingStylesheet()],
-    ["/styles/link-first.css", pendingStylesheet()],
-    ["/styles/link-reconnect.css", pendingStylesheet()],
-  ]);
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://fixture.test").pathname;
-    requestCounts.set(pathname, (requestCounts.get(pathname) ?? 0) + 1);
-    if (pathname === "/") {
-      reply(response, 200, "text/html", '<!doctype html><div id="host"></div>');
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-    if (pathname === "/documents/race.html") {
-      reply(
-        response,
-        200,
-        "text/html",
-        '<!doctype html><html><head></head><body><p id="race-target">race target</p></body></html>',
-      );
-      return;
-    }
-
-    const delayed = pending.get(pathname);
-    if (delayed !== undefined) {
-      if (request.headers["sec-fetch-dest"] === "style") {
-        reply(response, 200, "text/css", "");
-        return;
-      }
-      if (delayed.response !== null) {
-        reply(response, 409, "text/plain", `Duplicate delayed request for ${pathname}`);
-        return;
-      }
-      delayed.response = response;
-      delayed.resolveRequested();
-      return;
-    }
-    if (pathname === "/styles/link-third.css") {
-      reply(
-        response,
-        200,
-        "text/css",
-        ":host { background-color: rgb(101, 102, 103); } body { color: rgb(201, 202, 203); } #race-target { color: rgb(61, 62, 63); }",
-      );
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
-  });
-
-  await new Promise<void>((resolveListening) => {
-    server.listen(0, "127.0.0.1", resolveListening);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Dynamic stylesheet fixture server did not expose a TCP address");
+  const pending = new Map(
+    delayedStylesheets.map((pathname) => [pathname, pendingStylesheet()] as const),
+  );
+  const routes: Record<string, Route> = {
+    "/": '<!doctype html><div id="host"></div>',
+    "/dist/index.js": bundleRoute,
+    "/documents/race.html":
+      '<!doctype html><html><head></head><body><p id="race-target">race target</p></body></html>',
+    "/styles/link-third.css": {
+      type: "text/css",
+      body: ":host { background-color: rgb(101, 102, 103); } body { color: rgb(201, 202, 203); } #race-target { color: rgb(61, 62, 63); }",
+    },
+  };
+  for (const [pathname, delayed] of pending) {
+    routes[pathname] = holdStylesheet(pathname, delayed);
   }
 
+  const server = await startHTTPFixture({ routes });
   return {
-    origin: `http://127.0.0.1:${address.port}`,
+    origin: server.origin,
     requestCount(pathname) {
-      return requestCounts.get(pathname) ?? 0;
+      return server.requests.filter((recorded) => recorded === pathname).length;
     },
     waitForRequest(pathname) {
       const delayed = pending.get(pathname);
@@ -147,15 +112,19 @@ async function startFixture(): Promise<DynamicStylesheetFixture> {
     },
     release(pathname, status, source) {
       const delayed = pending.get(pathname);
-      if (delayed?.response === null || delayed === undefined) {
+      if (delayed === undefined || delayed.response === null) {
         throw new Error(
           `Delayed stylesheet ${pathname} was released before its request arrived`,
         );
       }
-      reply(delayed.response, status, status === 200 ? "text/css" : "text/plain", source);
+      sendResponse(delayed.response, {
+        status,
+        type: status === 200 ? "text/css" : "text/plain",
+        body: source,
+      });
       delayed.response = null;
     },
-    close: () => closeServer(server),
+    close: () => server.close(),
   };
 }
 
@@ -166,34 +135,6 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await fixture.close();
 });
-
-async function installBundle(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-}
-
-async function mountFrame(
-  page: Page,
-  id: string,
-): Promise<import("@playwright/test").Locator> {
-  await page.evaluate(
-    async ({ origin, frameID }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-      frame.id = frameID;
-      const loaded = new Promise<void>((resolveLoaded) => {
-        frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
-      });
-      frame.src = `${origin}/documents/race.html`;
-      document.querySelector("#host")?.append(frame);
-      await loaded;
-    },
-    { origin: fixture.origin, frameID: id },
-  );
-  return page.locator(`v-frame#${id}`);
-}
 
 async function appendStyle(
   frame: import("@playwright/test").Locator,
@@ -242,8 +183,12 @@ async function collectFailures(frame: import("@playwright/test").Locator): Promi
 test("keeps the third dynamic inline stylesheet revision when its first import finishes last", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "inline-race");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "inline-race",
+    settle: "load",
+  });
   await appendStyle(
     frame,
     "inline-race-style",
@@ -277,8 +222,12 @@ test("keeps the third dynamic inline stylesheet revision when its first import f
 test("keeps a page observer revision that reacts to implementation neutralization", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "observer-race");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "observer-race",
+    settle: "load",
+  });
   await frame.evaluate(async (element) => {
     const child = (
       element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
@@ -312,8 +261,12 @@ test("keeps a page observer revision that reacts to implementation neutralizatio
 });
 
 test("keeps an authored clear while an inline rewrite is pending", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "clear-race");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "clear-race",
+    settle: "load",
+  });
   await appendStyle(
     frame,
     "clear-race-style",
@@ -348,8 +301,12 @@ test("keeps an authored clear while an inline rewrite is pending", async ({ page
 test("processes batched child and innerHTML style mutations as complete authored sources", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "style-batches");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "style-batches",
+    settle: "load",
+  });
   await frame.evaluate((element) => {
     const child = (
       element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
@@ -382,8 +339,12 @@ test("processes batched child and innerHTML style mutations as complete authored
 test("installs CSSOM rewriting on rules created by an asynchronous dynamic style commit", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "dynamic-cssom");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "dynamic-cssom",
+    settle: "load",
+  });
   await appendStyle(
     frame,
     "dynamic-cssom-style",
@@ -417,8 +378,12 @@ test("installs CSSOM rewriting on rules created by an asynchronous dynamic style
 test("ignores a stale inline import failure and reports the current final failure once", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "failure-race");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "failure-race",
+    settle: "load",
+  });
   await collectFailures(frame);
   await appendStyle(
     frame,
@@ -455,9 +420,17 @@ test("ignores a stale inline import failure and reports the current final failur
 test("does not commit delayed dynamic styles after removal or frame teardown", async ({
   page,
 }) => {
-  await installBundle(page);
-  const removedFrame = await mountFrame(page, "removed-style-race");
-  const tornDownFrame = await mountFrame(page, "teardown-style-race");
+  await installBundle(page, fixture.origin);
+  const removedFrame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "removed-style-race",
+    settle: "load",
+  });
+  const tornDownFrame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "teardown-style-race",
+    settle: "load",
+  });
   await collectFailures(removedFrame);
   await collectFailures(tornDownFrame);
 
@@ -544,8 +517,12 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
 test("keeps the latest dynamic link href, media, and disabled state after its first fetch finishes late", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "link-race");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "link-race",
+    settle: "load",
+  });
   await collectFailures(frame);
   await frame.evaluate((element) => {
     const child = (
@@ -604,8 +581,12 @@ test("keeps the latest dynamic link href, media, and disabled state after its fi
 test("restores the authored link relation after pending work is disconnected and canceled", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "link-reconnect");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/race.html`,
+    id: "link-reconnect",
+    settle: "load",
+  });
   await collectFailures(frame);
   await frame.evaluate((element) => {
     const child = (

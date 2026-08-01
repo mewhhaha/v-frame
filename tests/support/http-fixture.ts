@@ -73,10 +73,14 @@ export function requestPathname(request: IncomingMessage): string {
   return new URL(request.url ?? "/", "http://fixture.test").pathname;
 }
 
-function writeRoute(
+/**
+ * Writes one response. Exported so a fixture can release a request its handler parked
+ * earlier with the same header shape the route table would have used.
+ */
+export function sendResponse(
   response: ServerResponse,
   route: RouteResponse,
-  fixtureHeaders: Record<string, string>,
+  fixtureHeaders: Record<string, string> = {},
 ) {
   const send = () => {
     const headers = {
@@ -112,15 +116,15 @@ async function serveRoute(
   fixtureHeaders: Record<string, string>,
 ) {
   if (typeof route === "string") {
-    writeRoute(response, { body: route }, fixtureHeaders);
+    sendResponse(response, { body: route }, fixtureHeaders);
     return;
   }
   if (typeof route !== "function") {
-    writeRoute(response, route, fixtureHeaders);
+    sendResponse(response, route, fixtureHeaders);
     return;
   }
   const result = await route(request, response);
-  if (result !== undefined) writeRoute(response, result, fixtureHeaders);
+  if (result !== undefined) sendResponse(response, result, fixtureHeaders);
 }
 
 function closeServer(server: Server): Promise<void> {
