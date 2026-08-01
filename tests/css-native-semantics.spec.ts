@@ -1,31 +1,15 @@
-import { expect, test, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { expect, test } from "@playwright/test";
+import {
+  bundleRoute,
+  type HTTPFixture,
+  type Route,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
-interface CSSNativeSemanticsFixture {
-  origin: string;
-  requests: string[];
-  close(): Promise<void>;
-}
+let fixture: HTTPFixture;
 
-let fixture: CSSNativeSemanticsFixture;
-
-function reply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  source: string,
-): void {
-  response.writeHead(status, {
-    "cache-control": "no-store",
-    "content-type": type,
-  });
-  response.end(source);
-}
-
-function importDocument(): string {
-  return `<!doctype html><html><head>
+const importDocument = `<!doctype html><html><head>
     <style>
       @charset "UTF-8";
       @layer reset;
@@ -47,10 +31,8 @@ function importDocument(): string {
     <p id="dynamic-linked-leading">dynamic linked leading</p>
     <p id="dynamic-linked-late">dynamic linked late</p>
   </body></html>`;
-}
 
-function fragmentDocument(): string {
-  return `<!doctype html><html><head>
+const fragmentDocument = `<!doctype html><html><head>
     <style id="fragment-style">
       #stylesheet-unquoted { fill: url(#paint); }
       #stylesheet-quoted { fill: url("#paint"); }
@@ -70,101 +52,55 @@ function fragmentDocument(): string {
       <rect id="cssom-target" x="60" width="20" height="20"></rect>
     </svg>
   </body></html>`;
+
+function stylesheet(body: string): Route {
+  return { type: "text/css", body };
 }
 
-function stylesheetFor(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/styles/inline-leading.css":
-      return "#inline-leading { color: rgb(21, 22, 23); }";
-    case "/styles/inline-late.css":
-      return "#inline-late { color: rgb(31, 32, 33); }";
-    case "/styles/imported-parent.css":
-      return '@import url("./imported-leading.css"); #imported-boundary { color: rgb(41, 42, 43); } @import url("./imported-late.css");';
-    case "/styles/imported-leading.css":
-      return "#imported-leading { color: rgb(51, 52, 53); }";
-    case "/styles/imported-late.css":
-      return "#imported-late { color: rgb(61, 62, 63); }";
-    case "/styles/linked.css":
-      return '@import url("./linked-leading.css"); #linked-boundary { color: rgb(71, 72, 73); } @import url("./linked-late.css");';
-    case "/styles/linked-leading.css":
-      return "#linked-leading { color: rgb(81, 82, 83); }";
-    case "/styles/linked-late.css":
-      return "#linked-late { color: rgb(91, 92, 93); }";
-    case "/styles/dynamic-inline-leading.css":
-      return "#dynamic-inline-leading { color: rgb(101, 102, 103); }";
-    case "/styles/dynamic-inline-late.css":
-      return "#dynamic-inline-late { color: rgb(111, 112, 113); }";
-    case "/styles/dynamic-linked.css":
-      return '@import url("./dynamic-linked-leading.css"); #dynamic-linked-boundary { color: rgb(121, 122, 123); } @import url("./dynamic-linked-late.css");';
-    case "/styles/dynamic-linked-leading.css":
-      return "#dynamic-linked-leading { color: rgb(131, 132, 133); }";
-    case "/styles/dynamic-linked-late.css":
-      return "#dynamic-linked-late { color: rgb(141, 142, 143); }";
-    default:
-      return undefined;
-  }
-}
-
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
+function startFixture(): Promise<HTTPFixture> {
+  return startHTTPFixture({
+    routes: {
+      "/": '<!doctype html><div id="host"></div>',
+      "/dist/index.js": bundleRoute,
+      "/documents/imports.html": importDocument,
+      "/documents/fragments.html": fragmentDocument,
+      "/styles/inline-leading.css": stylesheet(
+        "#inline-leading { color: rgb(21, 22, 23); }",
+      ),
+      "/styles/inline-late.css": stylesheet("#inline-late { color: rgb(31, 32, 33); }"),
+      "/styles/imported-parent.css": stylesheet(
+        '@import url("./imported-leading.css"); #imported-boundary { color: rgb(41, 42, 43); } @import url("./imported-late.css");',
+      ),
+      "/styles/imported-leading.css": stylesheet(
+        "#imported-leading { color: rgb(51, 52, 53); }",
+      ),
+      "/styles/imported-late.css": stylesheet(
+        "#imported-late { color: rgb(61, 62, 63); }",
+      ),
+      "/styles/linked.css": stylesheet(
+        '@import url("./linked-leading.css"); #linked-boundary { color: rgb(71, 72, 73); } @import url("./linked-late.css");',
+      ),
+      "/styles/linked-leading.css": stylesheet(
+        "#linked-leading { color: rgb(81, 82, 83); }",
+      ),
+      "/styles/linked-late.css": stylesheet("#linked-late { color: rgb(91, 92, 93); }"),
+      "/styles/dynamic-inline-leading.css": stylesheet(
+        "#dynamic-inline-leading { color: rgb(101, 102, 103); }",
+      ),
+      "/styles/dynamic-inline-late.css": stylesheet(
+        "#dynamic-inline-late { color: rgb(111, 112, 113); }",
+      ),
+      "/styles/dynamic-linked.css": stylesheet(
+        '@import url("./dynamic-linked-leading.css"); #dynamic-linked-boundary { color: rgb(121, 122, 123); } @import url("./dynamic-linked-late.css");',
+      ),
+      "/styles/dynamic-linked-leading.css": stylesheet(
+        "#dynamic-linked-leading { color: rgb(131, 132, 133); }",
+      ),
+      "/styles/dynamic-linked-late.css": stylesheet(
+        "#dynamic-linked-late { color: rgb(141, 142, 143); }",
+      ),
+    },
   });
-}
-
-async function startFixture(): Promise<CSSNativeSemanticsFixture> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const requests: string[] = [];
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
-    requests.push(pathname);
-
-    if (pathname === "/") {
-      reply(response, 200, "text/html", '<!doctype html><div id="host"></div>');
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-    if (pathname === "/documents/imports.html") {
-      reply(response, 200, "text/html", importDocument());
-      return;
-    }
-    if (pathname === "/documents/fragments.html") {
-      reply(response, 200, "text/html", fragmentDocument());
-      return;
-    }
-
-    const stylesheet = stylesheetFor(pathname);
-    if (stylesheet !== undefined) {
-      reply(response, 200, "text/css", stylesheet);
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
-  });
-
-  await new Promise<void>((resolveListening) => {
-    server.listen(0, "127.0.0.1", resolveListening);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("CSS native-semantics fixture did not expose a TCP address");
-  }
-
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    requests,
-    close: () => closeServer(server),
-  };
 }
 
 test.beforeAll(async () => {
@@ -175,40 +111,15 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-}
-
-async function mountFrame(page: Page, pathname: string): Promise<void> {
-  await page.evaluate(
-    async ({ origin, documentPath }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & {
-        src: string;
-      };
-      const loaded = new Promise<void>((resolveLoaded) => {
-        frame.addEventListener("v-frame-load", () => resolveLoaded(), {
-          once: true,
-        });
-      });
-      frame.src = `${origin}${documentPath}`;
-      document.querySelector("#host")?.append(frame);
-      await loaded;
-    },
-    { origin: fixture.origin, documentPath: pathname },
-  );
-}
-
 test("ignores late imports in initial, imported, linked, and dynamic stylesheets", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   fixture.requests.length = 0;
-  await mountFrame(page, "/documents/imports.html");
-  const frame = page.locator("v-frame");
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/imports.html`,
+    settle: "load",
+  });
 
   await frame.evaluate((element) => {
     const child = (
@@ -272,10 +183,12 @@ test("ignores late imports in initial, imported, linked, and dynamic stylesheets
 test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM rewrites", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   fixture.requests.length = 0;
-  await mountFrame(page, "/documents/fragments.html");
-  const frame = page.locator("v-frame");
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/fragments.html`,
+    settle: "load",
+  });
 
   const fills = await frame.evaluate((element) => {
     const child = (
