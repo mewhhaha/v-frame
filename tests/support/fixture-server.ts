@@ -1,13 +1,13 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage } from "node:http";
 import {
   bundleRoute,
+  gateRoute,
   htmlDocument as html,
   type HTTPFixture,
+  parkRoute,
   registerBundleRoute,
   type Route,
-  type RouteHandler,
   type RouteResponse,
-  sendResponse,
   startHTTPFixture,
 } from "./http-fixture";
 
@@ -24,6 +24,11 @@ export interface DynamicScriptOrder {
 
 export interface FixtureServer extends HTTPFixture {
   dynamicScriptOrder: DynamicScriptOrder;
+  /**
+   * Answers `/assets/async-order.js`. The async script is parked so the test says when it
+   * lands relative to the deferred one, rather than a response delay guessing at it.
+   */
+  releaseAsyncScript(): Promise<void>;
 }
 
 export type ContractFixtureServers = HTTPFixture;
@@ -273,11 +278,6 @@ const assetRoutes: Record<string, Route> = {
     type: "text/javascript",
     body: "window.__scriptEvents.push('defer-external:' + document.currentScript?.id + ':' + document.readyState);",
   },
-  "/assets/async-order.js": {
-    type: "text/javascript",
-    body: "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);",
-    delay: 50,
-  },
   "/assets/import-map-message.js": {
     type: "text/javascript",
     body: "export const message = 'resolved through import map';",
@@ -311,100 +311,44 @@ const dynamicSecondScript: RouteResponse = {
   body: "window.__dynamicExternalEvents.push('second');",
 };
 
-interface DynamicScriptOrderState {
-  parkedFirst: ServerResponse | null;
-  firstRequested: Promise<void>;
-  resolveFirstRequested: () => void;
-  secondServed: Promise<void>;
-  resolveSecondServed: () => void;
-}
-
-/** Arms both gates, so a repeated run of the test waits for its own two responses. */
-function armDynamicScriptOrder(state: DynamicScriptOrderState) {
-  state.firstRequested = new Promise<void>((resolve) => {
-    state.resolveFirstRequested = resolve;
-  });
-  state.secondServed = new Promise<void>((resolve) => {
-    state.resolveSecondServed = resolve;
-  });
-}
-
-function dynamicScriptOrderState(): DynamicScriptOrderState {
-  const state: DynamicScriptOrderState = {
-    parkedFirst: null,
-    firstRequested: Promise.resolve(),
-    resolveFirstRequested: () => undefined,
-    secondServed: Promise.resolve(),
-    resolveSecondServed: () => undefined,
-  };
-  armDynamicScriptOrder(state);
-  return state;
-}
-
-/** Parks the request so the test decides when the first script's bytes are written. */
-function parkFirstDynamicScript(state: DynamicScriptOrderState): RouteHandler {
-  return (_request, response) => {
-    if (state.parkedFirst !== null) {
-      return {
-        status: 409,
-        type: "text/plain",
-        body: "Duplicate request for /assets/dynamic-first.js",
-      };
-    }
-    state.parkedFirst = response;
-    state.resolveFirstRequested();
-    return undefined;
-  };
-}
-
-/**
- * "finish" fires once the body has been flushed to the socket, so a first-script release
- * that waits for it cannot reach the browser before the second script does.
- */
-function serveSecondDynamicScript(state: DynamicScriptOrderState): RouteHandler {
-  return (_request, response) => {
-    response.on("finish", state.resolveSecondServed);
-    return dynamicSecondScript;
-  };
-}
+const asyncOrderScript: RouteResponse = {
+  type: "text/javascript",
+  body: "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);",
+};
 
 export async function startFixtureServer(): Promise<FixtureServer> {
-  const state = dynamicScriptOrderState();
+  const dynamicFirst = parkRoute(dynamicFirstScript);
+  const dynamicSecond = gateRoute(dynamicSecondScript);
+  const asyncOrder = parkRoute(asyncOrderScript);
   const server = await startHTTPFixture({
     routes: {
       ...documentRoutes,
       ...assetRoutes,
-      "/assets/dynamic-first.js": parkFirstDynamicScript(state),
-      "/assets/dynamic-second.js": serveSecondDynamicScript(state),
+      "/assets/async-order.js": asyncOrder.route,
+      "/assets/dynamic-first.js": dynamicFirst.route,
+      "/assets/dynamic-second.js": dynamicSecond.route,
     },
   });
 
-  // The two requests race each other on separate sockets, so a release that arrives
-  // before the first script has even been asked for waits for it instead of failing.
   const releaseFirst = async () => {
-    await state.firstRequested;
-    const parked = state.parkedFirst;
-    if (parked === null) {
-      throw new Error("/assets/dynamic-first.js was already released");
-    }
-    state.parkedFirst = null;
-    sendResponse(parked, dynamicFirstScript);
-    armDynamicScriptOrder(state);
+    await dynamicFirst.release();
+    dynamicSecond.rearm();
   };
 
   return {
     ...server,
     dynamicScriptOrder: {
       get secondServed() {
-        return state.secondServed;
+        return dynamicSecond.served;
       },
       releaseFirst,
     },
+    releaseAsyncScript: asyncOrder.release,
     // A parked request keeps its socket open, which would otherwise stall the close of a
     // server whose test failed before releasing it.
     close: async () => {
-      state.parkedFirst?.destroy();
-      state.parkedFirst = null;
+      dynamicFirst.abandon();
+      asyncOrder.abandon();
       await server.close();
     },
   };

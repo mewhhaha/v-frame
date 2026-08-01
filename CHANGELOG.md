@@ -170,11 +170,19 @@ from.
 - Every Playwright fixture server is one parameterized route table in
   `tests/support/`, and every spec mounts frames through one shared
   `mountFrame` helper.
-- The dynamic-script insertion-order test no longer leaves the arrival order it
-  exercises to browser scheduling. It used a 50 ms fixture delay, which failed
+- No Playwright test leaves an ordering it asserts to browser scheduling. The
+  dynamic-script insertion-order test used a 50 ms fixture delay, which failed
   roughly one full-suite run in five on firefox; the first script's response is
   now parked until the second's body has reached the socket, so the order the
-  test claims is the order it gets under any load.
+  test claims is the order it gets under any load. `parkRoute` and `gateRoute` in
+  `tests/support/http-fixture.ts` generalize that pair, and the four remaining
+  timer-raced orderings use them: the fragment insertion-order scripts in
+  `tests/script-safety.spec.ts`, `/assets/async-order.js` behind the deferred
+  script in `tests/advanced.spec.ts`, the post-ready script that must not have
+  settled when the frame reports load, and the deferred classic that a module's
+  flush — not a 50 ms timer — now releases. Response delays that are themselves
+  the behaviour under test, such as the 75 ms and 125 ms bootstrap blockers,
+  are unchanged.
 
 ### Removed
 

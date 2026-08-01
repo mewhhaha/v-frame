@@ -4,7 +4,9 @@ import {
   bundleRoute,
   htmlDocument,
   type HTTPFixture,
+  parkRoute,
   type Route,
+  type RouteHandler,
   type RouteResponse,
   sendResponse,
   startHTTPFixture,
@@ -22,8 +24,6 @@ const contentSecurityPolicy = {
   "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
 };
 let fixture: HTTPFixture;
-let deferredSecondRequested = false;
-const pendingDeferredFirstResponses = new Set<ServerResponse>();
 
 function html(body: string): string {
   return htmlDocument(body);
@@ -32,6 +32,33 @@ function html(body: string): string {
 function script(body: string): RouteResponse {
   return { type: "text/javascript", body };
 }
+
+const deferredFirstScript = parkRoute(
+  script("window.__deferredEvents.push('first');"),
+  contentSecurityPolicy,
+);
+
+/**
+ * The module answers at once and releases the deferred classic only after its own bytes
+ * have gone out, so the classic provably arrives second on every run. Executing it first
+ * anyway is the document-order guarantee under test.
+ */
+const serveDeferredSecond: RouteHandler = (_request, response) => {
+  response.on("finish", () => void deferredFirstScript.release());
+  return script("window.__deferredEvents.push('second');");
+};
+
+/**
+ * Parked for the whole of the bootstrap-blocker test: a script appended from the child's
+ * load handler must not have settled by the time the frame reports load, and a parked
+ * response makes that true by construction rather than by outrunning a 20 ms wait.
+ */
+const postReadyScript = parkRoute(
+  script(
+    "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
+  ),
+  contentSecurityPolicy,
+);
 
 function searchParamsOf(request: IncomingMessage): URLSearchParams {
   return new URL(request.url ?? "/", "http://fixture.invalid").searchParams;
@@ -55,35 +82,6 @@ function teardownDocument(request: IncomingMessage): RouteResponse {
           document.head.append(classic, module);
         </script>
       `),
-  };
-}
-
-/** Holds the first deferred script until the second one has been requested. */
-function deferredFirst(): Route {
-  return (_request, response) => {
-    if (deferredSecondRequested) {
-      return script("window.__deferredEvents.push('first');");
-    }
-    pendingDeferredFirstResponses.add(response);
-    response.on("close", () => pendingDeferredFirstResponses.delete(response));
-    return undefined;
-  };
-}
-
-function deferredSecond(): Route {
-  return () => {
-    deferredSecondRequested = true;
-    setTimeout(() => {
-      for (const firstResponse of pendingDeferredFirstResponses) {
-        sendResponse(
-          firstResponse,
-          script("window.__deferredEvents.push('first');"),
-          contentSecurityPolicy,
-        );
-      }
-      pendingDeferredFirstResponses.clear();
-    }, 50);
-    return script("window.__deferredEvents.push('second');");
   };
 }
 
@@ -183,8 +181,8 @@ function startFixtureServer(): Promise<HTTPFixture> {
         window.__blockedInlineErrors = 0;
         document.querySelector('#blocked-inline').addEventListener('error', () => window.__blockedInlineErrors += 1);
       `),
-      "/scripts/deferred-first.js": deferredFirst(),
-      "/scripts/deferred-second.js": deferredSecond(),
+      "/scripts/deferred-first.js": deferredFirstScript.route,
+      "/scripts/deferred-second.js": serveDeferredSecond,
       "/scripts/dynamic-classic.js": {
         ...script(
           "window.__dynamicClassicSettled = true; window.__dynamicBlockerEvents.push('classic-execute');",
@@ -197,12 +195,7 @@ function startFixtureServer(): Promise<HTTPFixture> {
         ),
         delay: 125,
       },
-      "/scripts/post-ready.js": {
-        ...script(
-          "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
-        ),
-        delay: 100,
-      },
+      "/scripts/post-ready.js": postReadyScript.route,
       "/scripts/pending-module.js": script("await new Promise(() => undefined);"),
       "/scripts/teardown-classic.js": holdTeardownScript,
       "/scripts/teardown-module.js": holdTeardownScript,
@@ -216,6 +209,10 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // A parked request keeps its socket open, which would otherwise stall the close of a
+  // server whose test failed before releasing it.
+  deferredFirstScript.abandon();
+  postReadyScript.abandon();
   await fixture.close();
 });
 
@@ -447,6 +444,10 @@ test("waits for bootstrap dynamic resources before child and frame load", async 
   expect(result.events).toContain("module-load");
   expect(result.events?.at(-1)).toBe("load:true:true");
   expect(result.postReadyScriptSettled).toBe(false);
+
+  // Answer it now that the assertion has been made, so the child's socket does not outlive
+  // the page it belongs to.
+  await postReadyScript.release();
 });
 
 test("reports a timer error immediately while an external module remains pending", async ({
