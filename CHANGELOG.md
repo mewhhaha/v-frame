@@ -40,15 +40,18 @@ from.
   Cloudflare `HTMLRewriter` adapter over that core. `createStylesheetContext`
   and `rewriteStylesheet` are exported from the same entry so a Node host can
   write its own adapter without copying CSS logic.
-- Continuous integration: typecheck, build, and the Playwright suite on chromium
-  and firefox for every push and pull request.
-- Typechecking for `tests/` and `examples/*/shared/` through
+- Continuous integration on every push and pull request: one fast job running
+  `format:check`, `typecheck`, `build`, `size`, the unit tests and the root
+  Playwright suite on chromium and firefox, and a second job — gated on the
+  first — running `examples/ssr`'s routing suite, which is the only place the
+  navigation API is exercised against four real frameworks.
+- Typechecking for `tests/`, `bench/` and `examples/*/tests/` through
   `tsconfig.test.json`.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
   threshold.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
   the `src/css.ts` rewriters, `absolutizeSrcset`, and `VirtualHistorySession`.
-  180 assertions that run in about a tenth of a second, without a browser.
+  180 tests that run in about a tenth of a second, without a browser.
 - A benchmark for per-node marking (`pnpm bench`) and its findings note,
   [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md). Marking
   is measurably expensive; no optimization was applied, so the decision is now
@@ -72,7 +75,10 @@ from.
   itself keeps working.
 - The published bundles are minified, and `css-tree` is imported through its
   `parser`, `generator`, and `walker` subpaths so the unused lexer tables are no
-  longer shipped: 97 KB to 64 KB gzip.
+  longer shipped. Measured by `pnpm size`, which minifies and gzips
+  `src/index.ts` in memory, that is 97,514 bytes down to 65,442 — a third of the
+  payload. Every byte count in this entry comes from that command, so it is
+  reproducible rather than remembered.
 - Biome formats the repository, freezing the existing house style.
 - `examples/ssr` imports `v-frame/server` instead of reaching into `src/`, and
   routes host-driven navigation through the element's own API.

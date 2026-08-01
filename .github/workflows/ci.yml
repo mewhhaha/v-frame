@@ -42,3 +42,35 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 7
+
+  example-ssr:
+    name: example-ssr routing
+    # The only coverage the imperative navigation API has against real
+    # frameworks, but it builds five applications and boots five wrangler
+    # workers, so it waits for the fast job rather than racing it.
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec playwright install --with-deps chromium firefox
+
+      # test:routing builds v-frame and the five applications through its own
+      # webServer command, then drives them across chromium and firefox.
+      - run: pnpm --filter example-ssr run test:routing
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: example-ssr-playwright-report
+          path: examples/ssr/playwright-report
+          retention-days: 7
