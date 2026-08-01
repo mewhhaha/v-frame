@@ -1,8 +1,9 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,29 +15,19 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page, pathname = "/documents/dom.html"): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "event-fidelity-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}${pathname}`);
-  await expect
-    .poll(() =>
-      page
-        .locator("#event-fidelity-frame")
-        .evaluate((element) => (element as HTMLElement & { status: string }).status),
-    )
-    .toBe("ready");
+async function mountEventFrame(
+  page: Page,
+  pathname = "/documents/dom.html",
+): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}${pathname}`,
+    id: "event-fidelity-frame",
+  });
 }
 
 test("uses standards mode in the child document", async ({ page }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const documentMode = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
@@ -56,7 +47,7 @@ test("uses standards mode in the child document", async ({ page }) => {
 });
 
 test("preserves properties from physical event subclasses", async ({ page }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
@@ -106,7 +97,7 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
 test("uses one logical event across the element, document, and window path", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
@@ -384,7 +375,7 @@ test("uses one logical event across the element, document, and window path", asy
 test("keeps document structure, namespace collections, and observation logical", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
@@ -521,7 +512,7 @@ test("keeps document structure, namespace collections, and observation logical",
 });
 
 test("runs document lifecycle and body load property handlers once", async ({ page }) => {
-  await mountFrame(page, "/documents/inline-body-load.html");
+  await mountEventFrame(page, "/documents/inline-body-load.html");
   const inlineResult = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
       contentWindow: (Window & { __documentLifecycle: unknown }) | null;
@@ -536,7 +527,7 @@ test("runs document lifecycle and body load property handlers once", async ({ pa
     ],
   });
 
-  await mountFrame(page, "/documents/property-body-load.html");
+  await mountEventFrame(page, "/documents/property-body-load.html");
   const propertyLoads = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
       contentWindow:

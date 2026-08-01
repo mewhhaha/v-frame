@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,31 +12,18 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "url-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}/documents/dynamic-base-urls.html`);
-  await expect
-    .poll(() =>
-      page
-        .locator("#url-frame")
-        .evaluate((element) => (element as HTMLElement & { status: string }).status),
-    )
-    .toBe("ready");
+async function mountURLFrame(page: Page): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/dynamic-base-urls.html`,
+    id: "url-frame",
+  });
 }
 
 test("updates the first valid connected base and HTML URL properties synchronously", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountURLFrame(page);
 
   const states = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
@@ -209,7 +197,7 @@ test("updates the first valid connected base and HTML URL properties synchronous
 test("keeps authored srcset candidates while rebasing their physical URLs", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountURLFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
@@ -324,7 +312,7 @@ test("keeps authored srcset candidates while rebasing their physical URLs", asyn
 test("updates baseURI synchronously when textContent removes a base subtree", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountURLFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
@@ -358,7 +346,7 @@ test("updates baseURI synchronously when textContent removes a base subtree", as
 test("synchronizes base changes made through host-realm DOM methods", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountURLFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
@@ -400,7 +388,7 @@ test("synchronizes base changes made through host-realm DOM methods", async ({
 test("rebases SVG href and xlink resources without replacing SVGAnimatedString", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountURLFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {

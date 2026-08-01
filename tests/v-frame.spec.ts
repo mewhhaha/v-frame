@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,24 +12,8 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function mountFrame(page: import("@playwright/test").Page, source: string) {
-  await page.evaluate((src) => {
-    const frame = document.createElement("v-frame");
-    frame.setAttribute("src", src);
-    document.querySelector("#host")?.append(frame);
-  }, source);
-  return page.locator("v-frame");
+function mountSourceFrame(page: Page, source: string): Promise<Locator> {
+  return mountFrame(page, { src: source, settle: "none" });
 }
 
 test("importing the bundle has no registration side effect and defineVFrame is guarded", async ({
@@ -75,8 +60,8 @@ test("importing the bundle has no registration side effect and defineVFrame is g
 test("loads a document into a semantic shadow DOM and exposes readonly state", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, `${fixture.origin}/documents/first.html`);
+  await installBundle(page, fixture.origin);
+  const frame = await mountSourceFrame(page, `${fixture.origin}/documents/first.html`);
 
   await expect
     .poll(() =>
@@ -108,8 +93,11 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
 test("resolves bare module specifiers through a document import map", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, `${fixture.origin}/documents/import-map.html`);
+  await installBundle(page, fixture.origin);
+  const frame = await mountSourceFrame(
+    page,
+    `${fixture.origin}/documents/import-map.html`,
+  );
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -122,7 +110,7 @@ test("resolves bare module specifiers through a document import map", async ({
 test("keeps child custom element definitions isolated between frames", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   await page.evaluate((origin) => {
     for (const label of ["first child", "second child"]) {
       const frame = document.createElement("v-frame");
@@ -713,7 +701,7 @@ test("host page reload leaves active adopted frames intact until teardown", asyn
 test("emits lifecycle errors and ignores stale loads after disconnection", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const events = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & { reload(): void };
     const seen: string[] = [];
@@ -746,11 +734,14 @@ test("emits lifecycle errors and ignores stale loads after disconnection", async
 });
 
 test("bridges document scripts, rewritten CSS, and relative assets", async ({ page }) => {
-  await installBundle(page);
-  const scripted = await mountFrame(page, `${fixture.origin}/documents/scripted.html`);
+  await installBundle(page, fixture.origin);
+  const scripted = await mountSourceFrame(
+    page,
+    `${fixture.origin}/documents/scripted.html`,
+  );
   await expect(scripted.locator("#script-added")).toHaveText("Script executed");
 
-  const styled = await mountFrame(page, `${fixture.origin}/documents/styled.html`);
+  const styled = await mountSourceFrame(page, `${fixture.origin}/documents/styled.html`);
   await expect(styled.locator("#relative-image")).toHaveCount(1);
   await expect(styled.locator("#styled-copy")).toHaveCSS("color", "rgb(12, 34, 56)");
   await expect
@@ -761,8 +752,11 @@ test("bridges document scripts, rewritten CSS, and relative assets", async ({ pa
 test("forwards fetch-driven DOM changes and iframe history navigation", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, `${fixture.origin}/documents/application.html`);
+  await installBundle(page, fixture.origin);
+  const frame = await mountSourceFrame(
+    page,
+    `${fixture.origin}/documents/application.html`,
+  );
   await expect(frame.locator("#load")).toHaveCount(1);
   await frame.evaluate((element) =>
     (element as any).contentWindow.document.querySelector("#load").click(),
@@ -841,8 +835,8 @@ test("applies properties assigned before upgrade through their setters", async (
 });
 
 test("keeps noscript content inert while scripts run", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, `${fixture.origin}/documents/noscript.html`);
+  await installBundle(page, fixture.origin);
+  const frame = await mountSourceFrame(page, `${fixture.origin}/documents/noscript.html`);
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
     .toBe("ready");

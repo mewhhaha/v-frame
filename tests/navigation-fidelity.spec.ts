@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,31 +12,18 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "navigation-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}/documents/application.html`);
-  const frame = page.locator("#navigation-frame");
-  await expect
-    .poll(() =>
-      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
-    )
-    .toBe("ready");
-  return frame;
+async function mountNavigationFrame(page: Page): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/application.html`,
+    id: "navigation-frame",
+  });
 }
 
 test("resolves history URLs against the live base and preserves the URL when omitted", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
 
   const result = await frame.evaluate((element, origin) => {
     const child = (
@@ -113,7 +101,7 @@ test("resolves history URLs against the live base and preserves the URL when omi
 test("keeps prototype history calls virtual and applies child-realm Web IDL semantics", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const hostHistory = await page.evaluate(() => ({
     href: location.href,
     length: history.length,
@@ -217,7 +205,7 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
 test("keeps retained prototype history methods inert after disposal", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const hostHistory = await page.evaluate(() => ({
     href: location.href,
     length: history.length,
@@ -297,7 +285,7 @@ test("keeps retained prototype history methods inert after disposal", async ({
 test("documents javascript Location evaluation without document replacement as unsupported", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
       contentWindow:
@@ -436,7 +424,7 @@ test("loads links and GET forms while preserving guest document history", async 
 });
 
 test("restores the live guest when a document navigation fails", async ({ page }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const originalWindow = await frame.evaluateHandle(
     (element) =>
       (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
@@ -504,7 +492,7 @@ test("restores the live guest when a document navigation fails", async ({ page }
 });
 
 test("keeps a direct Location hash change inside the guest", async ({ page }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
       contentWindow: (Window & typeof globalThis) | null;
@@ -537,7 +525,7 @@ test("keeps a direct Location hash change inside the guest", async ({ page }) =>
 test("restores the virtual URL when the host cancels a direct hash change", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
       contentWindow: (Window & typeof globalThis) | null;
@@ -572,7 +560,7 @@ test("restores the virtual URL when the host cancels a direct hash change", asyn
 test("reports unsupported same-context POST forms without leaving the document", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   const error = frame.evaluate(
     (element) =>
       new Promise<{
@@ -634,7 +622,7 @@ test("reports unsupported same-context POST forms without leaving the document",
 test("reports window and SVG link destinations resolved against the live base", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   await frame.evaluate((element) => {
     (
       element as HTMLElement & { navigations?: Array<{ kind: string; to: string }> }
@@ -732,7 +720,7 @@ test("reports window and SVG link destinations resolved against the live base", 
 test("uses the first valid base target and scrolls to malformed legacy fragments", async ({
   page,
 }) => {
-  const frame = await mountFrame(page);
+  const frame = await mountNavigationFrame(page);
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigations?: string[] }).navigations = [];
     element.addEventListener("v-frame-navigate", (event) => {

@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,43 +12,16 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function mountFrame(
-  page: import("@playwright/test").Page,
+function mountCredentialsFrame(
+  page: Page,
   id: string,
   credentials: "omit" | "same-origin",
-) {
-  await page.evaluate(
-    ({ frameID, frameSource, frameCredentials }) => {
-      const frame = document.createElement("v-frame");
-      frame.id = frameID;
-      frame.setAttribute("credentials", frameCredentials);
-      frame.setAttribute("src", frameSource);
-      document.querySelector("#host")?.append(frame);
-    },
-    {
-      frameID: id,
-      frameSource: `${fixture.origin}/documents/first.html`,
-      frameCredentials: credentials,
-    },
-  );
-  const frame = page.locator(`v-frame#${id}`);
-  await expect
-    .poll(() =>
-      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
-    )
-    .toBe("ready");
-  return frame;
+): Promise<Locator> {
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/first.html`,
+    id,
+    credentials,
+  });
 }
 
 async function childValue<T>(
@@ -66,10 +40,14 @@ async function childValue<T>(
 test("preserves native missing network argument errors without issuing requests", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   for (const credentials of ["omit", "same-origin"] as const) {
-    const frame = await mountFrame(page, `required-${credentials}`, credentials);
+    const frame = await mountCredentialsFrame(
+      page,
+      `required-${credentials}`,
+      credentials,
+    );
     const requestsBefore = fixture.requests.length;
     const result = await childValue(frame, async (window) => {
       const exception = (operation: () => unknown) => {

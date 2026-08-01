@@ -1,8 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,36 +15,18 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function mountFrame(
-  page: import("@playwright/test").Page,
+function mountContractFrame(
+  page: Page,
   id: string,
   source: string,
   credentials?: "omit" | "same-origin" | "include",
-) {
-  await page.evaluate(
-    ({ frameID, frameSource, frameCredentials }) => {
-      const frame = document.createElement("v-frame");
-      frame.id = frameID;
-      if (frameCredentials !== undefined) {
-        frame.setAttribute("credentials", frameCredentials);
-      }
-      frame.setAttribute("src", frameSource);
-      document.querySelector("#host")?.append(frame);
-    },
-    { frameID: id, frameSource: source, frameCredentials: credentials },
-  );
-  return page.locator(`v-frame#${id}`);
+): Promise<Locator> {
+  return mountFrame(page, {
+    src: source,
+    id,
+    settle: "none",
+    ...(credentials === undefined ? {} : { credentials }),
+  });
 }
 
 async function childValue<T>(
@@ -95,7 +78,7 @@ test("registers one launchpad constructor across the side-effect and API entry p
 test("keeps a missing source idle and recreates its realm after reconnection", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const state = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -154,7 +137,7 @@ test("keeps a missing source idle and recreates its realm after reconnection", a
 test("exposes each lifecycle value as an exclusive custom element state", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const states = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -279,7 +262,7 @@ test("binds an explicit host-navigation frame to shell location and history", as
 test("keeps only the latest rapid source load and exposes redirect final URLs", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -315,7 +298,7 @@ test("keeps only the latest rapid source load and exposes redirect final URLs", 
 });
 
 test("preserves an entry fragment in currentURL and the load event", async ({ page }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const result = await page.evaluate(async (source) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -345,8 +328,12 @@ test("preserves an entry fragment in currentURL and the load event", async ({ pa
 test("provides document queries, mutations, focus, and listeners through the child realm", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "dom", `${fixture.origin}/documents/dom.html`);
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
+    page,
+    "dom",
+    `${fixture.origin}/documents/dom.html`,
+  );
   await expect
     .poll(() =>
       frame.evaluate((element: HTMLElement & { status: string }) => element.status),
@@ -399,13 +386,13 @@ test("provides document queries, mutations, focus, and listeners through the chi
 test("routes postMessage through the child window and keeps two realms separate", async ({
   page,
 }) => {
-  await installBundle(page);
-  const first = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const first = await mountContractFrame(
     page,
     "first-realm",
     `${fixture.origin}/documents/messaging.html`,
   );
-  const second = await mountFrame(
+  const second = await mountContractFrame(
     page,
     "second-realm",
     `${fixture.origin}/documents/messaging.html`,
@@ -470,8 +457,8 @@ test("routes postMessage through the child window and keeps two realms separate"
 test("keeps innerHTML scripts inert while running dynamic scripts and reporting runtime failures", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "scripts",
     `${fixture.origin}/documents/scripts.html`,
@@ -543,8 +530,8 @@ test("keeps innerHTML scripts inert while running dynamic scripts and reporting 
 test("rewrites dynamic inline and linked styles without crossing the shadow boundary", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "styles",
     `${fixture.origin}/documents/styles.html`,
@@ -585,8 +572,8 @@ test("rewrites dynamic inline and linked styles without crossing the shadow boun
 test("traverses virtual history with popstate and hashchange without changing host history", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "history",
     `${fixture.origin}/documents/history.html`,
@@ -699,8 +686,8 @@ test("traverses virtual history with popstate and hashchange without changing ho
 test("delivers composed DOM events to child window listeners before link defaults", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "window-events",
     `${fixture.origin}/documents/history.html`,
@@ -753,8 +740,8 @@ test("delivers composed DOM events to child window listeners before link default
 test("treats an empty hash as a local fragment and scrolls to the top", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "empty-fragment",
     `${fixture.origin}/documents/history.html`,
@@ -834,8 +821,8 @@ test("treats an empty hash as a local fragment and scrolls to the top", async ({
 test("reports but does not perform canceled link and form navigation", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "canceled-navigation",
     `${fixture.origin}/documents/history.html`,
@@ -945,8 +932,8 @@ test("reports but does not perform canceled link and form navigation", async ({
 });
 
 test("loads an allowed same-context link inside the guest", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "staged-navigation",
     `${fixture.origin}/documents/history.html`,
@@ -985,8 +972,8 @@ test("loads an allowed same-context link inside the guest", async ({ page }) => 
 test("gates modified primary and middle link activations before opening a new context", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "new-context-navigation",
     `${fixture.origin}/documents/history.html`,
@@ -1098,8 +1085,8 @@ test("gates modified primary and middle link activations before opening a new co
 test("uses submitter overrides and replacement query data for gated GET form windows", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "submitter-navigation",
     `${fixture.origin}/documents/history.html`,
@@ -1190,8 +1177,8 @@ test("uses the page viewport and frame scroll state then stops child timers when
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 });
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "viewport",
     `${fixture.origin}/documents/viewport.html`,
@@ -1304,8 +1291,8 @@ test("uses the page viewport and frame scroll state then stops child timers when
 });
 
 test("uses the virtual document element as the scrolling element", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "viewport-scroll",
     `${fixture.origin}/documents/viewport.html`,
@@ -1338,7 +1325,7 @@ test("uses the virtual document element as the scrolling element", async ({ page
 test("emits bubbling composed lifecycle details and a fatal entry error", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const events = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame");
@@ -1426,8 +1413,8 @@ test("emits bubbling composed lifecycle details and a fatal entry error", async 
 test("closes dialog form submissions natively without emitting navigation", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "dialog-form",
     `${fixture.origin}/documents/history.html`,
@@ -1475,8 +1462,8 @@ test("closes dialog form submissions natively without emitting navigation", asyn
 test("replaces the history entry when a fragment link targets the current URL", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(
+  await installBundle(page, fixture.origin);
+  const frame = await mountContractFrame(
     page,
     "repeat-fragment",
     `${fixture.origin}/documents/history.html`,

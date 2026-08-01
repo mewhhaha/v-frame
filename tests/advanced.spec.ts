@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,38 +12,12 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function mountFrame(
-  page: import("@playwright/test").Page,
-  path: string,
-  nonce?: string,
-) {
-  await page.evaluate(
-    ({ source, nonceValue }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-      if (nonceValue !== undefined) {
-        frame.nonce = nonceValue;
-      }
-      frame.src = source;
-      document.querySelector("#host")?.append(frame);
-    },
-    { source: `${fixture.origin}${path}`, nonceValue: nonce },
-  );
-  return page.locator("v-frame");
+function mountDocument(page: Page, path: string): Promise<Locator> {
+  return mountFrame(page, { src: `${fixture.origin}${path}`, settle: "none" });
 }
 
 async function childValue<T>(
-  frame: import("@playwright/test").Locator,
+  frame: Locator,
   expression: (window: Window & typeof globalThis) => T,
 ) {
   return frame.evaluate((element, source) => {
@@ -57,8 +32,8 @@ async function childValue<T>(
 test("executes an insertAdjacentElement script only in the child realm", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/dynamic-insert.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/dynamic-insert.html");
 
   await expect(frame.locator("#dynamic-insert-result")).toHaveText(
     "child realm executed",
@@ -70,8 +45,8 @@ test("executes an insertAdjacentElement script only in the child realm", async (
 });
 
 test("loads a network v-frame nested inside a child document", async ({ page }) => {
-  await installBundle(page);
-  const outerFrame = await mountFrame(page, "/documents/nested-network.html");
+  await installBundle(page, fixture.origin);
+  const outerFrame = await mountDocument(page, "/documents/nested-network.html");
   const innerFrame = outerFrame.locator("#nested-network-frame");
 
   await expect
@@ -89,8 +64,8 @@ test("loads a network v-frame nested inside a child document", async ({ page }) 
 test("waits for an inline module top-level await before becoming ready", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/inline-module.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/inline-module.html");
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -101,8 +76,8 @@ test("waits for an inline module top-level await before becoming ready", async (
 test("runs classic, deferred, and async scripts with their current script and ready state", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/script-order.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/script-order.html");
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -121,8 +96,8 @@ test("runs classic, deferred, and async scripts with their current script and re
 test("preserves insertion order for dynamic external scripts with async false", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/dynamic-external-order.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/dynamic-external-order.html");
 
   await expect
     .poll(() => childValue(frame, (window) => (window as any).__dynamicExternalEvents))
@@ -132,8 +107,8 @@ test("preserves insertion order for dynamic external scripts with async false", 
 test("applies imported supports rules and preserves root selector specificity", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/import-and-root.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/import-and-root.html");
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -145,8 +120,8 @@ test("applies imported supports rules and preserves root selector specificity", 
 test("keeps the signal and credentials when a Request is constructed from another request", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/request-abort.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/request-abort.html");
 
   await expect(frame.locator("#request-result")).toHaveText(
     "true:true:include:include:AbortError",
@@ -156,8 +131,8 @@ test("keeps the signal and credentials when a Request is constructed from anothe
 test("updates document base URLs after pushState without an explicit base", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/base-after-push.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/base-after-push.html");
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -169,8 +144,8 @@ test("updates document base URLs after pushState without an explicit base", asyn
 });
 
 test("preserves an explicit base URL after pushState", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/explicit-base-after-push.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/explicit-base-after-push.html");
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -186,8 +161,8 @@ test("preserves an explicit base URL after pushState", async ({ page }) => {
 test("forwards bubbling child-realm scroll events from document to window", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/scroll-events.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/scroll-events.html");
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
     .toBe("ready");
@@ -254,8 +229,12 @@ test("forwards bubbling child-realm scroll events from document to window", asyn
 });
 
 test("reflects the nonce property and attribute", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/nonce.html", "first-nonce");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/nonce.html`,
+    nonce: "first-nonce",
+    settle: "none",
+  });
 
   await expect
     .poll(() => frame.evaluate((element) => (element as any).status))
@@ -273,8 +252,8 @@ test("reflects the nonce property and attribute", async ({ page }) => {
 test("stops virtual history when navigation approval removes the frame", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/application.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/application.html");
   await expect
     .poll(() =>
       frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
@@ -359,8 +338,8 @@ test("stops virtual history when navigation approval removes the frame", async (
 test("stops old virtual history when navigation approval reloads the frame", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/application.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/application.html");
   await expect
     .poll(() =>
       frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
@@ -446,7 +425,7 @@ test("stops old virtual history when navigation approval reloads the frame", asy
 });
 
 test("disposes retained virtual history when realm bootstrap fails", async ({ page }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const failure = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
       contentWindow: (Window & typeof globalThis) | null;

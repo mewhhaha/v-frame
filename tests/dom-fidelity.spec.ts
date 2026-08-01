@@ -1,8 +1,9 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,29 +15,16 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "fidelity-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}/documents/dom.html`);
-  await expect
-    .poll(() =>
-      page
-        .locator("#fidelity-frame")
-        .evaluate((element) => (element as HTMLElement & { status: string }).status),
-    )
-    .toBe("ready");
+async function mountFidelityFrame(page: Page): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/dom.html`,
+    id: "fidelity-frame",
+  });
 }
 
 test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -145,7 +133,7 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
 test("scopes shell selectors and root translation to the connected virtual tree", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -260,7 +248,7 @@ test("scopes shell selectors and root translation to the connected virtual tree"
 });
 
 test("parses and clones virtual template contents", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -297,7 +285,7 @@ test("parses and clones virtual template contents", async ({ page }) => {
 test("reports element geometry in the virtual viewport coordinate space", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -360,7 +348,7 @@ test("reports element geometry in the virtual viewport coordinate space", async 
 });
 
 test("positions native popovers in the virtual viewport", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -424,7 +412,7 @@ test("positions native popovers in the virtual viewport", async ({ page }) => {
 });
 
 test("keeps document collections live with stable identities", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -606,7 +594,7 @@ test("keeps document collections live with stable identities", async ({ page }) 
 test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
@@ -662,7 +650,7 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
 test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({
   page,
 }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
