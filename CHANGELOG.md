@@ -93,8 +93,9 @@ from.
   those numbers instead of describing them. This was previously discoverable only
   by building something large and being disappointed.
 - Firefox numbers behind that ceiling, so it no longer rests on one engine.
-  Activation is about a fifth dearer than chromium's (1.24x and 1.17x on the two
-  runs taken) and insertion close to double, while re-parenting is within the
+  Activation is somewhat dearer than chromium's (1.03x to 1.24x across the runs
+  taken — too noisy for a specific figure) and insertion close to double, while
+  re-parenting is within the
   spread. Retained heap is still unmeasured on firefox and `limitations.md` now
   says so where the figure appears, instead of leaving a chromium number reading
   as a cross-engine one.
@@ -143,8 +144,8 @@ from.
   next re-parent of an ancestor. [`docs/limitations.md`](./docs/limitations.md)
   records that as a limitation, with the list of APIs it affects. Measured by
   `pnpm bench`, which now has a `re-parent` row, moving a settled hundred-node
-  subtree 1,000 times drops from 254–297 ms to 59–78 ms — from 48–59x plain host
-  DOM to 12–13x. Activation and insertion do not change; the earlier note's guess
+  subtree 1,000 times runs about 3–4x cheaper — from roughly 50–80x plain host
+  DOM to roughly 12–20x. Activation and insertion do not change; the earlier note's guess
   that insertion was bound by this was wrong, and
   [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md) now
   records what a profile says it is bound by instead.
@@ -230,6 +231,16 @@ from.
 
 ### Fixed
 
+- The `reload()` description in [`docs/api.md`](./docs/api.md) now says that a
+  successful reload resolves. Three earlier revisions of that paragraph were each
+  wrong in a different way — the first claimed `reload()` could not run before
+  `v-frame-load`, the second that it never rejects, the third enumerated the
+  cases in which it resolves and left out the ordinary successful one.
+- Benchmark figures in [`docs/limitations.md`](./docs/limitations.md),
+  [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md) and this
+  file are quoted as ratios rather than milliseconds. The absolute timings did
+  not reproduce between machines or under load, so they were repeatedly stated
+  more precisely than the measurement supported.
 - An attribute written to an element that is already in the virtual tree now
   produces a marked `Attr` node. Marking only ever walked an element's
   attributes while marking the element itself, so an attribute set afterwards

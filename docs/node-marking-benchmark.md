@@ -204,8 +204,9 @@ from before the first round:
 | 5 (10,000 rows) | — | 1,653 KB |
 
 Strong: +2,421 KB for the second round, and it would have kept paying that. Weak: +59 KB,
-then +106, +37, +122 — about 40 bytes per row against 1,211, and flat rather than
-compounding. The strong columns stop at two rounds because the run does not finish: the
+then +106, +37, +122 — about 40 bytes per row against 1,240, and flat rather than
+compounding. (Both figures use the 1,024-byte KB that `pnpm bench`'s own `bytes/row`
+column reports, so they are comparable with the table above.) The strong columns stop at two rounds because the run does not finish: the
 rows it will not release make the next round quadratic (below).
 
 What the first round's 1,329 KB is made of was not identified. It is not the rows — every
@@ -295,8 +296,10 @@ what did not move.
 | activation | before | 36.0 ms | 86.4 ms | 270.5 ms | 622.4 ms |
 | | after | 29.9 ms | 79.1 ms | 249.6 ms | 580.4 ms |
 
-**Re-parenting 1,000 settled subtrees drops from 254–297 ms to 59–78 ms — about 3.8x —
-and from 48–59x plain host DOM to 12–13x.** That is the whole of the claim.
+**Re-parenting 1,000 settled subtrees runs about 3–4x cheaper, dropping from roughly
+50–80x plain host DOM to roughly 12–20x.** That is the whole of the claim. The ratio
+reproduces across machines and runs; the absolute milliseconds do not, so they are not
+quoted here — take them from `pnpm bench` on the machine you care about.
 
 **Activation does not change**, and cannot: activation walks a tree that is detached when
 marking reaches it, so the gate never fires. The 5–8% in the table is run-to-run spread,

@@ -292,10 +292,12 @@ already there, because marking is per inserted subtree rather than per document.
 Two 60 Hz frames per thousand rows is the budget to plan against.
 
 **Re-parenting a settled subtree** — what a list does when it reorders rows —
-costs about 59–78 ms per 1,000 moves of a hundred-node subtree, against 4.5–6.2 ms
-for host DOM. Marking does not run again for a subtree that is already marked and
-still connected, so this no longer scales with how big the moved subtree is; it
-used to cost 254–297 ms.
+runs about 3–4x cheaper than it used to, bringing 1,000 moves of a hundred-node
+subtree from roughly 50–80x the cost of plain host DOM down to roughly 12–20x.
+Marking does not run again for a subtree that is already marked and still
+connected, so this no longer scales with how big the moved subtree is. The
+absolute milliseconds move with machine load — run `pnpm bench` for a figure on
+your own hardware; the ratio is what holds across runs.
 
 **Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
 marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
@@ -346,13 +348,14 @@ both engines in one run.
 Firefox 151.0 and chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D,
 2026-08-01. All four columns come from one `pnpm bench` run, so they are
 comparable to each other; they are a *different* run from the chromium table
-above, which is why its cells differ by up to 20% — that is the run-to-run
-spread, and it is why the ratio rather than any cell is the figure to read.
+above, which is why individual cells differ from it by 20–30% — that is the
+run-to-run spread, and it is why the ratio rather than any cell is the figure to
+read.
 
-The two runs taken that day put the marginal activation cost at **16.6 µs per
-element for firefox against 13.4 for chromium**, then 13.4 against 11.4. The
-absolute numbers moved together with the machine; the ratio did not, at 1.24x and
-1.17x. Activation on firefox is roughly a fifth dearer.
+Across the runs taken that day the marginal activation cost was consistently
+higher on firefox than on chromium, but by an unstable margin — measurements
+ranged from about 1.03x to 1.24x. Read it as *firefox is somewhat dearer, never
+dramatically so*; the sample is too noisy to support a specific multiple.
 
 Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
 chromium's 32–44** across the two runs — very close to double — and still flat in
