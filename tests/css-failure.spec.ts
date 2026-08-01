@@ -61,7 +61,10 @@ async function startFixture(): Promise<CSSFailureFixture> {
       if (!existsSync(bundle)) {
         return reply(response, 404, "text/plain", "Build output not found");
       }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(bundle).pipe(response);
       return;
     }
@@ -79,7 +82,9 @@ async function startFixture(): Promise<CSSFailureFixture> {
     return reply(response, 404, "text/plain", `No fixture for ${path}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -94,7 +99,7 @@ async function startFixture(): Promise<CSSFailureFixture> {
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -118,22 +123,31 @@ async function mountFrame(
   page: import("@playwright/test").Page,
   path: string,
 ): Promise<Array<{ phase: string; url: string; fatal: boolean }>> {
-  return page.evaluate(async ({ origin, documentPath }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-    const failures: Array<{ phase: string; url: string; fatal: boolean }> = [];
-    frame.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{ phase: string; url: string; fatal: boolean }>).detail;
-      failures.push({ phase: detail.phase, url: detail.url, fatal: detail.fatal });
-    });
-    const loaded = new Promise<void>((resolve) => frame.addEventListener("v-frame-load", () => resolve(), { once: true }));
-    frame.src = `${origin}${documentPath}`;
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    return failures;
-  }, { origin: fixture.origin, documentPath: path });
+  return page.evaluate(
+    async ({ origin, documentPath }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & { src: string };
+      const failures: Array<{ phase: string; url: string; fatal: boolean }> = [];
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (
+          event as CustomEvent<{ phase: string; url: string; fatal: boolean }>
+        ).detail;
+        failures.push({ phase: detail.phase, url: detail.url, fatal: detail.fatal });
+      });
+      const loaded = new Promise<void>((resolve) =>
+        frame.addEventListener("v-frame-load", () => resolve(), { once: true }),
+      );
+      frame.src = `${origin}${documentPath}`;
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      return failures;
+    },
+    { origin: fixture.origin, documentPath: path },
+  );
 }
 
-test("keeps valid inline stylesheet rules after a nested import fails", async ({ page }) => {
+test("keeps valid inline stylesheet rules after a nested import fails", async ({
+  page,
+}) => {
   await installBundle(page);
   const failures = await mountFrame(page, "/documents/inline.html");
   const frame = page.locator("v-frame");
@@ -141,14 +155,18 @@ test("keeps valid inline stylesheet rules after a nested import fails", async ({
   await expect(frame.locator("#inline-parent")).toHaveCSS("color", "rgb(11, 12, 13)");
   await expect(frame.locator("#inline-imported")).toHaveCSS("color", "rgb(21, 22, 23)");
   await expect(frame.locator("#inline-sibling")).toHaveCSS("color", "rgb(31, 32, 33)");
-  expect(failures).toEqual([{
-    phase: "stylesheet",
-    url: `${fixture.origin}/styles/inline-missing.css`,
-    fatal: false,
-  }]);
+  expect(failures).toEqual([
+    {
+      phase: "stylesheet",
+      url: `${fixture.origin}/styles/inline-missing.css`,
+      fatal: false,
+    },
+  ]);
 });
 
-test("keeps valid linked stylesheet rules after a nested import fails", async ({ page }) => {
+test("keeps valid linked stylesheet rules after a nested import fails", async ({
+  page,
+}) => {
   await installBundle(page);
   const failures = await mountFrame(page, "/documents/linked.html");
   const frame = page.locator("v-frame");
@@ -156,9 +174,11 @@ test("keeps valid linked stylesheet rules after a nested import fails", async ({
   await expect(frame.locator("#linked-parent")).toHaveCSS("color", "rgb(41, 42, 43)");
   await expect(frame.locator("#linked-imported")).toHaveCSS("color", "rgb(51, 52, 53)");
   await expect(frame.locator("#linked-sibling")).toHaveCSS("color", "rgb(61, 62, 63)");
-  expect(failures).toEqual([{
-    phase: "stylesheet",
-    url: `${fixture.origin}/styles/linked-missing.css`,
-    fatal: false,
-  }]);
+  expect(failures).toEqual([
+    {
+      phase: "stylesheet",
+      url: `${fixture.origin}/styles/linked-missing.css`,
+      fatal: false,
+    },
+  ]);
 });

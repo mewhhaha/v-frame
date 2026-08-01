@@ -10,7 +10,12 @@ interface CSSOMFixture {
 
 let fixture: CSSOMFixture;
 
-function reply(response: ServerResponse, status: number, type: string, source: string): void {
+function reply(
+  response: ServerResponse,
+  status: number,
+  type: string,
+  source: string,
+): void {
   response.writeHead(status, { "cache-control": "no-store", "content-type": type });
   response.end(source);
 }
@@ -27,7 +32,7 @@ function documentSource(): string {
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -62,7 +67,9 @@ async function startFixture(): Promise<CSSOMFixture> {
     reply(response, 404, "text/plain", `Unknown fixture path ${pathname}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -90,7 +97,9 @@ async function installBundle(page: Page): Promise<void> {
   }, `${fixture.origin}/dist/index.js`);
 }
 
-test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet APIs", async ({ page }) => {
+test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet APIs", async ({
+  page,
+}) => {
   await installBundle(page);
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -109,15 +118,21 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
     const style = child.document.createElement("style");
     child.document.head.append(style);
     const sheet = style.sheet!;
-    sheet.insertRule('body #insert-rule-target { color: rgb(11, 12, 13); background-image: url("./asset.png"); }');
-    (sheet as CSSStyleSheet & {
-      addRule(selector: string, declarations: string, index?: number): number;
-    }).addRule("body #add-rule-target", "color: rgb(21, 22, 23)");
+    sheet.insertRule(
+      'body #insert-rule-target { color: rgb(11, 12, 13); background-image: url("./asset.png"); }',
+    );
+    (
+      sheet as CSSStyleSheet & {
+        addRule(selector: string, declarations: string, index?: number): number;
+      }
+    ).addRule("body #add-rule-target", "color: rgb(21, 22, 23)");
 
-    const initialRule = (child.document.querySelector("#initial-style") as HTMLStyleElement)
-      .sheet!.cssRules[0] as CSSStyleRule;
+    const initialRule = (
+      child.document.querySelector("#initial-style") as HTMLStyleElement
+    ).sheet!.cssRules[0] as CSSStyleRule;
     initialRule.selectorText = "html #selector-target";
-    initialRule.style.cssText = 'color: rgb(31, 32, 33); background-image: url("./asset.png");';
+    initialRule.style.cssText =
+      'color: rgb(31, 32, 33); background-image: url("./asset.png");';
 
     const importError = (() => {
       try {
@@ -180,12 +195,17 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
   ]);
 
   const frame = page.locator("v-frame");
-  await expect(frame.locator("#insert-rule-target")).toHaveCSS("color", "rgb(11, 12, 13)");
+  await expect(frame.locator("#insert-rule-target")).toHaveCSS(
+    "color",
+    "rgb(11, 12, 13)",
+  );
   await expect(frame.locator("#add-rule-target")).toHaveCSS("color", "rgb(21, 22, 23)");
   await expect(frame.locator("#selector-target")).toHaveCSS("color", "rgb(31, 32, 33)");
 });
 
-test("applies, clears, and rejects shorthand values through the inline style declaration", async ({ page }) => {
+test("applies, clears, and rejects shorthand values through the inline style declaration", async ({
+  page,
+}) => {
   await installBundle(page);
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -202,7 +222,9 @@ test("applies, clears, and rejects shorthand values through the inline style dec
     const idlTarget = child.document.querySelector("#insert-rule-target") as HTMLElement;
     idlTarget.style.margin = "10px";
 
-    const setPropertyTarget = child.document.querySelector("#add-rule-target") as HTMLElement;
+    const setPropertyTarget = child.document.querySelector(
+      "#add-rule-target",
+    ) as HTMLElement;
     setPropertyTarget.style.setProperty("padding", "4px 8px");
 
     const clearedTarget = child.document.querySelector("#selector-target") as HTMLElement;
@@ -229,6 +251,9 @@ test("applies, clears, and rejects shorthand values through the inline style dec
   await expect(frame.locator("#insert-rule-target")).toHaveCSS("margin-left", "10px");
   await expect(frame.locator("#add-rule-target")).toHaveCSS("padding-top", "4px");
   await expect(frame.locator("#add-rule-target")).toHaveCSS("padding-left", "8px");
-  await expect(frame.locator("#selector-target")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(frame.locator("#selector-target")).toHaveCSS(
+    "background-color",
+    "rgba(0, 0, 0, 0)",
+  );
   await expect(frame.locator("#selector-target")).toHaveCSS("color", "rgb(5, 6, 7)");
 });

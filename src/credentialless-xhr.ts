@@ -48,7 +48,11 @@ function responseCharset(mimeType: string): string | undefined {
   return match?.[1] ?? match?.[2] ?? match?.[3];
 }
 
-function decodeResponseBody(window: VFrameWindow, body: ArrayBuffer, mimeType: string): string {
+function decodeResponseBody(
+  window: VFrameWindow,
+  body: ArrayBuffer,
+  mimeType: string,
+): string {
   const charset = responseCharset(mimeType);
   if (charset === undefined) {
     return new window.TextDecoder().decode(body);
@@ -91,7 +95,10 @@ function requestBodyForFetch(
     const source = new window.XMLSerializer().serializeToString(body);
     return {
       body: source,
-      contentType: body.contentType === "text/html" ? "text/html;charset=UTF-8" : "application/xml;charset=UTF-8",
+      contentType:
+        body.contentType === "text/html"
+          ? "text/html;charset=UTF-8"
+          : "application/xml;charset=UTF-8",
       uploadSize: new window.TextEncoder().encode(source).byteLength,
     };
   }
@@ -127,7 +134,9 @@ function responseProgress(response: Response, bodySize: number): ProgressValues 
     return progressValues(bodySize, null);
   }
   const total = Number(contentLength);
-  return Number.isSafeInteger(total) ? progressValues(bodySize, total) : progressValues(bodySize, null);
+  return Number.isSafeInteger(total)
+    ? progressValues(bodySize, total)
+    : progressValues(bodySize, null);
 }
 
 /**
@@ -173,10 +182,14 @@ export function createCredentiallessXMLHttpRequest(
       if (listeners === undefined) {
         return;
       }
-      const capture = typeof options === "boolean" ? options : options?.capture ?? false;
-      const remaining = listeners.filter((registered) =>
-        registered.listener !== listener ||
-        (typeof registered.options === "boolean" ? registered.options : registered.options?.capture ?? false) !== capture,
+      const capture =
+        typeof options === "boolean" ? options : (options?.capture ?? false);
+      const remaining = listeners.filter(
+        (registered) =>
+          registered.listener !== listener ||
+          (typeof registered.options === "boolean"
+            ? registered.options
+            : (registered.options?.capture ?? false)) !== capture,
       );
       if (remaining.length === 0) {
         this.#eventListeners.delete(type);
@@ -253,7 +266,8 @@ export function createCredentiallessXMLHttpRequest(
         return;
       }
 
-      const registered: EventListener = (event) => listener.call(this as unknown as XMLHttpRequestUpload, event);
+      const registered: EventListener = (event) =>
+        listener.call(this as unknown as XMLHttpRequestUpload, event);
       this.#eventHandlers.set(type, registered);
       this.#eventHandlerValues.set(type, listener);
       this.addEventListener(type, registered);
@@ -342,10 +356,14 @@ export function createCredentiallessXMLHttpRequest(
       if (listeners === undefined) {
         return;
       }
-      const capture = typeof options === "boolean" ? options : options?.capture ?? false;
-      const remaining = listeners.filter((registered) =>
-        registered.listener !== listener ||
-        (typeof registered.options === "boolean" ? registered.options : registered.options?.capture ?? false) !== capture,
+      const capture =
+        typeof options === "boolean" ? options : (options?.capture ?? false);
+      const remaining = listeners.filter(
+        (registered) =>
+          registered.listener !== listener ||
+          (typeof registered.options === "boolean"
+            ? registered.options
+            : (registered.options?.capture ?? false)) !== capture,
       );
       if (remaining.length === 0) {
         this.#eventListeners.delete(type);
@@ -359,17 +377,27 @@ export function createCredentiallessXMLHttpRequest(
     }
 
     set responseType(value: XMLHttpRequestResponseType) {
-      if (this.#readyState === CredentiallessXMLHttpRequest.LOADING || this.#readyState === CredentiallessXMLHttpRequest.DONE) {
-        throw this.#invalidState("responseType cannot change after response loading begins");
+      if (
+        this.#readyState === CredentiallessXMLHttpRequest.LOADING ||
+        this.#readyState === CredentiallessXMLHttpRequest.DONE
+      ) {
+        throw this.#invalidState(
+          "responseType cannot change after response loading begins",
+        );
       }
       if (!["", "text", "json", "arraybuffer", "blob", "document"].includes(value)) {
-        throw new window.TypeError(`XMLHttpRequest responseType ${JSON.stringify(value)} is not supported`);
+        throw new window.TypeError(
+          `XMLHttpRequest responseType ${JSON.stringify(value)} is not supported`,
+        );
       }
       this.#responseType = value as ResponseType;
     }
 
     get response(): unknown {
-      if (this.#readyState !== CredentiallessXMLHttpRequest.LOADING && this.#readyState !== CredentiallessXMLHttpRequest.DONE) {
+      if (
+        this.#readyState !== CredentiallessXMLHttpRequest.LOADING &&
+        this.#readyState !== CredentiallessXMLHttpRequest.DONE
+      ) {
         return null;
       }
       return this.#responseValue;
@@ -377,9 +405,14 @@ export function createCredentiallessXMLHttpRequest(
 
     get responseText(): string {
       if (this.#responseType !== "" && this.#responseType !== "text") {
-        throw this.#invalidState(`responseText is unavailable when responseType is ${JSON.stringify(this.#responseType)}`);
+        throw this.#invalidState(
+          `responseText is unavailable when responseType is ${JSON.stringify(this.#responseType)}`,
+        );
       }
-      if (this.#readyState !== CredentiallessXMLHttpRequest.LOADING && this.#readyState !== CredentiallessXMLHttpRequest.DONE) {
+      if (
+        this.#readyState !== CredentiallessXMLHttpRequest.LOADING &&
+        this.#readyState !== CredentiallessXMLHttpRequest.DONE
+      ) {
         return "";
       }
       return this.#responseText;
@@ -387,7 +420,9 @@ export function createCredentiallessXMLHttpRequest(
 
     get responseXML(): Document | null {
       if (this.#responseType !== "" && this.#responseType !== "document") {
-        throw this.#invalidState(`responseXML is unavailable when responseType is ${JSON.stringify(this.#responseType)}`);
+        throw this.#invalidState(
+          `responseXML is unavailable when responseType is ${JSON.stringify(this.#responseType)}`,
+        );
       }
       if (this.#readyState !== CredentiallessXMLHttpRequest.DONE) {
         return null;
@@ -413,7 +448,9 @@ export function createCredentiallessXMLHttpRequest(
 
     set timeout(value: number) {
       if (!Number.isFinite(value) || value < 0) {
-        throw new window.TypeError(`XMLHttpRequest timeout must be a non-negative finite number, received ${String(value)}`);
+        throw new window.TypeError(
+          `XMLHttpRequest timeout must be a non-negative finite number, received ${String(value)}`,
+        );
       }
       this.#timeout = Math.floor(value);
       if (this.#sendInProgress) {
@@ -427,7 +464,9 @@ export function createCredentiallessXMLHttpRequest(
 
     set withCredentials(value: boolean) {
       if (this.#sendInProgress) {
-        throw this.#invalidState("withCredentials cannot change while a request is in progress");
+        throw this.#invalidState(
+          "withCredentials cannot change while a request is in progress",
+        );
       }
       // Keep the observable setting for compatibility, but never let it weaken
       // the component's `credentials="omit"` boundary.
@@ -504,7 +543,9 @@ export function createCredentiallessXMLHttpRequest(
 
     open(...argumentsList: unknown[]): void {
       if (argumentsList.length < 2) {
-        throw new window.TypeError("XMLHttpRequest.open requires method and URL arguments");
+        throw new window.TypeError(
+          "XMLHttpRequest.open requires method and URL arguments",
+        );
       }
 
       const [method, url, suppliedAsync, username, password] = argumentsList;
@@ -555,8 +596,13 @@ export function createCredentiallessXMLHttpRequest(
     }
 
     setRequestHeader(name: string, value: string): void {
-      if (this.#readyState !== CredentiallessXMLHttpRequest.OPENED || this.#sendInProgress) {
-        throw this.#invalidState("setRequestHeader requires an opened request before send()");
+      if (
+        this.#readyState !== CredentiallessXMLHttpRequest.OPENED ||
+        this.#sendInProgress
+      ) {
+        throw this.#invalidState(
+          "setRequestHeader requires an opened request before send()",
+        );
       }
       try {
         this.#requestHeaders.append(name, value);
@@ -569,8 +615,13 @@ export function createCredentiallessXMLHttpRequest(
     }
 
     overrideMimeType(mimeType: string): void {
-      if (this.#readyState === CredentiallessXMLHttpRequest.LOADING || this.#readyState === CredentiallessXMLHttpRequest.DONE) {
-        throw this.#invalidState("overrideMimeType cannot run after response loading begins");
+      if (
+        this.#readyState === CredentiallessXMLHttpRequest.LOADING ||
+        this.#readyState === CredentiallessXMLHttpRequest.DONE
+      ) {
+        throw this.#invalidState(
+          "overrideMimeType cannot run after response loading begins",
+        );
       }
       this.#overrideMimeType = String(mimeType);
     }
@@ -602,7 +653,9 @@ export function createCredentiallessXMLHttpRequest(
         throw this.#invalidState("send() requires open() to run first");
       }
       if (this.#sendInProgress) {
-        throw this.#invalidState("send() cannot run more than once for the same opened request");
+        throw this.#invalidState(
+          "send() cannot run more than once for the same opened request",
+        );
       }
 
       const request = /^(GET|HEAD)$/u.test(this.#requestMethod)
@@ -635,7 +688,12 @@ export function createCredentiallessXMLHttpRequest(
 
       this.#scheduleTimeout(requestGeneration);
 
-      void this.#sendRequest(requestGeneration, request.body, request.uploadSize, abortController.signal);
+      void this.#sendRequest(
+        requestGeneration,
+        request.body,
+        request.uploadSize,
+        abortController.signal,
+      );
     }
 
     abort(): void {
@@ -661,7 +719,8 @@ export function createCredentiallessXMLHttpRequest(
         return;
       }
 
-      const registered: EventListener = (event) => listener.call(this as unknown as XMLHttpRequest, event);
+      const registered: EventListener = (event) =>
+        listener.call(this as unknown as XMLHttpRequest, event);
       this.#eventHandlers.set(type, registered);
       this.#eventHandlerValues.set(type, listener);
       this.addEventListener(type, registered);
@@ -691,7 +750,10 @@ export function createCredentiallessXMLHttpRequest(
           // The upload-complete flag is set before the terminal upload events,
           // so a later failure cannot re-fire them via the request-error steps.
           this.#requestHasBody = false;
-          const completedUpload = progressValues(requestUploadSize ?? 0, requestUploadSize);
+          const completedUpload = progressValues(
+            requestUploadSize ?? 0,
+            requestUploadSize,
+          );
           this.#dispatchUpload("progress", completedUpload);
           if (!this.#isCurrentRequest(requestGeneration)) {
             return;
@@ -741,7 +803,8 @@ export function createCredentiallessXMLHttpRequest(
     }
 
     #readResponse(response: Response, responseBody: ArrayBuffer): void {
-      const mimeType = this.#overrideMimeType ?? response.headers.get("content-type") ?? "";
+      const mimeType =
+        this.#overrideMimeType ?? response.headers.get("content-type") ?? "";
       const text = decodeResponseBody(window, responseBody, mimeType);
       const responseIsDocument = isXMLMimeType(mimeType) || isHTMLMimeType(mimeType);
 
@@ -751,7 +814,9 @@ export function createCredentiallessXMLHttpRequest(
         // The spec restricts HTML parsing to responseType "document"; the
         // legacy default mode only ever exposes XML documents.
         if (this.#responseType === "document" || xmlResponse) {
-          const documentMimeType: DOMParserSupportedType = xmlResponse ? "application/xml" : "text/html";
+          const documentMimeType: DOMParserSupportedType = xmlResponse
+            ? "application/xml"
+            : "text/html";
           const source = xmlResponse ? text : options.createHTML(text);
           let document: Document | null = new window.DOMParser().parseFromString(
             source,
@@ -800,16 +865,24 @@ export function createCredentiallessXMLHttpRequest(
         window.clearTimeout(this.#timeoutID);
         this.#timeoutID = null;
       }
-      if (!this.#isCurrentRequest(requestGeneration) || this.#timeout === 0 || this.#requestStartedAt === null) {
+      if (
+        !this.#isCurrentRequest(requestGeneration) ||
+        this.#timeout === 0 ||
+        this.#requestStartedAt === null
+      ) {
         return;
       }
 
-      const remaining = this.#timeout - (window.performance.now() - this.#requestStartedAt);
+      const remaining =
+        this.#timeout - (window.performance.now() - this.#requestStartedAt);
       if (remaining <= 0) {
         this.#timedOut(requestGeneration);
         return;
       }
-      this.#timeoutID = window.setTimeout(() => this.#timedOut(requestGeneration), remaining);
+      this.#timeoutID = window.setTimeout(
+        () => this.#timedOut(requestGeneration),
+        remaining,
+      );
     }
 
     #timedOut(requestGeneration: number): void {
@@ -900,7 +973,11 @@ export function createCredentiallessXMLHttpRequest(
         options.unregisterActive(activeRequest);
       }
 
-      if (result === "abort" && !this.#sendInProgress && this.#requestGeneration === requestGeneration) {
+      if (
+        result === "abort" &&
+        !this.#sendInProgress &&
+        this.#requestGeneration === requestGeneration
+      ) {
         this.#resetResponse();
         this.#readyState = CredentiallessXMLHttpRequest.UNSENT;
       }
@@ -932,17 +1009,23 @@ export function createCredentiallessXMLHttpRequest(
     }
 
     #dispatch(type: string, progress: ProgressValues = progressValues(0, null)): void {
-      const event = type === "readystatechange"
-        ? new window.Event(type)
-        : new window.ProgressEvent(type, progress);
+      const event =
+        type === "readystatechange"
+          ? new window.Event(type)
+          : new window.ProgressEvent(type, progress);
       this.dispatchEvent(event);
     }
 
-    #dispatchUpload(type: string, progress: ProgressValues = progressValues(0, null)): void {
+    #dispatchUpload(
+      type: string,
+      progress: ProgressValues = progressValues(0, null),
+    ): void {
       this.#upload.dispatchEvent(new window.ProgressEvent(type, progress));
     }
   }
 
-  Object.defineProperty(CredentiallessXMLHttpRequest, "name", { value: "XMLHttpRequest" });
+  Object.defineProperty(CredentiallessXMLHttpRequest, "name", {
+    value: "XMLHttpRequest",
+  });
   return CredentiallessXMLHttpRequest as unknown as typeof XMLHttpRequest;
 }

@@ -1,10 +1,5 @@
 import type { ReactNode } from "react";
-import {
-  isRouteErrorResponse,
-  Meta,
-  Outlet,
-  Scripts,
-} from "react-router";
+import { isRouteErrorResponse, Meta, Outlet, Scripts } from "react-router";
 
 import type { Route } from "./+types/root";
 import { widgetStyle } from "./widget";
@@ -39,5 +34,9 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     ? `${error.status} ${error.statusText}`
     : "The React Router application could not render this route.";
 
-  return <main className="activity-widget"><p>{message}</p></main>;
+  return (
+    <main className="activity-widget">
+      <p>{message}</p>
+    </main>
+  );
 }

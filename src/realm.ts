@@ -9,21 +9,14 @@ import {
   type StylesheetContext,
   type StylesheetImportFailure,
 } from "./css.js";
-import {
-  installDocumentFacade,
-  type DocumentFacade,
-} from "./document-facade.js";
+import { installDocumentFacade, type DocumentFacade } from "./document-facade.js";
 import {
   BoundHistory,
   type DocumentHistoryMode,
   VirtualHistory,
   VirtualHistorySession,
 } from "./history.js";
-import {
-  prepareAdoptedMarkup,
-  prepareMarkup,
-  type PreparedMarkup,
-} from "./markup.js";
+import { prepareAdoptedMarkup, prepareMarkup, type PreparedMarkup } from "./markup.js";
 import { installNetworkPatches } from "./network.js";
 import { ScriptRunner } from "./scripts.js";
 import { isSameDocumentFragment } from "./url.js";
@@ -287,9 +280,11 @@ export async function connectRealmIframe(
       ) {
         cleanup();
         iframe.remove();
-        reject(new Error(
-          "v-frame requires Navigation API support to isolate native Location changes",
-        ));
+        reject(
+          new Error(
+            "v-frame requires Navigation API support to isolate native Location changes",
+          ),
+        );
         return;
       }
 
@@ -309,7 +304,8 @@ export async function connectRealmIframe(
             const policyRules = {
               createHTML: (source: string) => trustedTypesPolicy.createHTML(source),
               createScript: (source: string) => trustedTypesPolicy.createScript(source),
-              createScriptURL: (source: string) => trustedTypesPolicy.createScriptURL(source),
+              createScriptURL: (source: string) =>
+                trustedTypesPolicy.createScriptURL(source),
             };
             const factory = (
               realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
@@ -318,13 +314,11 @@ export async function connectRealmIframe(
               realmTrustedTypes = policyRules;
             } else {
               try {
-                const policy = factory.createPolicy(
-                  trustedTypesPolicy.name,
-                  policyRules,
-                );
+                const policy = factory.createPolicy(trustedTypesPolicy.name, policyRules);
                 realmTrustedTypes = {
                   createHTML: (source) => policy.createHTML(source) as unknown as string,
-                  createScript: (source) => policy.createScript(source) as unknown as string,
+                  createScript: (source) =>
+                    policy.createScript(source) as unknown as string,
                   createScriptURL: (source) =>
                     policy.createScriptURL(source) as unknown as string,
                 };
@@ -347,10 +341,12 @@ export async function connectRealmIframe(
             } catch (error) {
               cleanup();
               iframe.remove();
-              reject(new Error(
-                `v-frame could not initialize its execution realm at ${locationURL}`,
-                { cause: error },
-              ));
+              reject(
+                new Error(
+                  `v-frame could not initialize its execution realm at ${locationURL}`,
+                  { cause: error },
+                ),
+              );
             }
           }, 0);
         } catch (error) {
@@ -431,16 +427,13 @@ function installInternalStyles(shadowRoot: ShadowRoot): InternalStyles {
 function installStagingStyles(shadowRoot: ShadowRoot): () => void {
   const view = shadowRoot.ownerDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
-    throw new Error(
-      "Cannot stage v-frame markup without constructed stylesheet support",
-    );
+    throw new Error("Cannot stage v-frame markup without constructed stylesheet support");
   }
 
-  const liveMarkupPosition = Array.from(shadowRoot.children).filter(
-    (element) => element.localName === "v-html",
-  ).length + 1;
-  const liveMarkupSelector =
-    `:host > v-html:nth-of-type(${liveMarkupPosition})${STAGING_SELECTOR_SPECIFICITY}`;
+  const liveMarkupPosition =
+    Array.from(shadowRoot.children).filter((element) => element.localName === "v-html")
+      .length + 1;
+  const liveMarkupSelector = `:host > v-html:nth-of-type(${liveMarkupPosition})${STAGING_SELECTOR_SPECIFICITY}`;
   const sheet = new view.CSSStyleSheet();
   sheet.replaceSync(`
 :host(${STAGING_SELECTOR_SPECIFICITY}) {
@@ -509,11 +502,14 @@ function installWindowEventBridge(
         return;
       }
 
-      const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
+      const capture =
+        typeof options === "boolean" ? options : (options?.capture ?? false);
       if (
         records.some(
           (record) =>
-            record.type === type && record.listener === listener && record.capture === capture,
+            record.type === type &&
+            record.listener === listener &&
+            record.capture === capture,
         )
       ) {
         return;
@@ -540,9 +536,10 @@ function installWindowEventBridge(
         }
       };
       records.push(record);
-      const listenerOptions = typeof options === "boolean"
-        ? options
-        : { capture, passive: options?.passive ?? false };
+      const listenerOptions =
+        typeof options === "boolean"
+          ? options
+          : { capture, passive: options?.passive ?? false };
       nativeAddEventListener(type, record.wrapper, listenerOptions);
       virtualEventTarget.addEventListener(type, record.wrapper, listenerOptions);
       if (typeof options !== "boolean" && options?.signal !== undefined) {
@@ -563,10 +560,13 @@ function installWindowEventBridge(
         return;
       }
 
-      const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
+      const capture =
+        typeof options === "boolean" ? options : (options?.capture ?? false);
       const index = records.findIndex(
         (record) =>
-          record.type === type && record.listener === listener && record.capture === capture,
+          record.type === type &&
+          record.listener === listener &&
+          record.capture === capture,
       );
       const record = records[index];
       if (record === undefined) {
@@ -742,9 +742,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const nativeWindowOpen = window.open.bind(window);
     const scheduleNavigationDefault = window.setTimeout.bind(window);
 
-    const prepare = options.markup.kind === "adopted"
-      ? prepareAdoptedMarkup
-      : prepareMarkup;
+    const prepare =
+      options.markup.kind === "adopted" ? prepareAdoptedMarkup : prepareMarkup;
     markup = await prepare({
       window,
       document,
@@ -785,11 +784,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const generatedStyleWrites = new WeakSet<HTMLStyleElement>();
     const connectedStylesAwaitingObservation = new WeakSet<HTMLStyleElement>();
     const connectedLinksAwaitingObservation = new WeakSet<HTMLLinkElement>();
-    const isConnectedToRealm = (node: Node): boolean => markup?.html.contains(node) ?? false;
+    const isConnectedToRealm = (node: Node): boolean =>
+      markup?.html.contains(node) ?? false;
 
     const getDocumentBaseURL = (): string => {
       for (const base of markup?.html.querySelectorAll("base[href]") ?? []) {
-        const authoredHref = markup?.authoredURLAttributes.get(base)?.get("href") ??
+        const authoredHref =
+          markup?.authoredURLAttributes.get(base)?.get("href") ??
           base.getAttribute("href") ??
           "";
         const resolvedBase = window.URL.parse(authoredHref, currentURL);
@@ -803,7 +804,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       for (const base of markup?.html.querySelectorAll("base[target]") ?? []) {
         const target = base.getAttribute("target") ?? "";
         const normalizedTarget = target.toLowerCase();
-        const isKeyword = normalizedTarget === "_blank" ||
+        const isKeyword =
+          normalizedTarget === "_blank" ||
           normalizedTarget === "_self" ||
           normalizedTarget === "_parent" ||
           normalizedTarget === "_top";
@@ -830,19 +832,19 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     };
     const history = options.boundNavigation
       ? new BoundHistory({
-        window,
-        hostWindow: options.host.ownerDocument.defaultView!,
-        onNavigate: options.onNavigate,
-        onURLChange: historyURLChanged,
-      })
+          window,
+          hostWindow: options.host.ownerDocument.defaultView!,
+          onNavigate: options.onNavigate,
+          onURLChange: historyURLChanged,
+        })
       : new VirtualHistory({
-        window,
-        session: options.historySession,
-        getBaseURL: getDocumentBaseURL,
-        onNavigate: options.onNavigate,
-        onURLChange: historyURLChanged,
-        onDocumentTraversal: options.onDocumentTraversal,
-      });
+          window,
+          session: options.historySession,
+          getBaseURL: getDocumentBaseURL,
+          onNavigate: options.onNavigate,
+          onURLChange: historyURLChanged,
+          onDocumentTraversal: options.onDocumentTraversal,
+        });
     history.install();
     bootstrapDisposers.push(() => history.dispose());
 
@@ -973,9 +975,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
               throw error;
             }
 
-            const insertionIndex = index === undefined
-              ? nativeInsertRule.call(sheet, rewritten)
-              : nativeInsertRule.call(sheet, rewritten, index);
+            const insertionIndex =
+              index === undefined
+                ? nativeInsertRule.call(sheet, rewritten)
+                : nativeInsertRule.call(sheet, rewritten, index);
             installCSSOMRules(sheet);
             return insertionIndex;
           },
@@ -990,9 +993,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
               getDocumentBaseURL(),
             );
             if (nativeAddRule !== undefined) {
-              const result = index === undefined
-                ? nativeAddRule.call(sheet, rewritten.selector, rewritten.declarations)
-                : nativeAddRule.call(sheet, rewritten.selector, rewritten.declarations, index);
+              const result =
+                index === undefined
+                  ? nativeAddRule.call(sheet, rewritten.selector, rewritten.declarations)
+                  : nativeAddRule.call(
+                      sheet,
+                      rewritten.selector,
+                      rewritten.declarations,
+                      index,
+                    );
               installCSSOMRules(sheet);
               return result;
             }
@@ -1021,8 +1030,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
         if (node instanceof window.Element || node instanceof window.DocumentFragment) {
           styles.push(
-            ...Array.from(node.querySelectorAll("style"))
-              .filter((style) => style !== markup?.inlineStyleSheet),
+            ...Array.from(node.querySelectorAll("style")).filter(
+              (style) => style !== markup?.inlineStyleSheet,
+            ),
           );
         }
       }
@@ -1144,9 +1154,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           update.status = "committed";
           processedStyles.set(style, rewritten);
           installCSSOMStyleSheet(style);
-          reportImportFailures(
-            importFailures,
-            () => styleRevisionIsCurrent(style, update, revision, snapshot),
+          reportImportFailures(importFailures, () =>
+            styleRevisionIsCurrent(style, update, revision, snapshot),
           );
         } catch (error) {
           if (!styleRevisionIsCurrent(style, update, revision, snapshot)) {
@@ -1213,9 +1222,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const scheduleDynamicStyleAttributes = (style: HTMLStyleElement): void => {
       const update = dynamicStyleUpdates.get(style);
       const physicalText = style.textContent ?? "";
-      const source = update?.physicalText === physicalText
-        ? update.snapshot.source
-        : physicalText;
+      const source =
+        update?.physicalText === physicalText ? update.snapshot.source : physicalText;
       scheduleDynamicStyle(style, source);
     };
     const scheduleConnectedDynamicStyle = (style: HTMLStyleElement): void => {
@@ -1237,9 +1245,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
 
-      const source = update?.physicalText === physicalText
-        ? update.snapshot.source
-        : physicalText;
+      const source =
+        update?.physicalText === physicalText ? update.snapshot.source : physicalText;
       if (
         update?.status === "committed" &&
         update.physicalText === physicalText &&
@@ -1287,9 +1294,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       authoredRelOverride?: string | null,
     ): void => {
       let update = dynamicLinkUpdates.get(link);
-      const authoredRel = authoredRelOverride !== undefined
-        ? authoredRelOverride
-        : (update?.authoredRel ?? link.getAttribute("rel"));
+      const authoredRel =
+        authoredRelOverride !== undefined
+          ? authoredRelOverride
+          : (update?.authoredRel ?? link.getAttribute("rel"));
       const authoredRelValue = authoredRel ?? "";
       const isStylesheet = authoredRelValue
         .split(/[\t\n\f\r ]+/)
@@ -1389,9 +1397,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
 
       for (const node of nodes) {
-        const parentStyle = node.parentNode instanceof window.HTMLStyleElement
-          ? node.parentNode
-          : null;
+        const parentStyle =
+          node.parentNode instanceof window.HTMLStyleElement ? node.parentNode : null;
         if (parentStyle !== null && !styles.includes(parentStyle)) {
           scheduleDynamicStyleContent(parentStyle);
         }
@@ -1435,10 +1442,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         scriptRunner?.executeDynamic(script, execution);
       },
       onStyleElementChange(style) {
-        if (
-          style === markup?.inlineStyleSheet ||
-          generatedStyleWrites.has(style)
-        ) {
+        if (style === markup?.inlineStyleSheet || generatedStyleWrites.has(style)) {
           return;
         }
         scheduleDynamicStyle(style, style.textContent ?? "", true);
@@ -1454,9 +1458,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     bootstrapDisposers.push(() => facade?.dispose());
     const liveMarkup = markup.html;
     if (options.markup.kind === "adopted" || options.stageMarkup) {
-      restoreStagingStyles = installStagingStyles(
-        options.shadowRoot,
-      );
+      restoreStagingStyles = installStagingStyles(options.shadowRoot);
     }
     if (!options.signal.aborted) {
       options.shadowRoot.append(liveMarkup);
@@ -1483,7 +1485,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       getNonce: options.getNonce,
       getCurrentURL: () => currentURL,
       getNativeCurrentScript: () =>
-        (nativeCurrentScriptGetter?.call(document) as HTMLScriptElement | null | undefined) ?? null,
+        (nativeCurrentScriptGetter?.call(document) as
+          | HTMLScriptElement
+          | null
+          | undefined) ?? null,
       onError(failure) {
         options.onError({ phase: "script", ...failure });
       },
@@ -1498,115 +1503,114 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     );
     bootstrapDisposers.push(windowEventDispose);
 
-    const mutationObserver = new globalThis.MutationObserver(
-      (records) => {
-        const stylesWithContentChanges = new Set<HTMLStyleElement>();
-        const stylesWithAttributeChanges = new Set<HTMLStyleElement>();
-        const linksWithAttributeChanges = new Set<HTMLLinkElement>();
-        const stylesConnectedWithoutFacade = new Set<HTMLStyleElement>();
-        const linksConnectedWithoutFacade = new Set<HTMLLinkElement>();
-        const removedStyles = new Set<HTMLStyleElement>();
-        const removedLinks = new Set<HTMLLinkElement>();
-        let baseElementsChanged = false;
-        // Only HTML-namespace base elements affect the document base URL;
-        // querySelector's unprefixed type selector also matches foreign ones.
-        const isHTMLBase = (element: Element): boolean =>
-          element.localName === "base" &&
-          element.namespaceURI === "http://www.w3.org/1999/xhtml";
-        const subtreeHasBaseElement = (node: Node): boolean =>
-          (node instanceof window.Element && isHTMLBase(node)) ||
-          ("querySelectorAll" in node &&
-            Array.from((node as ParentNode).querySelectorAll("base")).some(isHTMLBase));
-        for (const record of records) {
-          if (record.type === "childList") {
-            if (
-              record.target instanceof window.HTMLStyleElement &&
-              record.target !== markup?.inlineStyleSheet
-            ) {
-              stylesWithContentChanges.add(record.target);
+    const mutationObserver = new globalThis.MutationObserver((records) => {
+      const stylesWithContentChanges = new Set<HTMLStyleElement>();
+      const stylesWithAttributeChanges = new Set<HTMLStyleElement>();
+      const linksWithAttributeChanges = new Set<HTMLLinkElement>();
+      const stylesConnectedWithoutFacade = new Set<HTMLStyleElement>();
+      const linksConnectedWithoutFacade = new Set<HTMLLinkElement>();
+      const removedStyles = new Set<HTMLStyleElement>();
+      const removedLinks = new Set<HTMLLinkElement>();
+      let baseElementsChanged = false;
+      // Only HTML-namespace base elements affect the document base URL;
+      // querySelector's unprefixed type selector also matches foreign ones.
+      const isHTMLBase = (element: Element): boolean =>
+        element.localName === "base" &&
+        element.namespaceURI === "http://www.w3.org/1999/xhtml";
+      const subtreeHasBaseElement = (node: Node): boolean =>
+        (node instanceof window.Element && isHTMLBase(node)) ||
+        ("querySelectorAll" in node &&
+          Array.from((node as ParentNode).querySelectorAll("base")).some(isHTMLBase));
+      for (const record of records) {
+        if (record.type === "childList") {
+          if (
+            record.target instanceof window.HTMLStyleElement &&
+            record.target !== markup?.inlineStyleSheet
+          ) {
+            stylesWithContentChanges.add(record.target);
+          }
+          for (const node of record.addedNodes) {
+            facade?.markVirtualTree(node);
+            for (const style of virtualStylesFrom([node])) {
+              if (!connectedStylesAwaitingObservation.delete(style)) {
+                stylesConnectedWithoutFacade.add(style);
+              }
             }
-            for (const node of record.addedNodes) {
-              facade?.markVirtualTree(node);
-              for (const style of virtualStylesFrom([node])) {
-                if (!connectedStylesAwaitingObservation.delete(style)) {
-                  stylesConnectedWithoutFacade.add(style);
-                }
+            for (const link of dynamicLinksFrom([node])) {
+              if (!connectedLinksAwaitingObservation.delete(link)) {
+                linksConnectedWithoutFacade.add(link);
               }
-              for (const link of dynamicLinksFrom([node])) {
-                if (!connectedLinksAwaitingObservation.delete(link)) {
-                  linksConnectedWithoutFacade.add(link);
-                }
-              }
-              baseElementsChanged ||= subtreeHasBaseElement(node);
             }
-            for (const node of record.removedNodes) {
-              for (const style of virtualStylesFrom([node])) {
-                removedStyles.add(style);
-              }
-              for (const link of dynamicLinksFrom([node])) {
-                removedLinks.add(link);
-              }
-              baseElementsChanged ||= subtreeHasBaseElement(node);
+            baseElementsChanged ||= subtreeHasBaseElement(node);
+          }
+          for (const node of record.removedNodes) {
+            for (const style of virtualStylesFrom([node])) {
+              removedStyles.add(style);
             }
-          } else if (record.type === "characterData") {
-            const parentStyle = record.target.parentNode instanceof window.HTMLStyleElement
+            for (const link of dynamicLinksFrom([node])) {
+              removedLinks.add(link);
+            }
+            baseElementsChanged ||= subtreeHasBaseElement(node);
+          }
+        } else if (record.type === "characterData") {
+          const parentStyle =
+            record.target.parentNode instanceof window.HTMLStyleElement
               ? record.target.parentNode
               : null;
-            if (parentStyle !== null) {
-              stylesWithContentChanges.add(parentStyle);
-            }
-          } else if (
-            record.type === "attributes" &&
-            record.target instanceof window.Element
+          if (parentStyle !== null) {
+            stylesWithContentChanges.add(parentStyle);
+          }
+        } else if (
+          record.type === "attributes" &&
+          record.target instanceof window.Element
+        ) {
+          facade?.synchronizeURLAttribute(
+            record.target,
+            record.attributeName ?? "",
+            record.attributeNamespace,
+          );
+          if (record.attributeName === "style") {
+            facade?.synchronizeStyleAttribute(record.target);
+          }
+          if (
+            record.target instanceof window.HTMLStyleElement &&
+            record.target !== markup?.inlineStyleSheet
           ) {
-            facade?.synchronizeURLAttribute(
-              record.target,
-              record.attributeName ?? "",
-              record.attributeNamespace,
-            );
-            if (record.attributeName === "style") {
-              facade?.synchronizeStyleAttribute(record.target);
-            }
-            if (
-              record.target instanceof window.HTMLStyleElement &&
-              record.target !== markup?.inlineStyleSheet
-            ) {
-              stylesWithAttributeChanges.add(record.target);
-            } else if (record.target instanceof window.HTMLLinkElement) {
-              linksWithAttributeChanges.add(record.target);
-            }
+            stylesWithAttributeChanges.add(record.target);
+          } else if (record.target instanceof window.HTMLLinkElement) {
+            linksWithAttributeChanges.add(record.target);
           }
         }
-        if (baseElementsChanged) {
-          updateDocumentBaseURL();
+      }
+      if (baseElementsChanged) {
+        updateDocumentBaseURL();
+      }
+      for (const style of removedStyles) {
+        if (!isConnectedToRealm(style)) {
+          invalidateDynamicStyle(style);
         }
-        for (const style of removedStyles) {
-          if (!isConnectedToRealm(style)) {
-            invalidateDynamicStyle(style);
-          }
+      }
+      for (const link of removedLinks) {
+        if (!isConnectedToRealm(link)) {
+          invalidateDynamicLink(link);
         }
-        for (const link of removedLinks) {
-          if (!isConnectedToRealm(link)) {
-            invalidateDynamicLink(link);
-          }
-        }
-        for (const style of stylesConnectedWithoutFacade) {
-          scheduleConnectedDynamicStyle(style);
-        }
-        for (const link of linksConnectedWithoutFacade) {
-          scheduleDynamicLink(link, true);
-        }
-        for (const style of stylesWithContentChanges) {
-          scheduleDynamicStyleContent(style);
-        }
-        for (const style of stylesWithAttributeChanges) {
-          scheduleDynamicStyleAttributes(style);
-        }
-        for (const link of linksWithAttributeChanges) {
-          scheduleDynamicLink(link);
-        }
-      },
-    );
+      }
+      for (const style of stylesConnectedWithoutFacade) {
+        scheduleConnectedDynamicStyle(style);
+      }
+      for (const link of linksConnectedWithoutFacade) {
+        scheduleDynamicLink(link, true);
+      }
+      for (const style of stylesWithContentChanges) {
+        scheduleDynamicStyleContent(style);
+      }
+      for (const style of stylesWithAttributeChanges) {
+        scheduleDynamicStyleAttributes(style);
+      }
+      for (const link of linksWithAttributeChanges) {
+        scheduleDynamicLink(link);
+      }
+    });
     mutationObserver.observe(markup.html, {
       subtree: true,
       childList: true,
@@ -1631,23 +1635,28 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const nativeFormSubmit = window.HTMLFormElement.prototype.submit;
     const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
-      const action = submitter !== null &&
-          "formAction" in submitter &&
-          submitter.hasAttribute("formaction")
-        ? String(submitter.formAction)
-        : form.action;
-      const method = (submitter !== null &&
-          "formMethod" in submitter &&
-          submitter.hasAttribute("formmethod")
-        ? String(submitter.formMethod)
-        : form.method).toLowerCase();
-      const target = (submitter !== null &&
-          "formTarget" in submitter &&
-          submitter.hasAttribute("formtarget")
-        ? String(submitter.formTarget)
-        : form.hasAttribute("target")
-        ? form.target
-        : getDocumentBaseTarget()).toLowerCase();
+      const action =
+        submitter !== null &&
+        "formAction" in submitter &&
+        submitter.hasAttribute("formaction")
+          ? String(submitter.formAction)
+          : form.action;
+      const method = (
+        submitter !== null &&
+        "formMethod" in submitter &&
+        submitter.hasAttribute("formmethod")
+          ? String(submitter.formMethod)
+          : form.method
+      ).toLowerCase();
+      const target = (
+        submitter !== null &&
+        "formTarget" in submitter &&
+        submitter.hasAttribute("formtarget")
+          ? String(submitter.formTarget)
+          : form.hasAttribute("target")
+            ? form.target
+            : getDocumentBaseTarget()
+      ).toLowerCase();
       const targetURL = new URL(action || currentURL, currentURL);
       if (method === "get") {
         const parameters = new window.URLSearchParams();
@@ -1733,7 +1742,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         options.host.scrollTo(0, 0);
         return;
       }
-      const target = document.getElementById(identifier) ??
+      const target =
+        document.getElementById(identifier) ??
         Array.from(document.anchors).find(
           (anchor) => anchor.getAttribute("name") === identifier,
         );
@@ -1744,19 +1754,18 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       event: MouseEvent,
       anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement,
     ) => {
-      const href = anchor instanceof window.SVGAElement
-        ? anchor.getAttribute("href") ??
-          anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
-          ""
-        : anchor.href;
+      const href =
+        anchor instanceof window.SVGAElement
+          ? (anchor.getAttribute("href") ??
+            anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
+            "")
+          : anchor.href;
       const targetURL = new URL(href || currentURL, getDocumentBaseURL());
       const target = anchor.hasAttribute("target")
         ? (anchor.getAttribute("target") ?? "").toLowerCase()
         : getDocumentBaseTarget();
-      const opensNewContext = event.type === "auxclick" ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey;
+      const opensNewContext =
+        event.type === "auxclick" || event.ctrlKey || event.metaKey || event.shiftKey;
       if (opensNewContext || target === "_blank") {
         if (
           options.onNavigate({
@@ -1846,7 +1855,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       const form = event.target as HTMLFormElement;
       const submitter = event.submitter as HTMLElement | null;
       const method = (
-        submitter?.getAttribute("formmethod") ?? form.getAttribute("method") ?? ""
+        submitter?.getAttribute("formmethod") ??
+        form.getAttribute("method") ??
+        ""
       ).toLowerCase();
       // A dialog submission navigates nowhere; its default action (closing
       // the dialog) must stay native.
@@ -1876,9 +1887,21 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         capture: true,
         signal: hostListenerLifetime.signal,
       };
-      options.shadowRoot.addEventListener("click", suppressLinkDefault, navigationListenerOptions);
-      options.shadowRoot.addEventListener("auxclick", suppressLinkDefault, navigationListenerOptions);
-      options.shadowRoot.addEventListener("submit", suppressSubmitDefault, navigationListenerOptions);
+      options.shadowRoot.addEventListener(
+        "click",
+        suppressLinkDefault,
+        navigationListenerOptions,
+      );
+      options.shadowRoot.addEventListener(
+        "auxclick",
+        suppressLinkDefault,
+        navigationListenerOptions,
+      );
+      options.shadowRoot.addEventListener(
+        "submit",
+        suppressSubmitDefault,
+        navigationListenerOptions,
+      );
       window.HTMLFormElement.prototype.submit = function submit(): void {
         formSubmission(this, null);
       };
@@ -1903,46 +1926,51 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           guestInterceptions.add(this);
         },
       });
-      navigationWindow.navigation.addEventListener("navigate", (event) => {
-        if (!event.isTrusted || event.destination.sameDocument) {
-          return;
-        }
+      navigationWindow.navigation.addEventListener(
+        "navigate",
+        (event) => {
+          if (!event.isTrusted || event.destination.sameDocument) {
+            return;
+          }
 
-        const detail = {
-          from: currentURL,
-          to: event.destination.url,
-          kind: "window",
-          state: null,
-        } satisfies VFrameNavigateEventDetail;
-        const mode = event.navigationType === "push" ||
+          const detail = {
+            from: currentURL,
+            to: event.destination.url,
+            kind: "window",
+            state: null,
+          } satisfies VFrameNavigateEventDetail;
+          const mode =
+            event.navigationType === "push" ||
             event.navigationType === "replace" ||
             event.navigationType === "reload"
-          ? event.navigationType
-          : "replace";
-        if (!options.onNavigate(detail)) {
-          event.preventDefault();
-          return;
-        }
-        if (!event.canIntercept) {
-          event.preventDefault();
-          options.onNativeLocationNavigation(detail, mode);
-          return;
-        }
-
-        nativeIntercept.call(event, {
-          handler() {
-            if (guestInterceptions.has(event)) {
-              if (history instanceof VirtualHistory) {
-                history.adoptNativeNavigation(detail.to, mode);
-              } else {
-                historyURLChanged(detail.to);
-              }
-              return;
-            }
+              ? event.navigationType
+              : "replace";
+          if (!options.onNavigate(detail)) {
+            event.preventDefault();
+            return;
+          }
+          if (!event.canIntercept) {
+            event.preventDefault();
             options.onNativeLocationNavigation(detail, mode);
-          },
-        });
-      }, { signal: childListenerLifetime.signal });
+            return;
+          }
+
+          nativeIntercept.call(event, {
+            handler() {
+              if (guestInterceptions.has(event)) {
+                if (history instanceof VirtualHistory) {
+                  history.adoptNativeNavigation(detail.to, mode);
+                } else {
+                  historyURLChanged(detail.to);
+                }
+                return;
+              }
+              options.onNativeLocationNavigation(detail, mode);
+            },
+          });
+        },
+        { signal: childListenerLifetime.signal },
+      );
     };
 
     Object.defineProperty(window, "open", {
@@ -2037,7 +2065,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       } satisfies VFrameNavigateEventDetail;
       const allowed = options.boundNavigation
         ? options.onShellNavigation(detail)
-        : history instanceof VirtualHistory && history.navigateNativeFragment(virtualURL.href);
+        : history instanceof VirtualHistory &&
+          history.navigateNativeFragment(virtualURL.href);
       if (!allowed) {
         history.restoreMirroredURL();
       }

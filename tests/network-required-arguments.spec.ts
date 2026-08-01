@@ -17,7 +17,9 @@ async function installBundle(page: import("@playwright/test").Page) {
     const bundle = await import(url);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 }
 
 async function mountFrame(
@@ -25,19 +27,26 @@ async function mountFrame(
   id: string,
   credentials: "omit" | "same-origin",
 ) {
-  await page.evaluate(({ frameID, frameSource, frameCredentials }) => {
-    const frame = document.createElement("v-frame");
-    frame.id = frameID;
-    frame.setAttribute("credentials", frameCredentials);
-    frame.setAttribute("src", frameSource);
-    document.querySelector("#host")?.append(frame);
-  }, {
-    frameID: id,
-    frameSource: `${fixture.origin}/documents/first.html`,
-    frameCredentials: credentials,
-  });
+  await page.evaluate(
+    ({ frameID, frameSource, frameCredentials }) => {
+      const frame = document.createElement("v-frame");
+      frame.id = frameID;
+      frame.setAttribute("credentials", frameCredentials);
+      frame.setAttribute("src", frameSource);
+      document.querySelector("#host")?.append(frame);
+    },
+    {
+      frameID: id,
+      frameSource: `${fixture.origin}/documents/first.html`,
+      frameCredentials: credentials,
+    },
+  );
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   return frame;
 }
 
@@ -47,11 +56,16 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
+    return evaluate(
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+    );
   }, expression.toString()) as Promise<T>;
 }
 
-test("preserves native missing network argument errors without issuing requests", async ({ page }) => {
+test("preserves native missing network argument errors without issuing requests", async ({
+  page,
+}) => {
   await installBundle(page);
 
   for (const credentials of ["omit", "same-origin"] as const) {
@@ -93,22 +107,37 @@ test("preserves native missing network argument errors without issuing requests"
         return null;
       };
       const omittedConstructor = (
-        constructor: typeof window.WebSocket | typeof window.EventSource | typeof window.Worker | typeof window.SharedWorker,
+        constructor:
+          | typeof window.WebSocket
+          | typeof window.EventSource
+          | typeof window.Worker
+          | typeof window.SharedWorker,
         dispose: (connection: WebSocket | EventSource | Worker | SharedWorker) => void,
-      ) => exception(() => {
-        const connection = Reflect.construct(constructor, []);
-        dispose(connection as WebSocket | EventSource | Worker | SharedWorker);
-      });
+      ) =>
+        exception(() => {
+          const connection = Reflect.construct(constructor, []);
+          dispose(connection as WebSocket | EventSource | Worker | SharedWorker);
+        });
 
       return {
         request: exception(() => Reflect.construct(window.Request, [])),
         fetch: await asynchronousException(() => Reflect.apply(window.fetch, window, [])),
         xhr: await Promise.all([omittedOpen([]), omittedOpen(["GET"])]),
-        webSocket: omittedConstructor(window.WebSocket, (connection) => (connection as WebSocket).close()),
-        eventSource: omittedConstructor(window.EventSource, (connection) => (connection as EventSource).close()),
-        worker: omittedConstructor(window.Worker, (connection) => (connection as Worker).terminate()),
-        sharedWorker: omittedConstructor(window.SharedWorker, (connection) => (connection as SharedWorker).port.close()),
-        sendBeacon: exception(() => Reflect.apply(window.navigator.sendBeacon, window.navigator, [])),
+        webSocket: omittedConstructor(window.WebSocket, (connection) =>
+          (connection as WebSocket).close(),
+        ),
+        eventSource: omittedConstructor(window.EventSource, (connection) =>
+          (connection as EventSource).close(),
+        ),
+        worker: omittedConstructor(window.Worker, (connection) =>
+          (connection as Worker).terminate(),
+        ),
+        sharedWorker: omittedConstructor(window.SharedWorker, (connection) =>
+          (connection as SharedWorker).port.close(),
+        ),
+        sendBeacon: exception(() =>
+          Reflect.apply(window.navigator.sendBeacon, window.navigator, []),
+        ),
       };
     });
 
@@ -130,19 +159,26 @@ test("preserves native missing network argument errors without issuing requests"
     expect(fixture.requests.slice(requestsBefore)).toEqual([]);
 
     const explicitURLs = await childValue(frame, async (window) => {
-      const xhr = (input: unknown) => new Promise<string>((resolve) => {
-        const request = new window.XMLHttpRequest();
-        request.addEventListener("loadend", () => resolve(request.responseURL), { once: true });
-        Reflect.apply(request.open, request, ["GET", input]);
-        request.send();
-      });
+      const xhr = (input: unknown) =>
+        new Promise<string>((resolve) => {
+          const request = new window.XMLHttpRequest();
+          request.addEventListener("loadend", () => resolve(request.responseURL), {
+            once: true,
+          });
+          Reflect.apply(request.open, request, ["GET", input]);
+          request.send();
+        });
 
       return {
-        request: [undefined, null].map((input) => (Reflect.construct(window.Request, [input]) as Request).url),
-        fetch: await Promise.all([undefined, null].map(async (input) => {
-          const response = await Reflect.apply(window.fetch, window, [input]);
-          return response.url;
-        })),
+        request: [undefined, null].map(
+          (input) => (Reflect.construct(window.Request, [input]) as Request).url,
+        ),
+        fetch: await Promise.all(
+          [undefined, null].map(async (input) => {
+            const response = await Reflect.apply(window.fetch, window, [input]);
+            return response.url;
+          }),
+        ),
         xhr: await Promise.all([undefined, null].map(xhr)),
       };
     });
@@ -155,10 +191,7 @@ test("preserves native missing network argument errors without issuing requests"
         `${fixture.origin}/documents/undefined`,
         `${fixture.origin}/documents/null`,
       ],
-      xhr: [
-        `${fixture.origin}/documents/undefined`,
-        `${fixture.origin}/documents/null`,
-      ],
+      xhr: [`${fixture.origin}/documents/undefined`, `${fixture.origin}/documents/null`],
     });
   }
 });

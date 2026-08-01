@@ -1,12 +1,5 @@
 import * as cssTree from "css-tree";
-import type {
-  Atrule,
-  CssNode,
-  List,
-  ListItem,
-  Selector,
-  StyleSheet,
-} from "css-tree";
+import type { Atrule, CssNode, List, ListItem, Selector, StyleSheet } from "css-tree";
 
 const SHELL_ELEMENT_NAMES = new Map([
   ["html", "v-html"],
@@ -72,11 +65,7 @@ function rewriteShellSelectors(
   suppressShadowOnlyPseudoClasses = false,
 ): void {
   cssTree.walk(ast, {
-    enter(
-      node: CssNode,
-      item: ListItem<CssNode>,
-      list: List<CssNode>,
-    ) {
+    enter(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
       if (node.type === "TypeSelector") {
         const replacement = SHELL_ELEMENT_NAMES.get(node.name.toLowerCase());
         if (replacement !== undefined) {
@@ -153,13 +142,22 @@ function importParts(rule: Atrule, stylesheetURL: string): ImportParts | null {
   for (const qualifier of children.slice(1)) {
     if (qualifier.type === "Identifier" && qualifier.name.toLowerCase() === "layer") {
       layer = "";
-    } else if (qualifier.type === "Function" && qualifier.name.toLowerCase() === "layer") {
-      layer = qualifier.children.toArray().map((child) => cssTree.generate(child)).join("");
+    } else if (
+      qualifier.type === "Function" &&
+      qualifier.name.toLowerCase() === "layer"
+    ) {
+      layer = qualifier.children
+        .toArray()
+        .map((child) => cssTree.generate(child))
+        .join("");
     } else if (
       qualifier.type === "Function" &&
       qualifier.name.toLowerCase() === "supports"
     ) {
-      supports = qualifier.children.toArray().map((child) => cssTree.generate(child)).join("");
+      supports = qualifier.children
+        .toArray()
+        .map((child) => cssTree.generate(child))
+        .join("");
     } else if (qualifier.type === "MediaQueryList") {
       media = cssTree.generate(qualifier);
     }
@@ -188,15 +186,15 @@ function wrapImportedStylesheet(source: string, parts: ImportParts): string {
     wrapped = `@media ${parts.media}{${wrapped}}`;
   }
   if (parts.supports !== null) {
-    const condition = parts.supports.includes(":") && !parts.supports.trim().startsWith("(")
-      ? `(${parts.supports})`
-      : parts.supports;
+    const condition =
+      parts.supports.includes(":") && !parts.supports.trim().startsWith("(")
+        ? `(${parts.supports})`
+        : parts.supports;
     wrapped = `@supports ${condition}{${wrapped}}`;
   }
   if (parts.layer !== null) {
-    wrapped = parts.layer === ""
-      ? `@layer{${wrapped}}`
-      : `@layer ${parts.layer}{${wrapped}}`;
+    wrapped =
+      parts.layer === "" ? `@layer{${wrapped}}` : `@layer ${parts.layer}{${wrapped}}`;
   }
   return wrapped;
 }

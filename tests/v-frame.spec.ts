@@ -17,7 +17,9 @@ async function installBundle(page: import("@playwright/test").Page) {
     const bundle = await import(url);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 }
 
 async function mountFrame(page: import("@playwright/test").Page, source: string) {
@@ -29,7 +31,10 @@ async function mountFrame(page: import("@playwright/test").Page, source: string)
   return page.locator("v-frame");
 }
 
-test("importing the bundle has no registration side effect and defineVFrame is guarded", async ({ page, browser }) => {
+test("importing the bundle has no registration side effect and defineVFrame is guarded", async ({
+  page,
+  browser,
+}) => {
   await page.goto(fixture.origin);
   expect(await page.evaluate(() => customElements.get("v-frame"))).toBeUndefined();
 
@@ -38,27 +43,46 @@ test("importing the bundle has no registration side effect and defineVFrame is g
     const before = Boolean(customElements.get("v-frame"));
     const first = bundle.defineVFrame();
     const second = bundle.defineVFrame();
-    return { before, sameConstructor: first === second, registered: customElements.get("v-frame") === bundle.VFrameElement };
+    return {
+      before,
+      sameConstructor: first === second,
+      registered: customElements.get("v-frame") === bundle.VFrameElement,
+    };
   }, `${fixture.origin}/dist/index.js`);
-  expect(registration).toEqual({ before: false, sameConstructor: true, registered: true });
+  expect(registration).toEqual({
+    before: false,
+    sameConstructor: true,
+    registered: true,
+  });
 
   const collisionPage = await browser.newPage();
   try {
     await collisionPage.goto(fixture.origin);
-    await collisionPage.evaluate(() => customElements.define("v-frame", class extends HTMLElement {}));
-    await expect(collisionPage.evaluate(async (url) => (await import(url)).defineVFrame(), `${fixture.origin}/dist/index.js`)).rejects.toThrow();
+    await collisionPage.evaluate(() =>
+      customElements.define("v-frame", class extends HTMLElement {}),
+    );
+    await expect(
+      collisionPage.evaluate(
+        async (url) => (await import(url)).defineVFrame(),
+        `${fixture.origin}/dist/index.js`,
+      ),
+    ).rejects.toThrow();
   } finally {
     await collisionPage.close();
   }
 });
 
-test("loads a document into a semantic shadow DOM and exposes readonly state", async ({ page }) => {
+test("loads a document into a semantic shadow DOM and exposes readonly state", async ({
+  page,
+}) => {
   await installBundle(page);
   const frame = await mountFrame(page, `${fixture.origin}/documents/first.html`);
 
-  await expect.poll(() => frame.evaluate((element) => (
-    element as HTMLElement & { status: string }
-  ).status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
   await expect(frame.locator("main#first")).toContainText("First document");
   await expect(frame.locator("v-html > v-head")).toHaveCount(1);
   await expect(frame.locator("v-html > v-body")).toHaveCount(1);
@@ -68,58 +92,85 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   await expect(frame.locator("iframe")).toHaveCSS("pointer-events", "none");
 
   const state = await frame.evaluate((element) => {
-    const value = element as HTMLElement & { currentURL: string; contentWindow: (Window & typeof globalThis) | null };
-    return { currentURL: value.currentURL, hasContentWindow: value.contentWindow !== null };
+    const value = element as HTMLElement & {
+      currentURL: string;
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    return {
+      currentURL: value.currentURL,
+      hasContentWindow: value.contentWindow !== null,
+    };
   });
   expect(state.currentURL).toBe(`${fixture.origin}/documents/first.html`);
   expect(state.hasContentWindow).toBe(true);
 });
 
-test("resolves bare module specifiers through a document import map", async ({ page }) => {
+test("resolves bare module specifiers through a document import map", async ({
+  page,
+}) => {
   await installBundle(page);
   const frame = await mountFrame(page, `${fixture.origin}/documents/import-map.html`);
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
-  await expect(frame.locator("#import-map-result")).toHaveText("resolved through import map");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  await expect(frame.locator("#import-map-result")).toHaveText(
+    "resolved through import map",
+  );
 });
 
-test("keeps child custom element definitions isolated between frames", async ({ page }) => {
+test("keeps child custom element definitions isolated between frames", async ({
+  page,
+}) => {
   await installBundle(page);
   await page.evaluate((origin) => {
     for (const label of ["first child", "second child"]) {
       const frame = document.createElement("v-frame");
-      frame.setAttribute("src", `${origin}/documents/child-custom-elements.html?label=${encodeURIComponent(label)}`);
+      frame.setAttribute(
+        "src",
+        `${origin}/documents/child-custom-elements.html?label=${encodeURIComponent(label)}`,
+      );
       document.querySelector("#host")?.append(frame);
     }
   }, fixture.origin);
   const frames = page.locator("v-frame");
 
-  await expect.poll(() => frames.evaluateAll((elements) =>
-    elements.map((element) => (element as HTMLElement & { status: string }).status)
-  )).toEqual(["ready", "ready"]);
+  await expect
+    .poll(() =>
+      frames.evaluateAll((elements) =>
+        elements.map((element) => (element as HTMLElement & { status: string }).status),
+      ),
+    )
+    .toEqual(["ready", "ready"]);
   await expect(frames.nth(0).locator("#dynamic")).toHaveText("first child");
   await expect(frames.nth(0).locator("#parsed")).toHaveText("first child");
   await expect(frames.nth(1).locator("#dynamic")).toHaveText("second child");
   await expect(frames.nth(1).locator("#parsed")).toHaveText("second child");
 
-  expect(await frames.evaluateAll((elements) => {
-    type ChildWindow = Window & typeof globalThis & {
-      __childCustomElementState: {
-        dynamic: boolean;
-        parsed: boolean;
-        ownerDocument: boolean;
+  expect(
+    await frames.evaluateAll((elements) => {
+      type ChildWindow = Window &
+        typeof globalThis & {
+          __childCustomElementState: {
+            dynamic: boolean;
+            parsed: boolean;
+            ownerDocument: boolean;
+          };
+        };
+      const first = (elements[0] as HTMLElement & { contentWindow: ChildWindow })
+        .contentWindow;
+      const second = (elements[1] as HTMLElement & { contentWindow: ChildWindow })
+        .contentWindow;
+      return {
+        firstState: first.__childCustomElementState,
+        secondState: second.__childCustomElementState,
+        isolatedConstructors:
+          first.customElements.get("child-greeting") !==
+          second.customElements.get("child-greeting"),
+        absentFromHost: customElements.get("child-greeting") === undefined,
       };
-    };
-    const first = (elements[0] as HTMLElement & { contentWindow: ChildWindow }).contentWindow;
-    const second = (elements[1] as HTMLElement & { contentWindow: ChildWindow }).contentWindow;
-    return {
-      firstState: first.__childCustomElementState,
-      secondState: second.__childCustomElementState,
-      isolatedConstructors:
-        first.customElements.get("child-greeting") !== second.customElements.get("child-greeting"),
-      absentFromHost: customElements.get("child-greeting") === undefined,
-    };
-  })).toEqual({
+    }),
+  ).toEqual({
     firstState: { dynamic: true, parsed: true, ownerDocument: true },
     secondState: { dynamic: true, parsed: true, ownerDocument: true },
     isolatedConstructors: true,
@@ -127,32 +178,48 @@ test("keeps child custom element definitions isolated between frames", async ({ 
   });
 });
 
-test("adopts server-rendered shadow content without fetching the entry document", async ({ page }) => {
+test("adopts server-rendered shadow content without fetching the entry document", async ({
+  page,
+}) => {
   await page.goto(`${fixture.origin}/documents/adopted-host.html`);
   const frame = page.locator("v-frame");
 
-  await expect(frame.locator("#adopted-copy")).toHaveText("Server-rendered before definition");
+  await expect(frame.locator("#adopted-copy")).toHaveText(
+    "Server-rendered before definition",
+  );
   await expect(frame.locator("#adopted-copy")).toHaveCSS("color", "rgb(24, 96, 48)");
-  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(0);
+  expect(
+    fixture.requests.filter((path) => path === "/documents/adopted-entry.html"),
+  ).toHaveLength(0);
 
   await page.evaluate(async (url) => {
     const bundle = await import(url);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
-  await expect(frame.locator("#adopted-copy")).toHaveText("Activated without an entry fetch");
-  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(0);
-  await expect.poll(() => frame.evaluate((element) => (element as any).currentURL)).toBe(
-    `${fixture.origin}/documents/adopted-entry.html`,
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  await expect(frame.locator("#adopted-copy")).toHaveText(
+    "Activated without an entry fetch",
   );
+  expect(
+    fixture.requests.filter((path) => path === "/documents/adopted-entry.html"),
+  ).toHaveLength(0);
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).currentURL))
+    .toBe(`${fixture.origin}/documents/adopted-entry.html`);
 
   await frame.evaluate((element) => (element as any).reload());
   await expect(frame.locator("#network-reload")).toHaveText("Fetched by reload");
-  expect(fixture.requests.filter((path) => path === "/documents/adopted-entry.html")).toHaveLength(1);
+  expect(
+    fixture.requests.filter((path) => path === "/documents/adopted-entry.html"),
+  ).toHaveLength(1);
 });
 
-test("preserves nested adopted frames without fetching either entry document", async ({ page }) => {
+test("preserves nested adopted frames without fetching either entry document", async ({
+  page,
+}) => {
   const outerRequestsBefore = fixture.requests.filter(
     (path) => path === "/documents/outer-adopted-entry.html",
   ).length;
@@ -165,11 +232,12 @@ test("preserves nested adopted frames without fetching either entry document", a
     const outerModuleGate = new Promise<void>((resolve) => {
       releaseOuterModule = resolve;
     });
-    const hostWindow = window as Window & typeof globalThis & {
-      __nestedOuterModuleGate?: Promise<void>;
-      __nestedOuterModuleStarted?: boolean;
-      __releaseNestedOuterModule?: () => void;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __nestedOuterModuleGate?: Promise<void>;
+        __nestedOuterModuleStarted?: boolean;
+        __releaseNestedOuterModule?: () => void;
+      };
     hostWindow.__nestedOuterModuleGate = outerModuleGate;
     hostWindow.__nestedOuterModuleStarted = false;
     hostWindow.__releaseNestedOuterModule = releaseOuterModule;
@@ -180,74 +248,93 @@ test("preserves nested adopted frames without fetching either entry document", a
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
 
-  await expect.poll(() => page.evaluate(() =>
-    (window as Window & typeof globalThis & { __nestedOuterModuleStarted?: boolean })
-      .__nestedOuterModuleStarted
-  )).toBe(true);
-  await expect.poll(() => page.evaluate(() => {
-    const outer = document.querySelector("#outer-frame");
-    const nestedFrames = Array.from(
-      outer?.shadowRoot?.querySelectorAll("#inner-frame") ?? [],
-    ) as Array<HTMLElement & { status: string }>;
-    return {
-      outerStatus: (outer as HTMLElement & { status: string } | null)?.status,
-      nestedFrames: nestedFrames.length,
-      nestedStatuses: nestedFrames.map((frame) => frame.status),
-      nestedText: nestedFrames.map((frame) =>
-        frame.shadowRoot?.querySelector("#nested-copy")?.textContent
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window &
+              typeof globalThis & { __nestedOuterModuleStarted?: boolean }
+          ).__nestedOuterModuleStarted,
       ),
-    };
-  })).toEqual({
-    outerStatus: "loading",
-    nestedFrames: 2,
-    nestedStatuses: ["ready", "ready"],
-    nestedText: ["Nested preview activated", "Nested preview activated"],
-  });
-  expect(fixture.requests.filter(
-    (path) => path === "/documents/outer-adopted-entry.html",
-  )).toHaveLength(outerRequestsBefore);
-  expect(fixture.requests.filter(
-    (path) => path === "/documents/inner-adopted-entry.html",
-  )).toHaveLength(innerRequestsBefore);
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const outer = document.querySelector("#outer-frame");
+        const nestedFrames = Array.from(
+          outer?.shadowRoot?.querySelectorAll("#inner-frame") ?? [],
+        ) as Array<HTMLElement & { status: string }>;
+        return {
+          outerStatus: (outer as (HTMLElement & { status: string }) | null)?.status,
+          nestedFrames: nestedFrames.length,
+          nestedStatuses: nestedFrames.map((frame) => frame.status),
+          nestedText: nestedFrames.map(
+            (frame) => frame.shadowRoot?.querySelector("#nested-copy")?.textContent,
+          ),
+        };
+      }),
+    )
+    .toEqual({
+      outerStatus: "loading",
+      nestedFrames: 2,
+      nestedStatuses: ["ready", "ready"],
+      nestedText: ["Nested preview activated", "Nested preview activated"],
+    });
+  expect(
+    fixture.requests.filter((path) => path === "/documents/outer-adopted-entry.html"),
+  ).toHaveLength(outerRequestsBefore);
+  expect(
+    fixture.requests.filter((path) => path === "/documents/inner-adopted-entry.html"),
+  ).toHaveLength(innerRequestsBefore);
 
   await page.evaluate(() => {
-    (window as Window & typeof globalThis & { __releaseNestedOuterModule: () => void })
-      .__releaseNestedOuterModule();
+    (
+      window as Window & typeof globalThis & { __releaseNestedOuterModule: () => void }
+    ).__releaseNestedOuterModule();
   });
-  await expect.poll(() => page.evaluate(() => {
-    const outer = document.querySelector("#outer-frame") as
-      | (HTMLElement & { status: string })
-      | null;
-    const inner = outer?.shadowRoot?.querySelector("#inner-frame") as
-      | (HTMLElement & { status: string })
-      | null;
-    return {
-      innerStatus: inner?.status,
-      nestedFrames: outer?.shadowRoot?.querySelectorAll("#inner-frame").length,
-      nestedText: inner?.shadowRoot?.querySelector("#nested-copy")?.textContent,
-      outerStatus: outer?.status,
-    };
-  })).toEqual({
-    innerStatus: "ready",
-    nestedFrames: 1,
-    nestedText: "Nested preview activated",
-    outerStatus: "ready",
-  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const outer = document.querySelector("#outer-frame") as
+          | (HTMLElement & { status: string })
+          | null;
+        const inner = outer?.shadowRoot?.querySelector("#inner-frame") as
+          | (HTMLElement & { status: string })
+          | null;
+        return {
+          innerStatus: inner?.status,
+          nestedFrames: outer?.shadowRoot?.querySelectorAll("#inner-frame").length,
+          nestedText: inner?.shadowRoot?.querySelector("#nested-copy")?.textContent,
+          outerStatus: outer?.status,
+        };
+      }),
+    )
+    .toEqual({
+      innerStatus: "ready",
+      nestedFrames: 1,
+      nestedText: "Nested preview activated",
+      outerStatus: "ready",
+    });
 });
 
-test("keeps adopted preview visible until its initial module completes", async ({ page }) => {
+test("keeps adopted preview visible until its initial module completes", async ({
+  page,
+}) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {
     let releaseModule: () => void = () => undefined;
     const moduleGate = new Promise<void>((resolve) => {
       releaseModule = resolve;
     });
-    const hostWindow = window as Window & typeof globalThis & {
-      __adoptedModuleFinished?: boolean;
-      __adoptedModuleGate?: Promise<void>;
-      __adoptedModuleStarted?: boolean;
-      __releaseAdoptedModule?: () => void;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __adoptedModuleFinished?: boolean;
+        __adoptedModuleGate?: Promise<void>;
+        __adoptedModuleStarted?: boolean;
+        __releaseAdoptedModule?: () => void;
+      };
     hostWindow.__adoptedModuleFinished = false;
     hostWindow.__adoptedModuleGate = moduleGate;
     hostWindow.__adoptedModuleStarted = false;
@@ -280,36 +367,35 @@ test("keeps adopted preview visible until its initial module completes", async (
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
 
-  await expect.poll(() => page.evaluate(() =>
-    (window as Window & typeof globalThis & { __adoptedModuleStarted?: boolean })
-      .__adoptedModuleStarted
-  )).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as Window & typeof globalThis & { __adoptedModuleStarted?: boolean })
+            .__adoptedModuleStarted,
+      ),
+    )
+    .toBe(true);
   const frame = page.locator("v-frame");
   const staged = await frame.evaluate((element) => {
     const frameElement = element as HTMLElement & { status: string };
-    const markup = Array.from(
-      frameElement.shadowRoot?.querySelectorAll("v-html") ?? [],
-    );
+    const markup = Array.from(frameElement.shadowRoot?.querySelectorAll("v-html") ?? []);
     const frameRect = frameElement.getBoundingClientRect();
     const physicalRect = (html: Element) =>
       Element.prototype.getBoundingClientRect.call(html);
     return {
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
-      liveOverlaysPreview:
-        physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
-      frameHeightMatchesPreview:
-        frameRect.height === physicalRect(markup[0]!).height,
-      copyPointerEvents: markup.map((html) =>
-        getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents
+      liveOverlaysPreview: physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
+      frameHeightMatchesPreview: frameRect.height === physicalRect(markup[0]!).height,
+      copyPointerEvents: markup.map(
+        (html) => getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents,
       ),
-      copyVisibilities: markup.map((html) =>
-        getComputedStyle(html.querySelector("#adopted-copy")!).visibility
+      copyVisibilities: markup.map(
+        (html) => getComputedStyle(html.querySelector("#adopted-copy")!).visibility,
       ),
       liveHeight: physicalRect(markup[1]!).height,
-      markupText: markup.map((html) =>
-        html.querySelector("#adopted-copy")?.textContent
-      ),
+      markupText: markup.map((html) => html.querySelector("#adopted-copy")?.textContent),
       status: frameElement.status,
       styleSheets: frameElement.shadowRoot?.adoptedStyleSheets.length,
       opacities: markup.map((html) => getComputedStyle(html).opacity),
@@ -324,10 +410,7 @@ test("keeps adopted preview visible until its initial module completes", async (
     liveOverlaysPreview: true,
     frameHeightMatchesPreview: true,
     liveHeight: expect.any(Number),
-    markupText: [
-      "Server-rendered before activation",
-      "Prepared by initial module",
-    ],
+    markupText: ["Server-rendered before activation", "Prepared by initial module"],
     status: "loading",
     styleSheets: 2,
     opacities: ["1", "0"],
@@ -336,17 +419,21 @@ test("keeps adopted preview visible until its initial module completes", async (
   expect(staged.liveHeight).toBeGreaterThan(0);
 
   await page.evaluate(() => {
-    (window as Window & typeof globalThis & { __releaseAdoptedModule: () => void })
-      .__releaseAdoptedModule();
+    (
+      window as Window & typeof globalThis & { __releaseAdoptedModule: () => void }
+    ).__releaseAdoptedModule();
   });
-  await expect.poll(() => frame.evaluate((element) =>
-    (element as HTMLElement & { status: string }).status
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
   const revealed = await frame.evaluate((element) => {
     const frameElement = element as HTMLElement & { status: string };
-    const hostWindow = window as Window & typeof globalThis & {
-      __adoptedModuleFinished: boolean;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __adoptedModuleFinished: boolean;
+      };
     return {
       moduleFinished: hostWindow.__adoptedModuleFinished,
       markupCount: frameElement.shadowRoot?.querySelectorAll("v-html").length,
@@ -362,12 +449,15 @@ test("keeps adopted preview visible until its initial module completes", async (
   });
 });
 
-test("reveals adopted markup synchronously without starting a view transition", async ({ page }) => {
+test("reveals adopted markup synchronously without starting a view transition", async ({
+  page,
+}) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {
-    const hostWindow = window as Window & typeof globalThis & {
-      __revealTransitionStarts?: number;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __revealTransitionStarts?: number;
+      };
     hostWindow.__revealTransitionStarts = 0;
     const prototype = HTMLElement.prototype as HTMLElement & {
       startViewTransition?: (update: () => void) => ViewTransition;
@@ -396,13 +486,16 @@ test("reveals adopted markup synchronously without starting a view transition", 
   }, `${fixture.origin}/dist/index.js`);
 
   const frame = page.locator("v-frame");
-  await expect.poll(() => frame.evaluate((element) =>
-    (element as HTMLElement & { status: string }).status
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
   const state = await page.evaluate(() => {
-    const hostWindow = window as Window & typeof globalThis & {
-      __revealTransitionStarts: number;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __revealTransitionStarts: number;
+      };
     const frame = document.querySelector("v-frame");
     return {
       markupCount: frame?.shadowRoot?.querySelectorAll("v-html").length,
@@ -424,10 +517,11 @@ test("reveals simultaneous adopted handoffs independently", async ({ page }) => 
     const firstModuleGate = new Promise<void>((resolve) => {
       releaseFirstModule = resolve;
     });
-    const hostWindow = window as Window & typeof globalThis & {
-      __firstModuleGate?: Promise<void>;
-      __releaseFirstModule?: () => void;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __firstModuleGate?: Promise<void>;
+        __releaseFirstModule?: () => void;
+      };
     hostWindow.__firstModuleGate = firstModuleGate;
     hostWindow.__releaseFirstModule = releaseFirstModule;
 
@@ -436,14 +530,15 @@ test("reveals simultaneous adopted handoffs independently", async ({ page }) => 
       frame.id = name;
       frame.setAttribute("adopt", "");
       frame.setAttribute("src", `/documents/${name}.html`);
-      frame.attachShadow({ mode: "open" }).innerHTML =
-        `<v-html><v-head></v-head><v-body><p>${name}</p>${
-          name === "first"
-            ? `<script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+      frame.attachShadow({
+        mode: "open",
+      }).innerHTML = `<v-html><v-head></v-head><v-body><p>${name}</p>${
+        name === "first"
+          ? `<script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
                 await top.__firstModuleGate;
               </script>`
-            : ""
-        }</v-body></v-html>`;
+          : ""
+      }</v-body></v-html>`;
       document.querySelector("#host")?.append(frame);
     }
   });
@@ -453,26 +548,41 @@ test("reveals simultaneous adopted handoffs independently", async ({ page }) => 
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
   const frames = page.locator("v-frame");
-  await expect.poll(() => frames.evaluateAll((elements) =>
-    elements.map((element) => (element as HTMLElement & { status: string }).status)
-  )).toEqual(["loading", "ready"]);
-  expect(await frames.evaluateAll((elements) =>
-    elements.map((element) => element.shadowRoot?.querySelectorAll("v-html").length)
-  )).toEqual([2, 1]);
+  await expect
+    .poll(() =>
+      frames.evaluateAll((elements) =>
+        elements.map((element) => (element as HTMLElement & { status: string }).status),
+      ),
+    )
+    .toEqual(["loading", "ready"]);
+  expect(
+    await frames.evaluateAll((elements) =>
+      elements.map((element) => element.shadowRoot?.querySelectorAll("v-html").length),
+    ),
+  ).toEqual([2, 1]);
 
   await page.evaluate(() => {
-    (window as Window & typeof globalThis & { __releaseFirstModule: () => void })
-      .__releaseFirstModule();
+    (
+      window as Window & typeof globalThis & { __releaseFirstModule: () => void }
+    ).__releaseFirstModule();
   });
-  await expect.poll(() => frames.evaluateAll((elements) =>
-    elements.map((element) => (element as HTMLElement & { status: string }).status)
-  )).toEqual(["ready", "ready"]);
-  expect(await frames.evaluateAll((elements) =>
-    elements.map((element) => element.shadowRoot?.querySelectorAll("v-html").length)
-  )).toEqual([1, 1]);
+  await expect
+    .poll(() =>
+      frames.evaluateAll((elements) =>
+        elements.map((element) => (element as HTMLElement & { status: string }).status),
+      ),
+    )
+    .toEqual(["ready", "ready"]);
+  expect(
+    await frames.evaluateAll((elements) =>
+      elements.map((element) => element.shadowRoot?.querySelectorAll("v-html").length),
+    ),
+  ).toEqual([1, 1]);
 });
 
-test("does not restore adopted markup after removal during activation", async ({ page }) => {
+test("does not restore adopted markup after removal during activation", async ({
+  page,
+}) => {
   const entryRequestsBefore = fixture.requests.filter(
     (path) => path === "/documents/adopted-entry.html",
   ).length;
@@ -482,13 +592,14 @@ test("does not restore adopted markup after removal during activation", async ({
     const heldModuleGate = new Promise<void>((resolve) => {
       releaseHeldModule = resolve;
     });
-    const hostWindow = window as Window & typeof globalThis & {
-      __heldFrame?: HTMLElement;
-      __heldFrameLoads?: number;
-      __heldModuleGate?: Promise<void>;
-      __heldModuleStarted?: boolean;
-      __releaseHeldModule?: () => void;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __heldFrame?: HTMLElement;
+        __heldFrameLoads?: number;
+        __heldModuleGate?: Promise<void>;
+        __heldModuleStarted?: boolean;
+        __releaseHeldModule?: () => void;
+      };
     hostWindow.__heldFrameLoads = 0;
     hostWindow.__heldModuleGate = heldModuleGate;
     hostWindow.__heldModuleStarted = false;
@@ -515,43 +626,60 @@ test("does not restore adopted markup after removal during activation", async ({
     const bundle = await import(url);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() =>
-    (window as Window & typeof globalThis & { __heldModuleStarted?: boolean })
-      .__heldModuleStarted
-  )).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as Window & typeof globalThis & { __heldModuleStarted?: boolean })
+            .__heldModuleStarted,
+      ),
+    )
+    .toBe(true);
 
   await page.evaluate(() => {
-    const hostWindow = window as Window & typeof globalThis & {
-      __heldFrame: HTMLElement;
-      __releaseHeldModule: () => void;
-    };
+    const hostWindow = window as Window &
+      typeof globalThis & {
+        __heldFrame: HTMLElement;
+        __releaseHeldModule: () => void;
+      };
     hostWindow.__heldFrame.remove();
     hostWindow.__releaseHeldModule();
   });
-  await expect.poll(() => page.evaluate(() => {
-    const frame = (window as Window & typeof globalThis & {
-      __heldFrame: HTMLElement & { status: string };
-    }).__heldFrame;
-    return {
-      status: frame.status,
-      childElements: frame.shadowRoot?.children.length,
-      loads: (window as Window & typeof globalThis & { __heldFrameLoads: number })
-        .__heldFrameLoads,
-    };
-  })).toEqual({ status: "idle", childElements: 0, loads: 0 });
-  expect(fixture.requests.filter(
-    (path) => path === "/documents/adopted-entry.html",
-  )).toHaveLength(entryRequestsBefore);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const frame = (
+          window as Window &
+            typeof globalThis & {
+              __heldFrame: HTMLElement & { status: string };
+            }
+        ).__heldFrame;
+        return {
+          status: frame.status,
+          childElements: frame.shadowRoot?.children.length,
+          loads: (window as Window & typeof globalThis & { __heldFrameLoads: number })
+            .__heldFrameLoads,
+        };
+      }),
+    )
+    .toEqual({ status: "idle", childElements: 0, loads: 0 });
+  expect(
+    fixture.requests.filter((path) => path === "/documents/adopted-entry.html"),
+  ).toHaveLength(entryRequestsBefore);
 });
 
-test("host page reload leaves active adopted frames intact until teardown", async ({ page }) => {
+test("host page reload leaves active adopted frames intact until teardown", async ({
+  page,
+}) => {
   await page.goto(`${fixture.origin}/documents/adopted-host.html`);
   await page.evaluate(async (url) => {
     const bundle = await import(url);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
   const frame = page.locator("v-frame");
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
 
   const teardownReports: string[] = [];
   page.on("console", (message) => {
@@ -560,13 +688,20 @@ test("host page reload leaves active adopted frames intact until teardown", asyn
     }
   });
   await page.evaluate(() => {
-    window.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
-      console.log(`v-frame-teardown: error phase=${detail.phase} fatal=${detail.fatal}`);
-    }, true);
+    window.addEventListener(
+      "v-frame-error",
+      (event) => {
+        const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
+        console.log(
+          `v-frame-teardown: error phase=${detail.phase} fatal=${detail.fatal}`,
+        );
+      },
+      true,
+    );
     window.addEventListener("pagehide", () => {
-      const copyIntact = document.querySelector("v-frame")?.shadowRoot
-        ?.querySelector("#adopted-copy") !== null;
+      const copyIntact =
+        document.querySelector("v-frame")?.shadowRoot?.querySelector("#adopted-copy") !==
+        null;
       console.log(`v-frame-teardown: pagehide copyIntact=${copyIntact}`);
     });
   });
@@ -575,27 +710,38 @@ test("host page reload leaves active adopted frames intact until teardown", asyn
   expect(teardownReports).toEqual(["v-frame-teardown: pagehide copyIntact=true"]);
 });
 
-test("emits lifecycle errors and ignores stale loads after disconnection", async ({ page }) => {
+test("emits lifecycle errors and ignores stale loads after disconnection", async ({
+  page,
+}) => {
   await installBundle(page);
   const events = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & { reload(): void };
     const seen: string[] = [];
-    for (const name of ["v-frame-loadstart", "v-frame-load", "v-frame-error"]) frame.addEventListener(name, () => seen.push(name));
+    for (const name of ["v-frame-loadstart", "v-frame-load", "v-frame-error"])
+      frame.addEventListener(name, () => seen.push(name));
     document.body.append(frame);
     frame.setAttribute("src", `${origin}/documents/first.html`);
-    await new Promise((resolve) => frame.addEventListener("v-frame-load", resolve, { once: true }));
-    const reloaded = new Promise((resolve) => frame.addEventListener("v-frame-load", resolve, { once: true }));
+    await new Promise((resolve) =>
+      frame.addEventListener("v-frame-load", resolve, { once: true }),
+    );
+    const reloaded = new Promise((resolve) =>
+      frame.addEventListener("v-frame-load", resolve, { once: true }),
+    );
     frame.reload();
     await reloaded;
     frame.setAttribute("src", `${origin}/documents/broken.html`);
-    await new Promise((resolve) => frame.addEventListener("v-frame-error", resolve, { once: true }));
+    await new Promise((resolve) =>
+      frame.addEventListener("v-frame-error", resolve, { once: true }),
+    );
     frame.setAttribute("src", `${origin}/documents/second.html`);
     frame.remove();
     await new Promise((resolve) => setTimeout(resolve, 50));
     return seen;
   }, fixture.origin);
 
-  expect(events).toEqual(expect.arrayContaining(["v-frame-loadstart", "v-frame-load", "v-frame-error"]));
+  expect(events).toEqual(
+    expect.arrayContaining(["v-frame-loadstart", "v-frame-load", "v-frame-error"]),
+  );
   await expect(page.locator("v-frame")).toHaveCount(0);
 });
 
@@ -607,27 +753,46 @@ test("bridges document scripts, rewritten CSS, and relative assets", async ({ pa
   const styled = await mountFrame(page, `${fixture.origin}/documents/styled.html`);
   await expect(styled.locator("#relative-image")).toHaveCount(1);
   await expect(styled.locator("#styled-copy")).toHaveCSS("color", "rgb(12, 34, 56)");
-  await expect.poll(() => fixture.requests.filter((path) => path === "/assets/pixel.png").length).toBeGreaterThan(0);
+  await expect
+    .poll(() => fixture.requests.filter((path) => path === "/assets/pixel.png").length)
+    .toBeGreaterThan(0);
 });
 
-test("forwards fetch-driven DOM changes and iframe history navigation", async ({ page }) => {
+test("forwards fetch-driven DOM changes and iframe history navigation", async ({
+  page,
+}) => {
   await installBundle(page);
   const frame = await mountFrame(page, `${fixture.origin}/documents/application.html`);
   await expect(frame.locator("#load")).toHaveCount(1);
-  await frame.evaluate((element) => (element as any).contentWindow.document.querySelector("#load").click());
+  await frame.evaluate((element) =>
+    (element as any).contentWindow.document.querySelector("#load").click(),
+  );
   await expect(frame.locator("#result")).toHaveText("Fetched from fixture");
 
-  const navigated = page.evaluate(() => new Promise<string>((resolve) => {
-    document.querySelector("v-frame")?.addEventListener("v-frame-navigate", (event) => {
-      resolve((event as CustomEvent<{ to?: string }>).detail?.to ?? "");
-    }, { once: true });
-  }));
-  await frame.evaluate((element) => (element as any).contentWindow.document.querySelector("#push").click());
-  await expect.poll(async () => (await frame.evaluate((element) => (element as any).currentURL))).toContain("history-state");
+  const navigated = page.evaluate(
+    () =>
+      new Promise<string>((resolve) => {
+        document.querySelector("v-frame")?.addEventListener(
+          "v-frame-navigate",
+          (event) => {
+            resolve((event as CustomEvent<{ to?: string }>).detail?.to ?? "");
+          },
+          { once: true },
+        );
+      }),
+  );
+  await frame.evaluate((element) =>
+    (element as any).contentWindow.document.querySelector("#push").click(),
+  );
+  await expect
+    .poll(async () => await frame.evaluate((element) => (element as any).currentURL))
+    .toContain("history-state");
   await expect(navigated).resolves.toContain("history-state");
 });
 
-test("applies properties assigned before upgrade through their setters", async ({ page }) => {
+test("applies properties assigned before upgrade through their setters", async ({
+  page,
+}) => {
   await page.goto(fixture.origin);
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -678,15 +843,19 @@ test("applies properties assigned before upgrade through their setters", async (
 test("keeps noscript content inert while scripts run", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, `${fixture.origin}/documents/noscript.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
 
   await expect(frame.locator("#noscript-copy")).toHaveText("Scripted");
   await expect(frame.locator("#noscript-fallback")).toHaveCount(0);
   await expect(frame.locator("#noscript-copy")).toHaveCSS("color", "rgb(0, 0, 0)");
-  const noscriptTexts = await frame.evaluate((element) => Array.from(
-    (element as any).contentWindow.document.querySelectorAll("noscript"),
-    (noscript) => (noscript as HTMLElement).textContent ?? "",
-  ).join(" "));
+  const noscriptTexts = await frame.evaluate((element) =>
+    Array.from(
+      (element as any).contentWindow.document.querySelectorAll("noscript"),
+      (noscript) => (noscript as HTMLElement).textContent ?? "",
+    ).join(" "),
+  );
   expect(noscriptTexts).toContain("noscript-fallback");
   expect(noscriptTexts).toContain("#noscript-copy");
   expect(fixture.requests).not.toContain("/assets/noscript-only.css");

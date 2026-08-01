@@ -82,7 +82,10 @@ function networkDocument(markup: string): string {
 export default {
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "GET") {
-      return new Response("method not allowed", { status: 405, headers: { Allow: "GET" } });
+      return new Response("method not allowed", {
+        status: 405,
+        headers: { Allow: "GET" },
+      });
     }
 
     const url = new URL(request.url);

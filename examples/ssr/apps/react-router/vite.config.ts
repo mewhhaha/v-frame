@@ -4,8 +4,5 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   base: "/widgets/react-router/",
-  plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
-    reactRouter(),
-  ],
+  plugins: [cloudflare({ viteEnvironment: { name: "ssr" } }), reactRouter()],
 });

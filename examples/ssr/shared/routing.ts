@@ -22,7 +22,9 @@ interface SessionStorageLike {
 }
 
 function isRoutingId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
 }
 
 function routingMessageId(): string | null {
@@ -38,7 +40,9 @@ function isNavigationMode(value: unknown): value is NavigationMode {
 }
 
 export function routingSessionId(): string | null {
-  const browser = globalThis as typeof globalThis & { sessionStorage?: SessionStorageLike };
+  const browser = globalThis as typeof globalThis & {
+    sessionStorage?: SessionStorageLike;
+  };
   try {
     const sessionId = browser.sessionStorage?.getItem(routingSessionStorageKey) ?? null;
     return sessionId !== null && isRoutingId(sessionId) ? sessionId : null;
@@ -66,20 +70,18 @@ export function isRoutingMessage(value: unknown): value is RoutingMessage {
 
   const message = value as Partial<RoutingMessage>;
   if (
-    message.protocol !== routingProtocol
-    || message.version !== routingVersion
-    || typeof message.sessionId !== "string"
-    || !isRoutingId(message.sessionId)
-    || typeof message.messageId !== "string"
-    || !isRoutingId(message.messageId)
-    || typeof message.source !== "string"
-    || typeof message.target !== "string"
-    || (
-      message.kind !== "hello"
-      && message.kind !== "navigate-request"
-      && message.kind !== "route-change"
-      && message.kind !== "route-ready"
-    )
+    message.protocol !== routingProtocol ||
+    message.version !== routingVersion ||
+    typeof message.sessionId !== "string" ||
+    !isRoutingId(message.sessionId) ||
+    typeof message.messageId !== "string" ||
+    !isRoutingId(message.messageId) ||
+    typeof message.source !== "string" ||
+    typeof message.target !== "string" ||
+    (message.kind !== "hello" &&
+      message.kind !== "navigate-request" &&
+      message.kind !== "route-change" &&
+      message.kind !== "route-ready")
   ) {
     return false;
   }

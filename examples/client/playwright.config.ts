@@ -11,7 +11,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "concurrently -k -n host,mfe \"vite\" \"pnpm run serve:mfe\"",
+    command: 'concurrently -k -n host,mfe "vite" "pnpm run serve:mfe"',
     url: "http://127.0.0.1:43170/overlay-lab.html",
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

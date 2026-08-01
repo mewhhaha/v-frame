@@ -22,7 +22,8 @@ const hostSections = {
     path: "/",
     kicker: "Thread",
     title: "Platform migration",
-    description: "Plan a reversible rollout and keep the implementation decisions in one place.",
+    description:
+      "Plan a reversible rollout and keep the implementation decisions in one place.",
   },
   research: {
     path: "/research",
@@ -34,7 +35,8 @@ const hostSections = {
     path: "/brief",
     kicker: "Thread",
     title: "Weekly brief",
-    description: "Shape this week’s progress, risks, and decisions into a concise update.",
+    description:
+      "Shape this week’s progress, risks, and decisions into a concise update.",
   },
   plugins: {
     path: "/plugins",
@@ -52,13 +54,15 @@ const hostSections = {
     path: "/angular",
     kicker: "Workspace",
     title: "Delivery readiness",
-    description: "Track launch reviews in an Angular app with its own server and client build.",
+    description:
+      "Track launch reviews in an Angular app with its own server and client build.",
   },
   solid: {
     path: "/solid",
     kicker: "Workspace",
     title: "Signal review",
-    description: "Review live signals in a SolidStart app with independently hydrated state.",
+    description:
+      "Review live signals in a SolidStart app with independently hydrated state.",
   },
 } as const;
 
@@ -75,7 +79,10 @@ const hostSectionRoutes = {
   solid: { solid: "/signals" },
 } as const;
 
-const pageFramePresentation: Record<PageFrameId, { className: string; surfaceId: string }> = {
+const pageFramePresentation: Record<
+  PageFrameId,
+  { className: string; surfaceId: string }
+> = {
   angular: { className: "widget-angular", surfaceId: "angular-surface" },
   qwik: { className: "widget-qwik", surfaceId: "qwik-surface" },
   "react-router": { className: "widget-react", surfaceId: "react-surface" },
@@ -90,9 +97,7 @@ function pageFrameLabel(frameId: PageFrameId, hostSection: HostSectionKey): stri
       ? "React plugins frontend"
       : "React transcript frontend";
   }
-  return hostSection === "usage"
-    ? "Qwik usage frontend"
-    : "Qwik composer frontend";
+  return hostSection === "usage" ? "Qwik usage frontend" : "Qwik composer frontend";
 }
 
 function pageFrameSource(frameId: PageFrameId, route: string): string {
@@ -104,17 +109,23 @@ function shell(hostSection: HostSectionKey): string {
   const section = hostSections[hostSection];
   const sectionRoutes = hostSectionRoutes[hostSection];
   const frameIds = Object.keys(sectionRoutes) as PageFrameId[];
-  const threadSection = hostSection === "migration" || hostSection === "research" || hostSection === "brief";
+  const threadSection =
+    hostSection === "migration" || hostSection === "research" || hostSection === "brief";
   const compositionClasses = threadSection
     ? "page-composition"
     : `page-composition widget-grid-single widget-grid-${hostSection}`;
-  const workspaceSurfaces = frameIds.map((frameId) => {
-    const presentation = pageFramePresentation[frameId];
-    const label = pageFrameLabel(frameId, hostSection);
-    return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><div id="${frameId}-widget"></div></div>`;
-  }).join("");
+  const workspaceSurfaces = frameIds
+    .map((frameId) => {
+      const presentation = pageFramePresentation[frameId];
+      const label = pageFrameLabel(frameId, hostSection);
+      return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><div id="${frameId}-widget"></div></div>`;
+    })
+    .join("");
   const hostSectionDefinitions = JSON.stringify(hostSections).replaceAll("<", "\\u003c");
-  const hostSectionRouteDefinitions = JSON.stringify(hostSectionRoutes).replaceAll("<", "\\u003c");
+  const hostSectionRouteDefinitions = JSON.stringify(hostSectionRoutes).replaceAll(
+    "<",
+    "\\u003c",
+  );
   const initialRoutes = JSON.stringify(sectionRoutes).replaceAll("<", "\\u003c");
 
   return `<!doctype html>
@@ -292,7 +303,11 @@ function shell(hostSection: HostSectionKey): string {
               ${workspaceSurfaces}
             </div>
           </div>
-          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">${Object.entries(sectionRoutes).map(([frameId, route]) => `${frameId} ${route}`).join("; ")}</output></p>
+          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">${Object.entries(
+            sectionRoutes,
+          )
+            .map(([frameId, route]) => `${frameId} ${route}`)
+            .join("; ")}</output></p>
         </main>
       </div>
     </div>
@@ -743,10 +758,9 @@ function widgetContent(
         `<v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
         { html: true },
       );
-      element.replace(
-        materializeVFrameDocument(response, definition.documentURL),
-        { html: true },
-      );
+      element.replace(materializeVFrameDocument(response, definition.documentURL), {
+        html: true,
+      });
       element.after("</template></v-frame>", { html: true });
     },
   };
@@ -762,7 +776,10 @@ function failedWidget(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "GET") {
-      return new Response("method not allowed", { status: 405, headers: { Allow: "GET" } });
+      return new Response("method not allowed", {
+        status: 405,
+        headers: { Allow: "GET" },
+      });
     }
 
     const url = new URL(request.url);
@@ -801,9 +818,7 @@ export default {
         }
         componentPath = `/document?${componentParameters}`;
       }
-      return env.QWIK_WIDGET.fetch(
-        serviceRequest("qwik-widget", componentPath),
-      );
+      return env.QWIK_WIDGET.fetch(serviceRequest("qwik-widget", componentPath));
     }
     if (url.pathname.startsWith("/widgets/angular/")) {
       return env.ANGULAR_WIDGET.fetch(
@@ -852,11 +867,12 @@ export default {
             return { failureName: frameId, frameId, response, source };
           }
 
-          const article = route === "/research"
-            ? "research"
-            : route === "/brief"
-              ? "brief"
-              : "migration";
+          const article =
+            route === "/research"
+              ? "research"
+              : route === "/brief"
+                ? "brief"
+                : "migration";
           const nestedSource = `/widgets/qwik/inventory?surface=definition&article=${article}`;
           const nestedResponse = await env.QWIK_WIDGET.fetch(
             serviceRequest(
@@ -902,18 +918,21 @@ export default {
       pageWidgetsPromise,
       accountPromise,
     ]);
-    let failure = pageWidgets
-      .map(({ failureName, response }) => failedWidget(failureName, response))
-      .find((candidate) => candidate !== null) ?? null;
+    let failure =
+      pageWidgets
+        .map(({ failureName, response }) => failedWidget(failureName, response))
+        .find((candidate) => candidate !== null) ?? null;
     if (failure === null) {
       failure = failedWidget("account", account);
     }
     if (failure !== null) {
-      console.error(JSON.stringify({
-        message: "SSR widget composition failed",
-        widget: failure.name,
-        status: failure.response.status,
-      }));
+      console.error(
+        JSON.stringify({
+          message: "SSR widget composition failed",
+          widget: failure.name,
+          status: failure.response.status,
+        }),
+      );
       return new Response(
         `SSR widget ${failure.name} returned status ${failure.response.status}`,
         { status: 502 },

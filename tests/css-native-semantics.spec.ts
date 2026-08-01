@@ -107,7 +107,7 @@ function stylesheetFor(pathname: string): string | undefined {
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -184,19 +184,22 @@ async function installBundle(page: Page): Promise<void> {
 }
 
 async function mountFrame(page: Page, pathname: string): Promise<void> {
-  await page.evaluate(async ({ origin, documentPath }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      src: string;
-    };
-    const loaded = new Promise<void>((resolveLoaded) => {
-      frame.addEventListener("v-frame-load", () => resolveLoaded(), {
-        once: true,
+  await page.evaluate(
+    async ({ origin, documentPath }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        src: string;
+      };
+      const loaded = new Promise<void>((resolveLoaded) => {
+        frame.addEventListener("v-frame-load", () => resolveLoaded(), {
+          once: true,
+        });
       });
-    });
-    frame.src = `${origin}${documentPath}`;
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-  }, { origin: fixture.origin, documentPath: pathname });
+      frame.src = `${origin}${documentPath}`;
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+    },
+    { origin: fixture.origin, documentPath: pathname },
+  );
 }
 
 test("ignores late imports in initial, imported, linked, and dynamic stylesheets", async ({
@@ -208,8 +211,9 @@ test("ignores late imports in initial, imported, linked, and dynamic stylesheets
   const frame = page.locator("v-frame");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
-      .contentWindow!;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow!;
     const inlineStyle = child.document.createElement("style");
     inlineStyle.textContent = `
       @import url("../styles/dynamic-inline-leading.css");
@@ -245,21 +249,24 @@ test("ignores late imports in initial, imported, linked, and dynamic stylesheets
     await expect(frame.locator(selector)).toHaveCSS("color", "rgb(0, 0, 0)");
   }
 
-  const stylesheetRequests = fixture.requests.filter((pathname) => (
-    pathname.startsWith("/styles/")
-  ));
-  expect(stylesheetRequests).toEqual(expect.arrayContaining([
-    "/styles/inline-leading.css",
-    "/styles/imported-parent.css",
-    "/styles/imported-leading.css",
-    "/styles/linked.css",
-    "/styles/linked-leading.css",
-    "/styles/dynamic-inline-leading.css",
-    "/styles/dynamic-linked.css",
-    "/styles/dynamic-linked-leading.css",
-  ]));
-  expect(stylesheetRequests.filter((pathname) => pathname.includes("-late.css")))
-    .toEqual([]);
+  const stylesheetRequests = fixture.requests.filter((pathname) =>
+    pathname.startsWith("/styles/"),
+  );
+  expect(stylesheetRequests).toEqual(
+    expect.arrayContaining([
+      "/styles/inline-leading.css",
+      "/styles/imported-parent.css",
+      "/styles/imported-leading.css",
+      "/styles/linked.css",
+      "/styles/linked-leading.css",
+      "/styles/dynamic-inline-leading.css",
+      "/styles/dynamic-linked.css",
+      "/styles/dynamic-linked-leading.css",
+    ]),
+  );
+  expect(stylesheetRequests.filter((pathname) => pathname.includes("-late.css"))).toEqual(
+    [],
+  );
 });
 
 test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM rewrites", async ({
@@ -271,8 +278,9 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
   const frame = page.locator("v-frame");
 
   const fills = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
-      .contentWindow!;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow!;
     const fragmentStyle = child.document.querySelector(
       "#fragment-style",
     ) as HTMLStyleElement;
@@ -290,9 +298,8 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
       stylesheetQuoted: rules[1]!.style.fill,
       attributeUnquoted: dynamicAttribute.style.fill,
       cssom: cssomRule.style.fill,
-      computed: child.getComputedStyle(
-        child.document.querySelector("#cssom-target")!,
-      ).fill,
+      computed: child.getComputedStyle(child.document.querySelector("#cssom-target")!)
+        .fill,
     };
   });
 
@@ -301,7 +308,7 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
   }
 
   await page.waitForTimeout(100);
-  expect(fixture.requests.filter((pathname) => (
-    pathname === "/documents/fragments.html"
-  ))).toHaveLength(1);
+  expect(
+    fixture.requests.filter((pathname) => pathname === "/documents/fragments.html"),
+  ).toHaveLength(1);
 });

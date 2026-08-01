@@ -1,16 +1,7 @@
-import {
-  Button,
-  Dialog,
-  DialogContent,
-  DialogTrigger,
-} from "@comp0/react";
+import { Button, Dialog, DialogContent, DialogTrigger } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { VFrameStatus } from "v-frame";
-import type {
-  VFrameElement,
-  VFrameErrorEventDetail,
-  VFrameStatusValue,
-} from "v-frame";
+import type { VFrameElement, VFrameErrorEventDetail, VFrameStatusValue } from "v-frame";
 import { microfrontends, type MicrofrontendKey } from "./microfrontends";
 import "./App.css";
 
@@ -50,11 +41,14 @@ const hostSections = {
     frontend: "angular",
     url: `${microfrontends.angular.url}?thread=brief`,
   },
-} as const satisfies Record<string, {
-  frontend: MicrofrontendKey;
-  label: string;
-  url: string;
-}>;
+} as const satisfies Record<
+  string,
+  {
+    frontend: MicrofrontendKey;
+    label: string;
+    url: string;
+  }
+>;
 
 type HostSectionKey = keyof typeof hostSections;
 
@@ -98,7 +92,9 @@ function HostLink({
         {navigationMarks[section]}
       </span>
       <span className="host-link-label">{hostSections[section].label}</span>
-      <span className="host-link-owner">{frontendLabels[hostSections[section].frontend]}</span>
+      <span className="host-link-owner">
+        {frontendLabels[hostSections[section].frontend]}
+      </span>
     </Button>
   );
 }
@@ -109,7 +105,11 @@ function HostNavigation({ activeSection, onSelect }: HostNavigationProps) {
       <ul className="utility-navigation" role="list">
         {utilitySections.map((section) => (
           <li key={section}>
-            <HostLink activeSection={activeSection} onSelect={onSelect} section={section} />
+            <HostLink
+              activeSection={activeSection}
+              onSelect={onSelect}
+              section={section}
+            />
           </li>
         ))}
       </ul>
@@ -118,7 +118,11 @@ function HostNavigation({ activeSection, onSelect }: HostNavigationProps) {
         <ul role="list">
           {threadSections.map((section) => (
             <li key={section}>
-              <HostLink activeSection={activeSection} onSelect={onSelect} section={section} />
+              <HostLink
+                activeSection={activeSection}
+                onSelect={onSelect}
+                section={section}
+              />
             </li>
           ))}
         </ul>
@@ -206,7 +210,11 @@ export function App() {
       className={sidebarOpen ? "host-app" : "host-app host-app-sidebar-closed"}
       data-composition-visible={compositionVisible ? "true" : undefined}
     >
-      <aside id="host-sidebar" className="host-sidebar" data-composition-label="React host shell">
+      <aside
+        id="host-sidebar"
+        className="host-sidebar"
+        data-composition-label="React host shell"
+      >
         <div className="brand-row">
           <a href="/" aria-label="Relay homepage" className="brand">
             Relay <span>Pro</span>
@@ -236,21 +244,36 @@ export function App() {
 
       <div className="host-content">
         <header className="mobile-header">
-          <a href="/" aria-label="Relay homepage" className="brand">Relay <span>Pro</span></a>
+          <a href="/" aria-label="Relay homepage" className="brand">
+            Relay <span>Pro</span>
+          </a>
           <Dialog open={mobileNavigationOpen} onToggle={setMobileNavigationOpen}>
             <DialogTrigger className="mobile-menu-trigger">Menu</DialogTrigger>
-            <DialogContent className="mobile-navigation" aria-labelledby="mobile-navigation-title">
+            <DialogContent
+              className="mobile-navigation"
+              aria-labelledby="mobile-navigation-title"
+            >
               <div className="mobile-navigation-heading">
                 <h2 id="mobile-navigation-title">Navigation</h2>
-                <form method="dialog"><Button className="mobile-close">Close</Button></form>
+                <form method="dialog">
+                  <Button className="mobile-close">Close</Button>
+                </form>
               </div>
-              <Button className="new-thread" onClick={() => selectSection("new")}>＋ New thread</Button>
+              <Button className="new-thread" onClick={() => selectSection("new")}>
+                ＋ New thread
+              </Button>
               <HostNavigation activeSection={activeSection} onSelect={selectSection} />
             </DialogContent>
           </Dialog>
         </header>
 
-        <main className={activeFrontend === "angular" ? "page-shell" : "page-shell page-shell-standalone"}>
+        <main
+          className={
+            activeFrontend === "angular"
+              ? "page-shell"
+              : "page-shell page-shell-standalone"
+          }
+        >
           <header className="conversation-header">
             <Button
               className="sidebar-toggle"
@@ -266,7 +289,11 @@ export function App() {
               aria-pressed={compositionVisible}
               onClick={() => setCompositionVisible((visible) => !visible)}
             >
-              <span className="composition-swatches" aria-hidden="true"><span /><span /><span /></span>
+              <span className="composition-swatches" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
               {compositionVisible ? "Hide frontends" : "Show frontends"}
             </Button>
           </header>
@@ -286,7 +313,11 @@ export function App() {
                   else frameElementsRef.current.delete(section);
                 }}
                 src={hostSections[section].url}
-                className={section === activeSection ? "frame-slot frame-slot-active" : "frame-slot frame-slot-inactive"}
+                className={
+                  section === activeSection
+                    ? "frame-slot frame-slot-active"
+                    : "frame-slot frame-slot-inactive"
+                }
                 aria-hidden={section !== activeSection}
                 inert={section !== activeSection}
                 aria-label={`${hostSections[section].label} frontend surface`}
@@ -295,7 +326,11 @@ export function App() {
             ))}
           </section>
           {activeFrontend === "angular" ? (
-            <section className="composer-surface" aria-label="Message composer" data-composition-label="Qwik composer frontend">
+            <section
+              className="composer-surface"
+              aria-label="Message composer"
+              data-composition-label="Qwik composer frontend"
+            >
               <v-frame
                 className="composer-frame"
                 src={microfrontends.qwik.composerUrl}

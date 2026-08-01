@@ -1,5 +1,10 @@
 import { createReadStream, existsSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { resolve } from "node:path";
 
 export interface FixtureServer {
@@ -11,7 +16,12 @@ export interface FixtureServer {
 const html = (body: string, head = "") => `<!doctype html>
 <html><head>${head}</head><body>${body}</body></html>`;
 
-function reply(response: ServerResponse, status: number, type: string, body: string | Buffer) {
+function reply(
+  response: ServerResponse,
+  status: number,
+  type: string,
+  body: string | Buffer,
+) {
   response.writeHead(status, { "content-type": type, "cache-control": "no-store" });
   response.end(body);
 }
@@ -72,7 +82,9 @@ function pageFor(path: string) {
     case "/documents/adopted-entry.html":
       return html('<main id="network-reload">Fetched by reload</main>');
     case "/documents/first.html":
-      return html('<main id="first">First document <a id="next" href="second.html">next</a></main>');
+      return html(
+        '<main id="first">First document <a id="next" href="second.html">next</a></main>',
+      );
     case "/documents/second.html":
       return html('<main id="second">Second document</main>');
     case "/first-window-base/first":
@@ -82,9 +94,14 @@ function pageFor(path: string) {
     case "/svg-base/destination.html":
       return html('<main id="svg-destination">SVG destination document</main>');
     case "/documents/scripted.html":
-      return html('<main id="before-script">Before script</main><script src="../assets/append-content.js"></script>');
+      return html(
+        '<main id="before-script">Before script</main><script src="../assets/append-content.js"></script>',
+      );
     case "/documents/styled.html":
-      return html('<img id="relative-image" src="../assets/pixel.png"><p id="styled-copy">Styled</p>', '<link rel="stylesheet" href="../assets/document.css">');
+      return html(
+        '<img id="relative-image" src="../assets/pixel.png"><p id="styled-copy">Styled</p>',
+        '<link rel="stylesheet" href="../assets/document.css">',
+      );
     case "/documents/application.html":
       return html(`<button id="load">Load</button><button id="push">Push history</button><output id="result"></output>
         <script>
@@ -101,7 +118,9 @@ function pageFor(path: string) {
           document.querySelector('#dynamic-target').insertAdjacentElement('afterend', script);
         </script>`);
     case "/documents/nested-network.html":
-      return html('<v-frame id="nested-network-frame" src="/documents/inner-network.html"></v-frame>');
+      return html(
+        '<v-frame id="nested-network-frame" src="/documents/inner-network.html"></v-frame>',
+      );
     case "/documents/inner-network.html":
       return html('<p id="nested-network-copy">Nested network frame loaded</p>');
     case "/documents/inline-module.html":
@@ -164,11 +183,14 @@ function pageFor(path: string) {
           document.body.append(second);
         </script>`);
     case "/documents/import-and-root.html":
-      return html(`<p id="root-colour">Root specificity</p><p id="imported-colour" class="imported">Imported supports</p>`, `<style>
+      return html(
+        `<p id="root-colour">Root specificity</p><p id="imported-colour" class="imported">Imported supports</p>`,
+        `<style>
           @import url('../assets/imported-supports.css') supports(display: grid);
           :root { color: rgb(8, 9, 10); }
           html { color: rgb(50, 51, 52); }
-        </style>`);
+        </style>`,
+      );
     case "/documents/request-abort.html":
       return html(`<output id="request-result">pending</output>
         <script>
@@ -203,14 +225,17 @@ function pageFor(path: string) {
           window.__baseAfterPush = { baseURI: document.baseURI, src: image.src };
         </script>`);
     case "/documents/explicit-base-after-push.html":
-      return html(`<script>
+      return html(
+        `<script>
           history.pushState({}, '', 'nested/state.html');
           const image = document.createElement('img');
           image.src = 'asset.png';
           image.id = 'created-image';
           document.body.append(image);
           window.__explicitBaseAfterPush = { baseURI: document.baseURI, src: image.src };
-        </script>`, '<base href="/base-root/">');
+        </script>`,
+        '<base href="/base-root/">',
+      );
     case "/documents/dynamic-base-urls.html":
       return `<!doctype html><html><head>
         <base id="invalid-base" href="http://[">
@@ -233,11 +258,14 @@ function pageFor(path: string) {
           window.addEventListener('scroll', () => window.__scrollEvents += 1);
         </script>`);
     case "/documents/nonce.html":
-      return html('<p id="nonce-copy">Nonce fixture</p>', '<style>#nonce-copy { color: rgb(7, 8, 9); }</style>');
+      return html(
+        '<p id="nonce-copy">Nonce fixture</p>',
+        "<style>#nonce-copy { color: rgb(7, 8, 9); }</style>",
+      );
     case "/documents/noscript.html":
       return html(
         '<p id="noscript-copy">Scripted</p><noscript><link rel="stylesheet" href="/assets/noscript-only.css"><p id="noscript-fallback">Fallback</p></noscript>',
-        '<noscript><style>#noscript-copy { color: rgb(200, 0, 0); }</style></noscript>',
+        "<noscript><style>#noscript-copy { color: rgb(200, 0, 0); }</style></noscript>",
       );
     case "/documents/direct-location.html":
       return html('<script>location.assign("/documents/second.html");</script>');
@@ -255,46 +283,108 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     const path = pathname(request);
     requests.push(path);
 
-    if (path === "/") return reply(response, 200, "text/html", html('<div id="host"></div>'));
+    if (path === "/")
+      return reply(response, 200, "text/html", html('<div id="host"></div>'));
     if (path === "/dist/index.js") {
-      if (!existsSync(distFile)) return reply(response, 404, "text/plain", "Build output not found");
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      if (!existsSync(distFile))
+        return reply(response, 404, "text/plain", "Build output not found");
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(distFile).pipe(response);
       return;
     }
     if (path === "/assets/append-content.js") {
-      return reply(response, 200, "text/javascript", `document.body.insertAdjacentHTML('beforeend', '<p id="script-added">Script executed</p>');`);
+      return reply(
+        response,
+        200,
+        "text/javascript",
+        `document.body.insertAdjacentHTML('beforeend', '<p id="script-added">Script executed</p>');`,
+      );
     }
     if (path === "/assets/classic-order.js") {
-      return reply(response, 200, "text/javascript", "window.__scriptEvents.push('classic-external:' + document.currentScript?.id + ':' + document.readyState);");
+      return reply(
+        response,
+        200,
+        "text/javascript",
+        "window.__scriptEvents.push('classic-external:' + document.currentScript?.id + ':' + document.readyState);",
+      );
     }
     if (path === "/assets/defer-order.js") {
-      return reply(response, 200, "text/javascript", "window.__scriptEvents.push('defer-external:' + document.currentScript?.id + ':' + document.readyState);");
+      return reply(
+        response,
+        200,
+        "text/javascript",
+        "window.__scriptEvents.push('defer-external:' + document.currentScript?.id + ':' + document.readyState);",
+      );
     }
     if (path === "/assets/async-order.js") {
-      setTimeout(() => reply(response, 200, "text/javascript", "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);"), 50);
+      setTimeout(
+        () =>
+          reply(
+            response,
+            200,
+            "text/javascript",
+            "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);",
+          ),
+        50,
+      );
       return;
     }
     if (path === "/assets/dynamic-first.js") {
-      setTimeout(() => reply(response, 200, "text/javascript", "window.__dynamicExternalEvents.push('first');"), 50);
+      setTimeout(
+        () =>
+          reply(
+            response,
+            200,
+            "text/javascript",
+            "window.__dynamicExternalEvents.push('first');",
+          ),
+        50,
+      );
       return;
     }
     if (path === "/assets/dynamic-second.js") {
-      return reply(response, 200, "text/javascript", "window.__dynamicExternalEvents.push('second');");
+      return reply(
+        response,
+        200,
+        "text/javascript",
+        "window.__dynamicExternalEvents.push('second');",
+      );
     }
     if (path === "/assets/import-map-message.js") {
-      return reply(response, 200, "text/javascript", "export const message = 'resolved through import map';");
+      return reply(
+        response,
+        200,
+        "text/javascript",
+        "export const message = 'resolved through import map';",
+      );
     }
     if (path === "/assets/imported-supports.css") {
       return reply(response, 200, "text/css", ".imported { color: rgb(13, 14, 15); }");
     }
     if (path === "/assets/document.css") {
-      return reply(response, 200, "text/css", "#styled-copy { background-image: url('./pixel.png'); color: rgb(12, 34, 56); }");
+      return reply(
+        response,
+        200,
+        "text/css",
+        "#styled-copy { background-image: url('./pixel.png'); color: rgb(12, 34, 56); }",
+      );
     }
     if (path === "/assets/pixel.png") {
-      return reply(response, 200, "image/png", Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9sAAAAABJRU5ErkJggg==", "base64"));
+      return reply(
+        response,
+        200,
+        "image/png",
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9sAAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      );
     }
-    if (path === "/api/message") return reply(response, 200, "text/plain", "Fetched from fixture");
+    if (path === "/api/message")
+      return reply(response, 200, "text/plain", "Fetched from fixture");
     if (path === "/api/slow") {
       setTimeout(() => reply(response, 200, "text/plain", "Too slow"), 100);
       return;
@@ -306,14 +396,20 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     return reply(response, 404, "text/plain", `No fixture for ${path}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Fixture server did not expose a TCP address");
+  if (!address || typeof address === "string")
+    throw new Error("Fixture server did not expose a TCP address");
 
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
-    close: () => new Promise((resolveClosed, reject) => server.close((error) => error ? reject(error) : resolveClosed())),
+    close: () =>
+      new Promise((resolveClosed, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClosed())),
+      ),
   };
 }
 
@@ -355,7 +451,9 @@ function contractPageFor(path: string) {
     case "/documents/redirected.html":
       return contractHTML('<main id="redirect-copy">Redirect destination</main>');
     case "/documents/dom.html":
-      return contractHTML('<main id="dom-root"><input id="focus-target"><button id="click-target">Click</button></main>');
+      return contractHTML(
+        '<main id="dom-root"><input id="focus-target"><button id="click-target">Click</button></main>',
+      );
     case "/documents/inline-body-load.html":
       return `<!doctype html><html><head><script>
         window.__documentLifecycle = { bodyLoads: 0, readyStates: [] };
@@ -386,7 +484,9 @@ function contractPageFor(path: string) {
     case "/documents/scripts.html":
       return contractHTML('<main id="script-root">Script fixture</main>');
     case "/documents/styles.html":
-      return contractHTML('<main><p id="host-isolated">Host CSS must not leak here</p></main>');
+      return contractHTML(
+        '<main><p id="host-isolated">Host CSS must not leak here</p></main>',
+      );
     case "/documents/history.html":
       return contractHTML(`<main>
         <a id="top-link" href="#">Top</a>
@@ -433,7 +533,7 @@ function contractPageFor(path: string) {
 
 function closeContractServer(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -450,7 +550,10 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
         response,
         200,
         "text/html",
-        contractHTML('<div id="host"></div><p id="host-isolated">Host CSS</p>', '<style>#host-isolated { color: rgb(91, 92, 93); }</style>'),
+        contractHTML(
+          '<div id="host"></div><p id="host-isolated">Host CSS</p>',
+          "<style>#host-isolated { color: rgb(91, 92, 93); }</style>",
+        ),
       );
     }
     if (path === "/documents/bound-shell.html") {
@@ -462,39 +565,66 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
           contractHTML('<div id="host"></div>'),
         );
       }
-      return contractReply(response, 200, "text/html", contractHTML(`<output id="bound-result">bound</output>
+      return contractReply(
+        response,
+        200,
+        "text/html",
+        contractHTML(`<output id="bound-result">bound</output>
         <script>
           window.__boundPopStates = [];
           window.addEventListener('popstate', (event) => window.__boundPopStates.push(event.state));
-        </script>`));
+        </script>`),
+      );
     }
     if (path === "/dist/index.js") {
       if (!existsSync(distFile)) {
         return contractReply(response, 404, "text/plain", "Build output not found");
       }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(distFile).pipe(response);
       return;
     }
     if (path === "/dist/register.js") {
       if (!existsSync(registerFile)) {
-        return contractReply(response, 404, "text/plain", "Register build output not found");
+        return contractReply(
+          response,
+          404,
+          "text/plain",
+          "Register build output not found",
+        );
       }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(registerFile).pipe(response);
       return;
     }
     if (path === "/documents/slow.html") {
-      setTimeout(() => contractReply(response, 200, "text/html", contractPageFor(path) ?? ""), 500);
+      setTimeout(
+        () => contractReply(response, 200, "text/html", contractPageFor(path) ?? ""),
+        500,
+      );
       return;
     }
     if (path === "/documents/redirect.html") {
-      response.writeHead(302, { location: "/documents/redirected.html", "cache-control": "no-store" });
+      response.writeHead(302, {
+        location: "/documents/redirected.html",
+        "cache-control": "no-store",
+      });
       response.end();
       return;
     }
     if (path === "/assets/dynamic-linked.css") {
-      return contractReply(response, 200, "text/css", "#dynamic-linked { color: rgb(31, 32, 33); }");
+      return contractReply(
+        response,
+        200,
+        "text/css",
+        "#dynamic-linked { color: rgb(31, 32, 33); }",
+      );
     }
 
     const page = contractPageFor(path);
@@ -504,7 +634,9 @@ export async function startContractFixtureServers(): Promise<ContractFixtureServ
     return contractReply(response, 404, "text/plain", `No contract fixture for ${path}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (!address || typeof address === "string") {
     await closeContractServer(server);

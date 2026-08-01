@@ -346,20 +346,24 @@ export class BoundHistory {
     this.#listenerLifetime.signal.addEventListener("abort", stopObserving, {
       once: true,
     });
-    this.#hostWindow.addEventListener("popstate", () => {
-      if (this.#disposed) {
-        return;
-      }
-      const from = this.#currentURL;
-      const to = this.#hostWindow.location.href;
-      this.#onNavigate({
-        from,
-        to,
-        kind: "traverse",
-        state: this.#hostWindow.history.state,
-      });
-      this.#synchronizeFromHost(true);
-    }, { signal: this.#listenerLifetime.signal });
+    this.#hostWindow.addEventListener(
+      "popstate",
+      () => {
+        if (this.#disposed) {
+          return;
+        }
+        const from = this.#currentURL;
+        const to = this.#hostWindow.location.href;
+        this.#onNavigate({
+          from,
+          to,
+          kind: "traverse",
+          state: this.#hostWindow.history.state,
+        });
+        this.#synchronizeFromHost(true);
+      },
+      { signal: this.#listenerLifetime.signal },
+    );
     this.#synchronizeFromHost(false);
   }
 
@@ -455,16 +459,20 @@ export class BoundHistory {
   }
 
   #dispatchActivationEvents(previousURL: string): void {
-    this.#window.dispatchEvent(new this.#window.PopStateEvent("popstate", {
-      state: this.#hostWindow.history.state,
-    }));
+    this.#window.dispatchEvent(
+      new this.#window.PopStateEvent("popstate", {
+        state: this.#hostWindow.history.state,
+      }),
+    );
     const previousHash = new this.#window.URL(previousURL).hash;
     const currentHash = new this.#window.URL(this.#currentURL).hash;
     if (previousHash !== currentHash) {
-      this.#window.dispatchEvent(new this.#window.HashChangeEvent("hashchange", {
-        oldURL: previousURL,
-        newURL: this.#currentURL,
-      }));
+      this.#window.dispatchEvent(
+        new this.#window.HashChangeEvent("hashchange", {
+          oldURL: previousURL,
+          newURL: this.#currentURL,
+        }),
+      );
     }
   }
 
@@ -502,14 +510,17 @@ export class VirtualHistory {
   constructor(options: VirtualHistoryOptions) {
     this.#window = options.window;
     this.#history = options.window.history;
-    this.#nativeReplaceState = options.window.history.replaceState.bind(options.window.history);
+    this.#nativeReplaceState = options.window.history.replaceState.bind(
+      options.window.history,
+    );
     const nativeLengthGetter = Object.getOwnPropertyDescriptor(
       options.window.History.prototype,
       "length",
     )?.get;
-    this.#nativeLengthGetter = nativeLengthGetter === undefined
-      ? null
-      : () => Number(nativeLengthGetter.call(this.#history));
+    this.#nativeLengthGetter =
+      nativeLengthGetter === undefined
+        ? null
+        : () => Number(nativeLengthGetter.call(this.#history));
     this.#onNavigate = options.onNavigate;
     this.#onURLChange = options.onURLChange;
     this.#onDocumentTraversal = options.onDocumentTraversal;
@@ -674,10 +685,7 @@ export class VirtualHistory {
     return true;
   }
 
-  adoptNativeNavigation(
-    url: string,
-    mode: DocumentHistoryMode | "reload",
-  ): void {
+  adoptNativeNavigation(url: string, mode: DocumentHistoryMode | "reload"): void {
     if (this.#disposed || mode === "reload") {
       return;
     }
@@ -792,7 +800,9 @@ export class VirtualHistory {
 
   #coerceDelta(value: unknown): number {
     if (typeof value === "bigint" || typeof value === "symbol") {
-      throw new this.#window.TypeError("History traversal delta cannot be converted to a number");
+      throw new this.#window.TypeError(
+        "History traversal delta cannot be converted to a number",
+      );
     }
 
     let number: number;
@@ -818,7 +828,10 @@ export class VirtualHistory {
     }
 
     const nextEntry = this.#session.entryAt(nextIndex);
-    if (nextEntry === undefined || !this.#approve(nextEntry.url, "traverse", nextEntry.state)) {
+    if (
+      nextEntry === undefined ||
+      !this.#approve(nextEntry.url, "traverse", nextEntry.state)
+    ) {
       return;
     }
 
@@ -852,7 +865,10 @@ export class VirtualHistory {
     return this.#window.structuredClone(state);
   }
 
-  #commit(eventType: "none" | "fragment" | "traverse", previousURL = this.currentURL): void {
+  #commit(
+    eventType: "none" | "fragment" | "traverse",
+    previousURL = this.currentURL,
+  ): void {
     this.#onURLChange(this.currentURL);
 
     if (eventType === "none") {
@@ -867,12 +883,12 @@ export class VirtualHistory {
 
     const previousFragmentStart = previousURL.indexOf("#");
     const currentFragmentStart = this.currentURL.indexOf("#");
-    const previousFragment = previousFragmentStart === -1
-      ? null
-      : previousURL.slice(previousFragmentStart + 1);
-    const currentFragment = currentFragmentStart === -1
-      ? null
-      : this.currentURL.slice(currentFragmentStart + 1);
+    const previousFragment =
+      previousFragmentStart === -1 ? null : previousURL.slice(previousFragmentStart + 1);
+    const currentFragment =
+      currentFragmentStart === -1
+        ? null
+        : this.currentURL.slice(currentFragmentStart + 1);
     if (previousFragment !== currentFragment) {
       this.#window.dispatchEvent(
         new this.#window.HashChangeEvent("hashchange", {

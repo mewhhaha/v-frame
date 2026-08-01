@@ -28,9 +28,11 @@ function reply(
   response.writeHead(status, {
     "cache-control": "no-store",
     "content-type": contentType,
-    ...(responseContentSecurityPolicy === undefined ? {} : {
-      "content-security-policy": responseContentSecurityPolicy,
-    }),
+    ...(responseContentSecurityPolicy === undefined
+      ? {}
+      : {
+          "content-security-policy": responseContentSecurityPolicy,
+        }),
   });
   response.end(body);
 }
@@ -46,7 +48,9 @@ function documentSource(pathname: string): string | undefined {
     case "/documents/external-module-link-failure.html":
       return html('<script type="module" src="../modules/link-failure.js"></script>');
     case "/documents/external-module-evaluation-failure.html":
-      return html('<script type="module" src="../modules/evaluation-failure.js"></script>');
+      return html(
+        '<script type="module" src="../modules/evaluation-failure.js"></script>',
+      );
     case "/documents/nonce-styles.html":
       return html(
         `<p id="initial-inline">initial inline</p>
@@ -109,7 +113,7 @@ function stylesheetSource(pathname: string): string | undefined {
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -172,7 +176,9 @@ async function startFixtureServer(): Promise<FixtureServer> {
     reply(response, 404, "text/plain", `No fixture for ${pathname}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -194,16 +200,21 @@ test.afterAll(async () => {
 
 async function installBundle(page: Page): Promise<void> {
   await page.goto(fixture.origin);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 }
 
 async function mountFrame(page: Page, pathname: string): Promise<Locator> {
-  await page.evaluate(({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-    frame.nonce = frameNonce;
-    frame.src = source;
-    document.querySelector("#host")?.append(frame);
-  }, { frameNonce: nonce, source: `${fixture.origin}${pathname}` });
+  await page.evaluate(
+    ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & { src: string };
+      frame.nonce = frameNonce;
+      frame.src = source;
+      document.querySelector("#host")?.append(frame);
+    },
+    { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
+  );
   return page.locator("v-frame");
 }
 
@@ -213,26 +224,40 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
+    return evaluate(
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+    );
   }, expression.toString()) as Promise<T>;
 }
 
-test("runs an external module with a relative import and top-level await before load in its child realm", async ({ page }) => {
+test("runs an external module with a relative import and top-level await before load in its child realm", async ({
+  page,
+}) => {
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/external-module.html");
 
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   await expect(frame.locator("#module-result")).toHaveText("module settled");
-  expect(await childValue(frame, (window) => ({
-    events: (window as typeof window & { __externalModuleEvents?: string[] }).__externalModuleEvents,
-    state: (window as typeof window & {
-      __externalModuleState?: {
-        dependencyRealm: boolean;
-        currentScriptIsNull: boolean;
-        realm: boolean;
-      };
-    }).__externalModuleState,
-  }))).toEqual({
+  expect(
+    await childValue(frame, (window) => ({
+      events: (window as typeof window & { __externalModuleEvents?: string[] })
+        .__externalModuleEvents,
+      state: (
+        window as typeof window & {
+          __externalModuleState?: {
+            dependencyRealm: boolean;
+            currentScriptIsNull: boolean;
+            realm: boolean;
+          };
+        }
+      ).__externalModuleState,
+    })),
+  ).toEqual({
     events: ["entry-start:interactive", "entry-after-await:interactive", "load:complete"],
     state: {
       dependencyRealm: true,
@@ -243,56 +268,68 @@ test("runs an external module with a relative import and top-level await before 
   expect(await page.evaluate(() => "__externalModuleState" in window)).toBe(false);
 });
 
-test("loads documents and scripts through an explicit Trusted Types policy", async ({ page }) => {
+test("loads documents and scripts through an explicit Trusted Types policy", async ({
+  page,
+}) => {
   await page.goto(`${fixture.origin}/trusted-types`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 
   const frame = page.locator("v-frame");
-  await page.evaluate(({ frameNonce, source }) => {
-    const element = document.createElement("v-frame") as HTMLElement & {
-      nonce: string;
-      src: string;
-      trustedTypesPolicy: {
-        name: string;
-        createHTML(source: string): string;
-        createScript(source: string): string;
-        createScriptURL(source: string): string;
+  await page.evaluate(
+    ({ frameNonce, source }) => {
+      const element = document.createElement("v-frame") as HTMLElement & {
+        nonce: string;
+        src: string;
+        trustedTypesPolicy: {
+          name: string;
+          createHTML(source: string): string;
+          createScript(source: string): string;
+          createScriptURL(source: string): string;
+        };
       };
-    };
-    element.nonce = frameNonce;
-    element.trustedTypesPolicy = {
-      name: "v-frame-test",
-      createHTML: (htmlSource) => htmlSource.replaceAll(
-        "Trusted source",
-        "Trusted HTML policy applied",
-      ),
-      createScript: (scriptSource) => `${scriptSource}\n;globalThis.__trustedScriptPolicyApplied = true;`,
-      createScriptURL: (scriptURL) => scriptURL,
-    };
-    element.src = source;
-    document.querySelector("#host")?.append(element);
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/trusted-types.html`,
-  });
+      element.nonce = frameNonce;
+      element.trustedTypesPolicy = {
+        name: "v-frame-test",
+        createHTML: (htmlSource) =>
+          htmlSource.replaceAll("Trusted source", "Trusted HTML policy applied"),
+        createScript: (scriptSource) =>
+          `${scriptSource}\n;globalThis.__trustedScriptPolicyApplied = true;`,
+        createScriptURL: (scriptURL) => scriptURL,
+      };
+      element.src = source;
+      document.querySelector("#host")?.append(element);
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/trusted-types.html`,
+    },
+  );
 
-  await expect.poll(() => frame.evaluate(
-    (element: HTMLElement & { status: string }) => element.status,
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   await expect(frame.locator("#trusted-html")).toHaveText("Trusted HTML policy applied");
-  await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted HTML policy applied");
+  await expect(frame.locator("#trusted-fragment")).toHaveText(
+    "Trusted HTML policy applied",
+  );
   await frame.locator("#trusted-handler").click();
-  expect(await childValue(frame, (window) => ({
-    externalScript: window.document.querySelector("#trusted-html")?.getAttribute(
-      "data-external-script",
-    ),
-    trustedScriptPolicyApplied: (
-      window as typeof window & { __trustedScriptPolicyApplied?: boolean }
-    ).__trustedScriptPolicyApplied,
-    inlineHandler: window.document.querySelector("#trusted-handler")?.getAttribute(
-      "data-inline-handler",
-    ),
-  }))).toEqual({
+  expect(
+    await childValue(frame, (window) => ({
+      externalScript: window.document
+        .querySelector("#trusted-html")
+        ?.getAttribute("data-external-script"),
+      trustedScriptPolicyApplied: (
+        window as typeof window & { __trustedScriptPolicyApplied?: boolean }
+      ).__trustedScriptPolicyApplied,
+      inlineHandler: window.document
+        .querySelector("#trusted-handler")
+        ?.getAttribute("data-inline-handler"),
+    })),
+  ).toEqual({
     externalScript: "ran",
     trustedScriptPolicyApplied: true,
     inlineHandler: "ran",
@@ -305,27 +342,34 @@ test("uses a named identity Trusted Types policy without callback boilerplate", 
 }) => {
   test.skip(browserName !== "chromium", "Trusted Types enforcement is unavailable");
   await page.goto(`${fixture.origin}/trusted-types`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 
   const frame = page.locator("v-frame");
-  await page.evaluate(({ frameNonce, source }) => {
-    const element = document.createElement("v-frame") as HTMLElement & {
-      nonce: string;
-      src: string;
-      trustedTypesPolicy: string;
-    };
-    element.nonce = frameNonce;
-    element.trustedTypesPolicy = "v-frame-test";
-    element.src = source;
-    document.querySelector("#host")?.append(element);
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/trusted-types.html`,
-  });
+  await page.evaluate(
+    ({ frameNonce, source }) => {
+      const element = document.createElement("v-frame") as HTMLElement & {
+        nonce: string;
+        src: string;
+        trustedTypesPolicy: string;
+      };
+      element.nonce = frameNonce;
+      element.trustedTypesPolicy = "v-frame-test";
+      element.src = source;
+      document.querySelector("#host")?.append(element);
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/trusted-types.html`,
+    },
+  );
 
-  await expect.poll(() => frame.evaluate(
-    (element: HTMLElement & { status: string }) => element.status,
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   await expect(frame.locator("#trusted-html")).toHaveText("Trusted source");
   await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted source");
 });
@@ -336,38 +380,49 @@ test("reports a fatal bootstrap error when Trusted Types enforcement has no poli
 }) => {
   test.skip(browserName !== "chromium", "Trusted Types enforcement is unavailable");
   await page.goto(`${fixture.origin}/trusted-types`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 
-  const failure = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      nonce: string;
-      src: string;
-      status: string;
-    };
-    frame.nonce = frameNonce;
-    const failed = new Promise<{ phase: string; fatal: boolean; errorName: string }>(
-      (resolveFailed) => {
-        frame.addEventListener("v-frame-error", (event) => {
-          const detail = (event as CustomEvent<{
-            phase: string;
-            fatal: boolean;
-            error: { name?: string };
-          }>).detail;
-          resolveFailed({
-            phase: detail.phase,
-            fatal: detail.fatal,
-            errorName: detail.error.name ?? "",
-          });
-        }, { once: true });
-      },
-    );
-    frame.src = source;
-    document.querySelector("#host")?.append(frame);
-    return { ...await failed, status: frame.status };
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/trusted-types.html`,
-  });
+  const failure = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        nonce: string;
+        src: string;
+        status: string;
+      };
+      frame.nonce = frameNonce;
+      const failed = new Promise<{ phase: string; fatal: boolean; errorName: string }>(
+        (resolveFailed) => {
+          frame.addEventListener(
+            "v-frame-error",
+            (event) => {
+              const detail = (
+                event as CustomEvent<{
+                  phase: string;
+                  fatal: boolean;
+                  error: { name?: string };
+                }>
+              ).detail;
+              resolveFailed({
+                phase: detail.phase,
+                fatal: detail.fatal,
+                errorName: detail.error.name ?? "",
+              });
+            },
+            { once: true },
+          );
+        },
+      );
+      frame.src = source;
+      document.querySelector("#host")?.append(frame);
+      return { ...(await failed), status: frame.status };
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/trusted-types.html`,
+    },
+  );
 
   expect(failure).toEqual({
     phase: "bootstrap",
@@ -382,24 +437,32 @@ for (const [name, pathname] of [
   ["link", "/documents/external-module-link-failure.html"],
   ["evaluation", "/documents/external-module-evaluation-failure.html"],
 ] as const) {
-  test(`reports one nonfatal external module ${name} failure and becomes ready`, async ({ page }) => {
+  test(`reports one nonfatal external module ${name} failure and becomes ready`, async ({
+    page,
+  }) => {
     await installBundle(page);
-    const result = await page.evaluate(async ({ frameNonce, source }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { src: string; status: string };
-      const failures: Array<{ phase: string; fatal: boolean }> = [];
-      frame.nonce = frameNonce;
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
-        failures.push({ phase: detail.phase, fatal: detail.fatal });
-      });
-      const loaded = new Promise<void>((resolveLoaded) => {
-        frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
-      });
-      frame.src = source;
-      document.querySelector("#host")?.append(frame);
-      await loaded;
-      return { failures, status: frame.status };
-    }, { frameNonce: nonce, source: `${fixture.origin}${pathname}` });
+    const result = await page.evaluate(
+      async ({ frameNonce, source }) => {
+        const frame = document.createElement("v-frame") as HTMLElement & {
+          src: string;
+          status: string;
+        };
+        const failures: Array<{ phase: string; fatal: boolean }> = [];
+        frame.nonce = frameNonce;
+        frame.addEventListener("v-frame-error", (event) => {
+          const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
+          failures.push({ phase: detail.phase, fatal: detail.fatal });
+        });
+        const loaded = new Promise<void>((resolveLoaded) => {
+          frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
+        });
+        frame.src = source;
+        document.querySelector("#host")?.append(frame);
+        await loaded;
+        return { failures, status: frame.status };
+      },
+      { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
+    );
 
     expect(result).toEqual({
       failures: [{ phase: "script", fatal: false }],
@@ -408,34 +471,56 @@ for (const [name, pathname] of [
   });
 }
 
-test("uses the frame nonce for initial, linked, imported, and changing dynamic styles under a nonce-only CSP", async ({ page }) => {
+test("uses the frame nonce for initial, linked, imported, and changing dynamic styles under a nonce-only CSP", async ({
+  page,
+}) => {
   const cspViolations: string[] = [];
   page.on("console", (message) => {
-    if (message.type() === "error" && /content security policy|\bcsp\b/i.test(message.text())) {
+    if (
+      message.type() === "error" &&
+      /content security policy|\bcsp\b/i.test(message.text())
+    ) {
       cspViolations.push(message.text());
     }
   });
 
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/nonce-styles.html");
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
 
   await expect(frame.locator("#initial-inline")).toHaveCSS("color", "rgb(11, 12, 13)");
   await expect(frame.locator("#source-inline")).toHaveCSS("color", "rgb(61, 62, 63)");
   await expect(frame.locator("#imported")).toHaveCSS("color", "rgb(21, 22, 23)");
   await expect(frame.locator("#linked")).toHaveCSS("color", "rgb(31, 32, 33)");
-  expect(await childValue(frame, (window) => ({
-    initialNonce: (window.document.querySelector("#initial-style") as HTMLStyleElement | null)?.nonce,
-    linkedNonce: (window.document.querySelector("style[data-v-frame-source]") as HTMLStyleElement | null)?.nonce,
-    stylesheetLiteral: window.document.querySelector("#initial-style")?.textContent.includes("<style> & style="),
-    attributeLiteral: window.document.querySelector("#source-inline")?.getAttribute("data-literal"),
-    textLiteral: (window.document.querySelector("#literal-text") as HTMLTextAreaElement | null)?.value,
-    scriptLiteral: window.document.querySelector("#literal-script")?.textContent,
-    commentLiteral: window.document.createTreeWalker(
-      window.document.body,
-      window.NodeFilter.SHOW_COMMENT,
-    ).nextNode()?.textContent,
-  }))).toEqual({
+  expect(
+    await childValue(frame, (window) => ({
+      initialNonce: (
+        window.document.querySelector("#initial-style") as HTMLStyleElement | null
+      )?.nonce,
+      linkedNonce: (
+        window.document.querySelector(
+          "style[data-v-frame-source]",
+        ) as HTMLStyleElement | null
+      )?.nonce,
+      stylesheetLiteral: window.document
+        .querySelector("#initial-style")
+        ?.textContent.includes("<style> & style="),
+      attributeLiteral: window.document
+        .querySelector("#source-inline")
+        ?.getAttribute("data-literal"),
+      textLiteral: (
+        window.document.querySelector("#literal-text") as HTMLTextAreaElement | null
+      )?.value,
+      scriptLiteral: window.document.querySelector("#literal-script")?.textContent,
+      commentLiteral: window.document
+        .createTreeWalker(window.document.body, window.NodeFilter.SHOW_COMMENT)
+        .nextNode()?.textContent,
+    })),
+  ).toEqual({
     initialNonce: nonce,
     linkedNonce: nonce,
     stylesheetLiteral: true,
@@ -444,11 +529,16 @@ test("uses the frame nonce for initial, linked, imported, and changing dynamic s
     scriptLiteral: '{"literal":"<style> style="}',
     commentLiteral: " literal comment: <style> style= ",
   });
-  expect(await frame.evaluate((element) => (
-    element.shadowRoot?.querySelector(
-      "style[data-v-frame-inline-styles]",
-    ) as HTMLStyleElement | null
-  )?.nonce)).toBe(nonce);
+  expect(
+    await frame.evaluate(
+      (element) =>
+        (
+          element.shadowRoot?.querySelector(
+            "style[data-v-frame-inline-styles]",
+          ) as HTMLStyleElement | null
+        )?.nonce,
+    ),
+  ).toBe(nonce);
   expect(cspViolations).toEqual([]);
 
   await childValue(frame, (window) => {
@@ -464,18 +554,29 @@ test("uses the frame nonce for initial, linked, imported, and changing dynamic s
     style.textContent = "#dynamic { color: rgb(51, 52, 53); }";
   });
   await expect(frame.locator("#dynamic")).toHaveCSS("color", "rgb(51, 52, 53)");
-  expect(await childValue(frame, (window) =>
-    (window.document.querySelector("#dynamic-style") as HTMLStyleElement | null)?.nonce,
-  )).toBe(nonce);
+  expect(
+    await childValue(
+      frame,
+      (window) =>
+        (window.document.querySelector("#dynamic-style") as HTMLStyleElement | null)
+          ?.nonce,
+    ),
+  ).toBe(nonce);
   expect(cspViolations).toEqual([]);
 });
 
-test("facades inline style attributes and CSSOM through the nonce stylesheet", async ({ page }) => {
+test("facades inline style attributes and CSSOM through the nonce stylesheet", async ({
+  page,
+}) => {
   const consoleViolations: string[] = [];
 
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/nonce-styles.html");
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
 
   await page.evaluate(() => {
     const foreignDocument = document.implementation.createHTMLDocument("");
@@ -488,12 +589,17 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
     const adopted = foreignDocument.createElement("div");
     adopted.id = "adopted-style-target";
     adopted.setAttribute("style", "color: rgb(121, 122, 123)");
-    (window as typeof window & {
-      __foreignStyleNodes?: { foreign: HTMLElement; adopted: HTMLElement };
-    }).__foreignStyleNodes = { foreign, adopted };
+    (
+      window as typeof window & {
+        __foreignStyleNodes?: { foreign: HTMLElement; adopted: HTMLElement };
+      }
+    ).__foreignStyleNodes = { foreign, adopted };
   });
   page.on("console", (message) => {
-    if (message.type() === "error" && /content security policy|\bcsp\b/i.test(message.text())) {
+    if (
+      message.type() === "error" &&
+      /content security policy|\bcsp\b/i.test(message.text())
+    ) {
       consoleViolations.push(message.text());
     }
   });
@@ -502,7 +608,8 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
     document.addEventListener("securitypolicyviolation", (event) => {
       violations.push(`${event.violatedDirective}:${event.blockedURI}`);
     });
-    (window as typeof window & { __styleCSPViolations?: string[] }).__styleCSPViolations = violations;
+    (window as typeof window & { __styleCSPViolations?: string[] }).__styleCSPViolations =
+      violations;
   });
 
   const initialStyle = await childValue(frame, (window) => {
@@ -532,195 +639,201 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
     declarationTag: initialStyle.declarationTag,
     computedColor: "rgb(61, 62, 63)",
   });
-  expect([
-    "[object CSSStyleDeclaration]",
-    "[object CSSStyleProperties]",
-  ]).toContain(initialStyle.declarationTag);
+  expect(["[object CSSStyleDeclaration]", "[object CSSStyleProperties]"]).toContain(
+    initialStyle.declarationTag,
+  );
 
-  const result = await page.evaluate(({ frameNonce, origin }) => {
-    const frame = document.querySelector("v-frame") as HTMLElement & {
-      contentWindow: (Window & typeof globalThis) | null;
-      nonce: string;
-    };
-    const child = frame.contentWindow!;
-    const virtualDocument = child.document;
-    const nativeGetAttribute = Element.prototype.getAttribute;
+  const result = await page.evaluate(
+    ({ frameNonce, origin }) => {
+      const frame = document.querySelector("v-frame") as HTMLElement & {
+        contentWindow: (Window & typeof globalThis) | null;
+        nonce: string;
+      };
+      const child = frame.contentWindow!;
+      const virtualDocument = child.document;
+      const nativeGetAttribute = Element.prototype.getAttribute;
 
-    const attributeTarget = virtualDocument.createElement("div");
-    attributeTarget.id = "attribute-style-target";
-    virtualDocument.body.append(attributeTarget);
-    attributeTarget.setAttribute("style", "color: rgb(71, 72, 73)");
-    const afterSetAttribute = {
-      value: attributeTarget.getAttribute("style"),
-      color: child.getComputedStyle(attributeTarget).color,
-      physical: nativeGetAttribute.call(attributeTarget, "style"),
-    };
-    attributeTarget.removeAttribute("style");
-    const afterRemoveAttribute = {
-      value: attributeTarget.getAttribute("style"),
-      has: attributeTarget.hasAttribute("style"),
-    };
-    const toggleOn = attributeTarget.toggleAttribute("style");
-    const afterToggleOn = {
-      value: attributeTarget.getAttribute("style"),
-      has: attributeTarget.hasAttribute("style"),
-    };
-    const toggleOff = attributeTarget.toggleAttribute("style");
-
-    const cssomTarget = virtualDocument.createElement("div");
-    cssomTarget.id = "cssom-style-target";
-    cssomTarget.style.cssText =
-      'color: rgb(81, 82, 83); background-image: url("../images/cssom.png")';
-    virtualDocument.body.append(cssomTarget);
-    const beforeBase = child.getComputedStyle(cssomTarget).backgroundImage;
-    cssomTarget.style.setProperty("border-top-color", "rgb(91, 92, 93)", "important");
-    cssomTarget.style.color = "rgb(101, 102, 103)";
-    const assignedColor = child.getComputedStyle(cssomTarget).color;
-    const removedColor = cssomTarget.style.removeProperty("color");
-    const authoredBackground = cssomTarget.style.getPropertyValue("background-image");
-    const authoredCssText = cssomTarget.style.cssText;
-
-    const base = virtualDocument.createElement("base");
-    base.href = "/alternate/nested/";
-    virtualDocument.head.prepend(base);
-    const afterBase = child.getComputedStyle(cssomTarget).backgroundImage;
-    const baseURI = virtualDocument.baseURI;
-    const afterBaseStyleText = frame.shadowRoot?.querySelector(
-      "style[data-v-frame-inline-styles]",
-    )?.textContent ?? "";
-    cssomTarget.style.backgroundImage = 'url("property.png")';
-    const assignedBackgroundValue = cssomTarget.style.backgroundImage;
-    const afterPropertyAssignment = child.getComputedStyle(cssomTarget).backgroundImage;
-
-    const clone = cssomTarget.cloneNode(true) as HTMLElement;
-    clone.id = "cloned-style-target";
-    virtualDocument.body.append(clone);
-    const imported = virtualDocument.importNode(cssomTarget, true) as HTMLElement;
-    imported.id = "imported-style-target";
-    virtualDocument.body.append(imported);
-
-    const markerAttribute = Array.from(cssomTarget.attributes)
-      .find((attribute) => attribute.name.startsWith("data-v-frame-inline-style-"))!;
-    const foreignNodes = (window as typeof window & {
-      __foreignStyleNodes?: { foreign: HTMLElement; adopted: HTMLElement };
-    }).__foreignStyleNodes!;
-    const foreign = foreignNodes.foreign;
-    foreign.setAttribute(markerAttribute.name, markerAttribute.value);
-    virtualDocument.body.append(foreign);
-
-    const adopted = foreignNodes.adopted;
-    virtualDocument.adoptNode(adopted);
-    virtualDocument.body.append(adopted);
-
-    const svg = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-    const rect = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rect.setAttribute("style", "fill: rgb(131, 132, 133)");
-    svg.append(rect);
-    virtualDocument.body.append(svg);
-
-    const cascadeTarget = virtualDocument.createElement("div");
-    cascadeTarget.id = "cascade-style-target";
-    cascadeTarget.setAttribute("style", "color: rgb(151, 152, 153)");
-    virtualDocument.body.append(cascadeTarget);
-    const normalInlineColor = child.getComputedStyle(cascadeTarget).color;
-    cascadeTarget.style.setProperty("color", "rgb(161, 162, 163)", "important");
-    const importantInlineColor = child.getComputedStyle(cascadeTarget).color;
-    const cascadeImportantTarget = virtualDocument.createElement("div");
-    cascadeImportantTarget.id = "cascade-important-target";
-    cascadeImportantTarget.setAttribute("style", "color: rgb(181, 182, 183)");
-    virtualDocument.body.append(cascadeImportantTarget);
-    const pageImportantColor = child.getComputedStyle(cascadeImportantTarget).color;
-    cascadeImportantTarget.style.setProperty(
-      "color",
-      "rgb(191, 192, 193)",
-      "important",
-    );
-    const inlineImportantColor = child.getComputedStyle(cascadeImportantTarget).color;
-
-    const markerValues = [cssomTarget, clone, imported, foreign]
-      .map((element) => nativeGetAttribute.call(element, markerAttribute.name));
-    frame.nonce = frameNonce;
-    cssomTarget.style.opacity = "0.75";
-    const aggregateStyle = frame.shadowRoot?.querySelector(
-      "style[data-v-frame-inline-styles]",
-    ) as HTMLStyleElement;
-
-    return {
-      afterSetAttribute,
-      afterRemoveAttribute,
-      toggleOn,
-      afterToggleOn,
-      toggleOff,
-      afterToggleOff: {
+      const attributeTarget = virtualDocument.createElement("div");
+      attributeTarget.id = "attribute-style-target";
+      virtualDocument.body.append(attributeTarget);
+      attributeTarget.setAttribute("style", "color: rgb(71, 72, 73)");
+      const afterSetAttribute = {
+        value: attributeTarget.getAttribute("style"),
+        color: child.getComputedStyle(attributeTarget).color,
+        physical: nativeGetAttribute.call(attributeTarget, "style"),
+      };
+      attributeTarget.removeAttribute("style");
+      const afterRemoveAttribute = {
         value: attributeTarget.getAttribute("style"),
         has: attributeTarget.hasAttribute("style"),
-      },
-      cssom: {
-        beforeBase,
-        afterBase,
-        baseURI,
-        afterBaseStyleText,
-        afterPropertyAssignment,
-        assignedBackgroundValue,
-        assignedColor,
-        removedColor,
-        authoredBackground,
-        authoredCssText,
-        priority: cssomTarget.style.getPropertyPriority("border-top-color"),
-        borderColor: cssomTarget.style.getPropertyValue("border-top-color"),
-        attributeMatchesCssText:
-          cssomTarget.getAttribute("style") === cssomTarget.style.cssText,
-        indexedProperties: Array.from(
-          { length: cssomTarget.style.length },
-          (_value, index) => cssomTarget.style[index],
-        ),
-      },
-      clone: {
-        value: clone.getAttribute("style"),
-        background: child.getComputedStyle(clone).backgroundImage,
-      },
-      imported: {
-        value: imported.getAttribute("style"),
-        background: child.getComputedStyle(imported).backgroundImage,
-      },
-      foreign: {
-        value: foreign.getAttribute("style"),
-        physical: nativeGetAttribute.call(foreign, "style"),
-        color: child.getComputedStyle(foreign).color,
-        background: child.getComputedStyle(foreign).backgroundImage,
-        declarationInstance: foreign.style instanceof child.CSSStyleDeclaration,
-      },
-      adopted: {
-        value: adopted.getAttribute("style"),
-        physical: nativeGetAttribute.call(adopted, "style"),
-        color: child.getComputedStyle(adopted).color,
-      },
-      svg: {
-        value: rect.getAttribute("style"),
-        physical: nativeGetAttribute.call(rect, "style"),
-        fill: child.getComputedStyle(rect).fill,
-        declarationInstance: rect.style instanceof child.CSSStyleDeclaration,
-      },
-      cascade: {
-        normalInlineColor,
-        importantInlineColor,
-        pageImportantColor,
-        inlineImportantColor,
-      },
-      markerValues,
-      logicalMarkerNames: [cssomTarget, clone, imported, foreign]
-        .flatMap((element) => element.getAttributeNames())
-        .filter((name) => name.startsWith("data-v-frame-inline-style-")),
-      aggregateNonce: aggregateStyle.nonce,
-      opacity: child.getComputedStyle(cssomTarget).opacity,
-      expected: {
-        beforeBase: `url("${origin}/images/cssom.png")`,
-        afterBase: `url("${origin}/alternate/images/cssom.png")`,
-        property: `url("${origin}/alternate/nested/property.png")`,
-        foreign: `url("${origin}/alternate/nested/foreign.png")`,
-      },
-    };
-  }, { frameNonce: nextNonce, origin: fixture.origin });
+      };
+      const toggleOn = attributeTarget.toggleAttribute("style");
+      const afterToggleOn = {
+        value: attributeTarget.getAttribute("style"),
+        has: attributeTarget.hasAttribute("style"),
+      };
+      const toggleOff = attributeTarget.toggleAttribute("style");
+
+      const cssomTarget = virtualDocument.createElement("div");
+      cssomTarget.id = "cssom-style-target";
+      cssomTarget.style.cssText =
+        'color: rgb(81, 82, 83); background-image: url("../images/cssom.png")';
+      virtualDocument.body.append(cssomTarget);
+      const beforeBase = child.getComputedStyle(cssomTarget).backgroundImage;
+      cssomTarget.style.setProperty("border-top-color", "rgb(91, 92, 93)", "important");
+      cssomTarget.style.color = "rgb(101, 102, 103)";
+      const assignedColor = child.getComputedStyle(cssomTarget).color;
+      const removedColor = cssomTarget.style.removeProperty("color");
+      const authoredBackground = cssomTarget.style.getPropertyValue("background-image");
+      const authoredCssText = cssomTarget.style.cssText;
+
+      const base = virtualDocument.createElement("base");
+      base.href = "/alternate/nested/";
+      virtualDocument.head.prepend(base);
+      const afterBase = child.getComputedStyle(cssomTarget).backgroundImage;
+      const baseURI = virtualDocument.baseURI;
+      const afterBaseStyleText =
+        frame.shadowRoot?.querySelector("style[data-v-frame-inline-styles]")
+          ?.textContent ?? "";
+      cssomTarget.style.backgroundImage = 'url("property.png")';
+      const assignedBackgroundValue = cssomTarget.style.backgroundImage;
+      const afterPropertyAssignment = child.getComputedStyle(cssomTarget).backgroundImage;
+
+      const clone = cssomTarget.cloneNode(true) as HTMLElement;
+      clone.id = "cloned-style-target";
+      virtualDocument.body.append(clone);
+      const imported = virtualDocument.importNode(cssomTarget, true) as HTMLElement;
+      imported.id = "imported-style-target";
+      virtualDocument.body.append(imported);
+
+      const markerAttribute = Array.from(cssomTarget.attributes).find((attribute) =>
+        attribute.name.startsWith("data-v-frame-inline-style-"),
+      )!;
+      const foreignNodes = (
+        window as typeof window & {
+          __foreignStyleNodes?: { foreign: HTMLElement; adopted: HTMLElement };
+        }
+      ).__foreignStyleNodes!;
+      const foreign = foreignNodes.foreign;
+      foreign.setAttribute(markerAttribute.name, markerAttribute.value);
+      virtualDocument.body.append(foreign);
+
+      const adopted = foreignNodes.adopted;
+      virtualDocument.adoptNode(adopted);
+      virtualDocument.body.append(adopted);
+
+      const svg = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const rect = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("style", "fill: rgb(131, 132, 133)");
+      svg.append(rect);
+      virtualDocument.body.append(svg);
+
+      const cascadeTarget = virtualDocument.createElement("div");
+      cascadeTarget.id = "cascade-style-target";
+      cascadeTarget.setAttribute("style", "color: rgb(151, 152, 153)");
+      virtualDocument.body.append(cascadeTarget);
+      const normalInlineColor = child.getComputedStyle(cascadeTarget).color;
+      cascadeTarget.style.setProperty("color", "rgb(161, 162, 163)", "important");
+      const importantInlineColor = child.getComputedStyle(cascadeTarget).color;
+      const cascadeImportantTarget = virtualDocument.createElement("div");
+      cascadeImportantTarget.id = "cascade-important-target";
+      cascadeImportantTarget.setAttribute("style", "color: rgb(181, 182, 183)");
+      virtualDocument.body.append(cascadeImportantTarget);
+      const pageImportantColor = child.getComputedStyle(cascadeImportantTarget).color;
+      cascadeImportantTarget.style.setProperty(
+        "color",
+        "rgb(191, 192, 193)",
+        "important",
+      );
+      const inlineImportantColor = child.getComputedStyle(cascadeImportantTarget).color;
+
+      const markerValues = [cssomTarget, clone, imported, foreign].map((element) =>
+        nativeGetAttribute.call(element, markerAttribute.name),
+      );
+      frame.nonce = frameNonce;
+      cssomTarget.style.opacity = "0.75";
+      const aggregateStyle = frame.shadowRoot?.querySelector(
+        "style[data-v-frame-inline-styles]",
+      ) as HTMLStyleElement;
+
+      return {
+        afterSetAttribute,
+        afterRemoveAttribute,
+        toggleOn,
+        afterToggleOn,
+        toggleOff,
+        afterToggleOff: {
+          value: attributeTarget.getAttribute("style"),
+          has: attributeTarget.hasAttribute("style"),
+        },
+        cssom: {
+          beforeBase,
+          afterBase,
+          baseURI,
+          afterBaseStyleText,
+          afterPropertyAssignment,
+          assignedBackgroundValue,
+          assignedColor,
+          removedColor,
+          authoredBackground,
+          authoredCssText,
+          priority: cssomTarget.style.getPropertyPriority("border-top-color"),
+          borderColor: cssomTarget.style.getPropertyValue("border-top-color"),
+          attributeMatchesCssText:
+            cssomTarget.getAttribute("style") === cssomTarget.style.cssText,
+          indexedProperties: Array.from(
+            { length: cssomTarget.style.length },
+            (_value, index) => cssomTarget.style[index],
+          ),
+        },
+        clone: {
+          value: clone.getAttribute("style"),
+          background: child.getComputedStyle(clone).backgroundImage,
+        },
+        imported: {
+          value: imported.getAttribute("style"),
+          background: child.getComputedStyle(imported).backgroundImage,
+        },
+        foreign: {
+          value: foreign.getAttribute("style"),
+          physical: nativeGetAttribute.call(foreign, "style"),
+          color: child.getComputedStyle(foreign).color,
+          background: child.getComputedStyle(foreign).backgroundImage,
+          declarationInstance: foreign.style instanceof child.CSSStyleDeclaration,
+        },
+        adopted: {
+          value: adopted.getAttribute("style"),
+          physical: nativeGetAttribute.call(adopted, "style"),
+          color: child.getComputedStyle(adopted).color,
+        },
+        svg: {
+          value: rect.getAttribute("style"),
+          physical: nativeGetAttribute.call(rect, "style"),
+          fill: child.getComputedStyle(rect).fill,
+          declarationInstance: rect.style instanceof child.CSSStyleDeclaration,
+        },
+        cascade: {
+          normalInlineColor,
+          importantInlineColor,
+          pageImportantColor,
+          inlineImportantColor,
+        },
+        markerValues,
+        logicalMarkerNames: [cssomTarget, clone, imported, foreign]
+          .flatMap((element) => element.getAttributeNames())
+          .filter((name) => name.startsWith("data-v-frame-inline-style-")),
+        aggregateNonce: aggregateStyle.nonce,
+        opacity: child.getComputedStyle(cssomTarget).opacity,
+        expected: {
+          beforeBase: `url("${origin}/images/cssom.png")`,
+          afterBase: `url("${origin}/alternate/images/cssom.png")`,
+          property: `url("${origin}/alternate/nested/property.png")`,
+          foreign: `url("${origin}/alternate/nested/foreign.png")`,
+        },
+      };
+    },
+    { frameNonce: nextNonce, origin: fixture.origin },
+  );
   const historyRebase = await childValue(frame, (window) => {
     const target = window.document.createElement("div");
     target.style.backgroundImage = 'url("history.png")';
@@ -749,7 +862,9 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
   expect(result.cssom.authoredCssText).toContain("url(../images/cssom.png)");
   expect(result.cssom.beforeBase).toBe(result.expected.beforeBase);
   expect(result.cssom.baseURI).toBe(`${fixture.origin}/alternate/nested/`);
-  expect(result.cssom.afterBaseStyleText).toContain(`${fixture.origin}/alternate/images/cssom.png`);
+  expect(result.cssom.afterBaseStyleText).toContain(
+    `${fixture.origin}/alternate/images/cssom.png`,
+  );
   expect(result.cssom.afterBase).toBe(result.expected.afterBase);
   expect(result.cssom.afterPropertyAssignment).toBe(result.expected.property);
   expect(result.cssom.assignedBackgroundValue).toBe("url(property.png)");
@@ -801,9 +916,13 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
     baseURI: `${fixture.origin}/documents/history/nested.html`,
   });
   expect(consoleViolations).toEqual([]);
-  expect(await page.evaluate(() =>
-    (window as typeof window & { __styleCSPViolations?: string[] }).__styleCSPViolations,
-  )).toEqual([]);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __styleCSPViolations?: string[] })
+          .__styleCSPViolations,
+    ),
+  ).toEqual([]);
 
   await frame.evaluate((element) => element.remove());
   await expect(frame).toHaveCount(0);

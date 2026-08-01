@@ -1,5 +1,10 @@
 import { createReadStream, existsSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
@@ -23,13 +28,17 @@ function reply(
   body: string,
   headers: Record<string, string> = {},
 ): void {
-  response.writeHead(status, { "content-type": type, "cache-control": "no-store", ...headers });
+  response.writeHead(status, {
+    "content-type": type,
+    "cache-control": "no-store",
+    ...headers,
+  });
   response.end(body);
 }
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -37,10 +46,15 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
   const bundle = resolve(process.cwd(), "dist/index.js");
   const host = createServer((request, response) => {
     const path = pathname(request);
-    if (path === "/") return reply(response, 200, "text/html", documentPage('<div id="host"></div>'));
+    if (path === "/")
+      return reply(response, 200, "text/html", documentPage('<div id="host"></div>'));
     if (path === "/dist/index.js") {
-      if (!existsSync(bundle)) return reply(response, 404, "text/plain", "Build output not found");
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      if (!existsSync(bundle))
+        return reply(response, 404, "text/plain", "Build output not found");
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(bundle).pipe(response);
       return;
     }
@@ -49,9 +63,12 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
         response,
         200,
         "text/html",
-        documentPage('<output id="script-result">pending</output><script>document.querySelector("#script-result").textContent = "ran";</script>'),
+        documentPage(
+          '<output id="script-result">pending</output><script>document.querySelector("#script-result").textContent = "ran";</script>',
+        ),
         {
-          "content-security-policy": "default-src 'none'; script-src 'none'; frame-ancestors 'none'",
+          "content-security-policy":
+            "default-src 'none'; script-src 'none'; frame-ancestors 'none'",
           "x-frame-options": "DENY",
         },
       );
@@ -61,7 +78,9 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
         response,
         200,
         "text/html",
-        documentPage('<form id="native-form" action="/documents/form-target.html" method="get" target="_self"><input name="query" value="compatibility"><button>Submit</button></form>'),
+        documentPage(
+          '<form id="native-form" action="/documents/form-target.html" method="get" target="_self"><input name="query" value="compatibility"><button>Submit</button></form>',
+        ),
       );
     }
     if (path === "/documents/form-target.html") {
@@ -74,7 +93,9 @@ async function startCompatibilityFixture(): Promise<CompatibilityFixture> {
     }
     return reply(response, 404, "text/plain", `No host fixture for ${path}`);
   });
-  await new Promise<void>((resolveListening) => host.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    host.listen(0, "127.0.0.1", resolveListening),
+  );
   const hostAddress = host.address();
   if (hostAddress === null || typeof hostAddress === "string") {
     throw new Error("The compatibility host fixture did not expose a TCP address");
@@ -101,7 +122,9 @@ async function installBundle(page: import("@playwright/test").Page): Promise<voi
     const bundle = await import(bundleURL);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 }
 
 async function mountFrame(
@@ -109,14 +132,21 @@ async function mountFrame(
   id: string,
   source: string,
 ) {
-  await page.evaluate(({ frameID, frameSource }) => {
-    const frame = document.createElement("v-frame");
-    frame.id = frameID;
-    frame.setAttribute("src", frameSource);
-    document.querySelector("#host")?.append(frame);
-  }, { frameID: id, frameSource: source });
+  await page.evaluate(
+    ({ frameID, frameSource }) => {
+      const frame = document.createElement("v-frame");
+      frame.id = frameID;
+      frame.setAttribute("src", frameSource);
+      document.querySelector("#host")?.append(frame);
+    },
+    { frameID: id, frameSource: source },
+  );
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   return frame;
 }
 
@@ -125,10 +155,14 @@ test("rejects a cross-origin application route", async ({ page }) => {
   const failure = await page.evaluate(async () => {
     const frame = document.createElement("v-frame") as HTMLElement & { status: string };
     const reported = new Promise<{ message: string; phase: string }>((resolve) => {
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ error: Error; phase: string }>).detail;
-        resolve({ message: detail.error.message, phase: detail.phase });
-      }, { once: true });
+      frame.addEventListener(
+        "v-frame-error",
+        (event) => {
+          const detail = (event as CustomEvent<{ error: Error; phase: string }>).detail;
+          resolve({ message: detail.error.message, phase: detail.phase });
+        },
+        { once: true },
+      );
     });
     frame.setAttribute("src", "https://application.invalid/orders");
     document.querySelector("#host")?.append(frame);
@@ -144,39 +178,64 @@ test("rejects a cross-origin application route", async ({ page }) => {
   });
 });
 
-test("reconstructs a source that declares restrictive CSP and framing headers", async ({ page }) => {
+test("reconstructs a source that declares restrictive CSP and framing headers", async ({
+  page,
+}) => {
   await installBundle(page);
-  const frame = await mountFrame(page, "restrictive-headers", `${fixture.origin}/documents/restrictive-headers.html`);
-
-  await expect(frame.locator("#script-result")).toHaveText("ran");
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(
+  const frame = await mountFrame(
+    page,
+    "restrictive-headers",
     `${fixture.origin}/documents/restrictive-headers.html`,
   );
+
+  await expect(frame.locator("#script-result")).toHaveText("ran");
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element: HTMLElement & { currentURL: string | null }) => element.currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/restrictive-headers.html`);
 });
 
 test("loads an allowed same-context GET form inside the guest", async ({ page }) => {
   await installBundle(page);
-  const frame = await mountFrame(page, "native-form", `${fixture.origin}/documents/native-form.html`);
+  const frame = await mountFrame(
+    page,
+    "native-form",
+    `${fixture.origin}/documents/native-form.html`,
+  );
   const hostURL = page.url();
   await page.evaluate(() => {
-    document.querySelector("#native-form")?.addEventListener("v-frame-navigate", (event) => {
-      const detail = (event as CustomEvent<{ kind: string; to: string }>).detail;
-      sessionStorage.setItem("compatibility-navigation", JSON.stringify({
-        kind: detail.kind,
-        to: detail.to,
-      }));
-    });
+    document
+      .querySelector("#native-form")
+      ?.addEventListener("v-frame-navigate", (event) => {
+        const detail = (event as CustomEvent<{ kind: string; to: string }>).detail;
+        sessionStorage.setItem(
+          "compatibility-navigation",
+          JSON.stringify({
+            kind: detail.kind,
+            to: detail.to,
+          }),
+        );
+      });
   });
 
   await frame.locator("#native-form button").click();
   await expect(frame.locator("#form-target")).toHaveText("Form destination");
-  await expect.poll(() => frame.evaluate((element) =>
-    (element as HTMLElement & { currentURL: string | null }).currentURL
-  )).toBe(`${fixture.origin}/documents/form-target.html?query=compatibility`);
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) => (element as HTMLElement & { currentURL: string | null }).currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/form-target.html?query=compatibility`);
   expect(page.url()).toBe(hostURL);
-  expect(await page.evaluate(() => JSON.parse(
-    sessionStorage.getItem("compatibility-navigation") ?? "null",
-  ))).toEqual({
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("compatibility-navigation") ?? "null"),
+    ),
+  ).toEqual({
     kind: "form",
     to: `${fixture.origin}/documents/form-target.html?query=compatibility`,
   });

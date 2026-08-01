@@ -48,11 +48,7 @@ const URL_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
   video: ["src", "poster"],
 };
 
-const SVG_EXTERNAL_RESOURCE_ELEMENTS = new Set([
-  "feImage",
-  "image",
-  "use",
-]);
+const SVG_EXTERNAL_RESOURCE_ELEMENTS = new Set(["feImage", "image", "use"]);
 
 export interface MarkupError {
   phase: "stylesheet";
@@ -97,11 +93,13 @@ interface NeutralizedTag {
 }
 
 function isASCIIWhitespace(character: string | undefined): boolean {
-  return character === "\t"
-    || character === "\n"
-    || character === "\f"
-    || character === "\r"
-    || character === " ";
+  return (
+    character === "\t" ||
+    character === "\n" ||
+    character === "\f" ||
+    character === "\r" ||
+    character === " "
+  );
 }
 
 function isASCIIAlpha(character: string | undefined): boolean {
@@ -113,10 +111,12 @@ function isASCIIAlpha(character: string | undefined): boolean {
 }
 
 function isRawTextEndBoundary(character: string | undefined): boolean {
-  return character === undefined
-    || isASCIIWhitespace(character)
-    || character === "/"
-    || character === ">";
+  return (
+    character === undefined ||
+    isASCIIWhitespace(character) ||
+    character === "/" ||
+    character === ">"
+  );
 }
 
 function findUnusedAttributeName(source: string, purpose: string): string {
@@ -184,18 +184,18 @@ function neutralizeTag(
 
     const attributeStart = cursor;
     while (
-      cursor < source.length
-      && !isASCIIWhitespace(source[cursor])
-      && source[cursor] !== "/"
-      && source[cursor] !== ">"
-      && source[cursor] !== "="
+      cursor < source.length &&
+      !isASCIIWhitespace(source[cursor]) &&
+      source[cursor] !== "/" &&
+      source[cursor] !== ">" &&
+      source[cursor] !== "="
     ) {
       cursor += 1;
     }
     const attributeEnd = cursor;
     if (
-      styleAttributeReplacement !== undefined
-      && source.slice(attributeStart, attributeEnd).toLowerCase() === "style"
+      styleAttributeReplacement !== undefined &&
+      source.slice(attributeStart, attributeEnd).toLowerCase() === "style"
     ) {
       replacements.push({
         start: attributeStart,
@@ -216,16 +216,16 @@ function neutralizeTag(
       cursor += 1;
     }
     const quote = source[cursor];
-    if (quote === "\"" || quote === "'") {
+    if (quote === '"' || quote === "'") {
       cursor += 1;
       const closingQuote = source.indexOf(quote, cursor);
       cursor = closingQuote === -1 ? source.length : closingQuote + 1;
       continue;
     }
     while (
-      cursor < source.length
-      && !isASCIIWhitespace(source[cursor])
-      && source[cursor] !== ">"
+      cursor < source.length &&
+      !isASCIIWhitespace(source[cursor]) &&
+      source[cursor] !== ">"
     ) {
       cursor += 1;
     }
@@ -315,10 +315,10 @@ function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
 
     let nameEnd = nameStart + 1;
     while (
-      nameEnd < source.length
-      && !isASCIIWhitespace(source[nameEnd])
-      && source[nameEnd] !== "/"
-      && source[nameEnd] !== ">"
+      nameEnd < source.length &&
+      !isASCIIWhitespace(source[nameEnd]) &&
+      source[nameEnd] !== "/" &&
+      source[nameEnd] !== ">"
     ) {
       nameEnd += 1;
     }
@@ -337,7 +337,10 @@ function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
     cursor = tag.end;
     closesStyleElement = false;
 
-    if (!isEndTag && (RAW_TEXT_ELEMENTS.has(elementName) || elementName === "plaintext")) {
+    if (
+      !isEndTag &&
+      (RAW_TEXT_ELEMENTS.has(elementName) || elementName === "plaintext")
+    ) {
       rawTextElement = elementName;
     }
   }
@@ -394,9 +397,10 @@ function restoreStyleMarkup(
       }
     }
 
-    const children = element.namespaceURI === HTML_NAMESPACE && element.localName === "template"
-      ? Array.from((element as HTMLTemplateElement).content.childNodes)
-      : Array.from(element.childNodes);
+    const children =
+      element.namespaceURI === HTML_NAMESPACE && element.localName === "template"
+        ? Array.from((element as HTMLTemplateElement).content.childNodes)
+        : Array.from(element.childNodes);
     style.append(...children);
     element.replaceWith(style);
 
@@ -441,10 +445,7 @@ function lowerStyleAttributes(
   return style;
 }
 
-function resolveMarkupBaseURL(
-  root: Element,
-  fallbackURL: string,
-): string {
+function resolveMarkupBaseURL(root: Element, fallbackURL: string): string {
   for (const base of root.querySelectorAll("base[href]")) {
     const resolvedBase = URL.parse(base.getAttribute("href") ?? "", fallbackURL);
     if (resolvedBase !== null) {
@@ -549,10 +550,12 @@ export function isSrcsetAttribute(
   attributeName: string,
   namespaceURI: string | null = null,
 ): boolean {
-  return element.namespaceURI === HTML_NAMESPACE &&
+  return (
+    element.namespaceURI === HTML_NAMESPACE &&
     namespaceURI === null &&
     (element.localName === "img" || element.localName === "source") &&
-    attributeName.toLowerCase() === "srcset";
+    attributeName.toLowerCase() === "srcset"
+  );
 }
 
 export function isURLAttribute(
@@ -711,7 +714,9 @@ function neutralizeNoscriptContent(root: Element): void {
   }
 }
 
-export async function prepareMarkup(options: PrepareMarkupOptions): Promise<PreparedMarkup> {
+export async function prepareMarkup(
+  options: PrepareMarkupOptions,
+): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
   const neutralized = neutralizeStyleMarkup(options.source);
   const parsed = parser.parseFromString(
@@ -746,16 +751,20 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
   const authoredURLAttributes = collectAuthoredURLAttributes(html);
   const authoredStyleAttributes = new Map<Element, string>();
   for (const [element, authoredStyle] of parsedStyleAttributes) {
-    const reconstructedElement = element === parsedRoot
-      ? html
-      : element === parsedHead
-        ? head
-        : element === parsedBody
-          ? body
-          : element;
+    const reconstructedElement =
+      element === parsedRoot
+        ? html
+        : element === parsedHead
+          ? head
+          : element === parsedBody
+            ? body
+            : element;
     authoredStyleAttributes.set(reconstructedElement, authoredStyle);
   }
-  const inlineStyleSelectorAttribute = findUnusedAttributeName(options.source, "inline-style");
+  const inlineStyleSelectorAttribute = findUnusedAttributeName(
+    options.source,
+    "inline-style",
+  );
   const inlineStyleSheet = lowerStyleAttributes(
     authoredStyleAttributes,
     head,
@@ -769,11 +778,7 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
       element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
         ? options.pageURL
         : baseURL;
-    absolutizeElementAttributes(
-      element,
-      attributeBaseURL,
-      options.createScriptURL,
-    );
+    absolutizeElementAttributes(element, attributeBaseURL, options.createScriptURL);
   }
 
   const stylesheetContext = createStylesheetContext(
@@ -794,7 +799,9 @@ export async function prepareMarkup(options: PrepareMarkupOptions): Promise<Prep
     );
   }
 
-  for (const link of html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]')) {
+  for (const link of html.querySelectorAll<HTMLLinkElement>(
+    'link[rel~="stylesheet"][href]',
+  )) {
     stylesheetJobs.push(
       prepareLinkedStyle(
         link,
@@ -827,10 +834,7 @@ export async function prepareAdoptedMarkup(
   options: PrepareMarkupOptions,
 ): Promise<PreparedMarkup> {
   const parser = new options.window.DOMParser();
-  const parsed = parser.parseFromString(
-    options.createHTML(options.source),
-    "text/html",
-  );
+  const parsed = parser.parseFromString(options.createHTML(options.source), "text/html");
   const html = parsed.body.querySelector(":scope > v-html") as HTMLElement | null;
   const head = html?.querySelector(":scope > v-head") as HTMLElement | null;
   const body = html?.querySelector(":scope > v-body") as HTMLElement | null;
@@ -842,10 +846,7 @@ export async function prepareAdoptedMarkup(
   html.remove();
   const shadowHosts = new WeakSet<Element>();
   for (const element of collectParsedElements(html)) {
-    if (
-      element.namespaceURI !== HTML_NAMESPACE
-      || element.localName !== "template"
-    ) {
+    if (element.namespaceURI !== HTML_NAMESPACE || element.localName !== "template") {
       continue;
     }
 
@@ -853,11 +854,11 @@ export async function prepareAdoptedMarkup(
     const host = template.parentElement;
     const mode = template.getAttribute("shadowrootmode");
     if (
-      host === null
-      || host.namespaceURI !== HTML_NAMESPACE
-      || host.localName !== "v-frame"
-      || shadowHosts.has(host)
-      || mode !== "open"
+      host === null ||
+      host.namespaceURI !== HTML_NAMESPACE ||
+      host.localName !== "v-frame" ||
+      shadowHosts.has(host) ||
+      mode !== "open"
     ) {
       continue;
     }
@@ -873,7 +874,9 @@ export async function prepareAdoptedMarkup(
     template.remove();
   }
 
-  for (const script of html.querySelectorAll<HTMLScriptElement>("script[data-v-frame-script]")) {
+  for (const script of html.querySelectorAll<HTMLScriptElement>(
+    "script[data-v-frame-script]",
+  )) {
     if (script.getAttribute("type") !== "application/vnd.v-frame") {
       continue;
     }
@@ -914,11 +917,7 @@ export async function prepareAdoptedMarkup(
       element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
         ? options.pageURL
         : baseURL;
-    absolutizeElementAttributes(
-      element,
-      attributeBaseURL,
-      options.createScriptURL,
-    );
+    absolutizeElementAttributes(element, attributeBaseURL, options.createScriptURL);
   }
 
   const stylesheetContext = createStylesheetContext(
@@ -926,15 +925,16 @@ export async function prepareAdoptedMarkup(
     ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
   );
   await Promise.all(
-    Array.from(html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]')).map(
-      (link) =>
-        prepareLinkedStyle(
-          link,
-          options.nonce,
-          stylesheetContext,
-          options.document,
-          options.onError,
-        ),
+    Array.from(
+      html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'),
+    ).map((link) =>
+      prepareLinkedStyle(
+        link,
+        options.nonce,
+        stylesheetContext,
+        options.document,
+        options.onError,
+      ),
     ),
   );
   inlineStyleSheet.remove();

@@ -31,8 +31,6 @@ console.log(
   `v-frame gzip ${gzippedBytes} bytes / ${budgetBytes} budget (${percentage}%)`,
 );
 if (gzippedBytes > budgetBytes) {
-  console.error(
-    `The bundle exceeds its budget by ${gzippedBytes - budgetBytes} bytes.`,
-  );
+  console.error(`The bundle exceeds its budget by ${gzippedBytes - budgetBytes} bytes.`);
   process.exit(1);
 }

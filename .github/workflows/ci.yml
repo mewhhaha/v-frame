@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    name: typecheck, build, test
+    name: format, typecheck, build, test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +23,8 @@ jobs:
       # Only the two projects playwright.config.ts declares are installed; the
       # suite never drives webkit.
       - run: pnpm exec playwright install --with-deps chromium firefox
+
+      - run: pnpm format:check
 
       - run: pnpm typecheck
 

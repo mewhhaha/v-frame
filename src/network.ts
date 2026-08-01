@@ -15,15 +15,25 @@ interface NativeEventListenerRegistration {
   capture: boolean;
 }
 
-function eventListenerCapture(options: boolean | EventListenerOptions | undefined): boolean {
-  return typeof options === "boolean" ? options : options?.capture ?? false;
+function eventListenerCapture(
+  options: boolean | EventListenerOptions | undefined,
+): boolean {
+  return typeof options === "boolean" ? options : (options?.capture ?? false);
 }
 
-function resolveNetworkURL(window: VFrameWindow, value: unknown, baseURL: string): string {
+function resolveNetworkURL(
+  window: VFrameWindow,
+  value: unknown,
+  baseURL: string,
+): string {
   return new window.URL(String(value), baseURL).href;
 }
 
-function combinedSignal(window: VFrameWindow, left: AbortSignal, right?: AbortSignal | null): AbortSignal {
+function combinedSignal(
+  window: VFrameWindow,
+  left: AbortSignal,
+  right?: AbortSignal | null,
+): AbortSignal {
   if (right === undefined || right === null || right === left) {
     return left;
   }
@@ -50,7 +60,10 @@ function combinedSignal(window: VFrameWindow, left: AbortSignal, right?: AbortSi
   return controller.signal;
 }
 
-function eventSourceOptions(value: unknown, credentials: VFrameCredentials): EventSourceInit {
+function eventSourceOptions(
+  value: unknown,
+  credentials: VFrameCredentials,
+): EventSourceInit {
   const suppliedOptions = value as EventSourceInit | null | undefined;
   return {
     ...suppliedOptions,
@@ -66,7 +79,10 @@ function workerOptions(value: unknown, credentials: VFrameCredentials): WorkerOp
   };
 }
 
-function sharedWorkerOptions(value: unknown, credentials: VFrameCredentials): WorkerOptions {
+function sharedWorkerOptions(
+  value: unknown,
+  credentials: VFrameCredentials,
+): WorkerOptions {
   if (typeof value === "string") {
     return { name: value, credentials };
   }
@@ -77,15 +93,20 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const window = options.window;
   const nativeFetch = window.fetch.bind(window);
   const NativeRequest = window.Request;
-  const nativeRequestURLGetter = Object.getOwnPropertyDescriptor(NativeRequest.prototype, "url")?.get;
+  const nativeRequestURLGetter = Object.getOwnPropertyDescriptor(
+    NativeRequest.prototype,
+    "url",
+  )?.get;
   const NativeXMLHttpRequest = window.XMLHttpRequest;
   const nativeXHROpen = NativeXMLHttpRequest.prototype.open;
   const nativeXHRSend = NativeXMLHttpRequest.prototype.send;
   const nativeXHRAddEventListener = NativeXMLHttpRequest.prototype.addEventListener;
   const nativeXHRRemoveEventListener = NativeXMLHttpRequest.prototype.removeEventListener;
   const NativeXMLHttpRequestUpload = window.XMLHttpRequestUpload;
-  const nativeXHRUploadAddEventListener = NativeXMLHttpRequestUpload.prototype.addEventListener;
-  const nativeXHRUploadRemoveEventListener = NativeXMLHttpRequestUpload.prototype.removeEventListener;
+  const nativeXHRUploadAddEventListener =
+    NativeXMLHttpRequestUpload.prototype.addEventListener;
+  const nativeXHRUploadRemoveEventListener =
+    NativeXMLHttpRequestUpload.prototype.removeEventListener;
   const nativeXHRWithCredentials = Object.getOwnPropertyDescriptor(
     NativeXMLHttpRequest.prototype,
     "withCredentials",
@@ -97,7 +118,10 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const nativeXHRCredentialsAssigned = new WeakSet<XMLHttpRequest>();
   const nativeXHRUploads = new WeakMap<XMLHttpRequestUpload, XMLHttpRequest>();
   const silencedNativeXHRS = new WeakSet<XMLHttpRequest>();
-  const nativeEventListeners = new WeakMap<EventTarget, Map<string, NativeEventListenerRegistration[]>>();
+  const nativeEventListeners = new WeakMap<
+    EventTarget,
+    Map<string, NativeEventListenerRegistration[]>
+  >();
   const activeConnections = new Map<object, () => void>();
   const originals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
@@ -128,9 +152,14 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         return;
       }
       const capture = eventListenerCapture(options);
-      const registrations = nativeEventListeners.get(this) ?? new Map<string, NativeEventListenerRegistration[]>();
+      const registrations =
+        nativeEventListeners.get(this) ??
+        new Map<string, NativeEventListenerRegistration[]>();
       const listeners = registrations.get(type) ?? [];
-      let registration = listeners.find((registered) => registered.listener === listener && registered.capture === capture);
+      let registration = listeners.find(
+        (registered) =>
+          registered.listener === listener && registered.capture === capture,
+      );
       if (registration === undefined) {
         const wrapper: EventListener = (event) => {
           if (nativeEventTargetIsSilenced(this)) {
@@ -161,13 +190,17 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       const registrations = nativeEventListeners.get(this);
       const capture = eventListenerCapture(options);
       const listeners = registrations?.get(type);
-      const registration = listeners?.find((registered) => registered.listener === listener && registered.capture === capture);
+      const registration = listeners?.find(
+        (registered) =>
+          registered.listener === listener && registered.capture === capture,
+      );
       if (registration === undefined) {
         nativeRemoveEventListener.call(this, type, listener, options);
         return;
       }
       nativeRemoveEventListener.call(this, type, registration.wrapper, options);
-      const remaining = listeners?.filter((registered) => registered !== registration) ?? [];
+      const remaining =
+        listeners?.filter((registered) => registered !== registration) ?? [];
       if (remaining.length === 0) {
         registrations?.delete(type);
       } else {
@@ -177,7 +210,16 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   };
 
   const clearNativeEventHandlers = (target: XMLHttpRequest | XMLHttpRequestUpload) => {
-    for (const name of ["onabort", "onerror", "onload", "onloadend", "onloadstart", "onprogress", "onreadystatechange", "ontimeout"]) {
+    for (const name of [
+      "onabort",
+      "onerror",
+      "onload",
+      "onloadend",
+      "onloadstart",
+      "onprogress",
+      "onreadystatechange",
+      "ontimeout",
+    ]) {
       (target as unknown as Record<string, unknown>)[name] = null;
     }
   };
@@ -228,7 +270,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         window,
         options.signal,
         init !== undefined && "signal" in init
-          ? init.signal ?? undefined
+          ? (init.signal ?? undefined)
           : requestInput && isRequest(input)
             ? input.signal
             : undefined,
@@ -248,7 +290,9 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   class VFrameRequest extends NativeRequest {
     constructor(...argumentsList: [] | ConstructorParameters<typeof NativeRequest>) {
       if (argumentsList.length === 0) {
-        super(...(argumentsList as unknown as ConstructorParameters<typeof NativeRequest>));
+        super(
+          ...(argumentsList as unknown as ConstructorParameters<typeof NativeRequest>),
+        );
         return;
       }
 
@@ -316,7 +360,10 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       value: CredentiallessXMLHttpRequest,
     });
   } else {
-    if (options.credentials === "include" && nativeXHRWithCredentialsSetter !== undefined) {
+    if (
+      options.credentials === "include" &&
+      nativeXHRWithCredentialsSetter !== undefined
+    ) {
       Object.defineProperty(NativeXMLHttpRequest.prototype, "withCredentials", {
         ...nativeXHRWithCredentials,
         set(value: boolean) {
@@ -335,15 +382,23 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       nativeXHRUploadAddEventListener,
       nativeXHRUploadRemoveEventListener,
     );
-    NativeXMLHttpRequest.prototype.open = function open(...argumentsList: unknown[]): void {
+    NativeXMLHttpRequest.prototype.open = function open(
+      ...argumentsList: unknown[]
+    ): void {
       if (argumentsList.length < 2) {
-        throw new window.TypeError("XMLHttpRequest.open requires method and URL arguments");
+        throw new window.TypeError(
+          "XMLHttpRequest.open requires method and URL arguments",
+        );
       }
 
       const previousRequest = activeXHRSends.get(this);
       const nativeArguments = [...argumentsList];
       try {
-        nativeArguments[1] = resolveNetworkURL(window, argumentsList[1], options.getBaseURL());
+        nativeArguments[1] = resolveNetworkURL(
+          window,
+          argumentsList[1],
+          options.getBaseURL(),
+        );
       } catch {
         throw new window.DOMException(
           `XMLHttpRequest could not resolve URL ${JSON.stringify(String(argumentsList[1]))} against ${JSON.stringify(options.getBaseURL())}`,
@@ -358,10 +413,15 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         }
       }
       registerNativeXHR(this);
-      nativeXHRAsync.set(this, argumentsList[2] === undefined ? true : Boolean(argumentsList[2]));
+      nativeXHRAsync.set(
+        this,
+        argumentsList[2] === undefined ? true : Boolean(argumentsList[2]),
+      );
     };
 
-    NativeXMLHttpRequest.prototype.send = function send(body?: Document | XMLHttpRequestBodyInit | null): void {
+    NativeXMLHttpRequest.prototype.send = function send(
+      body?: Document | XMLHttpRequestBodyInit | null,
+    ): void {
       if (
         options.credentials === "include" &&
         nativeXHRWithCredentialsSetter !== undefined &&
@@ -379,7 +439,8 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
           activeXHRSends.delete(this);
         }
       };
-      const listenForCompletion = () => this.addEventListener("loadend", unregisterRequest, { once: true });
+      const listenForCompletion = () =>
+        this.addEventListener("loadend", unregisterRequest, { once: true });
       const listenForLoadStart = () => {
         if (activeXHRSends.get(this) === request) {
           listenForCompletion();
@@ -410,7 +471,9 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     transform: (argumentsList: unknown[]) => unknown[],
     disposeConnection: (connection: object) => void,
   ) => {
-    const NativeConstructor = window[key] as unknown as new (...argumentsList: never[]) => object;
+    const NativeConstructor = window[key] as unknown as new (
+      ...argumentsList: never[]
+    ) => object;
     if (NativeConstructor === undefined) {
       return;
     }
@@ -430,61 +493,77 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     });
   };
 
-  wrapConstructor("WebSocket", (argumentsList) => {
-    if (argumentsList.length === 0) {
-      return argumentsList;
-    }
+  wrapConstructor(
+    "WebSocket",
+    (argumentsList) => {
+      if (argumentsList.length === 0) {
+        return argumentsList;
+      }
 
-    const url = new window.URL(String(argumentsList[0]), options.getBaseURL());
-    if (url.protocol === "http:") {
-      url.protocol = "ws:";
-    } else if (url.protocol === "https:") {
-      url.protocol = "wss:";
-    }
-    return [url.href, ...argumentsList.slice(1)];
-  }, (connection) => {
-    (connection as WebSocket).close();
-  });
+      const url = new window.URL(String(argumentsList[0]), options.getBaseURL());
+      if (url.protocol === "http:") {
+        url.protocol = "ws:";
+      } else if (url.protocol === "https:") {
+        url.protocol = "wss:";
+      }
+      return [url.href, ...argumentsList.slice(1)];
+    },
+    (connection) => {
+      (connection as WebSocket).close();
+    },
+  );
 
-  wrapConstructor("EventSource", (argumentsList) => {
-    if (argumentsList.length === 0) {
-      return argumentsList;
-    }
+  wrapConstructor(
+    "EventSource",
+    (argumentsList) => {
+      if (argumentsList.length === 0) {
+        return argumentsList;
+      }
 
-    return [
-      resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
-      eventSourceOptions(argumentsList[1], options.credentials),
-      ...argumentsList.slice(2),
-    ];
-  }, (connection) => {
-    (connection as EventSource).close();
-  });
-  wrapConstructor("Worker", (argumentsList) => {
-    if (argumentsList.length === 0) {
-      return argumentsList;
-    }
+      return [
+        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        eventSourceOptions(argumentsList[1], options.credentials),
+        ...argumentsList.slice(2),
+      ];
+    },
+    (connection) => {
+      (connection as EventSource).close();
+    },
+  );
+  wrapConstructor(
+    "Worker",
+    (argumentsList) => {
+      if (argumentsList.length === 0) {
+        return argumentsList;
+      }
 
-    return [
-      resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
-      workerOptions(argumentsList[1], options.credentials),
-      ...argumentsList.slice(2),
-    ];
-  }, (connection) => {
-    (connection as Worker).terminate();
-  });
-  wrapConstructor("SharedWorker", (argumentsList) => {
-    if (argumentsList.length === 0) {
-      return argumentsList;
-    }
+      return [
+        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        workerOptions(argumentsList[1], options.credentials),
+        ...argumentsList.slice(2),
+      ];
+    },
+    (connection) => {
+      (connection as Worker).terminate();
+    },
+  );
+  wrapConstructor(
+    "SharedWorker",
+    (argumentsList) => {
+      if (argumentsList.length === 0) {
+        return argumentsList;
+      }
 
-    return [
-      resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
-      sharedWorkerOptions(argumentsList[1], options.credentials),
-      ...argumentsList.slice(2),
-    ];
-  }, (connection) => {
-    (connection as SharedWorker).port.close();
-  });
+      return [
+        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        sharedWorkerOptions(argumentsList[1], options.credentials),
+        ...argumentsList.slice(2),
+      ];
+    },
+    (connection) => {
+      (connection as SharedWorker).port.close();
+    },
+  );
 
   const navigator = window.navigator;
   const nativeSendBeacon = navigator.sendBeacon?.bind(navigator);
@@ -499,7 +578,11 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         }
 
         const nativeArguments = [...argumentsList];
-        nativeArguments[0] = resolveNetworkURL(window, argumentsList[0], options.getBaseURL());
+        nativeArguments[0] = resolveNetworkURL(
+          window,
+          argumentsList[0],
+          options.getBaseURL(),
+        );
         return Reflect.apply(nativeSendBeacon, navigator, nativeArguments);
       },
     });
@@ -535,10 +618,16 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       NativeXMLHttpRequest.prototype.send = nativeXHRSend;
       NativeXMLHttpRequest.prototype.addEventListener = nativeXHRAddEventListener;
       NativeXMLHttpRequest.prototype.removeEventListener = nativeXHRRemoveEventListener;
-      NativeXMLHttpRequestUpload.prototype.addEventListener = nativeXHRUploadAddEventListener;
-      NativeXMLHttpRequestUpload.prototype.removeEventListener = nativeXHRUploadRemoveEventListener;
+      NativeXMLHttpRequestUpload.prototype.addEventListener =
+        nativeXHRUploadAddEventListener;
+      NativeXMLHttpRequestUpload.prototype.removeEventListener =
+        nativeXHRUploadRemoveEventListener;
       if (nativeXHRWithCredentials !== undefined) {
-        Object.defineProperty(NativeXMLHttpRequest.prototype, "withCredentials", nativeXHRWithCredentials);
+        Object.defineProperty(
+          NativeXMLHttpRequest.prototype,
+          "withCredentials",
+          nativeXHRWithCredentials,
+        );
       }
     }
 

@@ -32,13 +32,21 @@ async function startFixture(): Promise<HostIsolationFixture> {
   const server = createServer((request, response) => {
     const path = new URL(request.url ?? "/", "http://fixture.test").pathname;
     if (path === "/") {
-      return reply(response, 200, "text/html", '<!doctype html><div id="host" class="host-context" style="width: 240px"></div>');
+      return reply(
+        response,
+        200,
+        "text/html",
+        '<!doctype html><div id="host" class="host-context" style="width: 240px"></div>',
+      );
     }
     if (path === "/dist/index.js") {
       if (!existsSync(bundle)) {
         return reply(response, 404, "text/plain", "Build output not found");
       }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(bundle).pipe(response);
       return;
     }
@@ -51,7 +59,9 @@ async function startFixture(): Promise<HostIsolationFixture> {
     return reply(response, 404, "text/plain", `No fixture for ${path}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -66,7 +76,7 @@ async function startFixture(): Promise<HostIsolationFixture> {
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -78,7 +88,9 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-test("page :host and :host-context selectors cannot style the v-frame host", async ({ page }) => {
+test("page :host and :host-context selectors cannot style the v-frame host", async ({
+  page,
+}) => {
   await page.goto(fixture.origin);
   await page.evaluate(async (url) => {
     const bundle = await import(url);
@@ -92,7 +104,9 @@ test("page :host and :host-context selectors cannot style the v-frame host", asy
   }, fixture.origin);
 
   const frame = page.locator("v-frame");
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
   await expect(frame).toHaveCSS("display", "block");
   await expect(frame).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(frame).toHaveJSProperty("offsetWidth", 240);

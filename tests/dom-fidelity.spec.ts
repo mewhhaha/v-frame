@@ -26,9 +26,13 @@ async function mountFrame(page: Page): Promise<void> {
     frame.setAttribute("src", source);
     document.querySelector("#host")?.append(frame);
   }, `${fixture.origin}/documents/dom.html`);
-  await expect.poll(() => page.locator("#fidelity-frame").evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      page
+        .locator("#fidelity-frame")
+        .evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
 }
 
 test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page }) => {
@@ -50,7 +54,10 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
 
     const sourceImage = document.createElement("img");
     sourceImage.setAttribute("src", "../assets/imported.png");
-    const importedImage = child.document.importNode(sourceImage, true) as HTMLImageElement;
+    const importedImage = child.document.importNode(
+      sourceImage,
+      true,
+    ) as HTMLImageElement;
     child.document.body.append(importedImage);
 
     const subtree = document.createElement("section");
@@ -65,10 +72,7 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
     foreignScript.textContent = "window.__foreignScriptHostRan = true";
     child.document.body.append(foreignScript);
     const foreignButton = document.createElement("button");
-    foreignButton.setAttribute(
-      "onclick",
-      "window.__foreignInlineChildRan = true",
-    );
+    foreignButton.setAttribute("onclick", "window.__foreignInlineChildRan = true");
     child.document.body.append(foreignButton);
     foreignButton.click();
 
@@ -94,14 +98,11 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
       adoptedRootIsFacade: adoptedAnchor.getRootNode() === child.document,
       parentPrototypeUntouched: document.createElement("html").matches("html"),
       foreignScriptStayedInert:
-        !("__foreignScriptHostRan" in window) &&
-        !("__foreignScriptHostRan" in child),
+        !("__foreignScriptHostRan" in window) && !("__foreignScriptHostRan" in child),
       foreignInlineRanInChild:
-        !("__foreignInlineChildRan" in window) &&
-        "__foreignInlineChildRan" in child,
+        !("__foreignInlineChildRan" in window) && "__foreignInlineChildRan" in child,
       foreignInlineAttribute:
-        foreignButton.getAttribute("onclick") ===
-        "window.__foreignInlineChildRan = true",
+        foreignButton.getAttribute("onclick") === "window.__foreignInlineChildRan = true",
     };
 
     child.history.pushState({}, "", "nested/state.html");
@@ -141,7 +142,9 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
   });
 });
 
-test("scopes shell selectors and root translation to the connected virtual tree", async ({ page }) => {
+test("scopes shell selectors and root translation to the connected virtual tree", async ({
+  page,
+}) => {
   await mountFrame(page);
 
   const result = await page.evaluate(() => {
@@ -187,8 +190,8 @@ test("scopes shell selectors and root translation to the connected virtual tree"
         bodyMatches: virtualDocument.body.matches("body"),
         bodyClosest: connected.closest("body") === virtualDocument.body,
         rootMatches: virtualDocument.documentElement.matches(":root"),
-        rootQuery: virtualDocument.querySelector(":root") ===
-          virtualDocument.documentElement,
+        rootQuery:
+          virtualDocument.querySelector(":root") === virtualDocument.documentElement,
       },
       parsedSelectors: {
         htmlMatches: parsed.documentElement.matches("html"),
@@ -291,7 +294,9 @@ test("parses and clones virtual template contents", async ({ page }) => {
   });
 });
 
-test("reports element geometry in the virtual viewport coordinate space", async ({ page }) => {
+test("reports element geometry in the virtual viewport coordinate space", async ({
+  page,
+}) => {
   await mountFrame(page);
 
   const result = await page.evaluate(() => {
@@ -402,10 +407,8 @@ test("positions native popovers in the virtual viewport", async ({ page }) => {
       expectedPhysicalTop: frameRect.top + frame.clientTop + 280,
       extendsPastFrame:
         physicalRect.right > frameRect.right && physicalRect.bottom > frameRect.bottom,
-      outsideHitRetargetsToFrame: document.elementFromPoint(
-        frameRect.right + 20,
-        physicalRect.top + 15,
-      ) === frame,
+      outsideHitRetargetsToFrame:
+        document.elementFromPoint(frameRect.right + 20, physicalRect.top + 15) === frame,
     };
     popover.hidePopover();
     return result;
@@ -456,7 +459,8 @@ test("keeps document collections live with stable identities", async ({ page }) 
       allElements: allElements.length,
       rootTags: rootTags.length,
       shellClasses: shellClasses.length,
-      rootByID: virtualDocument.getElementById("virtual-root") ===
+      rootByID:
+        virtualDocument.getElementById("virtual-root") ===
         virtualDocument.documentElement,
       rootByTag: rootTags[0] === virtualDocument.documentElement,
       rootByClass: shellClasses.item(0) === virtualDocument.documentElement,
@@ -599,7 +603,9 @@ test("keeps document collections live with stable identities", async ({ page }) 
   });
 });
 
-test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({ page }) => {
+test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({
+  page,
+}) => {
   await mountFrame(page);
 
   await page.evaluate(() => {
@@ -653,7 +659,9 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
   });
 });
 
-test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({ page }) => {
+test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({
+  page,
+}) => {
   await mountFrame(page);
 
   const result = await page.evaluate(() => {
@@ -663,7 +671,10 @@ test("matches foreign tag names case-sensitively and keeps unknown on-attributes
     const virtualDocument = frame.contentWindow!.document;
 
     const svg = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-    const gradient = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+    const gradient = virtualDocument.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "linearGradient",
+    );
     svg.append(gradient);
     virtualDocument.body.append(svg);
 

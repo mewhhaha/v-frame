@@ -3,9 +3,7 @@ import { fileURLToPath } from "node:url";
 import { qwikVite } from "@builder.io/qwik/optimizer";
 import { defineConfig } from "vite";
 
-const manifestPath = fileURLToPath(
-  new URL("src/manifest.generated.js", import.meta.url),
-);
+const manifestPath = fileURLToPath(new URL("src/manifest.generated.js", import.meta.url));
 const workerRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
@@ -23,10 +21,11 @@ export default defineConfig({
     qwikVite({
       client: {
         input: "src/widget.tsx",
-        manifestOutput: (manifest) => writeFile(
-          manifestPath,
-          `export const manifest = ${JSON.stringify(manifest)};\n`,
-        ),
+        manifestOutput: (manifest) =>
+          writeFile(
+            manifestPath,
+            `export const manifest = ${JSON.stringify(manifest)};\n`,
+          ),
         outDir: "dist/client",
       },
       ssr: {

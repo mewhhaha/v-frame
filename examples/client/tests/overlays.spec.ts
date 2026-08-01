@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const frameworks = ["react", "angular", "solid", "qwik"] as const;
-type Framework = typeof frameworks[number];
+type Framework = (typeof frameworks)[number];
 
 function frameworkFrame(page: Page, framework: Framework): Locator {
   return page.locator(`v-frame[data-testid="${framework}-frame"]`);
@@ -14,21 +14,30 @@ function tooltipFor(frame: Locator, framework: Framework): Locator {
 }
 
 async function expectReady(frame: Locator): Promise<void> {
-  await expect.poll(() => frame.evaluate((element) => {
-    return (element as HTMLElement & { status: string }).status;
-  })).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => {
+        return (element as HTMLElement & { status: string }).status;
+      }),
+    )
+    .toBe("ready");
 }
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const errors: Array<{ message: string; phase?: string; url?: string }> = [];
-    Object.defineProperty(window, "__vFrameErrors", { configurable: true, value: errors });
+    Object.defineProperty(window, "__vFrameErrors", {
+      configurable: true,
+      value: errors,
+    });
     document.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
-        error?: { message?: string };
-        phase?: string;
-        url?: string;
-      }>).detail;
+      const detail = (
+        event as CustomEvent<{
+          error?: { message?: string };
+          phase?: string;
+          url?: string;
+        }>
+      ).detail;
       errors.push({
         message: detail?.error?.message ?? String(detail?.error),
         phase: detail?.phase,
@@ -58,13 +67,17 @@ for (const framework of frameworks) {
     await expect(frame.locator("v-html > v-body")).toHaveCount(1);
     const bodyUsesVirtualElement = await frame.evaluate((element) => {
       const mountedFrame = element as HTMLElement & { contentWindow: Window | null };
-      return mountedFrame.contentWindow?.document.body ===
-        mountedFrame.shadowRoot?.querySelector("v-body");
+      return (
+        mountedFrame.contentWindow?.document.body ===
+        mountedFrame.shadowRoot?.querySelector("v-body")
+      );
     });
     expect(bodyUsesVirtualElement).toBe(true);
   });
 
-  test(`${framework} tooltip opens and closes across the frame boundary`, async ({ page }) => {
+  test(`${framework} tooltip opens and closes across the frame boundary`, async ({
+    page,
+  }) => {
     const frame = frameworkFrame(page, framework);
     const tooltip = tooltipFor(frame, framework);
 
@@ -124,7 +137,9 @@ for (const framework of frameworks) {
   });
 }
 
-test("removing frames with active overlays leaves no orphaned surfaces", async ({ page }) => {
+test("removing frames with active overlays leaves no orphaned surfaces", async ({
+  page,
+}) => {
   for (const framework of frameworks) {
     const frame = frameworkFrame(page, framework);
     await frame.locator('[data-testid="dialog-trigger"]').click();

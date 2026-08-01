@@ -5,10 +5,7 @@ import {
   type RealmFailure,
   type VFrameRealm,
 } from "./realm.js";
-import {
-  type DocumentHistoryMode,
-  VirtualHistorySession,
-} from "./history.js";
+import { type DocumentHistoryMode, VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { VFrameStatus } from "./types.js";
 import type {
@@ -23,9 +20,8 @@ import type {
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
 
-const HTMLElementBase = (
-  globalThis.HTMLElement ?? class HTMLElementFallback {}
-) as typeof HTMLElement;
+const HTMLElementBase = (globalThis.HTMLElement ??
+  class HTMLElementFallback {}) as typeof HTMLElement;
 const nativeNonceDescriptor = Object.getOwnPropertyDescriptor(
   HTMLElementBase.prototype,
   "nonce",
@@ -218,13 +214,15 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
     const adoptedMarkup = this.#consumeAdoptedMarkup();
-    this.#observeLoad(this.#startLoad({
-      source,
-      adoptedMarkup,
-      historySession: null,
-      stageMarkup: adoptedMarkup !== null,
-      boundNavigation: this.navigation === "host",
-    }));
+    this.#observeLoad(
+      this.#startLoad({
+        source,
+        adoptedMarkup,
+        historySession: null,
+        stageMarkup: adoptedMarkup !== null,
+        boundNavigation: this.navigation === "host",
+      }),
+    );
   }
 
   // Own properties assigned before upgrade shadow the prototype accessors;
@@ -268,13 +266,15 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
 
-    this.#observeLoad(this.#startLoad({
-      source,
-      adoptedMarkup: null,
-      historySession: null,
-      stageMarkup: false,
-      boundNavigation: this.navigation === "host",
-    }));
+    this.#observeLoad(
+      this.#startLoad({
+        source,
+        adoptedMarkup: null,
+        historySession: null,
+        stageMarkup: false,
+        boundNavigation: this.navigation === "host",
+      }),
+    );
   }
 
   reload(): Promise<void> {
@@ -416,18 +416,21 @@ export class VFrameElement extends HTMLElementBase {
     let failureURL = requestedURL.href;
     const pendingRealm = { iframe: null as HTMLIFrameElement | null };
     let realmConnectionFailed = false;
-    const connectRealm = (url: string) => connectRealmIframe(
-      this.#root,
-      controller.signal,
-      url,
-      this.#effectiveTrustedTypesPolicy(),
-    ).then((connection) => {
-      pendingRealm.iframe = connection.iframe;
-      return connection;
-    }).catch((error: unknown) => {
-      realmConnectionFailed = true;
-      throw error;
-    });
+    const connectRealm = (url: string) =>
+      connectRealmIframe(
+        this.#root,
+        controller.signal,
+        url,
+        this.#effectiveTrustedTypesPolicy(),
+      )
+        .then((connection) => {
+          pendingRealm.iframe = connection.iframe;
+          return connection;
+        })
+        .catch((error: unknown) => {
+          realmConnectionFailed = true;
+          throw error;
+        });
 
     try {
       let source: string;
@@ -492,13 +495,14 @@ export class VFrameElement extends HTMLElementBase {
         shadowRoot: this.#root,
         iframe: connection.iframe,
         trustedTypes: connection.trustedTypes,
-        markup: load.adoptedMarkup === null
-          ? { kind: "document", source }
-          : {
-            kind: "adopted",
-            source,
-            previewNodes: load.adoptedMarkup.previewNodes,
-          },
+        markup:
+          load.adoptedMarkup === null
+            ? { kind: "document", source }
+            : {
+                kind: "adopted",
+                source,
+                previewNodes: load.adoptedMarkup.previewNodes,
+              },
         pageURL: finalURL,
         historySession,
         boundNavigation: load.boundNavigation,
@@ -545,13 +549,15 @@ export class VFrameElement extends HTMLElementBase {
             if (!ownsController()) {
               return;
             }
-            this.#observeLoad(this.#startLoad({
-              source: detail.to,
-              adoptedMarkup: null,
-              historySession: nextSession,
-              stageMarkup: this.#realm !== null,
-              boundNavigation: false,
-            }));
+            this.#observeLoad(
+              this.#startLoad({
+                source: detail.to,
+                adoptedMarkup: null,
+                historySession: nextSession,
+                stageMarkup: this.#realm !== null,
+                boundNavigation: false,
+              }),
+            );
           });
           return true;
         },
@@ -563,13 +569,15 @@ export class VFrameElement extends HTMLElementBase {
             if (!ownsController()) {
               return;
             }
-            this.#observeLoad(this.#startLoad({
-              source: nextSession.currentURL,
-              adoptedMarkup: null,
-              historySession: nextSession,
-              stageMarkup: this.#realm !== null,
-              boundNavigation: false,
-            }));
+            this.#observeLoad(
+              this.#startLoad({
+                source: nextSession.currentURL,
+                adoptedMarkup: null,
+                historySession: nextSession,
+                stageMarkup: this.#realm !== null,
+                boundNavigation: false,
+              }),
+            );
           });
         },
         onShellNavigation: (detail) => {
@@ -597,20 +605,23 @@ export class VFrameElement extends HTMLElementBase {
             }
             return;
           }
-          const nextSession = mode === "reload"
-            ? historySession.clone()
-            : historySession.forkDocumentNavigation(detail.to, mode);
+          const nextSession =
+            mode === "reload"
+              ? historySession.clone()
+              : historySession.forkDocumentNavigation(detail.to, mode);
           queueMicrotask(() => {
             if (!ownsController()) {
               return;
             }
-            this.#observeLoad(this.#startLoad({
-              source: nextSession.currentURL,
-              adoptedMarkup: null,
-              historySession: nextSession,
-              stageMarkup: this.#realm !== null,
-              boundNavigation: load.boundNavigation,
-            }));
+            this.#observeLoad(
+              this.#startLoad({
+                source: nextSession.currentURL,
+                adoptedMarkup: null,
+                historySession: nextSession,
+                stageMarkup: this.#realm !== null,
+                boundNavigation: load.boundNavigation,
+              }),
+            );
           });
         },
         onError: (failure) => {
@@ -657,9 +668,10 @@ export class VFrameElement extends HTMLElementBase {
       }
 
       const failure = {
-        phase: realmConnectionFailed || entryResolved
-          ? "bootstrap" as const
-          : "entry" as const,
+        phase:
+          realmConnectionFailed || entryResolved
+            ? ("bootstrap" as const)
+            : ("entry" as const),
         url: failureURL,
         error,
       };
@@ -707,10 +719,7 @@ export class VFrameElement extends HTMLElementBase {
     }
   }
 
-  #failGeneration(
-    generation: number,
-    failure: RealmFailure,
-  ): void {
+  #failGeneration(generation: number, failure: RealmFailure): void {
     if (this.#generation !== generation) {
       return;
     }

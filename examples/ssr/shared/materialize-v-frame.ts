@@ -1,7 +1,4 @@
-import {
-  createStylesheetContext,
-  rewriteStylesheet,
-} from "../../../src/css.js";
+import { createStylesheetContext, rewriteStylesheet } from "../../../src/css.js";
 
 const inertScriptType = "application/vnd.v-frame";
 
@@ -69,8 +66,8 @@ export function materializeVFrameDocument(
     .on("script", {
       element(element) {
         if (
-          element.getAttribute("type") === inertScriptType
-          && element.hasAttribute("data-v-frame-script")
+          element.getAttribute("type") === inertScriptType &&
+          element.hasAttribute("data-v-frame-script")
         ) {
           return;
         }

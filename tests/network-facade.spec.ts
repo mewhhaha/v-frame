@@ -1,5 +1,10 @@
 import { createReadStream, existsSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
@@ -54,7 +59,7 @@ function listen(server: Server): Promise<number> {
 
 function close(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -65,13 +70,15 @@ function observeRequest(request: IncomingMessage): Promise<ObservedRequest> {
     request.on("data", (chunk: string) => {
       body += chunk;
     });
-    request.on("end", () => resolveObserved({
-      body,
-      cookie: request.headers.cookie ?? "",
-      method: request.method ?? "",
-      path: requestPath(request),
-      requestHeader: String(request.headers["x-network-request"] ?? ""),
-    }));
+    request.on("end", () =>
+      resolveObserved({
+        body,
+        cookie: request.headers.cookie ?? "",
+        method: request.method ?? "",
+        path: requestPath(request),
+        requestHeader: String(request.headers["x-network-request"] ?? ""),
+      }),
+    );
   });
 }
 
@@ -91,7 +98,10 @@ async function startNetworkFixture(): Promise<NetworkFixture> {
         reply(response, 404, "text/plain", "Build output not found");
         return;
       }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
+      response.writeHead(200, {
+        "content-type": "text/javascript",
+        "cache-control": "no-store",
+      });
       createReadStream(bundle).pipe(response);
       return;
     }
@@ -105,11 +115,21 @@ async function startNetworkFixture(): Promise<NetworkFixture> {
       return;
     }
     if (path.endsWith("/worker.js")) {
-      reply(response, 200, "text/javascript", "self.postMessage(self.location.pathname);");
+      reply(
+        response,
+        200,
+        "text/javascript",
+        "self.postMessage(self.location.pathname);",
+      );
       return;
     }
     if (path.endsWith("/shared-worker.js")) {
-      reply(response, 200, "text/javascript", "onconnect = (event) => event.ports[0].postMessage(self.location.pathname);");
+      reply(
+        response,
+        200,
+        "text/javascript",
+        "onconnect = (event) => event.ports[0].postMessage(self.location.pathname);",
+      );
       return;
     }
 
@@ -154,7 +174,9 @@ async function installBundle(page: import("@playwright/test").Page): Promise<voi
     const bundle = await import(bundleURL);
     bundle.defineVFrame();
   }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
 }
 
 async function mountFrame(
@@ -162,28 +184,41 @@ async function mountFrame(
   id: string,
   credentials: "omit" | "same-origin" | "include",
 ): Promise<import("@playwright/test").Locator> {
-  await page.evaluate(({ frameID, frameCredentials, source }) => {
-    const frame = document.createElement("v-frame");
-    frame.id = frameID;
-    frame.setAttribute("credentials", frameCredentials);
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, {
-    frameID: id,
-    frameCredentials: credentials,
-    source: `${fixture.origin}/documents/network.html`,
-  });
+  await page.evaluate(
+    ({ frameID, frameCredentials, source }) => {
+      const frame = document.createElement("v-frame");
+      frame.id = frameID;
+      frame.setAttribute("credentials", frameCredentials);
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+    },
+    {
+      frameID: id,
+      frameCredentials: credentials,
+      source: `${fixture.origin}/documents/network.html`,
+    },
+  );
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
   return frame;
 }
 
-test("network constructors and requests follow the live first-valid document base", async ({ page }) => {
+test("network constructors and requests follow the live first-valid document base", async ({
+  page,
+}) => {
   await installBundle(page);
   const frame = await mountFrame(page, "dynamic-base", "same-origin");
 
   const result = await frame.evaluate(async (element) => {
-    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis & typeof globalThis }).contentWindow;
+    const window = (
+      element as HTMLElement & {
+        contentWindow: Window & typeof globalThis & typeof globalThis;
+      }
+    ).contentWindow;
     const run = async (basePath: string) => {
       window.document.querySelector("#network-base")?.setAttribute("href", basePath);
 
@@ -206,7 +241,9 @@ test("network constructors and requests follow the live first-valid document bas
         worker.onmessage = (event) => resolvePath(String(event.data));
       });
       worker.terminate();
-      const sharedWorker = new window.SharedWorker("shared-worker.js", { name: basePath });
+      const sharedWorker = new window.SharedWorker("shared-worker.js", {
+        name: basePath,
+      });
       const sharedWorkerPath = await new Promise<string>((resolvePath) => {
         sharedWorker.port.onmessage = (event) => resolvePath(String(event.data));
         sharedWorker.port.start();
@@ -251,69 +288,77 @@ test("network constructors and requests follow the live first-valid document bas
       xhrURL: `${fixture.origin}/second-base/xhr`,
     },
   ]);
-  await expect.poll(() => fixture.requests.filter((request) => request.path.endsWith("/beacon")).map((request) => request.path)).toEqual([
-    "/first-base/beacon",
-    "/second-base/beacon",
-  ]);
+  await expect
+    .poll(() =>
+      fixture.requests
+        .filter((request) => request.path.endsWith("/beacon"))
+        .map((request) => request.path),
+    )
+    .toEqual(["/first-base/beacon", "/second-base/beacon"]);
 });
 
-test("foreign-realm POST Requests preserve metadata, consume bodies, and use child-realm TypeErrors", async ({ page }) => {
+test("foreign-realm POST Requests preserve metadata, consume bodies, and use child-realm TypeErrors", async ({
+  page,
+}) => {
   await installBundle(page);
   await mountFrame(page, "foreign-request", "same-origin");
 
-  const result = await page.evaluate(async ({ origin }) => {
-    const frame = document.querySelector("v-frame#foreign-request") as HTMLElement & {
-      contentWindow: Window & typeof globalThis & typeof globalThis;
-    };
-    const childWindow = frame.contentWindow;
-    const directRequest = new Request(`${origin}/foreign/direct`, {
-      body: "direct body",
-      credentials: "include",
-      headers: { "x-network-request": "direct header" },
-      method: "POST",
-    });
-    const directResponse = await childWindow.fetch(directRequest);
-    const directRequestBodyUsed = directRequest.bodyUsed;
-
-    const sourceRequest = new Request(`${origin}/foreign/constructed`, {
-      body: "constructed body",
-      credentials: "include",
-      headers: { "x-network-request": "constructed header" },
-      method: "POST",
-    });
-    const childRequest = new childWindow.Request(sourceRequest);
-    const constructedResponse = await childWindow.fetch(childRequest);
-    const constructedRequestBodyUsed = childRequest.bodyUsed;
-
-    const usedRequest = new Request(`${origin}/foreign/used`, {
-      body: "used body",
-      method: "POST",
-    });
-    await usedRequest.text();
-    let usedRequestError: { isChildTypeError: boolean; name: string } | null = null;
-    try {
-      new childWindow.Request(usedRequest);
-    } catch (error) {
-      usedRequestError = {
-        isChildTypeError: error instanceof childWindow.TypeError,
-        name: (error as Error).name,
+  const result = await page.evaluate(
+    async ({ origin }) => {
+      const frame = document.querySelector("v-frame#foreign-request") as HTMLElement & {
+        contentWindow: Window & typeof globalThis & typeof globalThis;
       };
-    }
+      const childWindow = frame.contentWindow;
+      const directRequest = new Request(`${origin}/foreign/direct`, {
+        body: "direct body",
+        credentials: "include",
+        headers: { "x-network-request": "direct header" },
+        method: "POST",
+      });
+      const directResponse = await childWindow.fetch(directRequest);
+      const directRequestBodyUsed = directRequest.bodyUsed;
 
-    return {
-      constructed: await constructedResponse.json(),
-      constructedRequest: {
-        bodyUsed: constructedRequestBodyUsed,
-        credentials: childRequest.credentials,
-        method: childRequest.method,
-        requestHeader: childRequest.headers.get("x-network-request"),
-        url: childRequest.url,
-      },
-      direct: await directResponse.json(),
-      directRequestBodyUsed,
-      usedRequestError,
-    };
-  }, { origin: fixture.origin });
+      const sourceRequest = new Request(`${origin}/foreign/constructed`, {
+        body: "constructed body",
+        credentials: "include",
+        headers: { "x-network-request": "constructed header" },
+        method: "POST",
+      });
+      const childRequest = new childWindow.Request(sourceRequest);
+      const constructedResponse = await childWindow.fetch(childRequest);
+      const constructedRequestBodyUsed = childRequest.bodyUsed;
+
+      const usedRequest = new Request(`${origin}/foreign/used`, {
+        body: "used body",
+        method: "POST",
+      });
+      await usedRequest.text();
+      let usedRequestError: { isChildTypeError: boolean; name: string } | null = null;
+      try {
+        new childWindow.Request(usedRequest);
+      } catch (error) {
+        usedRequestError = {
+          isChildTypeError: error instanceof childWindow.TypeError,
+          name: (error as Error).name,
+        };
+      }
+
+      return {
+        constructed: await constructedResponse.json(),
+        constructedRequest: {
+          bodyUsed: constructedRequestBodyUsed,
+          credentials: childRequest.credentials,
+          method: childRequest.method,
+          requestHeader: childRequest.headers.get("x-network-request"),
+          url: childRequest.url,
+        },
+        direct: await directResponse.json(),
+        directRequestBodyUsed,
+        usedRequestError,
+      };
+    },
+    { origin: fixture.origin },
+  );
 
   expect(result).toEqual({
     constructed: {
@@ -342,28 +387,42 @@ test("foreign-realm POST Requests preserve metadata, consume bodies, and use chi
   });
 });
 
-test("include-mode XHR keeps an explicit withCredentials opt-out", async ({ page, context }) => {
-  await context.addCookies([{
-    name: "network_cross_origin",
-    value: "present",
-    url: fixture.corsOrigin,
-    sameSite: "Lax",
-  }]);
+test("include-mode XHR keeps an explicit withCredentials opt-out", async ({
+  page,
+  context,
+}) => {
+  await context.addCookies([
+    {
+      name: "network_cross_origin",
+      value: "present",
+      url: fixture.corsOrigin,
+      sameSite: "Lax",
+    },
+  ]);
   await installBundle(page);
   const frame = await mountFrame(page, "xhr-opt-out", "include");
 
   const result = await frame.evaluate(async (element, corsOrigin) => {
-    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis & typeof globalThis }).contentWindow;
-    const request = (path: string, optOut: boolean) => new Promise<{ response: unknown; withCredentials: boolean }>((resolveRequest) => {
-      const xhr = new window.XMLHttpRequest();
-      xhr.open("GET", `${corsOrigin}${path}`);
-      if (optOut) {
-        xhr.withCredentials = false;
+    const window = (
+      element as HTMLElement & {
+        contentWindow: Window & typeof globalThis & typeof globalThis;
       }
-      xhr.responseType = "json";
-      xhr.onloadend = () => resolveRequest({ response: xhr.response, withCredentials: xhr.withCredentials });
-      xhr.send();
-    });
+    ).contentWindow;
+    const request = (path: string, optOut: boolean) =>
+      new Promise<{ response: unknown; withCredentials: boolean }>((resolveRequest) => {
+        const xhr = new window.XMLHttpRequest();
+        xhr.open("GET", `${corsOrigin}${path}`);
+        if (optOut) {
+          xhr.withCredentials = false;
+        }
+        xhr.responseType = "json";
+        xhr.onloadend = () =>
+          resolveRequest({
+            response: xhr.response,
+            withCredentials: xhr.withCredentials,
+          });
+        xhr.send();
+      });
 
     return {
       defaulted: await request("/credentials/default", false),
@@ -393,8 +452,13 @@ test("include-mode XHR keeps an explicit withCredentials opt-out", async ({ page
       withCredentials: false,
     },
   });
-  expect(fixture.requests.filter((request) => request.path.startsWith("/credentials/"))).toEqual([
-    expect.objectContaining({ cookie: "network_cross_origin=present", path: "/credentials/default" }),
+  expect(
+    fixture.requests.filter((request) => request.path.startsWith("/credentials/")),
+  ).toEqual([
+    expect.objectContaining({
+      cookie: "network_cross_origin=present",
+      path: "/credentials/default",
+    }),
     expect.objectContaining({ cookie: "", path: "/credentials/opt-out" }),
   ]);
 });

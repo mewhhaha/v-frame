@@ -24,9 +24,11 @@ async function mountFrame(page: Page) {
     document.querySelector("#host")?.append(frame);
   }, `${fixture.origin}/documents/application.html`);
   const frame = page.locator("#navigation-frame");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
   return frame;
 }
 
@@ -36,7 +38,9 @@ test("resolves history URLs against the live base and preserves the URL when omi
   const frame = await mountFrame(page);
 
   const result = await frame.evaluate((element, origin) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -117,7 +121,9 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
   }));
 
   const result = await frame.evaluate(async (element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -139,7 +145,10 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
       try {
         (child.history[method] as (state: unknown) => void)({});
       } catch (error) {
-        missingArguments.push({ method, childTypeError: error instanceof child.TypeError });
+        missingArguments.push({
+          method,
+          childTypeError: error instanceof child.TypeError,
+        });
       }
     }
     let illegalReceiverIsChildTypeError = false;
@@ -196,14 +205,18 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
     illegalReceiverIsChildTypeError: true,
     numericFailures: [true, true],
   });
-  expect(await page.evaluate(() => ({
-    href: location.href,
-    length: history.length,
-    state: history.state,
-  }))).toEqual(hostHistory);
+  expect(
+    await page.evaluate(() => ({
+      href: location.href,
+      length: history.length,
+      state: history.state,
+    })),
+  ).toEqual(hostHistory);
 });
 
-test("keeps retained prototype history methods inert after disposal", async ({ page }) => {
+test("keeps retained prototype history methods inert after disposal", async ({
+  page,
+}) => {
   const frame = await mountFrame(page);
   const hostHistory = await page.evaluate(() => ({
     href: location.href,
@@ -212,7 +225,9 @@ test("keeps retained prototype history methods inert after disposal", async ({ p
   }));
 
   const result = await frame.evaluate((element) => {
-    const controlledFrame = element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
+    const controlledFrame = element as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
     const child = controlledFrame.contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
@@ -230,7 +245,12 @@ test("keeps retained prototype history methods inert after disposal", async ({ p
     let exception: string | null = null;
     try {
       retainedPrototype.pushState.call(retainedHistory, () => undefined, "", "http://[");
-      retainedPrototype.replaceState.call(retainedHistory, () => undefined, "", "http://[");
+      retainedPrototype.replaceState.call(
+        retainedHistory,
+        () => undefined,
+        "",
+        "http://[",
+      );
       (retainedPrototype.pushState as (this: History) => void).call(retainedHistory);
       retainedPrototype.back.call(retainedHistory);
       retainedPrototype.forward.call(retainedHistory);
@@ -265,11 +285,13 @@ test("keeps retained prototype history methods inert after disposal", async ({ p
     },
     exception: null,
   });
-  expect(await page.evaluate(() => ({
-    href: location.href,
-    length: history.length,
-    state: history.state,
-  }))).toEqual(hostHistory);
+  expect(
+    await page.evaluate(() => ({
+      href: location.href,
+      length: history.length,
+      state: history.state,
+    })),
+  ).toEqual(hostHistory);
 });
 
 test("documents javascript Location evaluation without document replacement as unsupported", async ({
@@ -278,7 +300,9 @@ test("documents javascript Location evaluation without document replacement as u
   const frame = await mountFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: (Window & typeof globalThis & { __javascriptLocationExecuted?: boolean }) | null;
+      contentWindow:
+        | (Window & typeof globalThis & { __javascriptLocationExecuted?: boolean })
+        | null;
       currentURL: string | null;
       status: string;
     };
@@ -315,7 +339,9 @@ test("documents javascript Location evaluation without document replacement as u
   });
 });
 
-test("loads links and GET forms while preserving guest document history", async ({ page }) => {
+test("loads links and GET forms while preserving guest document history", async ({
+  page,
+}) => {
   await page.goto(fixture.origin);
   await page.evaluate(async (bundleURL) => {
     const bundle = await import(bundleURL);
@@ -332,23 +358,35 @@ test("loads links and GET forms while preserving guest document history", async 
   await expect(frame.locator("#first")).toContainText("First document");
   await frame.locator("#next").click();
   await expect(frame.locator("#second")).toHaveText("Second document");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/second.html`);
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/second.html`);
   expect(await frame.getAttribute("src")).toBe(`${fixture.origin}/documents/first.html`);
-  expect(await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
-    return child?.history.length;
-  })).toBe(2);
+  expect(
+    await frame.evaluate((element) => {
+      const child = (
+        element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+      ).contentWindow;
+      return child?.history.length;
+    }),
+  ).toBe(2);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     child?.history.back();
   });
   await expect(frame.locator("#first")).toContainText("First document");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     const form = child?.document.createElement("form");
     if (child === null || child === undefined || form === undefined) {
       throw new Error("The restored document has no child window");
@@ -366,52 +404,77 @@ test("loads links and GET forms while preserving guest document history", async 
   });
   await frame.locator("#document-navigation-form button").click();
   await expect(frame.locator("#second")).toHaveText("Second document");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/second.html?query=fixture`);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     child?.history.back();
   });
   await expect(frame.locator("#first")).toContainText("First document");
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     child?.history.forward();
   });
   await expect(frame.locator("#second")).toHaveText("Second document");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/second.html?query=fixture`);
 });
 
 test("restores the live guest when a document navigation fails", async ({ page }) => {
   const frame = await mountFrame(page);
-  const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
-  ).contentWindow);
-  const failure = frame.evaluate((element) => new Promise<{
-    fatal: boolean;
-    phase: string;
-    status: string;
-    url: string;
-  }>((resolve) => {
-    element.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
+  const originalWindow = await frame.evaluateHandle(
+    (element) =>
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+  );
+  const failure = frame.evaluate(
+    (element) =>
+      new Promise<{
         fatal: boolean;
         phase: string;
+        status: string;
         url: string;
-      }>).detail;
-      resolve({
-        fatal: detail.fatal,
-        phase: detail.phase,
-        status: (element as HTMLElement & { status: string }).status,
-        url: detail.url,
-      });
-    }, { once: true });
-  }));
+      }>((resolve) => {
+        element.addEventListener(
+          "v-frame-error",
+          (event) => {
+            const detail = (
+              event as CustomEvent<{
+                fatal: boolean;
+                phase: string;
+                url: string;
+              }>
+            ).detail;
+            resolve({
+              fatal: detail.fatal,
+              phase: detail.phase,
+              status: (element as HTMLElement & { status: string }).status,
+              url: detail.url,
+            });
+          },
+          { once: true },
+        );
+      }),
+  );
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     const link = child?.document.createElement("a");
     if (child === null || child === undefined || link === undefined) {
       throw new Error("The navigation frame has no child window");
@@ -430,9 +493,14 @@ test("restores the live guest when a document navigation fails", async ({ page }
     url: `${fixture.origin}/documents/broken.html`,
   });
   await expect(frame.locator("#load")).toHaveText("Load");
-  expect(await frame.evaluate((element, previousWindow) => (
-    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
-  ).contentWindow === previousWindow, originalWindow)).toBe(true);
+  expect(
+    await frame.evaluate(
+      (element, previousWindow) =>
+        (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+          .contentWindow === previousWindow,
+      originalWindow,
+    ),
+  ).toBe(true);
 });
 
 test("keeps a direct Location hash change inside the guest", async ({ page }) => {
@@ -466,7 +534,9 @@ test("keeps a direct Location hash change inside the guest", async ({ page }) =>
   expect(page.url()).toBe(`${fixture.origin}/`);
 });
 
-test("restores the virtual URL when the host cancels a direct hash change", async ({ page }) => {
+test("restores the virtual URL when the host cancels a direct hash change", async ({
+  page,
+}) => {
   const frame = await mountFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
@@ -499,24 +569,41 @@ test("restores the virtual URL when the host cancels a direct hash change", asyn
   });
 });
 
-test("reports unsupported same-context POST forms without leaving the document", async ({ page }) => {
+test("reports unsupported same-context POST forms without leaving the document", async ({
+  page,
+}) => {
   const frame = await mountFrame(page);
-  const error = frame.evaluate((element) => new Promise<{
-    fatal: boolean;
-    name: string;
-    phase: string;
-  }>((resolve) => {
-    element.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
-        error: Error;
+  const error = frame.evaluate(
+    (element) =>
+      new Promise<{
         fatal: boolean;
+        name: string;
         phase: string;
-      }>).detail;
-      resolve({ fatal: detail.fatal, name: detail.error.name, phase: detail.phase });
-    }, { once: true });
-  }));
+      }>((resolve) => {
+        element.addEventListener(
+          "v-frame-error",
+          (event) => {
+            const detail = (
+              event as CustomEvent<{
+                error: Error;
+                fatal: boolean;
+                phase: string;
+              }>
+            ).detail;
+            resolve({
+              fatal: detail.fatal,
+              name: detail.error.name,
+              phase: detail.phase,
+            });
+          },
+          { once: true },
+        );
+      }),
+  );
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     const form = child?.document.createElement("form");
     if (child === null || child === undefined || form === undefined) {
       throw new Error("The navigation frame has no child window");
@@ -531,18 +618,27 @@ test("reports unsupported same-context POST forms without leaving the document",
   });
   await frame.locator("#unsupported-post-form button").click();
 
-  expect(await error).toEqual({ fatal: false, name: "NotSupportedError", phase: "navigation" });
+  expect(await error).toEqual({
+    fatal: false,
+    name: "NotSupportedError",
+    phase: "navigation",
+  });
   await expect(frame.locator("#load")).toHaveText("Load");
-  expect(await frame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+  expect(
+    await frame.evaluate(
+      (element) => (element as HTMLElement & { status: string }).status,
+    ),
+  ).toBe("ready");
 });
 
-test("reports window and SVG link destinations resolved against the live base", async ({ page }) => {
+test("reports window and SVG link destinations resolved against the live base", async ({
+  page,
+}) => {
   const frame = await mountFrame(page);
   await frame.evaluate((element) => {
-    (element as HTMLElement & { navigations?: Array<{ kind: string; to: string }> })
-      .navigations = [];
+    (
+      element as HTMLElement & { navigations?: Array<{ kind: string; to: string }> }
+    ).navigations = [];
     element.addEventListener("v-frame-navigate", (event) => {
       const frameElement = element as HTMLElement & {
         navigations: Array<{ kind: string; to: string }>;
@@ -554,7 +650,9 @@ test("reports window and SVG link destinations resolved against the live base", 
   });
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -564,7 +662,9 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.open("first", "_self");
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -574,7 +674,9 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.open("second", "_self");
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -592,22 +694,35 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.document.body.append(svg);
   });
   await frame.evaluate(async (element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     const anchor = child?.document.querySelector("#svg-navigation-link");
-    if (child === null || child === undefined || anchor === null || anchor === undefined) {
+    if (
+      child === null ||
+      child === undefined ||
+      anchor === null ||
+      anchor === undefined
+    ) {
       throw new Error("The SVG navigation link is unavailable");
     }
-    anchor.dispatchEvent(new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window,
-    }));
+    anchor.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      }),
+    );
     await new Promise((resolve) => child.setTimeout(resolve, 0));
   });
-  expect(await frame.evaluate((element) => (
-    element as HTMLElement & { navigations: Array<{ kind: string; to: string }> }
-  ).navigations)).toEqual([
+  expect(
+    await frame.evaluate(
+      (element) =>
+        (element as HTMLElement & { navigations: Array<{ kind: string; to: string }> })
+          .navigations,
+    ),
+  ).toEqual([
     { kind: "window", to: `${fixture.origin}/first-window-base/first` },
     { kind: "window", to: `${fixture.origin}/second-window-base/second` },
     { kind: "link", to: `${fixture.origin}/svg-base/destination.html` },
@@ -627,7 +742,9 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
     });
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -665,12 +782,16 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
   await formPopup.waitForLoadState("domcontentloaded");
   expect(formPopup.url()).toBe(`${fixture.origin}/base-target/submitted`);
   await formPopup.close();
-  expect(await frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/application.html`);
+  expect(
+    await frame.evaluate(
+      (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+    ),
+  ).toBe(`${fixture.origin}/documents/application.html`);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
+    const child = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -692,11 +813,20 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
     });
   });
   await frame.locator("#malformed-fragment-link").click();
-  await expect.poll(() => frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
-    return (child as Window & { __legacyScrollCount?: number } | null)?.__legacyScrollCount;
-  })).toBe(1);
-  expect(await frame.evaluate(
-    (element) => (element as HTMLElement & { currentURL: string }).currentURL,
-  )).toBe(`${fixture.origin}/documents/application.html#bad%ZZ`);
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => {
+        const child = (
+          element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+        ).contentWindow;
+        return (child as (Window & { __legacyScrollCount?: number }) | null)
+          ?.__legacyScrollCount;
+      }),
+    )
+    .toBe(1);
+  expect(
+    await frame.evaluate(
+      (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+    ),
+  ).toBe(`${fixture.origin}/documents/application.html#bad%ZZ`);
 });

@@ -40,20 +40,36 @@ test("uses the public route for native Location while keeping soft history frame
   }, sourceURL);
 
   const frame = page.locator("#origin-history");
-  await expect.poll(() => frame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
-  await expect.poll(() => frame.evaluate((element) => (
-    element as HTMLElement & {
-      contentWindow: Window & typeof globalThis & { __originHistoryAnimationFrameCount: number };
-    }
-  ).contentWindow.__originHistoryAnimationFrameCount)).toBe(1);
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) =>
+          (
+            element as HTMLElement & {
+              contentWindow: Window &
+                typeof globalThis & { __originHistoryAnimationFrameCount: number };
+            }
+          ).contentWindow.__originHistoryAnimationFrameCount,
+      ),
+    )
+    .toBe(1);
 
-  const initial = await frame.evaluate((element) => (
-    element as HTMLElement & {
-      contentWindow: Window & typeof globalThis & { __initialLocationSnapshot: Record<string, string | null> };
-    }
-  ).contentWindow.__initialLocationSnapshot);
+  const initial = await frame.evaluate(
+    (element) =>
+      (
+        element as HTMLElement & {
+          contentWindow: Window &
+            typeof globalThis & {
+              __initialLocationSnapshot: Record<string, string | null>;
+            };
+        }
+      ).contentWindow.__initialLocationSnapshot,
+  );
   expect(initial).toEqual({
     href: sourceURL,
     origin: fixture.origin,
@@ -114,9 +130,11 @@ test("uses the public route for native Location while keeping soft history frame
       href: `${fixture.origin}/documents/replaced.html?step=2#replaced`,
     },
   });
-  expect(await page.evaluate(() => ({
-    href: location.href,
-    length: history.length,
-    state: history.state,
-  }))).toEqual(hostHistory);
+  expect(
+    await page.evaluate(() => ({
+      href: location.href,
+      length: history.length,
+      state: history.state,
+    })),
+  ).toEqual(hostHistory);
 });

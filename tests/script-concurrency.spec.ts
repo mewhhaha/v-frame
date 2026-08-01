@@ -149,7 +149,7 @@ function moduleSource(pathname: string): string | undefined {
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -187,7 +187,9 @@ async function startFixtureServer(): Promise<FixtureServer> {
     reply(response, 404, "text/plain", `No fixture for ${pathname}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -218,60 +220,74 @@ async function installBundle(page: Page): Promise<void> {
 async function loadFrame(
   page: Page,
   pathname: string,
-): Promise<{ failures: RecordedFailure[]; status: string; childState: Record<string, boolean> }> {
-  return page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & Record<string, unknown>) | null;
-      status: string;
-    };
-    const failures: RecordedFailure[] = [];
-    frame.setAttribute("nonce", frameNonce);
-    frame.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
-        phase: string;
-        url: string;
-        error: unknown;
-        fatal: boolean;
-      }>).detail;
-      const error = detail.error as { message?: unknown } | null;
-      failures.push({
-        phase: detail.phase,
-        url: detail.url,
-        message: typeof error?.message === "string" ? error.message : String(detail.error),
-        fatal: detail.fatal,
+): Promise<{
+  failures: RecordedFailure[];
+  status: string;
+  childState: Record<string, boolean>;
+}> {
+  return page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & Record<string, unknown>) | null;
+        status: string;
+      };
+      const failures: RecordedFailure[] = [];
+      frame.setAttribute("nonce", frameNonce);
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (
+          event as CustomEvent<{
+            phase: string;
+            url: string;
+            error: unknown;
+            fatal: boolean;
+          }>
+        ).detail;
+        const error = detail.error as { message?: unknown } | null;
+        failures.push({
+          phase: detail.phase,
+          url: detail.url,
+          message:
+            typeof error?.message === "string" ? error.message : String(detail.error),
+          fatal: detail.fatal,
+        });
       });
-    });
-    const loaded = new Promise<void>((resolveLoaded) => {
-      frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-    const childWindow = frame.contentWindow;
-    return {
-      failures,
-      status: frame.status,
-      childState: {
-        externalTlaFulfilled: childWindow?.__externalTlaFulfilled === true,
-        inlineTlaFulfilled: childWindow?.__inlineTlaFulfilled === true,
-      },
-    };
-  }, { frameNonce: nonce, source: `${fixture.origin}${pathname}` });
+      const loaded = new Promise<void>((resolveLoaded) => {
+        frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      const childWindow = frame.contentWindow;
+      return {
+        failures,
+        status: frame.status,
+        childState: {
+          externalTlaFulfilled: childWindow?.__externalTlaFulfilled === true,
+          inlineTlaFulfilled: childWindow?.__inlineTlaFulfilled === true,
+        },
+      };
+    },
+    { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
+  );
 }
 
-test("attributes an inline dependency failure while an async external module is pending", async ({ page }) => {
+test("attributes an inline dependency failure while an async external module is pending", async ({
+  page,
+}) => {
   await installBundle(page);
   const pathname = "/documents/inline-failure-external-success.html";
   const result = await loadFrame(page, pathname);
 
   expect(result).toEqual({
-    failures: [{
-      phase: "script",
-      url: `${fixture.origin}${pathname}`,
-      message: "inline dependency failure",
-      fatal: false,
-    }],
+    failures: [
+      {
+        phase: "script",
+        url: `${fixture.origin}${pathname}`,
+        message: "inline dependency failure",
+        fatal: false,
+      },
+    ],
     status: "ready",
     childState: {
       externalTlaFulfilled: true,
@@ -280,18 +296,22 @@ test("attributes an inline dependency failure while an async external module is 
   });
 });
 
-test("attributes an external dependency failure while an inline module has pending top-level await", async ({ page }) => {
+test("attributes an external dependency failure while an inline module has pending top-level await", async ({
+  page,
+}) => {
   await installBundle(page);
   const pathname = "/documents/external-failure-inline-success.html";
   const result = await loadFrame(page, pathname);
 
   expect(result).toEqual({
-    failures: [{
-      phase: "script",
-      url: `${fixture.origin}/modules/external-dependency-entry.js`,
-      message: "external dependency failure",
-      fatal: false,
-    }],
+    failures: [
+      {
+        phase: "script",
+        url: `${fixture.origin}/modules/external-dependency-entry.js`,
+        message: "external dependency failure",
+        fatal: false,
+      },
+    ],
     status: "ready",
     childState: {
       externalTlaFulfilled: false,
@@ -300,7 +320,9 @@ test("attributes an external dependency failure while an inline module has pendi
   });
 });
 
-test("reports two concurrent external failures and an unrelated runtime failure once each", async ({ page }) => {
+test("reports two concurrent external failures and an unrelated runtime failure once each", async ({
+  page,
+}) => {
   await installBundle(page);
   const result = await loadFrame(page, "/documents/concurrent-external-failures.html");
 
@@ -329,32 +351,44 @@ test("reports two concurrent external failures and an unrelated runtime failure 
   ]);
 });
 
-test("runs async inline modules concurrently while preserving their native start order", async ({ page }) => {
+test("runs async inline modules concurrently while preserving their native start order", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & { __asyncInlineEvents?: string[] }) | null;
-      status: string;
-    };
-    frame.setAttribute("nonce", frameNonce);
-    const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
-      const timeout = setTimeout(() => rejectLoaded(new Error("v-frame-load timed out")), 3_000);
-      frame.addEventListener("v-frame-load", () => {
-        clearTimeout(timeout);
-        resolveLoaded();
-      }, { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    return {
-      events: frame.contentWindow?.__asyncInlineEvents,
-      status: frame.status,
-    };
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/async-inline-order.html`,
-  });
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & { __asyncInlineEvents?: string[] }) | null;
+        status: string;
+      };
+      frame.setAttribute("nonce", frameNonce);
+      const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
+        const timeout = setTimeout(
+          () => rejectLoaded(new Error("v-frame-load timed out")),
+          3_000,
+        );
+        frame.addEventListener(
+          "v-frame-load",
+          () => {
+            clearTimeout(timeout);
+            resolveLoaded();
+          },
+          { once: true },
+        );
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      return {
+        events: frame.contentWindow?.__asyncInlineEvents,
+        status: frame.status,
+      };
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/async-inline-order.html`,
+    },
+  );
 
   expect(result).toEqual({
     events: ["A-start", "B", "A-end"],
@@ -362,48 +396,63 @@ test("runs async inline modules concurrently while preserving their native start
   });
 });
 
-test("settles concurrent failing and successful inline modules without duplicate reports", async ({ page }) => {
+test("settles concurrent failing and successful inline modules without duplicate reports", async ({
+  page,
+}) => {
   await installBundle(page);
   const pathname = "/documents/concurrent-inline-failures.html";
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & { __concurrentInlineEvents?: string[] }) | null;
-      status: string;
-    };
-    const failures: RecordedFailure[] = [];
-    frame.setAttribute("nonce", frameNonce);
-    frame.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
-        phase: string;
-        url: string;
-        error: unknown;
-        fatal: boolean;
-      }>).detail;
-      const error = detail.error as { message?: unknown } | null;
-      failures.push({
-        phase: detail.phase,
-        url: detail.url,
-        message: typeof error?.message === "string" ? error.message : String(detail.error),
-        fatal: detail.fatal,
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & { __concurrentInlineEvents?: string[] }) | null;
+        status: string;
+      };
+      const failures: RecordedFailure[] = [];
+      frame.setAttribute("nonce", frameNonce);
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (
+          event as CustomEvent<{
+            phase: string;
+            url: string;
+            error: unknown;
+            fatal: boolean;
+          }>
+        ).detail;
+        const error = detail.error as { message?: unknown } | null;
+        failures.push({
+          phase: detail.phase,
+          url: detail.url,
+          message:
+            typeof error?.message === "string" ? error.message : String(detail.error),
+          fatal: detail.fatal,
+        });
       });
-    });
-    const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
-      const timeout = setTimeout(() => rejectLoaded(new Error("v-frame-load timed out")), 3_000);
-      frame.addEventListener("v-frame-load", () => {
-        clearTimeout(timeout);
-        resolveLoaded();
-      }, { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-    return {
-      events: frame.contentWindow?.__concurrentInlineEvents,
-      failures,
-      status: frame.status,
-    };
-  }, { frameNonce: nonce, source: `${fixture.origin}${pathname}` });
+      const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
+        const timeout = setTimeout(
+          () => rejectLoaded(new Error("v-frame-load timed out")),
+          3_000,
+        );
+        frame.addEventListener(
+          "v-frame-load",
+          () => {
+            clearTimeout(timeout);
+            resolveLoaded();
+          },
+          { once: true },
+        );
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      return {
+        events: frame.contentWindow?.__concurrentInlineEvents,
+        failures,
+        status: frame.status,
+      };
+    },
+    { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
+  );
 
   expect(result.events).toEqual([
     "failure-a-start",
@@ -417,21 +466,25 @@ test("settles concurrent failing and successful inline modules without duplicate
     "async inline failure A",
     "async inline failure B",
   ]);
-  expect(result.failures).toEqual(expect.arrayContaining([
-    expect.objectContaining({
-      phase: "script",
-      url: `${fixture.origin}${pathname}`,
-      fatal: false,
-    }),
-    expect.objectContaining({
-      phase: "script",
-      url: `${fixture.origin}${pathname}`,
-      fatal: false,
-    }),
-  ]));
+  expect(result.failures).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        phase: "script",
+        url: `${fixture.origin}${pathname}`,
+        fatal: false,
+      }),
+      expect.objectContaining({
+        phase: "script",
+        url: `${fixture.origin}${pathname}`,
+        fatal: false,
+      }),
+    ]),
+  );
 });
 
-test("separates an external failure from overlapping concurrent inline modules", async ({ page }) => {
+test("separates an external failure from overlapping concurrent inline modules", async ({
+  page,
+}) => {
   await installBundle(page);
   const pathname = "/documents/external-and-concurrent-inline-failures.html";
   const result = await loadFrame(page, pathname);
@@ -439,61 +492,68 @@ test("separates an external failure from overlapping concurrent inline modules",
   expect(result.status).toBe("ready");
   expect(result.childState.inlineTlaFulfilled).toBe(true);
   expect(result.failures).toHaveLength(2);
-  expect(result.failures).toEqual(expect.arrayContaining([
-    {
-      phase: "script",
-      url: `${fixture.origin}/modules/external-dependency-entry.js`,
-      message: "external dependency failure",
-      fatal: false,
-    },
-    {
-      phase: "script",
-      url: `${fixture.origin}${pathname}`,
-      message: "concurrent inline failure",
-      fatal: false,
-    },
-  ]));
+  expect(result.failures).toEqual(
+    expect.arrayContaining([
+      {
+        phase: "script",
+        url: `${fixture.origin}/modules/external-dependency-entry.js`,
+        message: "external dependency failure",
+        fatal: false,
+      },
+      {
+        phase: "script",
+        url: `${fixture.origin}${pathname}`,
+        message: "concurrent inline failure",
+        fatal: false,
+      },
+    ]),
+  );
 });
 
-test("serializes dynamic inline modules whose async property is false", async ({ page }) => {
+test("serializes dynamic inline modules whose async property is false", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & { __orderedInlineEvents?: string[] }) | null;
-    };
-    frame.setAttribute("nonce", frameNonce);
-    const loaded = new Promise<void>((resolveLoaded) => {
-      frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & { __orderedInlineEvents?: string[] }) | null;
+      };
+      frame.setAttribute("nonce", frameNonce);
+      const loaded = new Promise<void>((resolveLoaded) => {
+        frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
 
-    const childWindow = frame.contentWindow!;
-    childWindow.__orderedInlineEvents = [];
-    const first = childWindow.document.createElement("script");
-    first.type = "module";
-    first.async = false;
-    first.text = `
+      const childWindow = frame.contentWindow!;
+      childWindow.__orderedInlineEvents = [];
+      const first = childWindow.document.createElement("script");
+      first.type = "module";
+      first.async = false;
+      first.text = `
       window.__orderedInlineEvents.push("first-start");
       await new Promise((resolve) => setTimeout(resolve, 50));
       window.__orderedInlineEvents.push("first-end");
     `;
-    const second = childWindow.document.createElement("script");
-    second.type = "module";
-    second.async = false;
-    second.text = 'window.__orderedInlineEvents.push("second");';
-    childWindow.document.body.append(first, second);
+      const second = childWindow.document.createElement("script");
+      second.type = "module";
+      second.async = false;
+      second.text = 'window.__orderedInlineEvents.push("second");';
+      childWindow.document.body.append(first, second);
 
-    const deadline = Date.now() + 3_000;
-    while (childWindow.__orderedInlineEvents.length < 3 && Date.now() < deadline) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-    }
-    return childWindow.__orderedInlineEvents;
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/blank.html`,
-  });
+      const deadline = Date.now() + 3_000;
+      while (childWindow.__orderedInlineEvents.length < 3 && Date.now() < deadline) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      return childWindow.__orderedInlineEvents;
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/blank.html`,
+    },
+  );
 
   expect(result).toEqual(["first-start", "first-end", "second"]);
 });

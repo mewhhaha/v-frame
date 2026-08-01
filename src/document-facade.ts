@@ -76,10 +76,7 @@ function authoredStylePropertyValues(source: string): Map<string, string> {
         if (!/url\s*\(/i.test(value)) {
           return;
         }
-        properties.set(
-          stylePropertyKey(declaration.property),
-          value,
-        );
+        properties.set(stylePropertyKey(declaration.property), value);
       },
     });
   } catch {
@@ -203,7 +200,9 @@ class ListenerBridge {
     if (
       this.#records.some(
         (record) =>
-          record.type === type && record.listener === listener && record.capture === capture,
+          record.type === type &&
+          record.listener === listener &&
+          record.capture === capture,
       )
     ) {
       return;
@@ -217,11 +216,8 @@ class ListenerBridge {
     };
     record.wrapper = (event) => {
       try {
-        const eventPhase = event.currentTarget === this.#listenerThis
-          ? undefined
-          : capture
-            ? 1
-            : 3;
+        const eventPhase =
+          event.currentTarget === this.#listenerThis ? undefined : capture ? 1 : 3;
         const listenerEvent = this.#eventForListener(
           event,
           this.#listenerThis,
@@ -247,11 +243,7 @@ class ListenerBridge {
     }
   }
 
-  invoke(
-    event: Event,
-    capture: boolean,
-    shouldContinue: () => boolean,
-  ): void {
+  invoke(event: Event, capture: boolean, shouldContinue: () => boolean): void {
     for (const record of [...this.#records]) {
       // A listener removed by an earlier listener in this dispatch is skipped,
       // matching the DOM inner-invoke algorithm.
@@ -279,7 +271,9 @@ class ListenerBridge {
     const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
     const index = this.#records.findIndex(
       (record) =>
-        record.type === type && record.listener === listener && record.capture === capture,
+        record.type === type &&
+        record.listener === listener &&
+        record.capture === capture,
     );
     const record = this.#records[index];
     if (record === undefined) {
@@ -317,10 +311,7 @@ export interface DocumentFacadeOptions {
   getCurrentScript(): HTMLScriptElement | null;
   onBaseElementChange(): void;
   onEventHandlerError(error: unknown): void;
-  onDynamicScript(
-    script: HTMLScriptElement,
-    execution: "async" | "ordered",
-  ): void;
+  onDynamicScript(script: HTMLScriptElement, execution: "async" | "ordered"): void;
   onStyleElementChange(style: HTMLStyleElement): void;
   onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
   onConnectedNodes(nodes: readonly Node[]): void;
@@ -374,7 +365,11 @@ function staticCollection<T extends Element>(elements: T[]): HTMLCollectionOf<T>
     },
     namedItem: {
       value(name: string) {
-        return elements.find((element) => element.id === name || element.getAttribute("name") === name) ?? null;
+        return (
+          elements.find(
+            (element) => element.id === name || element.getAttribute("name") === name,
+          ) ?? null
+        );
       },
     },
   });
@@ -523,10 +518,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const nativeRemoveChild = nodePrototype.removeChild;
   const nativeCloneNode = nodePrototype.cloneNode;
   const nativeGetRootNode = nodePrototype.getRootNode;
-  const nativeOwnerDocument = Object.getOwnPropertyDescriptor(nodePrototype, "ownerDocument");
+  const nativeOwnerDocument = Object.getOwnPropertyDescriptor(
+    nodePrototype,
+    "ownerDocument",
+  );
   const nativeTextContent = Object.getOwnPropertyDescriptor(nodePrototype, "textContent");
   const nativeNodeValue = Object.getOwnPropertyDescriptor(nodePrototype, "nodeValue");
-  const nativeCharacterData = Object.getOwnPropertyDescriptor(characterDataPrototype, "data");
+  const nativeCharacterData = Object.getOwnPropertyDescriptor(
+    characterDataPrototype,
+    "data",
+  );
   const nativeAppendData = characterDataPrototype.appendData;
   const nativeDeleteData = characterDataPrototype.deleteData;
   const nativeInsertData = characterDataPrototype.insertData;
@@ -651,10 +652,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     Map<"src" | "type", string>
   >();
   const eventAttributeValues = new WeakMap<Element, Map<string, string>>();
-  const physicalURLAttributeValues = new WeakMap<
-    Element,
-    Map<string, string | null>
-  >();
+  const physicalURLAttributeValues = new WeakMap<Element, Map<string, string | null>>();
   const physicalStyleAttributeValues = new WeakMap<Element, string | null>();
   const styleSelectorValues = new WeakMap<Element, string>();
   const styleDeclarations = new WeakMap<Element, CSSStyleDeclaration>();
@@ -663,10 +661,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const authoredLinkRelValues = new WeakMap<HTMLLinkElement, string | null>();
   const linkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
   const nativeLinkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
-  const elementHandlerValues = new WeakMap<
-    Element,
-    Map<string, EventListener | null>
-  >();
+  const elementHandlerValues = new WeakMap<Element, Map<string, EventListener | null>>();
   const elementHandlerWrappers = new WeakMap<Element, Map<string, EventListener>>();
   const virtualListenerRecords = new WeakMap<EventTarget, ListenerRecord[]>();
   const elementHandlerTargets = new Set<Element>();
@@ -683,10 +678,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const boundaryPropagationStopped = new WeakSet<Event>();
   const hostDefaultsSuppressed = new WeakSet<Event>();
   const virtualDefaultsPrevented = new WeakSet<Event>();
-  const dynamicScriptExecution = new WeakMap<
-    HTMLScriptElement,
-    "async" | "ordered"
-  >();
+  const dynamicScriptExecution = new WeakMap<HTMLScriptElement, "async" | "ordered">();
   const executedScripts = new WeakSet<HTMLScriptElement>();
   const nodeFacadeDescriptors = new Map<
     Node,
@@ -707,8 +699,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     if (isElementNode(node) && isBaseElement(node)) {
       return true;
     }
-    return "querySelector" in node &&
-      (node as ParentNode).querySelector("base") !== null;
+    return "querySelector" in node && (node as ParentNode).querySelector("base") !== null;
   };
   const connectedBaseElementChanged = (element: Element): void => {
     if (isBaseElement(element) && isInVirtualDocumentTree(element)) {
@@ -734,9 +725,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const physicalURLAttributeValue = (
     element: Element,
     attributeName: string,
-  ): string | null => attributeName === "xlink:href"
-    ? nativeGetAttributeNS.call(element, XLINK_NAMESPACE, "href")
-    : nativeGetAttribute.call(element, attributeName);
+  ): string | null =>
+    attributeName === "xlink:href"
+      ? nativeGetAttributeNS.call(element, XLINK_NAMESPACE, "href")
+      : nativeGetAttribute.call(element, attributeName);
   const rememberPhysicalURLAttribute = (
     element: Element,
     attributeName: string,
@@ -761,10 +753,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
     rememberPhysicalURLAttribute(element, attributeName, value);
   };
-  const removePhysicalURLAttribute = (
-    element: Element,
-    attributeName: string,
-  ): void => {
+  const removePhysicalURLAttribute = (element: Element, attributeName: string): void => {
     if (attributeName === "xlink:href") {
       nativeRemoveAttributeNS.call(element, XLINK_NAMESPACE, "href");
     } else {
@@ -773,8 +762,14 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     rememberPhysicalURLAttribute(element, attributeName, null);
   };
 
-  if (privateHead === null || privateBody === null || nativeInnerHTML?.set === undefined) {
-    throw new Error("The about:blank execution document has no usable head, body, or HTML parser");
+  if (
+    privateHead === null ||
+    privateBody === null ||
+    nativeInnerHTML?.set === undefined
+  ) {
+    throw new Error(
+      "The about:blank execution document has no usable head, body, or HTML parser",
+    );
   }
 
   const patch = (target: object, key: PropertyKey, descriptor: PropertyDescriptor) => {
@@ -805,9 +800,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const getVirtualBoundingClientRect = (element: Element): DOMRect =>
     toVirtualDOMRect(nativeGetBoundingClientRect.call(element));
   const getVirtualClientRects = (element: Element): DOMRectList => {
-    const rects = Array.from(
-      nativeGetClientRects.call(element),
-      (rect) => toVirtualDOMRect(rect),
+    const rects = Array.from(nativeGetClientRects.call(element), (rect) =>
+      toVirtualDOMRect(rect),
     ) as DOMRect[] & { item(index: number): DOMRect | null };
     Object.defineProperty(rects, "item", {
       configurable: true,
@@ -866,7 +860,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     styleSelectorValues.set(element, selectorValue);
     usedStyleSelectorValues.add(selectorValue);
     if (/^\d+$/.test(selectorValue)) {
-      nextStyleSelectorValue = Math.max(nextStyleSelectorValue, Number(selectorValue) + 1);
+      nextStyleSelectorValue = Math.max(
+        nextStyleSelectorValue,
+        Number(selectorValue) + 1,
+      );
     }
   }
 
@@ -876,12 +873,17 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       return existing;
     }
 
-    const scratch = nativeCreateElement.call(styleDeclarationDocument, "span") as HTMLElement;
+    const scratch = nativeCreateElement.call(
+      styleDeclarationDocument,
+      "span",
+    ) as HTMLElement;
     const declaration = nativeHTMLElementStyle?.get?.call(scratch) as
       | CSSStyleDeclaration
       | undefined;
     if (declaration === undefined) {
-      throw new Error("The execution realm has no usable CSSStyleDeclaration implementation");
+      throw new Error(
+        "The execution realm has no usable CSSStyleDeclaration implementation",
+      );
     }
     const authoredStyle = options.authoredStyleAttributes.get(element) ?? "";
     declaration.cssText = authoredStyle;
@@ -991,9 +993,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       styleDeclarationDocument,
       "span",
     ) as HTMLElement;
-    return nativeHTMLElementStyle?.get?.call(scratch) as
-      | CSSStyleDeclaration
-      | undefined;
+    return nativeHTMLElementStyle?.get?.call(scratch) as CSSStyleDeclaration | undefined;
   };
 
   const styleFacade = (element: Element): CSSStyleDeclaration => {
@@ -1019,10 +1019,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       const propertyName = String(property);
       const nextValue = String(value);
       const requestedPriority = priority === undefined ? "" : String(priority);
-      if (
-        requestedPriority !== "" &&
-        requestedPriority.toLowerCase() !== "important"
-      ) {
+      if (requestedPriority !== "" && requestedPriority.toLowerCase() !== "important") {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
         return;
       }
@@ -1042,19 +1039,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           }
         }
       }
-      const propertyNames = Array.from(
-        { length: declaration.length },
-        (_value, index) => declaration.item(index),
+      const propertyNames = Array.from({ length: declaration.length }, (_value, index) =>
+        declaration.item(index),
       );
       // item() enumerates longhands only, so an applied shorthand is detected
       // through its serialized value instead.
-      const canonicalProperty = propertyNames.find(
-        (candidate) => stylePropertyKey(candidate) === stylePropertyKey(propertyName),
-      ) ?? (
-        declaration.getPropertyValue(propertyName) === ""
+      const canonicalProperty =
+        propertyNames.find(
+          (candidate) => stylePropertyKey(candidate) === stylePropertyKey(propertyName),
+        ) ??
+        (declaration.getPropertyValue(propertyName) === ""
           ? undefined
-          : propertyName.toLowerCase()
-      );
+          : propertyName.toLowerCase());
       let logicalValue: string;
       try {
         logicalValue = updateAuthoredStyleProperty(
@@ -1092,10 +1088,12 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (declaration.getPropertyValue(propertyName) === "") {
         return "";
       }
-      return authoredStylePropertyValues(
-        options.authoredStyleAttributes.get(element) ?? "",
-      ).get(stylePropertyKey(propertyName)) ??
-        declaration.getPropertyValue(propertyName);
+      return (
+        authoredStylePropertyValues(
+          options.authoredStyleAttributes.get(element) ?? "",
+        ).get(stylePropertyKey(propertyName)) ??
+        declaration.getPropertyValue(propertyName)
+      );
     };
     boundMethods.set("setProperty", setProperty);
     boundMethods.set("removeProperty", removeProperty);
@@ -1134,18 +1132,16 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           return true;
         }
         const previousProperties = new Set(
-          Array.from(
-            { length: target.length },
-            (_value, index) => stylePropertyKey(target.item(index)),
+          Array.from({ length: target.length }, (_value, index) =>
+            stylePropertyKey(target.item(index)),
           ),
         );
         let logicalValue = options.authoredStyleAttributes.get(element) ?? "";
         const updated = Reflect.set(target, property, value, target);
         if (updated) {
           const currentProperties = new Set(
-            Array.from(
-              { length: target.length },
-              (_value, index) => stylePropertyKey(target.item(index)),
+            Array.from({ length: target.length }, (_value, index) =>
+              stylePropertyKey(target.item(index)),
             ),
           );
           for (const previousProperty of previousProperties) {
@@ -1184,7 +1180,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
                 { length: probe.length },
                 (_probeValue, index) => probe.item(index),
               );
-              const applied = probeProperties.length > 0 &&
+              const applied =
+                probeProperties.length > 0 &&
                 probeProperties.every((name) =>
                   currentProperties.has(stylePropertyKey(name)),
                 );
@@ -1219,9 +1216,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   };
 
   const linkRelIncludesStylesheet = (value: string | null): boolean =>
-    value !== null && value
-      .split(/[\t\n\f\r ]+/)
-      .some((token) => token.toLowerCase() === "stylesheet");
+    value !== null &&
+    value.split(/[\t\n\f\r ]+/).some((token) => token.toLowerCase() === "stylesheet");
 
   const synchronizePhysicalLinkRel = (
     link: HTMLLinkElement,
@@ -1338,10 +1334,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeSetAttribute.call(script, "type", "application/x-v-frame-inert");
   };
 
-  const eventAttributeName = (
-    element: Element,
-    attributeName: string,
-  ): string | null => {
+  const eventAttributeName = (element: Element, attributeName: string): string | null => {
     const normalizedName = attributeName.toLowerCase();
     if (!/^on[a-z]/.test(normalizedName)) {
       return null;
@@ -1350,9 +1343,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     // the element interface's handler properties mirror that set, so names like
     // "once" or "onboarding-step" stay plain attributes. The prototype chain is
     // consulted directly to ignore expando properties.
-    return normalizedName in Object.getPrototypeOf(element)
-      ? normalizedName
-      : null;
+    return normalizedName in Object.getPrototypeOf(element) ? normalizedName : null;
   };
 
   const listenerEventSource = (event: Event): Event =>
@@ -1382,10 +1373,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         typeof window.PointerEvent === "function"
       ) {
         mirrored = new window.PointerEvent(source.type, eventInit as PointerEventInit);
-      } else if (
-        hostWindow !== null &&
-        source instanceof hostWindow.WheelEvent
-      ) {
+      } else if (hostWindow !== null && source instanceof hostWindow.WheelEvent) {
         mirrored = new window.WheelEvent(source.type, eventInit as WheelEventInit);
       } else if (
         hostWindow !== null &&
@@ -1394,15 +1382,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         typeof window.DragEvent === "function"
       ) {
         mirrored = new window.DragEvent(source.type, eventInit as DragEventInit);
-      } else if (
-        hostWindow !== null &&
-        source instanceof hostWindow.MouseEvent
-      ) {
+      } else if (hostWindow !== null && source instanceof hostWindow.MouseEvent) {
         mirrored = new window.MouseEvent(source.type, eventInit as MouseEventInit);
-      } else if (
-        hostWindow !== null &&
-        source instanceof hostWindow.KeyboardEvent
-      ) {
+      } else if (hostWindow !== null && source instanceof hostWindow.KeyboardEvent) {
         mirrored = new window.KeyboardEvent(source.type, eventInit as KeyboardEventInit);
       } else if (
         hostWindow !== null &&
@@ -1418,15 +1400,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         typeof window.SubmitEvent === "function"
       ) {
         mirrored = new window.SubmitEvent(source.type, eventInit as SubmitEventInit);
-      } else if (
-        hostWindow !== null &&
-        source instanceof hostWindow.FocusEvent
-      ) {
+      } else if (hostWindow !== null && source instanceof hostWindow.FocusEvent) {
         mirrored = new window.FocusEvent(source.type, eventInit as FocusEventInit);
-      } else if (
-        hostWindow !== null &&
-        source instanceof hostWindow.CustomEvent
-      ) {
+      } else if (hostWindow !== null && source instanceof hostWindow.CustomEvent) {
         mirrored = new window.CustomEvent(source.type, eventInit as CustomEventInit);
       } else {
         mirrored = new window.Event(source.type, eventInit);
@@ -1486,11 +1462,14 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           case "view":
             return window;
           case "defaultPrevented":
-            return virtualDefaultsPrevented.has(source) || target.defaultPrevented ||
-              (source.defaultPrevented && !hostDefaultsSuppressed.has(source));
+            return (
+              virtualDefaultsPrevented.has(source) ||
+              target.defaultPrevented ||
+              (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
+            );
           case "cancelBubble":
             return boundaryPropagationStopped.has(source) &&
-                !virtualPropagationStopped.has(source)
+              !virtualPropagationStopped.has(source)
               ? false
               : source.cancelBubble;
           case "returnValue":
@@ -1573,9 +1552,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const removeElementHandler = (element: Element, eventName: string): void => {
     const wrapper = elementHandlerWrappers.get(element)?.get(eventName);
     if (wrapper !== undefined) {
-      const target = element === options.body && eventName === "load"
-        ? window
-        : element;
+      const target = element === options.body && eventName === "load" ? window : element;
       nativeRemoveEventListener.call(target, eventName, wrapper);
       elementHandlerWrappers.get(element)?.delete(eventName);
       if (elementHandlerWrappers.get(element)?.size === 0) {
@@ -1621,9 +1598,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
     wrappers.set(eventName, wrapper);
     elementHandlerTargets.add(element);
-    const target = element === options.body && eventName === "load"
-      ? window
-      : element;
+    const target = element === options.body && eventName === "load" ? window : element;
     nativeAddEventListener.call(target, eventName, wrapper);
   };
 
@@ -1633,7 +1608,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     source: string,
   ): void => {
     const eventName = attributeName.slice(2);
-    const completionName = `__vFrameEventHandler${eventHandlerSequence += 1}`;
+    const completionName = `__vFrameEventHandler${(eventHandlerSequence += 1)}`;
     let listener: EventListener | null = null;
     let compilationError: unknown;
     const errorListener: EventListener = (event) => {
@@ -1671,7 +1646,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     if (listener === null) {
       setElementHandler(element, eventName, null);
       options.onEventHandlerError(
-        compilationError ?? new Error(`Event handler ${attributeName} could not be compiled`),
+        compilationError ??
+          new Error(`Event handler ${attributeName} could not be compiled`),
       );
       return;
     }
@@ -1751,9 +1727,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
     const authoredHref = (): string => {
       const authoredAttributes = options.authoredURLAttributes.get(element);
-      return authoredAttributes?.get("href") ??
-        authoredAttributes?.get("xlink:href") ??
-        "";
+      return (
+        authoredAttributes?.get("href") ?? authoredAttributes?.get("xlink:href") ?? ""
+      );
     };
     try {
       Object.defineProperties(animatedHref, {
@@ -1833,9 +1809,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
 
     for (const [attributeName, authoredValue] of authoredAttributes) {
-      let value = attributeName === "srcset"
-        ? absolutizeSrcset(authoredValue, options.getBaseURL())
-        : authoredValue;
+      let value =
+        attributeName === "srcset"
+          ? absolutizeSrcset(authoredValue, options.getBaseURL())
+          : authoredValue;
       const baseURL = isBaseElement(element)
         ? options.getCurrentURL()
         : options.getBaseURL();
@@ -1846,7 +1823,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       ) {
         value = window.URL.parse(value, baseURL)?.href ?? value;
       }
-      if (isHTMLScriptElement(element) && protectedScriptAttributes.has(element) && attributeName === "src") {
+      if (
+        isHTMLScriptElement(element) &&
+        protectedScriptAttributes.has(element) &&
+        attributeName === "src"
+      ) {
         protectedScriptAttributes.get(element)?.set("src", value);
       } else {
         setPhysicalURLAttribute(element, attributeName, value);
@@ -1854,10 +1835,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
   };
 
-  const defineNodeFacade = (
-    node: Node,
-    descriptors: PropertyDescriptorMap,
-  ): void => {
+  const defineNodeFacade = (node: Node, descriptors: PropertyDescriptorMap): void => {
     let previousDescriptors = nodeFacadeDescriptors.get(node);
     if (previousDescriptors === undefined) {
       previousDescriptors = new Map();
@@ -1947,8 +1925,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   };
 
   markVirtualNode(options.html);
-  const virtualDoctype = document.doctype ??
-    document.implementation.createDocumentType("html", "", "");
+  const virtualDoctype =
+    document.doctype ?? document.implementation.createDocumentType("html", "", "");
   markVirtualNode(virtualDoctype);
   try {
     defineNodeFacade(virtualDoctype, {
@@ -2073,22 +2051,24 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   };
 
   const parseFragment = (markup: string): DocumentFragment => {
-    const template = nativeCreateElement.call(document, "template") as HTMLTemplateElement;
+    const template = nativeCreateElement.call(
+      document,
+      "template",
+    ) as HTMLTemplateElement;
     nativeInnerHTML.set?.call(template, options.createHTML(markup));
     const fragment = template.content;
     const parsedElements = Array.from(fragment.querySelectorAll("*")).reverse();
     for (const parsedElement of parsedElements) {
       const customizedName = parsedElement.getAttribute("is");
-      const customName = customizedName !== null &&
-          window.customElements.get(customizedName) !== undefined
-        ? customizedName
-        : parsedElement.localName;
+      const customName =
+        customizedName !== null && window.customElements.get(customizedName) !== undefined
+          ? customizedName
+          : parsedElement.localName;
       if (window.customElements.get(customName) === undefined) {
         continue;
       }
-      const creationOptions = customName === customizedName
-        ? { is: customName }
-        : undefined;
+      const creationOptions =
+        customName === customizedName ? { is: customName } : undefined;
       const customElement = nativeCreateElement.call(
         document,
         parsedElement.localName,
@@ -2161,10 +2141,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       return;
     }
     executedScripts.add(script);
-    options.onDynamicScript(
-      script,
-      dynamicScriptExecution.get(script) ?? "async",
-    );
+    options.onDynamicScript(script, dynamicScriptExecution.get(script) ?? "async");
   };
 
   const prepareInsertion = (node: Node): void => {
@@ -2183,10 +2160,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const insertedNodes = (node: Node): Node[] =>
     isDocumentFragmentNode(node) ? Array.from(node.childNodes) : [node];
 
-  const finishInsertion = (
-    nodes: readonly Node[],
-    baseElementChanged: boolean,
-  ): void => {
+  const finishInsertion = (nodes: readonly Node[], baseElementChanged: boolean): void => {
     if (baseElementChanged) {
       options.onBaseElementChange();
     }
@@ -2211,11 +2185,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
   };
 
-  const insert = <T extends Node>(
-    parent: Node,
-    node: T,
-    operation: () => T,
-  ): T => {
+  const insert = <T extends Node>(parent: Node, node: T, operation: () => T): T => {
     if (!virtualNodes.has(parent)) {
       return operation();
     }
@@ -2249,10 +2219,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         ensureStyleSelector(clone);
       }
       if (isHTMLLinkElement(source) && isHTMLLinkElement(clone)) {
-        authoredLinkRelValues.set(
-          clone,
-          authoredLinkRelValues.get(source) ?? null,
-        );
+        authoredLinkRelValues.set(clone, authoredLinkRelValues.get(source) ?? null);
         synchronizePhysicalLinkRel(clone);
       }
       const eventAttributes = eventAttributeValues.get(source);
@@ -2387,16 +2354,17 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
   });
 
-  const appendValues = (parent: Node, values: Array<Node | string>, prepend: boolean): void => {
+  const appendValues = (
+    parent: Node,
+    values: Array<Node | string>,
+    prepend: boolean,
+  ): void => {
     const nodes = values.map((value) =>
-      typeof value === "string"
-        ? (document.createTextNode(value) as Node)
-        : value,
+      typeof value === "string" ? (document.createTextNode(value) as Node) : value,
     );
     const reference = prepend ? parent.firstChild : null;
-    const parentStyle = isElementNode(parent) && isHTMLStyleElement(parent)
-      ? parent
-      : null;
+    const parentStyle =
+      isElementNode(parent) && isHTMLStyleElement(parent) ? parent : null;
     const ownsStyleBatch = parentStyle !== null && !styleMutationBatches.has(parentStyle);
     if (ownsStyleBatch) {
       styleMutationBatches.add(parentStyle);
@@ -2429,8 +2397,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     patch(prototype, "replaceChildren", {
       writable: true,
       value(this: Node, ...values: Array<Node | string>) {
-        const baseElementChanged = this.isConnected && Array.from(this.childNodes)
-          .some(subtreeHasBaseElement);
+        const baseElementChanged =
+          this.isConnected && Array.from(this.childNodes).some(subtreeHasBaseElement);
         while (this.firstChild !== null) {
           nativeRemoveChild.call(this, this.firstChild);
         }
@@ -2446,9 +2414,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   }
 
   const performStyleMutationBatch = (parent: Node, mutation: () => void): void => {
-    const parentStyle = isElementNode(parent) && isHTMLStyleElement(parent)
-      ? parent
-      : null;
+    const parentStyle =
+      isElementNode(parent) && isHTMLStyleElement(parent) ? parent : null;
     if (parentStyle === null || styleMutationBatches.has(parentStyle)) {
       mutation();
       return;
@@ -2535,9 +2502,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     values: Array<Node | string>,
     reference: Node | null,
   ): void {
-    const parentStyle = isElementNode(parent) && isHTMLStyleElement(parent)
-      ? parent
-      : null;
+    const parentStyle =
+      isElementNode(parent) && isHTMLStyleElement(parent) ? parent : null;
     const ownsStyleBatch = parentStyle !== null && !styleMutationBatches.has(parentStyle);
     if (ownsStyleBatch) {
       styleMutationBatches.add(parentStyle);
@@ -2573,7 +2539,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode?.insertBefore(fragment, this.nextSibling);
           return;
         default:
-          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(
+            `Invalid insertion position ${position}`,
+            "SyntaxError",
+          );
       }
     },
   });
@@ -2601,15 +2570,20 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           this.parentNode.insertBefore(element, this.nextSibling);
           return element;
         default:
-          throw new window.DOMException(`Invalid insertion position ${position}`, "SyntaxError");
+          throw new window.DOMException(
+            `Invalid insertion position ${position}`,
+            "SyntaxError",
+          );
       }
     },
   });
 
   patch(elementPrototype, "innerHTML", {
-    get: nativeInnerHTML.get ?? function getInnerHTML(this: Element) {
-      return "";
-    },
+    get:
+      nativeInnerHTML.get ??
+      function getInnerHTML(this: Element) {
+        return "";
+      },
     set(this: Element, markup: string) {
       if (!virtualNodes.has(this)) {
         nativeInnerHTML.set?.call(this, options.createHTML(String(markup)));
@@ -2710,11 +2684,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     };
     const bubble: EventListener = (event) => {
       invokeRootListeners(event, false);
-      if (
-        !event.bubbles ||
-        event.cancelBubble ||
-        !listenerCanContinue(event)
-      ) {
+      if (!event.bubbles || event.cancelBubble || !listenerCanContinue(event)) {
         return;
       }
       documentListeners.invoke(event, false, () => listenerCanContinue(event));
@@ -2764,9 +2734,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         return;
       }
 
-      const capture = typeof listenerOptions === "boolean"
-        ? listenerOptions
-        : (listenerOptions?.capture ?? false);
+      const capture =
+        typeof listenerOptions === "boolean"
+          ? listenerOptions
+          : (listenerOptions?.capture ?? false);
       let records = virtualListenerRecords.get(this);
       if (records === undefined) {
         records = [];
@@ -2802,10 +2773,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
             listener.handleEvent(listenerEvent);
           }
         } finally {
-          if (
-            typeof listenerOptions !== "boolean" &&
-            listenerOptions?.once === true
-          ) {
+          if (typeof listenerOptions !== "boolean" && listenerOptions?.once === true) {
             removeVirtualListenerRecord(this, record);
           }
         }
@@ -2814,10 +2782,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (this !== options.html) {
         nativeAddEventListener.call(this, type, record.wrapper, listenerOptions);
       }
-      if (
-        typeof listenerOptions !== "boolean" &&
-        listenerOptions?.signal !== undefined
-      ) {
+      if (typeof listenerOptions !== "boolean" && listenerOptions?.signal !== undefined) {
         record.signal = listenerOptions.signal;
         record.abort = () => removeVirtualListenerRecord(this, record);
         listenerOptions.signal.addEventListener("abort", record.abort, { once: true });
@@ -2839,15 +2804,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (listener === null) {
         return;
       }
-      const capture = typeof listenerOptions === "boolean"
-        ? listenerOptions
-        : (listenerOptions?.capture ?? false);
-      const record = virtualListenerRecords.get(this)?.find(
-        (candidate) =>
-          candidate.type === type &&
-          candidate.listener === listener &&
-          candidate.capture === capture,
-      );
+      const capture =
+        typeof listenerOptions === "boolean"
+          ? listenerOptions
+          : (listenerOptions?.capture ?? false);
+      const record = virtualListenerRecords
+        .get(this)
+        ?.find(
+          (candidate) =>
+            candidate.type === type &&
+            candidate.listener === listener &&
+            candidate.capture === capture,
+        );
       if (record !== undefined) {
         removeVirtualListenerRecord(this, record);
       }
@@ -2868,9 +2836,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     element: Element,
     attributeName: string,
   ): { managed: boolean; value: string | null } {
-    const normalizedAttributeName = element.namespaceURI === HTML_NAMESPACE
-      ? attributeName.toLowerCase()
-      : attributeName;
+    const normalizedAttributeName =
+      element.namespaceURI === HTML_NAMESPACE
+        ? attributeName.toLowerCase()
+        : attributeName;
     if (virtualNodes.has(element)) {
       if (normalizedAttributeName === options.inlineStyleSelectorAttribute) {
         return { managed: true, value: null };
@@ -3043,9 +3012,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       synchronizePhysicalLinkRel(element, true);
     }
 
-    let physicalValue = attributeName === "srcset"
-      ? absolutizeSrcset(value, options.getBaseURL())
-      : value;
+    let physicalValue =
+      attributeName === "srcset" ? absolutizeSrcset(value, options.getBaseURL()) : value;
     const baseURL = isBaseElement(element)
       ? options.getCurrentURL()
       : options.getBaseURL();
@@ -3068,10 +3036,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       setPhysicalURLAttribute(element, attributeName, physicalValue);
     }
     if (isHTMLLinkElement(element) && attributeName === "href") {
-      options.onLinkElementChange(
-        element,
-        authoredLinkRelValues.get(element) ?? null,
-      );
+      options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
     }
     connectedBaseElementChanged(element);
   }
@@ -3083,9 +3048,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   ): void {
     let nextValue = String(value);
     const attributeName = qualifiedName.toLowerCase();
-    const normalizedAttributeName = element.namespaceURI === HTML_NAMESPACE
-      ? attributeName
-      : qualifiedName;
+    const normalizedAttributeName =
+      element.namespaceURI === HTML_NAMESPACE ? attributeName : qualifiedName;
     if (
       virtualNodes.has(element) &&
       normalizedAttributeName === options.inlineStyleSelectorAttribute
@@ -3142,9 +3106,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
     const attributeName = qualifiedName.toLowerCase();
-    const normalizedAttributeName = element.namespaceURI === HTML_NAMESPACE
-      ? attributeName
-      : qualifiedName;
+    const normalizedAttributeName =
+      element.namespaceURI === HTML_NAMESPACE ? attributeName : qualifiedName;
     if (
       virtualNodes.has(element) &&
       normalizedAttributeName === options.inlineStyleSelectorAttribute
@@ -3186,10 +3149,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       removePhysicalURLAttribute(element, urlAttributeName);
       if (isHTMLLinkElement(element) && urlAttributeName === "href") {
         synchronizePhysicalLinkRel(element, false);
-        options.onLinkElementChange(
-          element,
-          authoredLinkRelValues.get(element) ?? null,
-        );
+        options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
       }
       connectedBaseElementChanged(element);
       return;
@@ -3253,10 +3213,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       removePhysicalURLAttribute(element, attributeName);
       if (isHTMLLinkElement(element) && attributeName === "href") {
         synchronizePhysicalLinkRel(element, false);
-        options.onLinkElementChange(
-          element,
-          authoredLinkRelValues.get(element) ?? null,
-        );
+        options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
       }
       return;
     }
@@ -3297,10 +3254,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
     if (isHTMLLinkElement(element) && urlAttributeName === "href") {
       synchronizePhysicalLinkRel(element, physicalValue !== null);
-      options.onLinkElementChange(
-        element,
-        authoredLinkRelValues.get(element) ?? null,
-      );
+      options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
     }
 
     if (isBaseElement(element)) {
@@ -3385,7 +3339,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         removeAttribute: {
           configurable: true,
           writable: true,
-          value: (qualifiedName: string) => removeVirtualAttribute(element, qualifiedName),
+          value: (qualifiedName: string) =>
+            removeVirtualAttribute(element, qualifiedName),
         },
         removeAttributeNS: {
           configurable: true,
@@ -3523,9 +3478,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
     patch(prototype, "style", {
       get(this: Element): CSSStyleDeclaration {
-        return virtualNodes.has(this)
-          ? styleFacade(this)
-          : nativeStyle.get?.call(this);
+        return virtualNodes.has(this) ? styleFacade(this) : nativeStyle.get?.call(this);
       },
       set(this: Element, value: string) {
         if (virtualNodes.has(this)) {
@@ -3565,8 +3518,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   }
   patch(window.Attr.prototype, "ownerDocument", {
     get(this: Attr): Document | null {
-      if (virtualNodes.has(this) ||
-          (this.ownerElement !== null && virtualNodes.has(this.ownerElement))) {
+      if (
+        virtualNodes.has(this) ||
+        (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
+      ) {
         return document;
       }
       return nativeOwnerDocument?.get?.call(this) ?? null;
@@ -3588,8 +3543,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (!isInVirtualDocumentTree(this)) {
         return nativeMatches.call(this, selectors);
       }
-      return nativeMatches.call(this, selectors) ||
-        nativeMatches.call(this, translateSelector(selectors));
+      return (
+        nativeMatches.call(this, selectors) ||
+        nativeMatches.call(this, translateSelector(selectors))
+      );
     },
   });
   patch(elementPrototype, "closest", {
@@ -3623,10 +3580,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         : 1;
     });
 
-  const querySelectorAllWithShell = (
-    root: Element,
-    selectors: string,
-  ): Element[] => {
+  const querySelectorAllWithShell = (root: Element, selectors: string): Element[] => {
     const translated = translateSelector(selectors);
     const matches = Array.from(nativeQuerySelectorAll.call(root, selectors));
     if (translated === selectors) {
@@ -3708,10 +3662,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         if (baseElementChanged) {
           options.onBaseElementChange();
         }
-        if (
-          virtualNodes.has(this) &&
-          this instanceof window.HTMLScriptElement
-        ) {
+        if (virtualNodes.has(this) && this instanceof window.HTMLScriptElement) {
           executeConnectedScript(this);
         }
       },
@@ -3753,9 +3704,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   class VFrameMutationObserver extends NativeMutationObserver {
     observe(target: Node, observerOptions?: MutationObserverInit): void {
-      const observedTarget = target === document && observerOptions?.subtree === true
-        ? options.html
-        : target;
+      const observedTarget =
+        target === document && observerOptions?.subtree === true ? options.html : target;
       super.observe(observedTarget, observerOptions);
     }
   }
@@ -3788,20 +3738,18 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const createLiveHTMLCollection = <T extends Element>(
     currentElements: () => T[],
   ): HTMLCollectionOf<T> =>
-    liveIndexedCollection(
-      window.HTMLCollection.prototype,
-      currentElements,
-      (name) => {
-        if (name === "") {
-          return null;
-        }
-        return currentElements().find(
+    liveIndexedCollection(window.HTMLCollection.prototype, currentElements, (name) => {
+      if (name === "") {
+        return null;
+      }
+      return (
+        currentElements().find(
           (element) =>
             nativeGetAttribute.call(element, "id") === name ||
             nativeGetAttribute.call(element, "name") === name,
-        ) ?? null;
-      },
-    ) as unknown as HTMLCollectionOf<T>;
+        ) ?? null
+      );
+    }) as unknown as HTMLCollectionOf<T>;
   const tagCollections = new Map<string, HTMLCollectionOf<Element>>();
   const getElementsByTagName = (qualifiedName: string): HTMLCollectionOf<Element> => {
     const requestedName = String(qualifiedName);
@@ -3815,9 +3763,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     // translation below wants the lowercase form.
     const collectionName = requestedName.toLowerCase();
     const collection = createLiveHTMLCollection(() => {
-      const translated = collectionName === "*"
-        ? "*"
-        : translateSelector(collectionName);
+      const translated = collectionName === "*" ? "*" : translateSelector(collectionName);
       const matches = Array.from(
         nativeGetElementsByTagName.call(options.html, requestedName),
       );
@@ -3861,13 +3807,14 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       const matches = Array.from(
         nativeGetElementsByTagNameNS.call(options.html, namespace, requestedName),
       );
-      const shellName = requestedName === "html"
-        ? "v-html"
-        : requestedName === "head"
-          ? "v-head"
-          : requestedName === "body"
-            ? "v-body"
-            : requestedName;
+      const shellName =
+        requestedName === "html"
+          ? "v-html"
+          : requestedName === "head"
+            ? "v-head"
+            : requestedName === "body"
+              ? "v-body"
+              : requestedName;
       if (
         (namespace === "*" || namespace === HTML_NAMESPACE) &&
         shellName !== requestedName
@@ -3919,29 +3866,42 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   };
   const styleSheetCollection = liveIndexedCollection(
     window.StyleSheetList.prototype,
-    () => Array.from(nativeQuerySelectorAll.call(options.html, "style"))
-      .map((style) => (style as HTMLStyleElement).sheet)
-      .filter((sheet): sheet is CSSStyleSheet => sheet !== null),
+    () =>
+      Array.from(nativeQuerySelectorAll.call(options.html, "style"))
+        .map((style) => (style as HTMLStyleElement).sheet)
+        .filter((sheet): sheet is CSSStyleSheet => sheet !== null),
   ) as unknown as StyleSheetList;
-  const formCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "form")) as HTMLFormElement[]
+  const formCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(nativeQuerySelectorAll.call(options.html, "form")) as HTMLFormElement[],
   );
-  const imageCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "img")) as HTMLImageElement[]
+  const imageCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(nativeQuerySelectorAll.call(options.html, "img")) as HTMLImageElement[],
   );
-  const scriptCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "script")) as HTMLScriptElement[]
+  const scriptCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(
+        nativeQuerySelectorAll.call(options.html, "script"),
+      ) as HTMLScriptElement[],
   );
-  const linkCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "a[href], area[href]")) as Array<
-      HTMLAnchorElement | HTMLAreaElement
-    >
+  const linkCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(
+        nativeQuerySelectorAll.call(options.html, "a[href], area[href]"),
+      ) as Array<HTMLAnchorElement | HTMLAreaElement>,
   );
-  const anchorCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "a[name]")) as HTMLAnchorElement[]
+  const anchorCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(
+        nativeQuerySelectorAll.call(options.html, "a[name]"),
+      ) as HTMLAnchorElement[],
   );
-  const embedCollection = createLiveHTMLCollection(() =>
-    Array.from(nativeQuerySelectorAll.call(options.html, "embed")) as HTMLEmbedElement[]
+  const embedCollection = createLiveHTMLCollection(
+    () =>
+      Array.from(
+        nativeQuerySelectorAll.call(options.html, "embed"),
+      ) as HTMLEmbedElement[],
   );
   const namedNodeLists = new Map<string, NodeListOf<HTMLElement>>();
   const getElementsByName = (name: string): NodeListOf<HTMLElement> => {
@@ -3953,7 +3913,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     const selector = `[name="${window.CSS.escape(requestedName)}"]`;
     const list = liveIndexedCollection(
       window.NodeList.prototype,
-      () => Array.from(nativeQuerySelectorAll.call(options.html, selector)) as HTMLElement[],
+      () =>
+        Array.from(nativeQuerySelectorAll.call(options.html, selector)) as HTMLElement[],
     ) as unknown as NodeListOf<HTMLElement>;
     namedNodeLists.set(requestedName, list);
     return list;
@@ -4028,7 +3989,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     currentScript: {
       configurable: true,
-      get: () => options.getCurrentScript() ?? nativeCurrentScript?.call(document) ?? null,
+      get: () =>
+        options.getCurrentScript() ?? nativeCurrentScript?.call(document) ?? null,
     },
     readyState: { configurable: true, get: () => readyState },
     URL: { configurable: true, get: options.getCurrentURL },
@@ -4168,8 +4130,12 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       configurable: true,
       writable: true,
       value(node: Node | null) {
-        return node === document || node === virtualDoctype ||
-          node === options.html || options.html.contains(node);
+        return (
+          node === document ||
+          node === virtualDoctype ||
+          node === options.html ||
+          options.html.contains(node)
+        );
       },
     },
     createElement: {
@@ -4180,7 +4146,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     createElementNS: {
       configurable: true,
       writable: true,
-      value(namespace: string | null, qualifiedName: string, creationOptions?: string | ElementCreationOptions) {
+      value(
+        namespace: string | null,
+        qualifiedName: string,
+        creationOptions?: string | ElementCreationOptions,
+      ) {
         const element = nativeCreateElementNS.call(
           document,
           namespace,
@@ -4260,7 +4230,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       configurable: true,
       writable: true,
       value(namespace: string | null, qualifiedName: string) {
-        const attribute = nativeCreateAttributeNS.call(document, namespace, qualifiedName);
+        const attribute = nativeCreateAttributeNS.call(
+          document,
+          namespace,
+          qualifiedName,
+        );
         markVirtualNode(attribute);
         return attribute;
       },
@@ -4401,9 +4375,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           return;
         }
         const wrapper: EventListener = (event) => {
-          const result = (
-            listener as (this: Document, event: Event) => unknown
-          ).call(document, event);
+          const result = (listener as (this: Document, event: Event) => unknown).call(
+            document,
+            event,
+          );
           if (result === false) {
             event.preventDefault();
           }
@@ -4451,8 +4426,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     wasEventDefaultPrevented(event) {
       const source = listenerEventSource(event);
-      return virtualDefaultsPrevented.has(source) ||
-        (source.defaultPrevented && !hostDefaultsSuppressed.has(source));
+      return (
+        virtualDefaultsPrevented.has(source) ||
+        (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
+      );
     },
     setReadyState(state) {
       readyState = state;
@@ -4489,7 +4466,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         }
       }
       for (const element of [...elementHandlerTargets]) {
-        for (const eventName of [...(elementHandlerWrappers.get(element)?.keys() ?? [])]) {
+        for (const eventName of [
+          ...(elementHandlerWrappers.get(element)?.keys() ?? []),
+        ]) {
           removeElementHandler(element, eventName);
         }
       }

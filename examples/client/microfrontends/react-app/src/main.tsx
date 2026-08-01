@@ -23,9 +23,19 @@ function OverlayLab() {
       </header>
       <Tooltip.Provider delayDuration={0}>
         <Tooltip.Root open={tooltipOpen} onOpenChange={setTooltipOpen}>
-          <Tooltip.Trigger ref={tooltipTrigger} className="lab-button" data-testid="tooltip-trigger">Tooltip</Tooltip.Trigger>
+          <Tooltip.Trigger
+            ref={tooltipTrigger}
+            className="lab-button"
+            data-testid="tooltip-trigger"
+          >
+            Tooltip
+          </Tooltip.Trigger>
           <Tooltip.Portal>
-            <Tooltip.Content className="overlay-content tooltip-content" data-testid="tooltip-content" sideOffset={8}>
+            <Tooltip.Content
+              className="overlay-content tooltip-content"
+              data-testid="tooltip-content"
+              sideOffset={8}
+            >
               React tooltip
               <Tooltip.Arrow className="overlay-arrow" />
             </Tooltip.Content>
@@ -34,10 +44,20 @@ function OverlayLab() {
       </Tooltip.Provider>
 
       <Popover.Root>
-        <Popover.Trigger className="lab-button" data-testid="popover-trigger">Popover</Popover.Trigger>
+        <Popover.Trigger className="lab-button" data-testid="popover-trigger">
+          Popover
+        </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Content className="overlay-content popover-content" data-testid="popover-content" side="bottom" sideOffset={8}>
-            <label>Project name<input data-testid="popover-input" defaultValue="Relay" /></label>
+          <Popover.Content
+            className="overlay-content popover-content"
+            data-testid="popover-content"
+            side="bottom"
+            sideOffset={8}
+          >
+            <label>
+              Project name
+              <input data-testid="popover-input" defaultValue="Relay" />
+            </label>
             <Popover.Close className="close-button">Close</Popover.Close>
             <Popover.Arrow className="overlay-arrow" />
           </Popover.Content>
@@ -45,18 +65,28 @@ function OverlayLab() {
       </Popover.Root>
 
       <Dialog.Root>
-        <Dialog.Trigger className="lab-button" data-testid="dialog-trigger">Modal</Dialog.Trigger>
+        <Dialog.Trigger className="lab-button" data-testid="dialog-trigger">
+          Modal
+        </Dialog.Trigger>
         <Dialog.Portal>
           <Dialog.Overlay className="dialog-overlay" />
           <Dialog.Content className="dialog-content" data-testid="dialog-content">
             <Dialog.Title>React modal</Dialog.Title>
             <Dialog.Description>Radix manages focus and dismissal.</Dialog.Description>
-            <input data-testid="dialog-first" aria-label="Modal project name" defaultValue="Relay" />
-            <Dialog.Close className="close-button" data-testid="dialog-close">Close</Dialog.Close>
+            <input
+              data-testid="dialog-first"
+              aria-label="Modal project name"
+              defaultValue="Relay"
+            />
+            <Dialog.Close className="close-button" data-testid="dialog-close">
+              Close
+            </Dialog.Close>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
-      <p className="boundary-note">The dashed edge is the microfrontend rendering boundary.</p>
+      <p className="boundary-note">
+        The dashed edge is the microfrontend rendering boundary.
+      </p>
     </main>
   );
 }

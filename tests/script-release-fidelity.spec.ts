@@ -37,7 +37,10 @@ function reply(
   response.end(body);
 }
 
-function documentSource(pathname: string, searchParams: URLSearchParams): string | undefined {
+function documentSource(
+  pathname: string,
+  searchParams: URLSearchParams,
+): string | undefined {
   switch (pathname) {
     case "/documents/script-events.html":
       return html(`
@@ -120,7 +123,7 @@ function documentSource(pathname: string, searchParams: URLSearchParams): string
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
+    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
   });
 }
 
@@ -167,10 +170,15 @@ async function startFixtureServer(): Promise<FixtureServer> {
       return;
     }
     if (pathname === "/scripts/install-blocked-listener.js") {
-      reply(response, 200, "text/javascript", `
+      reply(
+        response,
+        200,
+        "text/javascript",
+        `
         window.__blockedInlineErrors = 0;
         document.querySelector('#blocked-inline').addEventListener('error', () => window.__blockedInlineErrors += 1);
-      `);
+      `,
+      );
       return;
     }
     if (pathname === "/scripts/deferred-first.js") {
@@ -187,37 +195,54 @@ async function startFixtureServer(): Promise<FixtureServer> {
       reply(response, 200, "text/javascript", "window.__deferredEvents.push('second');");
       setTimeout(() => {
         for (const firstResponse of pendingDeferredFirstResponses) {
-          reply(firstResponse, 200, "text/javascript", "window.__deferredEvents.push('first');");
+          reply(
+            firstResponse,
+            200,
+            "text/javascript",
+            "window.__deferredEvents.push('first');",
+          );
         }
         pendingDeferredFirstResponses.clear();
       }, 50);
       return;
     }
     if (pathname === "/scripts/dynamic-classic.js") {
-      setTimeout(() => reply(
-        response,
-        200,
-        "text/javascript",
-        "window.__dynamicClassicSettled = true; window.__dynamicBlockerEvents.push('classic-execute');",
-      ), 75);
+      setTimeout(
+        () =>
+          reply(
+            response,
+            200,
+            "text/javascript",
+            "window.__dynamicClassicSettled = true; window.__dynamicBlockerEvents.push('classic-execute');",
+          ),
+        75,
+      );
       return;
     }
     if (pathname === "/scripts/dynamic-module.js") {
-      setTimeout(() => reply(
-        response,
-        200,
-        "text/javascript",
-        "window.__dynamicModuleSettled = true; window.__dynamicBlockerEvents.push('module-execute');",
-      ), 125);
+      setTimeout(
+        () =>
+          reply(
+            response,
+            200,
+            "text/javascript",
+            "window.__dynamicModuleSettled = true; window.__dynamicBlockerEvents.push('module-execute');",
+          ),
+        125,
+      );
       return;
     }
     if (pathname === "/scripts/post-ready.js") {
-      setTimeout(() => reply(
-        response,
-        200,
-        "text/javascript",
-        "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
-      ), 100);
+      setTimeout(
+        () =>
+          reply(
+            response,
+            200,
+            "text/javascript",
+            "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
+          ),
+        100,
+      );
       return;
     }
     if (pathname === "/scripts/pending-module.js") {
@@ -230,7 +255,12 @@ async function startFixtureServer(): Promise<FixtureServer> {
     ) {
       const token = searchParams.get("token") ?? "missing";
       if (releasedTeardownTokens.has(token)) {
-        reply(response, 200, "text/javascript", "window.__staleTeardownScriptExecuted = true;");
+        reply(
+          response,
+          200,
+          "text/javascript",
+          "window.__staleTeardownScriptExecuted = true;",
+        );
         return;
       }
       const responses = pendingTeardownResponses.get(token) ?? new Set<ServerResponse>();
@@ -257,7 +287,9 @@ async function startFixtureServer(): Promise<FixtureServer> {
     reply(response, 404, "text/plain", `No fixture for ${pathname}`);
   });
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
+  await new Promise<void>((resolveListening) =>
+    server.listen(0, "127.0.0.1", resolveListening),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") {
     await closeServer(server);
@@ -285,58 +317,66 @@ async function installBundle(page: Page): Promise<void> {
   }, `${fixture.origin}/dist/index.js`);
 }
 
-test("dispatches one logical handler event and reports an empty source as a script failure", async ({ page }) => {
+test("dispatches one logical handler event and reports an empty source as a script failure", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & Record<string, unknown>) | null;
-      status: string;
-    };
-    const failures: RecordedFailure[] = [];
-    frame.setAttribute("nonce", frameNonce);
-    frame.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{
-        phase: string;
-        fatal: boolean;
-        error: unknown;
-      }>).detail;
-      const error = detail.error as { message?: unknown } | null;
-      failures.push({
-        phase: detail.phase,
-        fatal: detail.fatal,
-        message: typeof error?.message === "string" ? error.message : String(detail.error),
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & Record<string, unknown>) | null;
+        status: string;
+      };
+      const failures: RecordedFailure[] = [];
+      frame.setAttribute("nonce", frameNonce);
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (
+          event as CustomEvent<{
+            phase: string;
+            fatal: boolean;
+            error: unknown;
+          }>
+        ).detail;
+        const error = detail.error as { message?: unknown } | null;
+        failures.push({
+          phase: detail.phase,
+          fatal: detail.fatal,
+          message:
+            typeof error?.message === "string" ? error.message : String(detail.error),
+        });
       });
-    });
-    const loaded = new Promise<void>((resolveLoaded) => {
-      frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    const childWindow = frame.contentWindow!;
-    const dynamicEmptySource = childWindow.document.createElement("script");
-    dynamicEmptySource.src = "";
-    dynamicEmptySource.text = "window.__dynamicEmptySourceExecuted = true;";
-    dynamicEmptySource.addEventListener("error", (event) => {
-      (childWindow.__scriptEventChecks as Array<Record<string, unknown>>).push({
-        kind: "dynamic-empty",
-        logicalThis: event.currentTarget === dynamicEmptySource,
-        logicalTarget: event.target === dynamicEmptySource,
-        logicalCurrentTarget: event.currentTarget === dynamicEmptySource,
+      const loaded = new Promise<void>((resolveLoaded) => {
+        frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });
       });
-    });
-    childWindow.document.head.append(dynamicEmptySource);
-    return {
-      checks: childWindow.__scriptEventChecks,
-      dynamicEmptySourceExecuted: childWindow.__dynamicEmptySourceExecuted === true,
-      emptySourceExecuted: childWindow.__emptySourceExecuted === true,
-      failures,
-      status: frame.status,
-    };
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/script-events.html`,
-  });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      const childWindow = frame.contentWindow!;
+      const dynamicEmptySource = childWindow.document.createElement("script");
+      dynamicEmptySource.src = "";
+      dynamicEmptySource.text = "window.__dynamicEmptySourceExecuted = true;";
+      dynamicEmptySource.addEventListener("error", (event) => {
+        (childWindow.__scriptEventChecks as Array<Record<string, unknown>>).push({
+          kind: "dynamic-empty",
+          logicalThis: event.currentTarget === dynamicEmptySource,
+          logicalTarget: event.target === dynamicEmptySource,
+          logicalCurrentTarget: event.currentTarget === dynamicEmptySource,
+        });
+      });
+      childWindow.document.head.append(dynamicEmptySource);
+      return {
+        checks: childWindow.__scriptEventChecks,
+        dynamicEmptySourceExecuted: childWindow.__dynamicEmptySourceExecuted === true,
+        emptySourceExecuted: childWindow.__emptySourceExecuted === true,
+        failures,
+        status: frame.status,
+      };
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/script-events.html`,
+    },
+  );
 
   expect(result).toEqual({
     checks: [
@@ -384,7 +424,9 @@ test("dispatches one logical handler event and reports an empty source as a scri
   });
 });
 
-test("reports a CSP-blocked inline classic once without dispatching load", async ({ page }) => {
+test("reports a CSP-blocked inline classic once without dispatching load", async ({
+  page,
+}) => {
   await installBundle(page);
   const result = await page.evaluate(async (source) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
@@ -419,62 +461,81 @@ test("reports a CSP-blocked inline classic once without dispatching load", async
   });
 });
 
-test("starts deferred classic and module fetches together while executing in document order", async ({ page }) => {
+test("starts deferred classic and module fetches together while executing in document order", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & { __deferredEvents?: string[] }) | null;
-    };
-    frame.setAttribute("nonce", frameNonce);
-    const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
-      const timeout = setTimeout(() => rejectLoaded(new Error("v-frame-load timed out")), 3_000);
-      frame.addEventListener("v-frame-load", () => {
-        clearTimeout(timeout);
-        resolveLoaded();
-      }, { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    return frame.contentWindow?.__deferredEvents;
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/deferred-concurrency.html`,
-  });
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow: (Window & { __deferredEvents?: string[] }) | null;
+      };
+      frame.setAttribute("nonce", frameNonce);
+      const loaded = new Promise<void>((resolveLoaded, rejectLoaded) => {
+        const timeout = setTimeout(
+          () => rejectLoaded(new Error("v-frame-load timed out")),
+          3_000,
+        );
+        frame.addEventListener(
+          "v-frame-load",
+          () => {
+            clearTimeout(timeout);
+            resolveLoaded();
+          },
+          { once: true },
+        );
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      return frame.contentWindow?.__deferredEvents;
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/deferred-concurrency.html`,
+    },
+  );
 
   expect(result).toEqual(["first", "second"]);
 });
 
-test("waits for bootstrap dynamic resources before child and frame load", async ({ page }) => {
+test("waits for bootstrap dynamic resources before child and frame load", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & {
-        __dynamicBlockerEvents?: string[];
-        __postReadyScriptSettled?: boolean;
-      }) | null;
-    };
-    let frameLoadCalls = 0;
-    frame.setAttribute("nonce", frameNonce);
-    const loaded = new Promise<void>((resolveLoaded) => {
-      frame.addEventListener("v-frame-load", () => {
-        frameLoadCalls += 1;
-        resolveLoaded();
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        contentWindow:
+          | (Window & {
+              __dynamicBlockerEvents?: string[];
+              __postReadyScriptSettled?: boolean;
+            })
+          | null;
+      };
+      let frameLoadCalls = 0;
+      frame.setAttribute("nonce", frameNonce);
+      const loaded = new Promise<void>((resolveLoaded) => {
+        frame.addEventListener("v-frame-load", () => {
+          frameLoadCalls += 1;
+          resolveLoaded();
+        });
       });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-    return {
-      events: frame.contentWindow?.__dynamicBlockerEvents,
-      frameLoadCalls,
-      postReadyScriptSettled: frame.contentWindow?.__postReadyScriptSettled === true,
-    };
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/dynamic-blockers.html`,
-  });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      return {
+        events: frame.contentWindow?.__dynamicBlockerEvents,
+        frameLoadCalls,
+        postReadyScriptSettled: frame.contentWindow?.__postReadyScriptSettled === true,
+      };
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/dynamic-blockers.html`,
+    },
+  );
 
   expect(result.frameLoadCalls).toBe(1);
   expect(result.events).toContain("dom-content-loaded");
@@ -486,40 +547,57 @@ test("waits for bootstrap dynamic resources before child and frame load", async 
   expect(result.postReadyScriptSettled).toBe(false);
 });
 
-test("reports a timer error immediately while an external module remains pending", async ({ page }) => {
+test("reports a timer error immediately while an external module remains pending", async ({
+  page,
+}) => {
   await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame");
-    let loaded = false;
-    frame.setAttribute("nonce", frameNonce);
-    frame.addEventListener("v-frame-load", () => {
-      loaded = true;
-    });
-    const failure = new Promise<{ phase: string; message: string }>((resolveFailure) => {
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ phase: string; error: unknown }>).detail;
-        const error = detail.error as { message?: unknown } | null;
-        resolveFailure({
-          phase: detail.phase,
-          message: typeof error?.message === "string" ? error.message : String(detail.error),
-        });
-      }, { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    const recordedFailure = await Promise.race([
-      failure,
-      new Promise<never>((_, reject) => setTimeout(
-        () => reject(new Error("runtime failure was deferred behind the module")),
-        1_000,
-      )),
-    ]);
-    frame.remove();
-    return { failure: recordedFailure, loaded };
-  }, {
-    frameNonce: nonce,
-    source: `${fixture.origin}/documents/pending-external-module.html`,
-  });
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame");
+      let loaded = false;
+      frame.setAttribute("nonce", frameNonce);
+      frame.addEventListener("v-frame-load", () => {
+        loaded = true;
+      });
+      const failure = new Promise<{ phase: string; message: string }>(
+        (resolveFailure) => {
+          frame.addEventListener(
+            "v-frame-error",
+            (event) => {
+              const detail = (event as CustomEvent<{ phase: string; error: unknown }>)
+                .detail;
+              const error = detail.error as { message?: unknown } | null;
+              resolveFailure({
+                phase: detail.phase,
+                message:
+                  typeof error?.message === "string"
+                    ? error.message
+                    : String(detail.error),
+              });
+            },
+            { once: true },
+          );
+        },
+      );
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      const recordedFailure = await Promise.race([
+        failure,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("runtime failure was deferred behind the module")),
+            1_000,
+          ),
+        ),
+      ]);
+      frame.remove();
+      return { failure: recordedFailure, loaded };
+    },
+    {
+      frameNonce: nonce,
+      source: `${fixture.origin}/documents/pending-external-module.html`,
+    },
+  );
 
   expect(result).toEqual({
     failure: {
@@ -531,40 +609,45 @@ test("reports a timer error immediately while an external module remains pending
 });
 
 for (const action of ["disconnect", "supersede"] as const) {
-  test(`does not publish delayed classic or module settlements after ${action}`, async ({ page }) => {
+  test(`does not publish delayed classic or module settlements after ${action}`, async ({
+    page,
+  }) => {
     await installBundle(page);
     const token = `${action}-${test.info().project.name}-${Date.now()}`;
-    const result = await page.evaluate(async ({ action, frameNonce, origin, token }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & {
-        contentWindow: (Window & Record<string, unknown>) | null;
-      };
-      let errors = 0;
-      let loads = 0;
-      frame.setAttribute("nonce", frameNonce);
-      frame.addEventListener("v-frame-error", () => {
-        errors += 1;
-      });
-      frame.addEventListener("v-frame-load", () => {
-        loads += 1;
-      });
-      frame.setAttribute("src", `${origin}/documents/teardown.html?token=${token}`);
-      document.querySelector("#host")?.append(frame);
-      const deadline = Date.now() + 2_000;
-      while (frame.contentWindow?.__teardownStarted !== true && Date.now() < deadline) {
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-      }
-      if (action === "disconnect") {
-        frame.remove();
-      } else {
-        frame.setAttribute("src", `${origin}/documents/blank.html`);
-        while (loads === 0 && Date.now() < deadline) {
+    const result = await page.evaluate(
+      async ({ action, frameNonce, origin, token }) => {
+        const frame = document.createElement("v-frame") as HTMLElement & {
+          contentWindow: (Window & Record<string, unknown>) | null;
+        };
+        let errors = 0;
+        let loads = 0;
+        frame.setAttribute("nonce", frameNonce);
+        frame.addEventListener("v-frame-error", () => {
+          errors += 1;
+        });
+        frame.addEventListener("v-frame-load", () => {
+          loads += 1;
+        });
+        frame.setAttribute("src", `${origin}/documents/teardown.html?token=${token}`);
+        document.querySelector("#host")?.append(frame);
+        const deadline = Date.now() + 2_000;
+        while (frame.contentWindow?.__teardownStarted !== true && Date.now() < deadline) {
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
         }
-      }
-      await fetch(`${origin}/release-teardown?token=${token}`);
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-      return { errors, loads };
-    }, { action, frameNonce: nonce, origin: fixture.origin, token });
+        if (action === "disconnect") {
+          frame.remove();
+        } else {
+          frame.setAttribute("src", `${origin}/documents/blank.html`);
+          while (loads === 0 && Date.now() < deadline) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+          }
+        }
+        await fetch(`${origin}/release-teardown?token=${token}`);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        return { errors, loads };
+      },
+      { action, frameNonce: nonce, origin: fixture.origin, token },
+    );
 
     expect(result).toEqual({
       errors: 0,

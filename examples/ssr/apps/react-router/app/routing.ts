@@ -46,13 +46,13 @@ export function useWidgetRouteAdapter(routingFrameId: string): void {
       }
       const message = event.data;
       if (
-        message.sessionId !== sessionId
-        || message.source !== "host"
-        || message.target !== routingFrameId
-        || message.kind !== "route-change"
-        || message.route === undefined
-        || !isWidgetRoute(message.route)
-        || message.mode === undefined
+        message.sessionId !== sessionId ||
+        message.source !== "host" ||
+        message.target !== routingFrameId ||
+        message.kind !== "route-change" ||
+        message.route === undefined ||
+        !isWidgetRoute(message.route) ||
+        message.mode === undefined
       ) {
         return;
       }
