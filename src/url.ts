@@ -1,19 +1,19 @@
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 
-export function parseEntryURL(value: string, baseURL: string): URL {
+export function parseEntryURL(value: string, baseURL: string, label = "src"): URL {
   let url: URL;
 
   try {
     url = new URL(value, baseURL);
   } catch (cause) {
-    throw new TypeError(`v-frame src ${JSON.stringify(value)} is not a valid URL`, {
+    throw new TypeError(`v-frame ${label} ${JSON.stringify(value)} is not a valid URL`, {
       cause,
     });
   }
 
   if (!HTTP_PROTOCOLS.has(url.protocol)) {
     throw new TypeError(
-      `v-frame src ${JSON.stringify(value)} must use http: or https:, received ${url.protocol}`,
+      `v-frame ${label} ${JSON.stringify(value)} must use http: or https:, received ${url.protocol}`,
     );
   }
 

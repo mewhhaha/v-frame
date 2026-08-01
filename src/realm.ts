@@ -13,6 +13,8 @@ import { installDocumentFacade, type DocumentFacade } from "./document-facade.js
 import {
   BoundHistory,
   type DocumentHistoryMode,
+  type NavigateDispatchOptions,
+  type NavigationControls,
   VirtualHistory,
   VirtualHistorySession,
 } from "./history.js";
@@ -25,6 +27,7 @@ import type {
   VFrameCredentials,
   VFrameErrorPhase,
   VFrameNavigateEventDetail,
+  VFrameNavigationKind,
   VFrameTrustedTypesPolicyDefinition,
   VFrameWindow,
 } from "./types.js";
@@ -161,8 +164,11 @@ export interface CreateRealmOptions {
   signal: AbortSignal;
   getNonce(): string;
   fetchStylesheet(url: string): Promise<string>;
-  onURLChange(url: string): void;
-  onNavigate(detail: VFrameNavigateEventDetail): boolean;
+  onURLChange(url: string, kind: VFrameNavigationKind | null): void;
+  onNavigate(
+    detail: VFrameNavigateEventDetail,
+    options?: NavigateDispatchOptions,
+  ): boolean;
   onDocumentNavigation(
     detail: VFrameNavigateEventDetail,
     mode: DocumentHistoryMode,
@@ -178,6 +184,7 @@ export interface CreateRealmOptions {
 
 export interface VFrameRealm {
   readonly window: VFrameWindow;
+  readonly navigation: NavigationControls;
   executeInitialScripts(): Promise<void>;
   reveal(): void;
   dispose(): void;
@@ -768,10 +775,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       facade?.rebaseURLs();
     };
 
-    const historyURLChanged = (url: string) => {
+    const historyURLChanged = (url: string, kind: VFrameNavigationKind | null) => {
       currentURL = url;
       updateDocumentBaseURL();
-      options.onURLChange(url);
+      options.onURLChange(url, kind);
     };
     const history = options.boundNavigation
       ? new BoundHistory({
@@ -1903,7 +1910,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
                 if (history instanceof VirtualHistory) {
                   history.adoptNativeNavigation(detail.to, mode);
                 } else {
-                  historyURLChanged(detail.to);
+                  historyURLChanged(detail.to, mode === "reload" ? "replace" : mode);
                 }
                 return;
               }
@@ -2049,6 +2056,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const runtime: VFrameRealm = {
       window,
+      navigation: history,
       async executeInitialScripts() {
         installNavigation();
         await scriptRunner?.executeInitial();

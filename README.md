@@ -290,7 +290,9 @@ Use host navigation only when the shell deliberately owns the guest's route:
 ```
 
 In host mode, guest history follows shell history and document navigation is
-promoted to the host page.
+promoted to the host page. v-frame follows the shell by observing the host page's
+`navigation` object, so it never patches the host's `history.pushState` or
+`history.replaceState` — a shell router is free to wrap those itself.
 
 The host can cancel link, form, fragment, and window navigation:
 
@@ -300,6 +302,39 @@ frame.addEventListener("v-frame-navigate", (event) => {
   if (destination.origin !== location.origin) {
     event.preventDefault();
   }
+});
+```
+
+The host can also move the guest itself:
+
+```ts
+await frame.navigate("/applications/orders/research");
+await frame.navigate("/applications/orders/", { replace: true });
+
+if (frame.canGoBack) {
+  await frame.back();
+}
+```
+
+`navigate()` is a same-document navigation. The guest's URL changes and it
+receives a `popstate`, which is what a client-side router listens for; the guest
+document is not refetched. Use `src` or `reload()` to replace the document.
+Routes resolve against `currentURL` and must share the host origin. In host mode
+these methods drive the shell's history and the guest follows it.
+
+Every navigation the host starts is cancelable through `v-frame-navigate`,
+whatever its kind — except traversal in host mode, which the shell performs and
+cannot take back. `navigate()` rejects with an `AbortError` when a listener
+cancels it, a `TypeError` for a cross-origin or non-HTTP route, and an
+`InvalidStateError` when there is no active guest. `back()`, `forward()`, and
+`go(delta)` reject the same way, but resolve without effect when there is nothing
+to traverse — read `canGoBack` and `canGoForward` first.
+
+To follow the guest's route, listen for `v-frame-navigated`:
+
+```ts
+frame.addEventListener("v-frame-navigated", (event) => {
+  render({ url: event.detail.to, canGoBack: frame.canGoBack });
 });
 ```
 
@@ -328,6 +363,16 @@ Readonly element properties:
 | `status` | `"idle"`, `"loading"`, `"ready"`, or `"error"`. |
 | `currentURL` | Current guest URL, or `null` without an active guest. |
 | `contentWindow` | Guest `Window`, or `null` before creation and after teardown. |
+| `canGoBack` | Whether the guest session has an earlier entry. In host mode, the shell's. |
+| `canGoForward` | Whether the guest session has a later entry. In host mode, the shell's. |
+
+Element methods:
+
+| Method | Effect |
+| --- | --- |
+| `navigate(url, { replace })` | Same-document navigation to another same-origin route. |
+| `back()`, `forward()`, `go(delta)` | Traverses the guest session. |
+| `reload()` | Reloads the current guest document. |
 
 Reload the current guest document with:
 
@@ -359,7 +404,8 @@ All events bubble through the host DOM and are composed.
 | `v-frame-loadstart` | `{ url }` for the selected entry URL. |
 | `v-frame-load` | `{ url }` when the guest is ready. |
 | `v-frame-error` | `{ phase, url, error, fatal }`. |
-| `v-frame-navigate` | `{ from, to, kind, state }`; cancelable for default link, form, fragment, and window actions. |
+| `v-frame-navigate` | `{ from, to, kind, state }` before the guest moves; cancelable for default link, form, fragment, and window actions, and for every navigation the host starts. |
+| `v-frame-navigated` | `{ from, to, kind }` after the guest URL changed, including guest `pushState`, fragment navigation, traversal, and document navigation. |
 
 Error phases are `entry`, `bootstrap`, `stylesheet`, `script`, `runtime`,
 `navigation`, and `network`. A fatal error ends the current load. Nonfatal

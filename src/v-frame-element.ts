@@ -13,8 +13,11 @@ import type {
   VFrameErrorEventDetail,
   VFrameEventMap,
   VFrameLoadEventDetail,
+  VFrameNavigatedEventDetail,
   VFrameNavigateEventDetail,
+  VFrameNavigateOptions,
   VFrameNavigation,
+  VFrameNavigationKind,
   VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
@@ -37,6 +40,17 @@ function entryFetchError(url: string, response: Response): TypeError {
   );
 }
 
+function idleNavigationError(method: string): DOMException {
+  return new DOMException(
+    `v-frame cannot ${method} without an active guest`,
+    "InvalidStateError",
+  );
+}
+
+function canceledNavigationError(url: string): DOMException {
+  return new DOMException(`v-frame navigation to ${url} was canceled`, "AbortError");
+}
+
 interface AdoptedMarkup {
   source: string;
   previewNodes: readonly Node[];
@@ -48,6 +62,8 @@ interface FrameLoad {
   historySession: VirtualHistorySession | null;
   stageMarkup: boolean;
   boundNavigation: boolean;
+  /** The navigation that asked for this document, or null when the host set `src`. */
+  navigationKind: VFrameNavigationKind | null;
 }
 
 function identityTrustedTypesPolicy(name: string): VFrameTrustedTypesPolicyDefinition {
@@ -202,6 +218,89 @@ export class VFrameElement extends HTMLElementBase {
     return this.#realm?.window ?? this.#loadingRealm?.window ?? null;
   }
 
+  get canGoBack(): boolean {
+    return this.#realm?.navigation.canGoBack ?? false;
+  }
+
+  get canGoForward(): boolean {
+    return this.#realm?.navigation.canGoForward ?? false;
+  }
+
+  /**
+   * Moves the live guest to another same-origin route without reloading its document.
+   * The guest sees the new URL and a `popstate`, which is what a client-side router
+   * listens for. Replacing the document is `src` or `reload()`.
+   */
+  navigate(url: string | URL, options: VFrameNavigateOptions = {}): Promise<void> {
+    const navigation = this.#realm?.navigation ?? null;
+    if (navigation === null) {
+      return Promise.reject(idleNavigationError("navigate"));
+    }
+
+    let route: URL;
+    try {
+      route = this.#resolveRoute(url);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    const mode: DocumentHistoryMode = options.replace === true ? "replace" : "push";
+    const outcome = navigation.navigate(route.href, mode);
+    if (outcome === "canceled") {
+      return Promise.reject(canceledNavigationError(route.href));
+    }
+    if (outcome === "unavailable") {
+      return Promise.reject(idleNavigationError("navigate"));
+    }
+    return Promise.resolve();
+  }
+
+  back(): Promise<void> {
+    return this.#traverse(-1);
+  }
+
+  forward(): Promise<void> {
+    return this.#traverse(1);
+  }
+
+  go(delta = 0): Promise<void> {
+    return this.#traverse(delta);
+  }
+
+  // Traversal past either end of the guest session is a no-op, exactly as
+  // `history.go` is; `canGoBack` and `canGoForward` are how a host checks first.
+  #traverse(delta: number): Promise<void> {
+    const navigation = this.#realm?.navigation ?? null;
+    if (navigation === null) {
+      return Promise.reject(idleNavigationError("traverse"));
+    }
+
+    const steps = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+    if (steps === 0) {
+      return Promise.resolve();
+    }
+    if (navigation.traverse(steps) === "canceled") {
+      return Promise.reject(canceledNavigationError(this.#currentURL ?? ""));
+    }
+    return Promise.resolve();
+  }
+
+  // Imperative routes resolve against the live guest URL and are held to the
+  // same-origin rule the entry path enforces.
+  #resolveRoute(url: string | URL): URL {
+    const route = parseEntryURL(
+      String(url),
+      this.#currentURL ?? this.ownerDocument.baseURI,
+      "route",
+    );
+    if (route.origin !== this.ownerDocument.location.origin) {
+      throw new TypeError(
+        `v-frame route ${route.href} must share host origin ${this.ownerDocument.location.origin}`,
+      );
+    }
+    return route;
+  }
+
   connectedCallback(): void {
     this.#upgradeProperty("adopt");
     this.#upgradeProperty("credentials");
@@ -221,6 +320,7 @@ export class VFrameElement extends HTMLElementBase {
         historySession: null,
         stageMarkup: adoptedMarkup !== null,
         boundNavigation: this.navigation === "host",
+        navigationKind: null,
       }),
     );
   }
@@ -273,6 +373,7 @@ export class VFrameElement extends HTMLElementBase {
         historySession: null,
         stageMarkup: false,
         boundNavigation: this.navigation === "host",
+        navigationKind: null,
       }),
     );
   }
@@ -290,6 +391,7 @@ export class VFrameElement extends HTMLElementBase {
       historySession: this.#historySession?.clone() ?? null,
       stageMarkup: this.#realm !== null,
       boundNavigation: this.navigation === "host",
+      navigationKind: null,
     });
   }
 
@@ -482,7 +584,10 @@ export class VFrameElement extends HTMLElementBase {
       }
       const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
       historySession.replaceCurrentURL(finalURL);
-      if (previous.realm === null) {
+      // While this load is staged behind a live guest, the URL the host observes still
+      // belongs to that guest; this realm owns it only once it goes live.
+      let staged = previous.realm !== null;
+      if (!staged) {
         this.#currentURL = finalURL;
       }
 
@@ -522,19 +627,22 @@ export class VFrameElement extends HTMLElementBase {
           }
           return stylesheetResponse.text();
         },
-        onURLChange: (url) => {
+        onURLChange: (url, kind) => {
           finalURL = url;
           failureURL = url;
-          if (ownsController() && previous.realm === null) {
-            this.#currentURL = url;
+          if (ownsController() && !staged) {
+            this.#setCurrentURL(url, kind);
           }
         },
-        onNavigate: (detail) => {
+        onNavigate: (detail, dispatchOptions) => {
           if (!ownsController()) {
             return false;
           }
 
-          const allowed = this.#dispatchNavigate(detail);
+          const allowed = this.#dispatchNavigate(
+            detail,
+            dispatchOptions?.cancelable === true,
+          );
           return allowed && ownsController();
         },
         onDocumentNavigation: (
@@ -556,6 +664,7 @@ export class VFrameElement extends HTMLElementBase {
                 historySession: nextSession,
                 stageMarkup: this.#realm !== null,
                 boundNavigation: false,
+                navigationKind: detail.kind,
               }),
             );
           });
@@ -576,6 +685,7 @@ export class VFrameElement extends HTMLElementBase {
                 historySession: nextSession,
                 stageMarkup: this.#realm !== null,
                 boundNavigation: false,
+                navigationKind: "traverse",
               }),
             );
           });
@@ -620,6 +730,7 @@ export class VFrameElement extends HTMLElementBase {
                 historySession: nextSession,
                 stageMarkup: this.#realm !== null,
                 boundNavigation: load.boundNavigation,
+                navigationKind: detail.kind,
               }),
             );
           });
@@ -651,7 +762,8 @@ export class VFrameElement extends HTMLElementBase {
       this.#loadController = null;
       this.#historySession = historySession;
       this.#realmGeneration = generation;
-      this.#currentURL = finalURL;
+      staged = false;
+      this.#setCurrentURL(finalURL, load.navigationKind);
       realm.reveal();
       this.#setStatus(VFrameStatus.Ready);
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
@@ -791,8 +903,26 @@ export class VFrameElement extends HTMLElementBase {
     this.#dispatch<VFrameErrorEventDetail>("v-frame-error", detail);
   }
 
-  #dispatchNavigate(detail: VFrameNavigateEventDetail): boolean {
+  // The past-tense counterpart of `v-frame-navigate`: the guest URL is already the new
+  // one, so a host router can read `currentURL`, `canGoBack` and `canGoForward` here.
+  #setCurrentURL(url: string, kind: VFrameNavigationKind | null): void {
+    const from = this.#currentURL;
+    this.#currentURL = url;
+    if (kind === null || from === null || from === url) {
+      return;
+    }
+    this.#dispatch<VFrameNavigatedEventDetail>("v-frame-navigated", {
+      from,
+      to: url,
+      kind,
+    });
+  }
+
+  #dispatchNavigate(detail: VFrameNavigateEventDetail, hostInitiated = false): boolean {
+    // A host-initiated navigation is always cancelable; a guest History call is not,
+    // because the platform gives the page no way to refuse one.
     const cancelable =
+      hostInitiated ||
       detail.kind === "link" ||
       detail.kind === "fragment" ||
       detail.kind === "form" ||

@@ -13,79 +13,54 @@ interface HistoryEntry {
 
 export type DocumentHistoryMode = "push" | "replace";
 
-type HostHistoryChange = "push" | "replace";
+/** The outcome of a navigation the host drove through the element's imperative API. */
+export type NavigationOutcome = "applied" | "canceled" | "unavailable";
 
-interface HostHistoryObserver {
-  callbacks: Set<(change: HostHistoryChange) => void>;
-  pushStateDescriptor: PropertyDescriptor | undefined;
-  replaceStateDescriptor: PropertyDescriptor | undefined;
+/** What `VFrameElement` drives; both history implementations satisfy it. */
+export interface NavigationControls {
+  readonly canGoBack: boolean;
+  readonly canGoForward: boolean;
+  navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome;
+  traverse(delta: number): NavigationOutcome;
 }
 
-const hostHistoryObservers = new WeakMap<Window, HostHistoryObserver>();
+export interface NavigateDispatchOptions {
+  /** Host-initiated navigations stay cancelable whatever their kind. */
+  cancelable: boolean;
+}
 
+type HostHistoryChange = "push" | "replace" | "traverse";
+
+type HostNavigationWindow = Window & { readonly navigation: Navigation };
+
+function hostNavigation(hostWindow: Window): Navigation {
+  return (hostWindow as HostNavigationWindow).navigation;
+}
+
+/**
+ * The runtime already refuses to boot without the Navigation API, so the host's
+ * `navigation` object reports every same-document entry change — including
+ * `pushState` and `replaceState`. Observing it keeps v-frame out of the host's
+ * `history` methods, which every mainstream shell router wraps for itself.
+ */
 function observeHostHistory(
   hostWindow: Window,
   callback: (change: HostHistoryChange) => void,
 ): () => void {
-  let observer = hostHistoryObservers.get(hostWindow);
-  if (observer === undefined) {
-    const history = hostWindow.history;
-    const nativePushState = history.pushState;
-    const nativeReplaceState = history.replaceState;
-    observer = {
-      callbacks: new Set(),
-      pushStateDescriptor: Object.getOwnPropertyDescriptor(history, "pushState"),
-      replaceStateDescriptor: Object.getOwnPropertyDescriptor(history, "replaceState"),
-    };
-    hostHistoryObservers.set(hostWindow, observer);
-    const notify = (change: HostHistoryChange) => {
-      for (const registeredCallback of observer?.callbacks ?? []) {
-        registeredCallback(change);
+  const lifetime = new AbortController();
+  hostNavigation(hostWindow).addEventListener(
+    "currententrychange",
+    (event) => {
+      const change = event.navigationType;
+      // `updateCurrentEntry` reports a null type and a reload replaces the whole
+      // document, so neither moves the guest.
+      if (change === "push" || change === "replace" || change === "traverse") {
+        callback(change);
       }
-    };
-    Object.defineProperties(history, {
-      pushState: {
-        configurable: true,
-        writable: true,
-        value: function pushState(this: History, _state: unknown, _unused: string) {
-          Reflect.apply(nativePushState, this, arguments);
-          if (this === history) {
-            notify("push");
-          }
-        },
-      },
-      replaceState: {
-        configurable: true,
-        writable: true,
-        value: function replaceState(this: History, _state: unknown, _unused: string) {
-          Reflect.apply(nativeReplaceState, this, arguments);
-          if (this === history) {
-            notify("replace");
-          }
-        },
-      },
-    });
-  }
-
-  observer.callbacks.add(callback);
-  return () => {
-    observer?.callbacks.delete(callback);
-    if (observer === undefined || observer.callbacks.size !== 0) {
-      return;
-    }
-    const history = hostWindow.history;
-    if (observer.pushStateDescriptor === undefined) {
-      delete (history as unknown as Record<string, unknown>).pushState;
-    } else {
-      Object.defineProperty(history, "pushState", observer.pushStateDescriptor);
-    }
-    if (observer.replaceStateDescriptor === undefined) {
-      delete (history as unknown as Record<string, unknown>).replaceState;
-    } else {
-      Object.defineProperty(history, "replaceState", observer.replaceStateDescriptor);
-    }
-    hostHistoryObservers.delete(hostWindow);
-  };
+    },
+    { signal: lifetime.signal },
+  );
+  return () => lifetime.abort();
 }
 
 export class VirtualHistorySession {
@@ -213,19 +188,25 @@ export interface VirtualHistoryOptions {
   window: VFrameWindow;
   session: VirtualHistorySession;
   getBaseURL(): string;
-  onNavigate(detail: VFrameNavigateEventDetail): boolean;
-  onURLChange(url: string): void;
+  onNavigate(
+    detail: VFrameNavigateEventDetail,
+    options?: NavigateDispatchOptions,
+  ): boolean;
+  onURLChange(url: string, kind: VFrameNavigationKind | null): void;
   onDocumentTraversal(session: VirtualHistorySession): void;
 }
 
 export interface BoundHistoryOptions {
   window: VFrameWindow;
   hostWindow: Window;
-  onNavigate(detail: VFrameNavigateEventDetail): boolean;
-  onURLChange(url: string): void;
+  onNavigate(
+    detail: VFrameNavigateEventDetail,
+    options?: NavigateDispatchOptions,
+  ): boolean;
+  onURLChange(url: string, kind: VFrameNavigationKind | null): void;
 }
 
-export class BoundHistory {
+export class BoundHistory implements NavigationControls {
   readonly #window: VFrameWindow;
   readonly #childHistory: History;
   readonly #hostWindow: Window;
@@ -234,7 +215,9 @@ export class BoundHistory {
   readonly #onURLChange: BoundHistoryOptions["onURLChange"];
   readonly #listenerLifetime = new AbortController();
   #currentURL: string;
-  #originatingHostChange = false;
+  // Set while this frame is the one driving the host history, which both suppresses
+  // the echo back into the guest and names the navigation the observer sees.
+  #originatingKind: VFrameNavigationKind | null = null;
   #disposed = false;
 
   constructor(options: BoundHistoryOptions) {
@@ -340,31 +323,48 @@ export class BoundHistory {
       },
     });
 
-    const stopObserving = observeHostHistory(this.#hostWindow, () => {
-      this.#synchronizeFromHost(!this.#originatingHostChange);
+    const stopObserving = observeHostHistory(this.#hostWindow, (change) => {
+      this.#adoptHostChange(change);
     });
     this.#listenerLifetime.signal.addEventListener("abort", stopObserving, {
       once: true,
     });
-    this.#hostWindow.addEventListener(
-      "popstate",
-      () => {
-        if (this.#disposed) {
-          return;
-        }
-        const from = this.#currentURL;
-        const to = this.#hostWindow.location.href;
-        this.#onNavigate({
-          from,
-          to,
-          kind: "traverse",
-          state: this.#hostWindow.history.state,
-        });
-        this.#synchronizeFromHost(true);
-      },
-      { signal: this.#listenerLifetime.signal },
-    );
-    this.#synchronizeFromHost(false);
+    this.#synchronizeFromHost(null, false);
+  }
+
+  get canGoBack(): boolean {
+    return !this.#disposed && hostNavigation(this.#hostWindow).canGoBack;
+  }
+
+  get canGoForward(): boolean {
+    return !this.#disposed && hostNavigation(this.#hostWindow).canGoForward;
+  }
+
+  navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome {
+    if (this.#disposed) {
+      return "unavailable";
+    }
+    const from = this.#currentURL;
+    const to = new this.#window.URL(url, from).href;
+    if (!this.#onNavigate({ from, to, kind: mode, state: null }, { cancelable: true })) {
+      return "canceled";
+    }
+    if (this.#disposed) {
+      return "unavailable";
+    }
+    this.#changeHostEntry(mode, null, to);
+    this.#dispatchActivationEvents(from);
+    return "applied";
+  }
+
+  traverse(delta: number): NavigationOutcome {
+    if (this.#disposed) {
+      return "unavailable";
+    }
+    // The shell owns the session, so its traversal reaches the guest through the
+    // same observer a user-driven back button would.
+    this.#hostWindow.history.go(delta);
+    return "applied";
   }
 
   navigateFragment(url: string, state: unknown = null): boolean {
@@ -376,12 +376,7 @@ export class BoundHistory {
     if (!this.#onNavigate({ from, to, kind: "fragment", state })) {
       return false;
     }
-    this.#originatingHostChange = true;
-    try {
-      this.#hostWindow.history.pushState(state, "", to);
-    } finally {
-      this.#originatingHostChange = false;
-    }
+    this.#changeHostEntry("push", state, to, "fragment");
     this.#dispatchActivationEvents(from);
     return true;
   }
@@ -401,7 +396,7 @@ export class BoundHistory {
   }
 
   #changeHostHistory(
-    change: HostHistoryChange,
+    change: DocumentHistoryMode,
     state: unknown,
     unused: string,
     url?: string | URL | null,
@@ -425,26 +420,61 @@ export class BoundHistory {
     if (this.#disposed) {
       return;
     }
-    this.#originatingHostChange = true;
+    this.#changeHostEntry(change, nextState, url, change, unused);
+  }
+
+  // Every host history change this frame originates is tagged, so the observer can
+  // mirror it without echoing a second activation back into the guest.
+  #changeHostEntry(
+    change: DocumentHistoryMode,
+    state: unknown,
+    url?: string | URL | null,
+    kind: VFrameNavigationKind = change,
+    unused = "",
+  ): void {
+    this.#originatingKind = kind;
     try {
       this.#hostWindow.history[change === "push" ? "pushState" : "replaceState"](
-        nextState,
+        state,
         unused,
         url,
       );
     } finally {
-      this.#originatingHostChange = false;
+      this.#originatingKind = null;
     }
   }
 
-  #synchronizeFromHost(dispatchEvents: boolean): void {
+  #adoptHostChange(change: HostHistoryChange): void {
+    if (this.#disposed) {
+      return;
+    }
+    const originatingKind = this.#originatingKind;
+    if (originatingKind !== null) {
+      this.#synchronizeFromHost(originatingKind, false);
+      return;
+    }
+    if (change === "traverse") {
+      this.#onNavigate({
+        from: this.#currentURL,
+        to: this.#hostWindow.location.href,
+        kind: "traverse",
+        state: this.#hostWindow.history.state,
+      });
+      if (this.#disposed) {
+        return;
+      }
+    }
+    this.#synchronizeFromHost(change, true);
+  }
+
+  #synchronizeFromHost(kind: VFrameNavigationKind | null, dispatchEvents: boolean): void {
     if (this.#disposed) {
       return;
     }
     const previousURL = this.#currentURL;
     this.#currentURL = this.#hostWindow.location.href;
     this.#mirrorHostEntry();
-    this.#onURLChange(this.#currentURL);
+    this.#onURLChange(this.#currentURL, kind);
     if (dispatchEvents) {
       this.#dispatchActivationEvents(previousURL);
     }
@@ -491,7 +521,7 @@ export class BoundHistory {
   }
 }
 
-export class VirtualHistory {
+export class VirtualHistory implements NavigationControls {
   readonly #window: VFrameWindow;
   readonly #history: History;
   readonly #nativeReplaceState: History["replaceState"];
@@ -535,6 +565,14 @@ export class VirtualHistory {
 
   get state(): unknown {
     return this.#activeState;
+  }
+
+  get canGoBack(): boolean {
+    return !this.#disposed && this.#session.currentIndex > 0;
+  }
+
+  get canGoForward(): boolean {
+    return !this.#disposed && this.#session.currentIndex < this.#session.length - 1;
   }
 
   install(): void {
@@ -639,6 +677,44 @@ export class VirtualHistory {
     this.#nativeHistoryLength = this.#readNativeHistoryLength();
   }
 
+  /**
+   * A host-driven route change. It carries no state and activates the guest the way a
+   * traversal does, because a router only re-renders when the session tells it to.
+   */
+  navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome {
+    if (this.#disposed) {
+      return "unavailable";
+    }
+
+    const nextURL = resolveHistoryURL(
+      url,
+      this.#getBaseURL(),
+      this.currentURL,
+      this.#window,
+    );
+    if (!this.#approve(nextURL, mode, null, true)) {
+      return "canceled";
+    }
+
+    const previousURL = this.currentURL;
+    this.#mirrorEntry(nextURL, null);
+    if (mode === "replace") {
+      this.#session.replaceState(nextURL, null);
+    } else {
+      this.#session.pushState(nextURL, null);
+    }
+    this.#activeState = null;
+    this.#commit(mode, "activate", previousURL);
+    return "applied";
+  }
+
+  traverse(delta: number): NavigationOutcome {
+    if (this.#disposed) {
+      return "unavailable";
+    }
+    return this.#traverse(Math.trunc(delta), true);
+  }
+
   pushState(state: unknown, url?: string | URL | null): boolean {
     if (this.#disposed) {
       return false;
@@ -658,7 +734,7 @@ export class VirtualHistory {
     this.#mirrorEntry(nextURL, nextState);
     this.#session.pushState(nextURL, nextState);
     this.#activeState = this.#cloneState(nextState);
-    this.#commit("none");
+    this.#commit("push", "silent");
     return true;
   }
 
@@ -681,7 +757,7 @@ export class VirtualHistory {
     this.#mirrorEntry(nextURL, nextState);
     this.#session.replaceState(nextURL, nextState);
     this.#activeState = this.#cloneState(nextState);
-    this.#commit("none");
+    this.#commit("replace", "silent");
     return true;
   }
 
@@ -703,7 +779,7 @@ export class VirtualHistory {
     }
     this.#activeState = null;
     this.#nativeHistoryLength = this.#readNativeHistoryLength();
-    this.#commit("none");
+    this.#commit(mode, "silent");
   }
 
   navigateFragment(url: string, state: unknown = null): boolean {
@@ -726,7 +802,7 @@ export class VirtualHistory {
     this.#mirrorEntry(nextURL, nextState);
     this.#session.navigateFragment(nextURL, nextState);
     this.#activeState = this.#cloneState(nextState);
-    this.#commit("fragment", previousURL);
+    this.#commit("fragment", "activate", previousURL);
     return true;
   }
 
@@ -757,7 +833,7 @@ export class VirtualHistory {
       this.#session.navigateFragment(nextURL, nextState);
     }
     this.#activeState = null;
-    this.#commit("fragment", previousURL);
+    this.#commit("fragment", "activate", previousURL);
     return true;
   }
 
@@ -817,47 +893,56 @@ export class VirtualHistory {
     return Number.isFinite(number) ? number | 0 : 0;
   }
 
-  #traverse(delta: number): void {
+  #traverse(delta: number, cancelable = false): NavigationOutcome {
     const nextIndex = this.#session.currentIndex + Math.trunc(delta);
     if (
       nextIndex < 0 ||
       nextIndex >= this.#session.length ||
       nextIndex === this.#session.currentIndex
     ) {
-      return;
+      return "unavailable";
     }
 
     const nextEntry = this.#session.entryAt(nextIndex);
-    if (
-      nextEntry === undefined ||
-      !this.#approve(nextEntry.url, "traverse", nextEntry.state)
-    ) {
-      return;
+    if (nextEntry === undefined) {
+      return "unavailable";
+    }
+    if (!this.#approve(nextEntry.url, "traverse", nextEntry.state, cancelable)) {
+      return "canceled";
     }
 
     if (nextEntry.documentID !== this.#session.currentDocumentID) {
       this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex));
-      return;
+      return "applied";
     }
 
     const previousURL = this.currentURL;
     this.#mirrorEntry(nextEntry.url, nextEntry.state);
     this.#session.traverse(nextIndex);
     this.#activeState = this.#cloneState(nextEntry.state);
-    this.#commit("traverse", previousURL);
+    this.#commit("traverse", "activate", previousURL);
+    return "applied";
   }
 
-  #approve(to: string, kind: VFrameNavigationKind, state: unknown): boolean {
+  #approve(
+    to: string,
+    kind: VFrameNavigationKind,
+    state: unknown,
+    cancelable = false,
+  ): boolean {
     if (this.#disposed) {
       return false;
     }
 
-    const approved = this.#onNavigate({
-      from: this.currentURL,
-      to,
-      kind,
-      state,
-    });
+    const approved = this.#onNavigate(
+      {
+        from: this.currentURL,
+        to,
+        kind,
+        state,
+      },
+      { cancelable },
+    );
     return approved && !this.#disposed;
   }
 
@@ -866,12 +951,13 @@ export class VirtualHistory {
   }
 
   #commit(
-    eventType: "none" | "fragment" | "traverse",
+    kind: VFrameNavigationKind,
+    activation: "silent" | "activate",
     previousURL = this.currentURL,
   ): void {
-    this.#onURLChange(this.currentURL);
+    this.#onURLChange(this.currentURL, kind);
 
-    if (eventType === "none") {
+    if (activation === "silent") {
       return;
     }
 
