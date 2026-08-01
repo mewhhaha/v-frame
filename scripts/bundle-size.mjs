@@ -3,11 +3,12 @@ import { gzipSync } from "node:zlib";
 
 // The budget exists so payload regressions surface in CI rather than in a
 // consumer's network tab. Ratchet it down whenever the bundle genuinely shrinks.
-const budgetBytes = 100_000;
+const budgetBytes = 66_000;
 
 async function measureGzippedBundle() {
-  // The shipped build is unminified, so measuring it would report the size a
-  // consumer's bundler never serves. Minify in memory instead of touching dist.
+  // Building in memory keeps the budget runnable without a prior `pnpm build`,
+  // and drops the sourcemap and legal comments that dist/index.js carries but
+  // no consumer downloads on the critical path.
   const result = await build({
     entryPoints: ["src/index.ts"],
     bundle: true,

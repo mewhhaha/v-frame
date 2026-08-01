@@ -1,4 +1,6 @@
-import * as cssTree from "css-tree";
+import generateCSS from "css-tree/generator";
+import parseCSS from "css-tree/parser";
+import walkCSS from "css-tree/walker";
 import type { Atrule, CssNode, List, ListItem, Selector, StyleSheet } from "css-tree";
 
 const SHELL_ELEMENT_NAMES = new Map([
@@ -47,7 +49,7 @@ export function createStylesheetContext(
 
 function parseStylesheet(source: string, stylesheetURL: string): StyleSheet {
   try {
-    return cssTree.parse(source, {
+    return parseCSS(source, {
       context: "stylesheet",
       filename: stylesheetURL,
       parseCustomProperty: true,
@@ -64,7 +66,7 @@ function rewriteShellSelectors(
   ast: CssNode,
   suppressShadowOnlyPseudoClasses = false,
 ): void {
-  cssTree.walk(ast, {
+  walkCSS(ast, {
     enter(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
       if (node.type === "TypeSelector") {
         const replacement = SHELL_ELEMENT_NAMES.get(node.name.toLowerCase());
@@ -80,7 +82,7 @@ function rewriteShellSelectors(
           suppressShadowOnlyPseudoClasses &&
           SHADOW_ONLY_PSEUDO_CLASSES.has(pseudoClassName)
         ) {
-          const replacement = cssTree.parse(":not(*)", {
+          const replacement = parseCSS(":not(*)", {
             context: "selector",
           }) as Selector;
           list.replace(item, replacement.children.copy());
@@ -88,7 +90,7 @@ function rewriteShellSelectors(
         }
 
         if (pseudoClassName === "root") {
-          const replacement = cssTree.parse(":where(v-html):nth-child(n)", {
+          const replacement = parseCSS(":where(v-html):nth-child(n)", {
             context: "selector",
           }) as Selector;
           list.replace(item, replacement.children.copy());
@@ -99,7 +101,7 @@ function rewriteShellSelectors(
 }
 
 function absolutizeCssURLs(ast: CssNode, stylesheetURL: string): void {
-  cssTree.walk(ast, {
+  walkCSS(ast, {
     visit: "Url",
     enter(node) {
       // An empty url() is an invalid resource that must never be fetched, so
@@ -148,7 +150,7 @@ function importParts(rule: Atrule, stylesheetURL: string): ImportParts | null {
     ) {
       layer = qualifier.children
         .toArray()
-        .map((child) => cssTree.generate(child))
+        .map((child) => generateCSS(child))
         .join("");
     } else if (
       qualifier.type === "Function" &&
@@ -156,10 +158,10 @@ function importParts(rule: Atrule, stylesheetURL: string): ImportParts | null {
     ) {
       supports = qualifier.children
         .toArray()
-        .map((child) => cssTree.generate(child))
+        .map((child) => generateCSS(child))
         .join("");
     } else if (qualifier.type === "MediaQueryList") {
-      media = cssTree.generate(qualifier);
+      media = generateCSS(qualifier);
     }
   }
 
@@ -308,7 +310,7 @@ async function transformStylesheet(
   await inlineImports(ast, stylesheetURL, context, ancestors);
   rewriteShellSelectors(ast, true);
   absolutizeCssURLs(ast, stylesheetURL);
-  return cssTree.generate(ast);
+  return generateCSS(ast);
 }
 
 export async function rewriteStylesheet(
@@ -320,18 +322,18 @@ export async function rewriteStylesheet(
 }
 
 export function rewriteStyleAttribute(source: string, baseURL: string): string {
-  const ast = cssTree.parse(source, {
+  const ast = parseCSS(source, {
     context: "declarationList",
     parseCustomProperty: true,
   });
   absolutizeCssURLs(ast, baseURL);
-  return cssTree.generate(ast);
+  return generateCSS(ast);
 }
 
 export function rewriteCSSOMInsertRule(source: string, baseURL: string): string {
   const ast = parseStylesheet(source, baseURL);
   let containsImport = false;
-  cssTree.walk(ast, {
+  walkCSS(ast, {
     visit: "Atrule",
     enter(node) {
       if (node.name.toLowerCase() === "import") {
@@ -344,7 +346,7 @@ export function rewriteCSSOMInsertRule(source: string, baseURL: string): string 
   }
   rewriteShellSelectors(ast, true);
   absolutizeCssURLs(ast, baseURL);
-  return cssTree.generate(ast);
+  return generateCSS(ast);
 }
 
 export function rewriteCSSOMAddRule(
@@ -359,13 +361,13 @@ export function rewriteCSSOMAddRule(
 }
 
 export function rewriteCSSOMSelectorText(source: string): string {
-  const ast = cssTree.parse(source, { context: "selectorList" }) as Selector;
+  const ast = parseCSS(source, { context: "selectorList" }) as Selector;
   rewriteShellSelectors(ast, true);
-  return cssTree.generate(ast);
+  return generateCSS(ast);
 }
 
 export function translateShellSelector(selector: string): string {
-  const ast = cssTree.parse(selector, { context: "selectorList" });
+  const ast = parseCSS(selector, { context: "selectorList" });
   rewriteShellSelectors(ast);
-  return cssTree.generate(ast);
+  return generateCSS(ast);
 }

@@ -1,4 +1,6 @@
-import * as cssTree from "css-tree";
+import generateCSS from "css-tree/generator";
+import parseCSS from "css-tree/parser";
+import walkCSS from "css-tree/walker";
 import type { DeclarationList } from "css-tree";
 import { rewriteStyleAttribute, translateShellSelector } from "./css.js";
 import {
@@ -65,14 +67,14 @@ function stylePropertyNameFromIDL(property: string): string {
 function authoredStylePropertyValues(source: string): Map<string, string> {
   const properties = new Map<string, string>();
   try {
-    const declarations = cssTree.parse(source, {
+    const declarations = parseCSS(source, {
       context: "declarationList",
       parseCustomProperty: true,
     });
-    cssTree.walk(declarations, {
+    walkCSS(declarations, {
       visit: "Declaration",
       enter(declaration) {
-        const value = cssTree.generate(declaration.value);
+        const value = generateCSS(declaration.value);
         if (!/url\s*\(/i.test(value)) {
           return;
         }
@@ -86,11 +88,11 @@ function authoredStylePropertyValues(source: string): Map<string, string> {
 }
 
 function normalizeAuthoredStyleAttribute(source: string): string {
-  const declarations = cssTree.parse(source, {
+  const declarations = parseCSS(source, {
     context: "declarationList",
     parseCustomProperty: true,
   });
-  return cssTree.generate(declarations);
+  return generateCSS(declarations);
 }
 
 function updateAuthoredStyleProperty(
@@ -99,7 +101,7 @@ function updateAuthoredStyleProperty(
   value: string,
   priority: string,
 ): string {
-  const declarations = cssTree.parse(source, {
+  const declarations = parseCSS(source, {
     context: "declarationList",
     parseCustomProperty: true,
   }) as DeclarationList;
@@ -112,7 +114,7 @@ function updateAuthoredStyleProperty(
     }
   });
   if (value !== "") {
-    const addition = cssTree.parse(
+    const addition = parseCSS(
       `${property}:${value}${priority === "" ? "" : `!${priority}`}`,
       {
         context: "declarationList",
@@ -124,7 +126,7 @@ function updateAuthoredStyleProperty(
       declarations.children.appendData(declaration);
     }
   }
-  return cssTree.generate(declarations);
+  return generateCSS(declarations);
 }
 
 interface ListenerRecord {

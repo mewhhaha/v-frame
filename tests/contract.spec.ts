@@ -70,7 +70,11 @@ test("registers one launchpad constructor across the side-effect and API entry p
       const registered = customElements.get("v-frame");
       const api = await import(apiURL);
       return {
-        constructorName: registered?.name,
+        // The shipped bundle is minified, so the constructor's own `name` is
+        // mangled; its identity and its prototype chain are the contract.
+        registeredElement: registered !== undefined,
+        extendsHTMLElement: registered?.prototype instanceof HTMLElement,
+        exportedConstructor: api.VFrameElement === registered,
         sharedConstructor: api.defineVFrame() === registered,
       };
     },
@@ -81,7 +85,9 @@ test("registers one launchpad constructor across the side-effect and API entry p
   );
 
   expect(registration).toEqual({
-    constructorName: "VFrameElement",
+    registeredElement: true,
+    extendsHTMLElement: true,
+    exportedConstructor: true,
     sharedConstructor: true,
   });
 });

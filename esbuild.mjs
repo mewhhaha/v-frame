@@ -10,6 +10,7 @@ await build({
   format: "esm",
   platform: "browser",
   target: "es2022",
+  minify: true,
   sourcemap: true,
   legalComments: "external",
 });
@@ -21,6 +22,7 @@ await build({
   format: "esm",
   platform: "browser",
   target: "es2022",
+  minify: true,
   sourcemap: true,
   legalComments: "external",
   external: ["./index.js"],
