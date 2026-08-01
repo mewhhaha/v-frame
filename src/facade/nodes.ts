@@ -138,10 +138,21 @@ export function installNodeFacade(
   };
   const dynamicScriptExecution = new WeakMap<HTMLScriptElement, "async" | "ordered">();
   const executedScripts = new WeakSet<HTMLScriptElement>();
-  const nodeFacadeDescriptors = new Map<
+  // dispose() has to hand every node it touched back the descriptors it
+  // overwrote, which is why the previous ones are remembered at all. Holding the
+  // nodes themselves to do it would make the facade a leak: a guest that churns
+  // rows would retain every row it ever rendered for the lifetime of the frame.
+  // So the descriptors hang off a WeakMap and the restore list holds only weak
+  // references — a node nothing else can reach can no longer observe whether its
+  // descriptors came back, and the registry drops its slot once it is collected.
+  const nodeFacadeDescriptors = new WeakMap<
     Node,
     Map<PropertyKey, PropertyDescriptor | undefined>
   >();
+  const facadedNodes = new Set<WeakRef<Node>>();
+  const collectedFacadedNodes = new FinalizationRegistry<WeakRef<Node>>((reference) => {
+    facadedNodes.delete(reference);
+  });
 
   const protectScript = (script: HTMLScriptElement): void => {
     if (protectedScriptAttributes.has(script)) {
@@ -167,6 +178,9 @@ export function installNodeFacade(
     if (previousDescriptors === undefined) {
       previousDescriptors = new Map();
       nodeFacadeDescriptors.set(node, previousDescriptors);
+      const reference = new WeakRef(node);
+      facadedNodes.add(reference);
+      collectedFacadedNodes.register(node, reference);
     }
     for (const property of Reflect.ownKeys(descriptors)) {
       if (!previousDescriptors.has(property)) {
@@ -1096,7 +1110,13 @@ export function installNodeFacade(
   };
 
   const dispose = (): void => {
-    for (const [node, descriptors] of nodeFacadeDescriptors) {
+    for (const reference of facadedNodes) {
+      const node = reference.deref();
+      const descriptors =
+        node === undefined ? undefined : nodeFacadeDescriptors.get(node);
+      if (node === undefined || descriptors === undefined) {
+        continue;
+      }
       for (const [property, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (node as unknown as Record<PropertyKey, unknown>)[property];
@@ -1104,8 +1124,9 @@ export function installNodeFacade(
           Object.defineProperty(node, property, descriptor);
         }
       }
+      nodeFacadeDescriptors.delete(node);
     }
-    nodeFacadeDescriptors.clear();
+    facadedNodes.clear();
   };
 
   markVirtualNode(options.html);
