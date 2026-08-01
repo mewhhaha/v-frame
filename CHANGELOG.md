@@ -17,12 +17,22 @@ from.
   `back()`, `forward()`, `go(delta)`, and the `canGoBack` / `canGoForward`
   properties. They delegate to the same history session guest-initiated
   navigation uses, fire the cancelable `v-frame-navigate`, and drive the shell's
-  history under `navigation="host"`.
+  history under `navigation="host"`. Traversal resolves once the guest has
+  actually moved in both navigation modes — under `navigation="host"` the shell
+  performs it asynchronously, and the frame waits for the shell to report it —
+  so `currentURL`, `canGoBack`, and `canGoForward` are already the post-traversal
+  values when the promise settles. Host-mode traversal is bounded by the entries
+  the shell's `navigation` object reports, which is the list `canGoBack` and
+  `canGoForward` already answer from. A traversal the host cancels rejects
+  naming the entry it aimed at, not the one the guest is still on.
 - `v-frame-navigated`, the past-tense counterpart of `v-frame-navigate`. It is
-  not cancelable, carries `{ from, to, kind }`, and fires after the guest URL has
-  changed — including guest `pushState`, fragment navigation, traversal, and
-  document navigation — so a host router can read `currentURL`, `canGoBack`, and
-  `canGoForward` from the listener instead of polling.
+  not cancelable, carries `{ from, to, kind }`, and fires after the guest has
+  moved through its session — including guest `pushState`, fragment navigation,
+  traversal, and document navigation — so a host router can read `currentURL`,
+  `canGoBack`, and `canGoForward` from the listener instead of polling. It
+  reports the move rather than the URL string, so a push of the route the guest
+  is already on fires with `from === to`, while a replace of that route does
+  not fire at all.
 - `v-frame/server`, the server-side materializer for the adopted (SSR) path. It
   exports a runtime-neutral core — shell tag renaming, the injected display
   rules, script neutralization, and stylesheet rewriting — that a host drives

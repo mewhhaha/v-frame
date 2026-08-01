@@ -94,6 +94,11 @@ way the URL can change, including ones the host did not start: guest
 `pushState`, guest `replaceState`, fragment navigation, traversal, and document
 navigation (fired once the replacement document is live).
 
+What it reports is a move through the session, not a change of the URL string.
+Pushing the route the guest is already on grows the session and flips
+`canGoBack`, so it fires with `from === to`; replacing that same route moves
+nothing and stays silent.
+
 `kind` on both events is one of `"link"`, `"form"`, `"window"`, `"push"`,
 `"replace"`, `"traverse"`, or `"fragment"`.
 
@@ -125,6 +130,14 @@ Non-integer deltas are truncated, and `go(0)` resolves without doing anything.
 Traversal past either end of the session is a no-op, exactly as `history.go()`
 is — read `canGoBack` and `canGoForward` first if you need to know.
 
+They resolve once the traversal has been applied, so `currentURL`, `canGoBack`,
+and `canGoForward` already report the new entry when the promise settles, and
+`v-frame-navigated` has already fired. That holds in host mode too, where the
+shell performs the traversal asynchronously and the frame waits for it. The
+session traversed there is the one the shell's `navigation.entries()` reports —
+the same list `canGoBack` and `canGoForward` answer from — so a step that would
+leave the shell's own entries does nothing.
+
 ### How they fail
 
 Every one of these methods returns a `Promise<void>` and rejects rather than
@@ -134,7 +147,7 @@ throwing synchronously.
 | --- | --- |
 | `AbortError` | A `v-frame-navigate` listener called `preventDefault()`. |
 | `TypeError` | The route is cross-origin, or its scheme is not `http:`/`https:`. |
-| `InvalidStateError` | There is no active guest — the element is idle or disconnected. |
+| `InvalidStateError` | There is no live guest to move — the element is idle, disconnected, or still loading its first document. |
 
 ```text
 AbortError: v-frame navigation to https://host.example/documents/denied was canceled
@@ -143,8 +156,22 @@ TypeError: v-frame route "mailto:someone@example.com" must use http: or https:, 
 InvalidStateError: v-frame cannot navigate without an active guest
 ```
 
+A canceled traversal names the entry it was aiming at, not the one the guest is
+still sitting on, so a host logging the message learns which route was blocked.
+
 Traversal in host mode is the exception to the first row: the shell has already
 performed it by the time `v-frame` sees it, so it cannot be canceled.
+
+A freshly mounted frame has no guest until `v-frame-load` fires — its first
+realm is still in flight — so these methods reject with `InvalidStateError`
+until then. Wait for the event, or assign `src` and let the load carry the
+route:
+
+```ts
+frame.addEventListener("v-frame-load", () => frame.navigate("/orders/open"), {
+  once: true,
+});
+```
 
 ## Replacing the document
 

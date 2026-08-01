@@ -265,11 +265,102 @@ test("rejects imperative navigation the host cancels or cannot route", async ({
     crossOrigin: `TypeError: v-frame route https://cross-origin.invalid/route must share host origin ${fixture.origin}`,
     unsupportedScheme: `TypeError: v-frame route "mailto:someone@example.com" must use http: or https:, received mailto:`,
     canceledNavigate: `AbortError: v-frame navigation to ${fixture.origin}/documents/denied was canceled`,
-    canceledBack: `AbortError: v-frame navigation to ${fixture.origin}/documents/allowed was canceled`,
+    // The rejection names the entry the traversal aimed at, not the one it left.
+    canceledBack: `AbortError: v-frame navigation to ${fixture.origin}/documents/application.html was canceled`,
     afterCancel: `${fixture.origin}/documents/allowed`,
     idleNavigate: "InvalidStateError: v-frame cannot navigate without an active guest",
     idleBack: "InvalidStateError: v-frame cannot traverse without an active guest",
     idleCanGoBack: false,
+  });
+});
+
+test("reports a push of the current route so a host back button stays live", async ({
+  page,
+}) => {
+  const frame = await mountNavigationFrame(page);
+  await recordNavigationEvents(frame);
+
+  const result = await frame.evaluate(async (element) => {
+    const controlled = element as NavigableFrame;
+    const child = controlled.contentWindow;
+    if (child === null) {
+      throw new Error("The imperative frame has no child window");
+    }
+    const before = controlled.canGoBack;
+    // The route does not change, but the session grows an entry, so the host's
+    // back button has to hear about it.
+    await controlled.navigate(controlled.currentURL ?? "");
+    const afterNavigate = controlled.canGoBack;
+    child.history.pushState(null, "", "application.html");
+    // Replacing an entry moves nothing, so it stays silent.
+    child.history.replaceState({ step: 1 }, "", "application.html");
+    return {
+      before,
+      afterNavigate,
+      length: child.history.length,
+      currentURL: controlled.currentURL,
+    };
+  });
+
+  expect(result).toEqual({
+    before: false,
+    afterNavigate: true,
+    length: 3,
+    currentURL: `${fixture.origin}/documents/application.html`,
+  });
+  expect(await navigationEvents(frame)).toEqual([
+    "navigate:push:/documents/application.html:true",
+    "navigated:push:/documents/application.html->/documents/application.html",
+    "popstate",
+    "navigate:push:/documents/application.html:false",
+    "navigated:push:/documents/application.html->/documents/application.html",
+    "navigate:replace:/documents/application.html:false",
+  ]);
+});
+
+test("refuses to move a guest that is still loading its first document", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+
+  const result = await page.evaluate(async (src) => {
+    const failure = async (run: () => Promise<void>) => {
+      try {
+        await run();
+        return "resolved";
+      } catch (error) {
+        return `${(error as Error).name}: ${(error as Error).message}`;
+      }
+    };
+
+    const frame = document.createElement("v-frame") as NavigableFrame;
+    const loaded = new Promise<void>((resolve) => {
+      frame.addEventListener("v-frame-load", () => resolve(), { once: true });
+    });
+    frame.setAttribute("src", src);
+    document.querySelector("#host")?.append(frame);
+    // The first realm is in flight, not live, so there is no guest to move yet.
+    const loadingStatus = frame.status;
+    const navigateWhileLoading = await failure(() => frame.navigate("/documents/early"));
+    const backWhileLoading = await failure(() => frame.back());
+
+    await loaded;
+    await frame.navigate("/documents/late");
+    return {
+      loadingStatus,
+      navigateWhileLoading,
+      backWhileLoading,
+      currentURL: frame.currentURL,
+    };
+  }, `${fixture.origin}/documents/application.html`);
+
+  expect(result).toEqual({
+    loadingStatus: "loading",
+    navigateWhileLoading:
+      "InvalidStateError: v-frame cannot navigate without an active guest",
+    backWhileLoading:
+      "InvalidStateError: v-frame cannot traverse without an active guest",
+    currentURL: `${fixture.origin}/documents/late`,
   });
 });
 
@@ -426,11 +517,45 @@ test("drives shell history without touching the host page's own pushState", asyn
   });
   await expect(page).toHaveURL(`${contractFixture.origin}/documents/frame-route`);
 
-  await frame.evaluate((element) => (element as NavigableFrame).back());
-  await expect(page).toHaveURL(`${contractFixture.origin}/documents/shell-route`);
-  await expect
-    .poll(() => frame.evaluate((element) => (element as NavigableFrame).currentURL))
-    .toBe(`${contractFixture.origin}/documents/shell-route`);
+  // The shell performs its traversal asynchronously, so back() may only resolve once
+  // the guest has followed it — the same guarantee guest-owned routing already gives.
+  const traversed = await frame.evaluate(async (element) => {
+    const controlled = element as NavigableFrame;
+    await controlled.back();
+    return {
+      currentURL: controlled.currentURL,
+      href: controlled.contentWindow?.location.href,
+      canGoBack: controlled.canGoBack,
+      canGoForward: controlled.canGoForward,
+      shellURL: location.href,
+    };
+  });
+  expect(traversed).toEqual({
+    currentURL: `${contractFixture.origin}/documents/shell-route`,
+    href: `${contractFixture.origin}/documents/shell-route`,
+    canGoBack: true,
+    canGoForward: true,
+    shellURL: `${contractFixture.origin}/documents/shell-route`,
+  });
+
+  const canceled = await frame.evaluate(async (element) => {
+    const controlled = element as NavigableFrame;
+    const cancel = (event: Event) => event.preventDefault();
+    element.addEventListener("v-frame-navigate", cancel);
+    let rejection = "resolved";
+    try {
+      await controlled.navigate("/documents/blocked-route");
+    } catch (error) {
+      rejection = `${(error as Error).name}: ${(error as Error).message}`;
+    }
+    element.removeEventListener("v-frame-navigate", cancel);
+    return { rejection, currentURL: controlled.currentURL, shellURL: location.href };
+  });
+  expect(canceled).toEqual({
+    rejection: `AbortError: v-frame navigation to ${contractFixture.origin}/documents/blocked-route was canceled`,
+    currentURL: `${contractFixture.origin}/documents/shell-route`,
+    shellURL: `${contractFixture.origin}/documents/shell-route`,
+  });
 
   expect(
     await page.evaluate(() => {

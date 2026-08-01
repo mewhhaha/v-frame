@@ -88,6 +88,8 @@ export class VFrameElement extends HTMLElementBase {
   readonly #internals: ElementInternals;
   #status: VFrameStatusValue = VFrameStatus.Idle;
   #currentURL: string | null = null;
+  // The guest's index in its own session, or null while no realm has reported one.
+  #currentPosition: number | null = null;
   #realm: VFrameRealm | null = null;
   #loadingRealm: VFrameRealm | null = null;
   #realmController: AbortController | null = null;
@@ -269,20 +271,21 @@ export class VFrameElement extends HTMLElementBase {
 
   // Traversal past either end of the guest session is a no-op, exactly as
   // `history.go` is; `canGoBack` and `canGoForward` are how a host checks first.
-  #traverse(delta: number): Promise<void> {
+  // The promise settles once the guest has moved, in either navigation mode.
+  async #traverse(delta: number): Promise<void> {
     const navigation = this.#realm?.navigation ?? null;
     if (navigation === null) {
-      return Promise.reject(idleNavigationError("traverse"));
+      throw idleNavigationError("traverse");
     }
 
     const steps = Number.isFinite(delta) ? Math.trunc(delta) : 0;
     if (steps === 0) {
-      return Promise.resolve();
+      return;
     }
-    if (navigation.traverse(steps) === "canceled") {
-      return Promise.reject(canceledNavigationError(this.#currentURL ?? ""));
+    const result = await navigation.traverse(steps);
+    if (result.outcome === "canceled") {
+      throw canceledNavigationError(result.destination);
     }
-    return Promise.resolve();
   }
 
   // Imperative routes resolve against the live guest URL and are held to the
@@ -411,6 +414,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#generation += 1;
     this.#destroyRealm();
     this.#currentURL = null;
+    this.#currentPosition = null;
     this.#historySession = null;
     this.#setStatus(VFrameStatus.Idle);
   }
@@ -457,6 +461,7 @@ export class VFrameElement extends HTMLElementBase {
       this.#realmController = null;
       this.#historySession = null;
       this.#currentURL = null;
+      this.#currentPosition = null;
       for (const child of Array.from(this.#root.children)) {
         child.remove();
       }
@@ -903,12 +908,31 @@ export class VFrameElement extends HTMLElementBase {
     this.#dispatch<VFrameErrorEventDetail>("v-frame-error", detail);
   }
 
+  // The position comes from whichever realm is reporting, including one still loading
+  // its first document — that realm owns the session the URL change belongs to.
+  #historyPosition(): number | null {
+    return (this.#realm ?? this.#loadingRealm)?.navigation.position ?? null;
+  }
+
   // The past-tense counterpart of `v-frame-navigate`: the guest URL is already the new
   // one, so a host router can read `currentURL`, `canGoBack` and `canGoForward` here.
   #setCurrentURL(url: string, kind: VFrameNavigationKind | null): void {
     const from = this.#currentURL;
+    const fromPosition = this.#currentPosition;
+    const position = this.#historyPosition();
     this.#currentURL = url;
-    if (kind === null || from === null || from === url) {
+    this.#currentPosition = position;
+    if (kind === null || from === null) {
+      return;
+    }
+    // Pushing the URL the guest is already on still moves the session, and
+    // `canGoBack` moves with it, so the position decides — not the URL string.
+    // Until a realm has reported a position there is nothing to compare, and the
+    // URL is the only signal.
+    const moved =
+      from !== url ||
+      (fromPosition !== null && position !== null && fromPosition !== position);
+    if (!moved) {
       return;
     }
     this.#dispatch<VFrameNavigatedEventDetail>("v-frame-navigated", {

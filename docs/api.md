@@ -94,11 +94,13 @@ v-frame:state(error) {
 | Method | Effect |
 | --- | --- |
 | `navigate(url, { replace })` | Same-document navigation to another same-origin route. |
-| `back()`, `forward()`, `go(delta)` | Traverses the guest session. |
+| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved. |
 | `reload()` | Reloads the current guest document over the network. |
 
 All four return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
+None of them can run before `v-frame-load`, because the first guest is not live
+until then.
 
 ```ts
 await frame.reload();
@@ -130,7 +132,9 @@ traversal in host mode, which the shell performs and cannot take back.
 `v-frame-navigated` is the past-tense counterpart: the guest URL is already the
 new one when it fires, so `currentURL`, `canGoBack`, and `canGoForward` can be
 read directly from the listener. It covers guest-initiated `pushState` and
-`replaceState`, fragment navigation, traversal, and document navigation.
+`replaceState`, fragment navigation, traversal, and document navigation. It
+reports a move through the session rather than a change of the URL string, so a
+push of the route the guest is already on fires with `from === to`.
 
 Error `phase` is one of `entry`, `bootstrap`, `stylesheet`, `script`, `runtime`,
 `navigation`, or `network`. A fatal error ends the current load and moves the

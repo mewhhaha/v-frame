@@ -16,12 +16,28 @@ export type DocumentHistoryMode = "push" | "replace";
 /** The outcome of a navigation the host drove through the element's imperative API. */
 export type NavigationOutcome = "applied" | "canceled" | "unavailable";
 
+/**
+ * A traversal names the entry it aimed at when it is refused, so the host learns
+ * which route a `v-frame-navigate` listener blocked rather than the one the guest
+ * is still sitting on.
+ */
+export type TraversalOutcome =
+  | { readonly outcome: "applied" | "unavailable" }
+  | { readonly outcome: "canceled"; readonly destination: string };
+
 /** What `VFrameElement` drives; both history implementations satisfy it. */
 export interface NavigationControls {
   readonly canGoBack: boolean;
   readonly canGoForward: boolean;
+  /** Index of the current entry in the session the guest is moving through. */
+  readonly position: number;
   navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome;
-  traverse(delta: number): NavigationOutcome;
+  /**
+   * Resolves once the traversal has been applied and the guest URL reports it —
+   * the shell performs its own traversals asynchronously, and a host awaiting
+   * `back()` has to see the same state in either navigation mode.
+   */
+  traverse(delta: number): Promise<TraversalOutcome>;
 }
 
 export interface NavigateDispatchOptions {
@@ -234,9 +250,10 @@ export abstract class HistoryController implements NavigationControls {
 
   abstract get canGoBack(): boolean;
   abstract get canGoForward(): boolean;
+  abstract get position(): number;
   abstract install(): void;
   abstract navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome;
-  abstract traverse(delta: number): NavigationOutcome;
+  abstract traverse(delta: number): Promise<TraversalOutcome>;
   abstract navigateFragment(url: string, state?: unknown): boolean;
   abstract restoreMirroredURL(): void;
 
@@ -314,6 +331,8 @@ export abstract class HistoryController implements NavigationControls {
 export class BoundHistory extends HistoryController {
   readonly #hostWindow: Window;
   readonly #listenerLifetime = new AbortController();
+  // Resolvers waiting for the shell to report the entry change this frame asked for.
+  readonly #hostChangeWaiters = new Set<() => void>();
   #currentURL: string;
   // Set while this frame is the one driving the host history, which both suppresses
   // the echo back into the guest and names the navigation the observer sees.
@@ -433,6 +452,10 @@ export class BoundHistory extends HistoryController {
     return !this.disposed && hostNavigation(this.#hostWindow).canGoForward;
   }
 
+  override get position(): number {
+    return hostNavigation(this.#hostWindow).currentEntry?.index ?? -1;
+  }
+
   override navigate(url: string, mode: DocumentHistoryMode): NavigationOutcome {
     if (this.disposed) {
       return "unavailable";
@@ -450,14 +473,43 @@ export class BoundHistory extends HistoryController {
     return "applied";
   }
 
-  override traverse(delta: number): NavigationOutcome {
+  override async traverse(delta: number): Promise<TraversalOutcome> {
     if (this.disposed) {
-      return "unavailable";
+      return { outcome: "unavailable" };
     }
+
+    // Traversal is bounded by the entries the shell's navigation object reports,
+    // which is the same list `canGoBack` and `canGoForward` answer from. Asking the
+    // platform for a step it cannot take would never report back at all.
+    const navigation = hostNavigation(this.#hostWindow);
+    const currentEntry = navigation.currentEntry;
+    if (currentEntry === null) {
+      return { outcome: "unavailable" };
+    }
+    const destination = navigation.entries()[currentEntry.index + delta];
+    if (destination === undefined || destination.key === currentEntry.key) {
+      return { outcome: "unavailable" };
+    }
+
     // The shell owns the session, so its traversal reaches the guest through the
-    // same observer a user-driven back button would.
-    this.#hostWindow.history.go(delta);
-    return "applied";
+    // same observer a user-driven back button would — and that observer, not the
+    // platform call, is what tells the host the guest has actually moved.
+    const mirrored = this.#awaitHostChange();
+    const traversal = navigation.traverseTo(destination.key);
+    // Nothing awaits the whole traversal, so an aborted one would otherwise surface
+    // as an unhandled rejection on the host page.
+    traversal.finished?.catch(() => undefined);
+    // A shell that refuses its own traversal from a `navigate` listener never
+    // changes entry, so there would be nothing for the observer to report.
+    const committed = (traversal.committed ?? Promise.resolve()).then(
+      () => true,
+      () => false,
+    );
+    if (!(await committed)) {
+      return { outcome: "unavailable" };
+    }
+    await mirrored;
+    return { outcome: this.disposed ? "unavailable" : "applied" };
   }
 
   override navigateFragment(url: string, state: unknown = null): boolean {
@@ -486,6 +538,23 @@ export class BoundHistory extends HistoryController {
     }
     super.dispose();
     this.#listenerLifetime.abort();
+    // A traversal still in flight will never be observed now, so release it rather
+    // than leaving the host's `back()` promise pending forever.
+    this.#settleHostChangeWaiters();
+  }
+
+  #awaitHostChange(): Promise<void> {
+    return new Promise((resolve) => {
+      this.#hostChangeWaiters.add(resolve);
+    });
+  }
+
+  #settleHostChangeWaiters(): void {
+    const waiters = Array.from(this.#hostChangeWaiters);
+    this.#hostChangeWaiters.clear();
+    for (const waiter of waiters) {
+      waiter();
+    }
   }
 
   protected override get currentURL(): string {
@@ -550,6 +619,7 @@ export class BoundHistory extends HistoryController {
     const originatingKind = this.#originatingKind;
     if (originatingKind !== null) {
       this.#synchronizeFromHost(originatingKind, false);
+      this.#settleHostChangeWaiters();
       return;
     }
     if (change === "traverse") {
@@ -564,6 +634,7 @@ export class BoundHistory extends HistoryController {
       }
     }
     this.#synchronizeFromHost(change, true);
+    this.#settleHostChangeWaiters();
   }
 
   #synchronizeFromHost(kind: VFrameNavigationKind | null, dispatchEvents: boolean): void {
@@ -628,6 +699,10 @@ export class VirtualHistory extends HistoryController {
 
   override get canGoForward(): boolean {
     return !this.disposed && this.#session.currentIndex < this.#session.length - 1;
+  }
+
+  override get position(): number {
+    return this.#session.currentIndex;
   }
 
   override install(): void {
@@ -758,11 +833,13 @@ export class VirtualHistory extends HistoryController {
     return "applied";
   }
 
-  override traverse(delta: number): NavigationOutcome {
+  // The virtual session is applied synchronously; the promise only exists so both
+  // navigation modes resolve at the same point in the traversal.
+  override traverse(delta: number): Promise<TraversalOutcome> {
     if (this.disposed) {
-      return "unavailable";
+      return Promise.resolve({ outcome: "unavailable" });
     }
-    return this.#traverse(Math.trunc(delta), true);
+    return Promise.resolve(this.#traverse(Math.trunc(delta), true));
   }
 
   pushState(state: unknown, url?: string | URL | null): boolean {
@@ -907,27 +984,27 @@ export class VirtualHistory extends HistoryController {
     return Number.isFinite(number) ? number | 0 : 0;
   }
 
-  #traverse(delta: number, cancelable = false): NavigationOutcome {
+  #traverse(delta: number, cancelable = false): TraversalOutcome {
     const nextIndex = this.#session.currentIndex + Math.trunc(delta);
     if (
       nextIndex < 0 ||
       nextIndex >= this.#session.length ||
       nextIndex === this.#session.currentIndex
     ) {
-      return "unavailable";
+      return { outcome: "unavailable" };
     }
 
     const nextEntry = this.#session.entryAt(nextIndex);
     if (nextEntry === undefined) {
-      return "unavailable";
+      return { outcome: "unavailable" };
     }
     if (!this.#approve(nextEntry.url, "traverse", nextEntry.state, cancelable)) {
-      return "canceled";
+      return { outcome: "canceled", destination: nextEntry.url };
     }
 
     if (nextEntry.documentID !== this.#session.currentDocumentID) {
       this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex));
-      return "applied";
+      return { outcome: "applied" };
     }
 
     const previousURL = this.currentURL;
@@ -935,7 +1012,7 @@ export class VirtualHistory extends HistoryController {
     this.#session.traverse(nextIndex);
     this.#activeState = this.cloneState(nextEntry.state);
     this.#commit("traverse", "activate", previousURL);
-    return "applied";
+    return { outcome: "applied" };
   }
 
   #approve(
