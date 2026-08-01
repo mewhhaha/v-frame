@@ -1,127 +1,71 @@
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+import type { IncomingMessage } from "node:http";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  bundleRoute,
+  type HTTPFixture,
+  requestPathname,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 interface ObservedRequest {
   path: string;
   cookie: string;
 }
 
-interface XHRFixture {
-  origin: string;
-  requests: ObservedRequest[];
-  close(): Promise<void>;
-}
-
-function reply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  body: string,
-  headers: Record<string, string> = {},
-) {
-  response.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store",
-    ...headers,
-  });
-  response.end(body);
-}
+let fixture: HTTPFixture<ObservedRequest>;
 
 function page(body: string): string {
   return `<!doctype html><html><body>${body}</body></html>`;
 }
 
-function requestPath(request: IncomingMessage): string {
-  return new URL(request.url ?? "/", "http://fixture.test").pathname;
+function observeRequest(request: IncomingMessage): ObservedRequest {
+  return { path: requestPathname(request), cookie: request.headers.cookie ?? "" };
 }
 
-async function startXHRFixture(): Promise<XHRFixture> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const requests: ObservedRequest[] = [];
-  const server = createServer((request, response) => {
-    const path = requestPath(request);
-    requests.push({ path, cookie: request.headers.cookie ?? "" });
-    if (path === "/")
-      return reply(response, 200, "text/html", page('<div id="host"></div>'));
-    if (path === "/dist/index.js") {
-      if (!existsSync(bundle))
-        return reply(response, 404, "text/plain", "Build output not found");
-      response.writeHead(200, {
-        "content-type": "text/javascript",
-        "cache-control": "no-store",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-    if (path === "/documents/xhr.html")
-      return reply(
-        response,
-        200,
-        "text/html",
-        page('<link rel="stylesheet" href="/styles/guest.css"><main>XHR fixture</main>'),
-      );
-    if (path === "/styles/guest.css")
-      return reply(response, 200, "text/css", "main { color: rgb(1, 2, 3); }");
-    if (path === "/api/xhr-echo") {
-      return reply(
-        response,
-        200,
-        "application/json",
-        JSON.stringify({
+function startXHRFixture(): Promise<HTTPFixture<ObservedRequest>> {
+  return startHTTPFixture({
+    record: observeRequest,
+    routes: {
+      "/": page('<div id="host"></div>'),
+      "/dist/index.js": bundleRoute,
+      "/documents/xhr.html": page(
+        '<link rel="stylesheet" href="/styles/guest.css"><main>XHR fixture</main>',
+      ),
+      "/styles/guest.css": { type: "text/css", body: "main { color: rgb(1, 2, 3); }" },
+      "/api/xhr-echo": (request) => ({
+        type: "application/json",
+        headers: { "x-fixture-response": "visible" },
+        body: JSON.stringify({
           cookie: request.headers.cookie ?? "",
           method: request.method,
           requestHeader: request.headers["x-fixture-request"] ?? "",
         }),
-        { "x-fixture-response": "visible" },
-      );
-    }
-    if (path === "/api/slow") {
-      setTimeout(() => reply(response, 200, "text/plain", "slow response"), 250);
-      return;
-    }
-    if (path === "/api/slow-stream") {
-      response.writeHead(200, {
-        "content-type": "text/plain",
-        "cache-control": "no-store",
-      });
-      response.write("first chunk");
-      setTimeout(() => response.end("second chunk"), 250);
-      return;
-    }
-    if (path === "/api/teardown-stream") {
-      response.writeHead(200, {
-        "content-type": "text/plain",
-        "cache-control": "no-store",
-      });
-      response.write("x".repeat(64 * 1024));
-      const timer = setTimeout(() => response.end("second chunk"), 5_000);
-      response.once("close", () => clearTimeout(timer));
-      return;
-    }
-    return reply(response, 404, "text/plain", `No XHR fixture for ${path}`);
-  });
-  await new Promise<void>((resolveListening) =>
-    server.listen(0, "127.0.0.1", resolveListening),
-  );
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("The XHR fixture did not expose a TCP address");
-  }
-
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    requests,
-    async close() {
-      await new Promise<void>((resolveClosed, reject) =>
-        server.close((error) => (error ? reject(error) : resolveClosed())),
-      );
+      }),
+      "/api/slow": { type: "text/plain", body: "slow response", delay: 250 },
+      "/api/slow-stream": (_request, response) => {
+        response.writeHead(200, {
+          "content-type": "text/plain",
+          "cache-control": "no-store",
+        });
+        response.write("first chunk");
+        setTimeout(() => response.end("second chunk"), 250);
+        return undefined;
+      },
+      // Held open long enough that a frame teardown always beats the final chunk.
+      "/api/teardown-stream": (_request, response) => {
+        response.writeHead(200, {
+          "content-type": "text/plain",
+          "cache-control": "no-store",
+        });
+        response.write("x".repeat(64 * 1024));
+        const timer = setTimeout(() => response.end("second chunk"), 5_000);
+        response.once("close", () => clearTimeout(timer));
+        return undefined;
+      },
     },
-  };
+  });
 }
-
-let fixture: XHRFixture;
 
 test.beforeAll(async () => {
   fixture = await startXHRFixture();
@@ -131,18 +75,7 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function addHostCookie(page: import("@playwright/test").Page) {
+async function addHostCookie(page: Page) {
   await page.context().addCookies([
     {
       name: "xhr_host_cookie",
@@ -153,32 +86,16 @@ async function addHostCookie(page: import("@playwright/test").Page) {
   ]);
 }
 
-async function mountFrame(
-  page: import("@playwright/test").Page,
+function mountXHRFrame(
+  page: Page,
   id: string,
   credentials: "omit" | "same-origin" | "include",
-) {
-  await page.evaluate(
-    ({ frameID, frameSource, frameCredentials }) => {
-      const frame = document.createElement("v-frame");
-      frame.id = frameID;
-      frame.setAttribute("credentials", frameCredentials);
-      frame.setAttribute("src", frameSource);
-      document.querySelector("#host")?.append(frame);
-    },
-    {
-      frameID: id,
-      frameSource: `${fixture.origin}/documents/xhr.html`,
-      frameCredentials: credentials,
-    },
-  );
-  const frame = page.locator(`v-frame#${id}`);
-  await expect
-    .poll(() =>
-      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
-    )
-    .toBe("ready");
-  return frame;
+): Promise<Locator> {
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/xhr.html`,
+    id,
+    credentials,
+  });
 }
 
 async function childValue<T, Argument = undefined>(
@@ -207,12 +124,12 @@ test("applies the credentials mode to the entry document and stylesheet fetches"
   page,
 }) => {
   await addHostCookie(page);
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   const observed = new Map<string, ObservedRequest[]>();
   for (const credentials of ["omit", "same-origin", "include"] as const) {
     const before = fixture.requests.length;
-    await mountFrame(page, `entry-${credentials}`, credentials);
+    await mountXHRFrame(page, `entry-${credentials}`, credentials);
     observed.set(
       credentials,
       fixture.requests
@@ -243,9 +160,9 @@ test("resolves native XHR against the guest base and preserves headers, JSON, an
   page,
 }) => {
   await addHostCookie(page);
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
-  const frame = await mountFrame(page, "same-origin-xhr", "same-origin");
+  const frame = await mountXHRFrame(page, "same-origin-xhr", "same-origin");
   const result = await childValue(frame, async (window) => {
     const xhr = new window.XMLHttpRequest();
     const events: string[] = [];
@@ -304,7 +221,7 @@ test("resolves native XHR against the guest base and preserves headers, JSON, an
   });
   expect(result.allHeaders).toContain("x-fixture-response: visible");
 
-  const included = await mountFrame(page, "include-xhr", "include");
+  const included = await mountXHRFrame(page, "include-xhr", "include");
   const includedResult = await childValue(included, async (window) => {
     const xhr = new window.XMLHttpRequest();
     xhr.open("GET", "/api/xhr-echo");
@@ -322,9 +239,9 @@ test("resolves native XHR against the guest base and preserves headers, JSON, an
 });
 
 test("disposal aborts reentrant XHR sends", async ({ page }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
-  await mountFrame(page, "reentrant", "same-origin");
+  await mountXHRFrame(page, "reentrant", "same-origin");
   await page.evaluate(async () => {
     const frame = document.querySelector("#reentrant") as HTMLElement & {
       contentWindow: (Window & typeof globalThis) | null;
@@ -368,11 +285,11 @@ test("disposal aborts reentrant XHR sends", async ({ page }) => {
 });
 
 test("teardown suppresses XHR callbacks", async ({ page }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
 
   for (const teardown of ["disconnect", "supersede"] as const) {
     const frameID = `silent-${teardown}`;
-    const frame = await mountFrame(page, frameID, "same-origin");
+    const frame = await mountXHRFrame(page, frameID, "same-origin");
     await page.evaluate(
       ({ id, teardownKind }) => {
         const element = document.querySelector(`#${id}`) as
@@ -469,8 +386,8 @@ test("teardown suppresses XHR callbacks", async ({ page }) => {
 test("resolves invalid network URLs to rejections and native SyntaxError throws", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "invalid-urls", "same-origin");
+  await installBundle(page, fixture.origin);
+  const frame = await mountXHRFrame(page, "invalid-urls", "same-origin");
   const result = await childValue(frame, async (window) => {
     let openError = "";
     try {
