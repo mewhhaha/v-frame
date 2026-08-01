@@ -256,6 +256,22 @@ node is marked whether or not an ancestor is ever re-parented. Nothing watches a
 subtree, which is why detached ones are still walked in full — and why the walk still runs
 on the path that matters most, building a subtree offline before inserting it.
 
+### What it changed about *when* repair happens
+
+The gate is not free, and the cost is a timing change rather than a correctness one. For a
+connected subtree it converts synchronous repair into deferred repair. A node one of those
+unintercepted writes put inside a connected marked element — the `textContent` setter's
+text node, `insertAdjacentText`, `setHTMLUnsafe` — used to be marked by the next walk over
+an ancestor, synchronously, inside whatever re-parented that ancestor. That walk now
+returns early, so the node is marked when the realm's `MutationObserver` callback runs, at
+the next microtask checkpoint. Guest code that writes through one of those APIs, moves an
+ancestor and reads the new node's identity in the same synchronous turn now gets native
+answers where it used to get virtual ones. The re-parent case in
+`tests/dom-fidelity.spec.ts` reads after the observer for exactly this reason, and
+[`limitations.md`](./limitations.md#node-identity-after-an-unintercepted-write) states it
+as a limitation with the affected APIs. A detached subtree is unaffected: it is still
+walked in full on insertion, synchronously.
+
 `tests/dom-fidelity.spec.ts` holds both halves: one case moves a marked subtree and asserts
 identity, root and rebasing survive plus that an `insertAdjacentText` into it is still
 marked, and one builds a detached subtree through two paths that mark nothing and asserts

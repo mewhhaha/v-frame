@@ -12,6 +12,7 @@ test suite. Each entry says what throws, why it has to, and what to do instead.
 | [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close) | `NotSupportedError` |
 | [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets) | `NotSupportedError` |
 | [Direct child mutation of `document`](#direct-child-mutation-of-document) | `NotSupportedError` |
+| [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late |
 | [CSSOM `@import` rules](#cssom-import-rules) | `NotSupportedError` |
 | [Non-`GET` form submission](#non-get-form-submission) | `v-frame-error`, navigation dropped |
 | [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank) | Navigation dropped |
@@ -119,6 +120,42 @@ document.documentElement.setAttribute("lang", "en");
 document.head.append(meta);
 document.body.append(root);
 ```
+
+## Node identity after an unintercepted write
+
+**Does not throw.** A node that one of these writes puts inside a *connected*
+guest element is marked a microtask later rather than synchronously:
+
+- the text node the `textContent` setter creates,
+- `insertAdjacentText`,
+- `setHTMLUnsafe`.
+
+Until the realm's `MutationObserver` callback runs — the next microtask
+checkpoint — the new node is not in the virtual-node set, so the realm's
+identity accessors do not answer for it: `ownerDocument` and `baseURI` report the
+host document's, `getRootNode()` reports the frame's shadow root rather than the
+virtual document, and any URL attribute `setHTMLUnsafe` brought with it has not
+been rebased yet. Read the identity of such a node after a microtask, or
+insert it through an API the facade does intercept — `appendChild`,
+`insertBefore`, `replaceChild`, `append`, `prepend`, `replaceChildren`, `before`,
+`after`, `replaceWith`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, or
+`insertAdjacentElement` — all of which mark synchronously.
+
+**Why.** The facade marks a node when it intercepts the write that inserts it,
+and these three are not intercepted: `insertAdjacentText` and `setHTMLUnsafe` are
+not patched at all, and the patched `textContent` setter hands the string to the
+native setter, which creates the text node itself. What finds them is the realm's
+`MutationObserver`, which watches the shell with `subtree: true` and hands every
+added node back to marking, and observer callbacks are microtasks.
+
+Marking used to also repair these nodes synchronously, as a side effect of
+re-walking any marked subtree that was re-parented. That walk is now skipped for
+a subtree that is already marked and still in the tree, which is what makes
+re-parenting about 3.8x cheaper — see [round two of the marking
+benchmark](./node-marking-benchmark.md#round-two--re-parenting) — so on a
+connected subtree the observer is the only repair left. A *detached* subtree is
+still walked in full when it is inserted, so building a tree offline and then
+inserting it marks everything in it synchronously, before any observer runs.
 
 ## CSSOM `@import` rules
 

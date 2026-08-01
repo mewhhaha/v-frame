@@ -52,7 +52,9 @@ from.
   the project maps that name to `src/` rather than to declarations `dist/` does
   not have until after `typecheck` has run.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
-  threshold, currently 68,000 bytes against a measured 65,882.
+  threshold, currently 68,000 bytes. The measured size is not repeated here: the
+  command prints it, and a figure copied into prose is stale by the next commit
+  — this one was, three revisions running.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
   the `src/css.ts` rewriters, `absolutizeSrcset`, `VirtualHistorySession`, and
   the facade's prototype-patch registry. 183 tests that run in about a tenth of a
@@ -109,10 +111,13 @@ from.
   itself keeps working.
 - The published bundles are minified, and `css-tree` is imported through its
   `parser`, `generator`, and `walker` subpaths so the unused lexer tables are no
-  longer shipped. Measured by `pnpm size`, which minifies and gzips
-  `src/index.ts` in memory, that is 97,514 bytes down to 65,755 — a third of the
-  payload. Every byte count in this entry comes from that command, so it is
-  reproducible rather than remembered.
+  longer shipped. Together they take about a third off the gzipped payload.
+  `pnpm size`, which minifies and gzips `src/index.ts` in memory, prints what
+  that payload is now, and it is the only place that number is kept; no bundle
+  byte count is copied into this entry, because every copy of it so far has gone
+  stale within a commit or two of being written down. The heap and timing
+  figures below are a different matter — they come from `pnpm bench` against a
+  named machine and browser, and are stated as measurements of that run.
 - A guest node no longer carries the facade on itself. `ownerDocument` and
   `baseURI` are answered by accessors on the realm's `Node.prototype`, gated on
   the same virtual-node set `getRootNode` was already gated on, instead of three
@@ -131,12 +136,18 @@ from.
   marked and still inside the virtual tree is left alone, and one that is
   detached is walked in full, because nothing observes a detached subtree while
   the realm's `MutationObserver` hands every node added to a connected one back
-  to marking on its own. Measured by `pnpm bench`, which now has a `re-parent`
-  row, moving a settled hundred-node subtree 1,000 times drops from 254–297 ms to
-  59–78 ms — from 48–59x plain host DOM to 12–13x. Activation and insertion do
-  not change; the earlier note's guess that insertion was bound by this was
-  wrong, and [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md)
-  now records what a profile says it is bound by instead.
+  to marking on its own. That observer is a microtask where the walk was
+  synchronous, so a node an unintercepted write put inside a connected marked
+  element — the `textContent` setter's text node, `insertAdjacentText`,
+  `setHTMLUnsafe` — is now marked a microtask after the write rather than by the
+  next re-parent of an ancestor. [`docs/limitations.md`](./docs/limitations.md)
+  records that as a limitation, with the list of APIs it affects. Measured by
+  `pnpm bench`, which now has a `re-parent` row, moving a settled hundred-node
+  subtree 1,000 times drops from 254–297 ms to 59–78 ms — from 48–59x plain host
+  DOM to 12–13x. Activation and insertion do not change; the earlier note's guess
+  that insertion was bound by this was wrong, and
+  [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md) now
+  records what a profile says it is bound by instead.
 - The facade no longer retains every node it ever marked. The descriptors it
   records so `dispose()` can put a node back the way it found it were held in a
   strong `Map` keyed by node, so a guest that churned rows grew for the lifetime
@@ -200,7 +211,7 @@ from.
 
 ### Removed
 
-- The credentialless XHR transport (`src/credentialless-xhr.ts`, 948 lines): a
+- The credentialless XHR transport (`src/credentialless-xhr.ts`, 1,031 lines): a
   from-scratch reimplementation of `XMLHttpRequest` over `fetch`, whose only
   purpose was to suppress same-origin cookies for a guest that could send them
   itself through any other API. `XMLHttpRequest` is now always the native one, so
@@ -234,6 +245,12 @@ from.
   oldest-first and left the first patch of any twice-patched key installed. The
   realm's `dispose()` guards against running twice, so this was latent rather
   than observed; `tests/unit/facade-patches.test.ts` now pins it directly.
-- [`docs/api.md`](./docs/api.md) claimed `reload()` cannot run before
-  `v-frame-load`. It can, and it never rejects; only `navigate`, `back`,
-  `forward` and `go` need a live guest.
+- [`docs/api.md`](./docs/api.md) described `reload()` wrongly, twice over. It
+  claimed the method cannot run before `v-frame-load` — it can; only `navigate`,
+  `back`, `forward` and `go` need a live guest — and the correction to that
+  claimed it never rejects, which is worse. `reload()` settles with the load it
+  starts, so it rejects with a non-HTTP or cross-origin `src`, and with the
+  entry fetch's error whenever the response is not `ok`: a frame whose route
+  404s rejects. It resolves only when it starts no load, because the element is
+  disconnected or has no `src`, or when a later load supersedes the one it
+  started. `tests/contract.spec.ts` now pins all five outcomes on both engines.

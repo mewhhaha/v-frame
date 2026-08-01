@@ -100,17 +100,32 @@ v-frame:state(error) {
 All four return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
 None of those three can run before `v-frame-load`, because the first guest is
-not live until then. `reload()` is the exception: it never rejects. On a
-connected frame with a `src` it starts a fresh load whether or not a guest is
-live yet, and on an idle frame it returns the element to `status === "idle"`
-and resolves.
+not live until then. `reload()` can: on a connected frame with a `src` it starts
+a fresh load whether or not a guest is live yet.
+
+`reload()` settles with the load it starts, so it rejects with the same errors
+an `src` assignment reports through `v-frame-error`: a `TypeError` for a `src`
+that is not an `http:` or `https:` URL, a `TypeError` for a cross-origin one,
+and the entry fetch's own error for a response that is not `ok`. Reloading a
+frame whose route 404s therefore rejects. It resolves in exactly three cases: the
+element is disconnected, or it has no `src` — in both of which it starts no load
+and returns the element to `status === "idle"` — or the load it did start was
+superseded by a later one before it finished.
 
 ```ts
-await frame.reload();
+try {
+  await frame.reload();
+} catch (error) {
+  // The failure the frame reports through `v-frame-error` as well.
+}
 ```
 
-The current content stays visible until its replacement is ready. A failed
-reload restores the current guest and emits a nonfatal `v-frame-error`.
+The current content stays visible until its replacement is ready. A reload that
+fails with a live guest to fall back on restores it and emits a nonfatal
+`v-frame-error`; one that fails without a guest to restore — a frame already in
+`status === "error"`, or one reloading before its first guest went live — emits
+a fatal `v-frame-error` and leaves the element in `status === "error"`.
+`tests/contract.spec.ts` pins each of these outcomes.
 
 ## Events
 
