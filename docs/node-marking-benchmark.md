@@ -11,6 +11,11 @@ nodes and onto the realm's `Node.prototype`, gated on the virtual-node set that
 `getRootNode` was already gated on, cut the marginal activation cost by about 30% and the
 retained heap by about 86%, with the whole suite green.
 
+A second round, [below](#round-two--re-parenting), answers the item that one left open:
+marking re-walked a subtree every time it was re-parented. It no longer does, and moving a
+settled subtree got about 3.8x cheaper — but insertion, which the first round guessed was
+bound by the same re-walking, turned out not to be.
+
 ## How to reproduce
 
 ```
@@ -26,11 +31,14 @@ measures it two ways in headless chromium:
 
 Then, in the settled tree, it appends 1,000 elements one at a time from a script that is
 byte-identical in the two realms (served once, loaded by both), which is what drives
-`finishInsertion` and with it `markVirtualNode`. Heap is `Runtime.getHeapUsage` after
-`HeapProfiler.collectGarbage` over CDP, reported as the delta across the whole
-configuration. Every configuration is the median of three runs on a fresh page.
+`finishInsertion` and with it `markVirtualNode`. Then it re-parents: 1,000 times it appends
+one of the guest's `<section>` groups — about a hundred nodes each, already in the tree and
+already marked — back onto the same parent, which is the shape of a list reordering its
+rows. Heap is `Runtime.getHeapUsage` after `HeapProfiler.collectGarbage` over CDP, reported
+as the delta across the whole configuration. Every configuration is the median of three
+runs on a fresh page.
 
-A fourth measurement churns rather than grows: it creates 2,000 rows in a settled guest,
+A fifth measurement churns rather than grows: it creates 2,000 rows in a settled guest,
 removes them and drops every reference, and reports the heap that survives. That one reads
 twice, because the registries hold weak references and the first collection only clears
 them — the second collects what their finalizers released.
@@ -208,6 +216,86 @@ does not change the cost, and the same quadratic is why the churn in
 `tests/node-retention.spec.ts` styles only every tenth row. That is a separate problem and
 is untouched here.
 
+## Round two — re-parenting
+
+The note above closed with marking still re-walking a subtree every time it moved, called
+that the largest remaining item, and guessed it was also why insertion stayed ~25x host
+DOM. The first half was right and the second was wrong, and the `re-parent` row exists
+because neither could be told from the tables above: the benchmark grew trees, and never
+moved one.
+
+### What the walk was for, and what it is now
+
+Everything marking does is a statement about the node itself. Joining the virtual-node set
+the realm's identity accessors read, remembering the authored style, `rel` and URL
+attributes, defusing scripts and inline handlers, installing the foreign-element facade —
+none of it depends on where the node hangs. The one input that is not per-node is the
+document base URL, and a base change already rebases the whole tree through
+`rebaseURLs()`, so a move does not need it either.
+
+So `markVirtualNode` now returns immediately for a node that is **already in the
+virtual-node set and still inside the virtual tree**, and walks in full otherwise.
+
+The gate is connectedness rather than an "already walked" flag because the walk is not only
+marking, it is also *repair*. Plenty of DOM writes put an unmarked node inside an already
+marked one without going through anything the facade patches — the `textContent` setter
+creates its text node natively, `insertAdjacentText` and `setHTMLUnsafe` are not
+intercepted at all — and until now the next walk over an ancestor is what found them. For a
+connected subtree that repair is redundant: the realm's `MutationObserver` watches the
+shell with `subtree: true`, and hands every added node straight back to marking, so the
+node is marked whether or not an ancestor is ever re-parented. Nothing watches a *detached*
+subtree, which is why detached ones are still walked in full — and why the walk still runs
+on the path that matters most, building a subtree offline before inserting it.
+
+`tests/dom-fidelity.spec.ts` holds both halves: one case moves a marked subtree and asserts
+identity, root and rebasing survive plus that an `insertAdjacentText` into it is still
+marked, and one builds a detached subtree through two paths that mark nothing and asserts
+the insertion walk finds them *synchronously*, before any observer could run. Replacing the
+gate with a bare `virtualNodes.has` check fails the second one and the existing template
+case.
+
+### Numbers
+
+Same machine and browser as above, 2026-08-01, one `pnpm bench` run before and one after,
+back to back on an idle machine. Read the re-parent row; the other two are here to show
+what did not move.
+
+| | | 1,000 | 5,000 | 20,000 | 50,000 |
+| --- | --- | --- | --- | --- | --- |
+| re-parent | before | 253.7 ms | 273.0 ms | 277.5 ms | 297.4 ms |
+| | after | 58.8 ms | 60.6 ms | 66.4 ms | 78.2 ms |
+| | host DOM | 4.5 ms | 4.6 ms | 5.2 ms | 6.2 ms |
+| insertion | before | 41.0 ms | 37.6 ms | 35.7 ms | 37.5 ms |
+| | after | 35.3 ms | 35.8 ms | 34.4 ms | 36.5 ms |
+| activation | before | 36.0 ms | 86.4 ms | 270.5 ms | 622.4 ms |
+| | after | 29.9 ms | 79.1 ms | 249.6 ms | 580.4 ms |
+
+**Re-parenting 1,000 settled subtrees drops from 254–297 ms to 59–78 ms — about 3.8x —
+and from 48–59x plain host DOM to 12–13x.** That is the whole of the claim.
+
+**Activation does not change**, and cannot: activation walks a tree that is detached when
+marking reaches it, so the gate never fires. The 5–8% in the table is run-to-run spread,
+and a second pair taken the same day put the two within 1.5% of each other.
+
+**Insertion does not reliably change either.** The pair above is 3–14% cheaper, a pair taken
+with the measurements in the other order was 1–8% dearer, and the spread on this row is
+about ±10%. What the gate removes from an insertion is the mutation observer's second walk
+over the subtree `prepareInsertion` had just walked — three nodes per row in this
+benchmark, against ~35 µs a row spent elsewhere. So the earlier note's guess was wrong:
+insertion is not bound by re-walking.
+
+### What insertion is bound by
+
+A CPU profile of the insertion loop (`Profiler.start` over CDP, unminified bundle,
+1,000-element guest) attributes about 40% of it to one thing — `querySelectorAllWithShell`
+in `src/facade/collections.ts`, reached six times per inserted row from `collectElements`,
+`subtreeHasBaseElement`, `virtualStylesFrom`, `dynamicLinksFrom` and
+`installCSSOMStyleSheets`. Each call parses its selector with `css-tree` and regenerates it
+so that `html` and `body` translate to the shell elements, and the selectors involved are
+the constants `"*"`, `"base"`, `"style"` and `"link"`. Marking itself is about 18% of the
+same profile. Caching the translation of a selector string would be the next thing to try,
+and it is a separate change from this one.
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and
@@ -216,7 +304,8 @@ is untouched here.
   `page.requestGC()`, not by this benchmark.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
-- Marking still re-walks a subtree on every insertion. `virtualNodes` short-circuits the
-  per-node work, but the recursive descent over `childNodes` and `attributes` still runs
-  in full each time a subtree is re-parented, which is the largest remaining item and the
-  likeliest explanation for insertion staying ~25x host DOM.
+- Detached subtrees are still walked in full every time they are inserted, and a guest that
+  detaches a container, edits it and re-attaches it pays the old price. Closing that needs
+  the facade to intercept every write that can put an unmarked node inside a marked one,
+  rather than repairing them afterwards; `insertAdjacentText` and `setHTMLUnsafe` are the
+  two known gaps.

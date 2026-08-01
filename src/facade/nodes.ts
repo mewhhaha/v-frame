@@ -243,7 +243,7 @@ export function installNodeFacade(
   };
   context.markVirtualAttribute = markVirtualAttribute;
 
-  const markVirtualNode = (node: Node): void => {
+  const markVirtualSubtree = (node: Node): void => {
     const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
       virtualNodes.add(node);
@@ -289,12 +289,33 @@ export function installNodeFacade(
     }
 
     for (const child of Array.from(node.childNodes)) {
-      markVirtualNode(child);
+      markVirtualSubtree(child);
     }
 
     if (isElementNode(node) && isHTMLTemplateElement(node)) {
-      markVirtualNode(node.content);
+      markVirtualSubtree(node.content);
     }
+  };
+
+  // Everything marking does is a statement about the node itself, never about
+  // where it hangs: the virtual-node set the realm's identity accessors read,
+  // the authored attribute records, the defused scripts and inline handlers.
+  // Re-parenting changes none of those answers, and the base URL — the one
+  // input that is not per-node — is rebased across the whole tree by
+  // rebaseURLs() when it changes. So a subtree that is already marked and still
+  // inside the virtual tree costs nothing to move.
+  //
+  // The gate is connectedness rather than an "already walked" flag because the
+  // realm's mutation observer watches the shell subtree and hands every node
+  // added under it back to marking on its own. Nothing watches a detached
+  // subtree, so anything the guest put inside one since the last walk — a text
+  // node from the textContent setter, the result of a DOM API the facade does
+  // not intercept — is only found by walking it again.
+  const markVirtualNode = (node: Node): void => {
+    if (virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
+      return;
+    }
+    markVirtualSubtree(node);
   };
 
   const installScrollFacade = (element: HTMLElement) => {

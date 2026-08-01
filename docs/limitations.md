@@ -223,9 +223,11 @@ past some size that rate is itself the reason not to use `v-frame`.
 virtual-node set that the realm's prototype accessors are gated on, plus the
 attribute, URL and event-handler work marking has always done. The facade cannot
 decide a node is virtual without touching it, so activation walks the whole guest
-tree and every later insertion walks the inserted subtree. Plain host DOM does
+tree and every later insertion walks the subtree it inserts. Plain host DOM does
 none of that, and Blink never materializes a JS wrapper for a node nobody has
-touched.
+touched. Moving a subtree that is already in the tree is the one case that
+escapes: it was marked when it arrived, and none of the answers marking installs
+depend on where it hangs.
 
 **Activation** — fetch, parse and insert the whole guest, both columns including
 the fetch and the parse. "Plain host DOM" is the same markup fetched,
@@ -252,18 +254,26 @@ optimization below, are in
 already there, because marking is per inserted subtree rather than per document.
 Two 60 Hz frames per thousand rows is the budget to plan against.
 
+**Re-parenting a settled subtree** — what a list does when it reorders rows —
+costs about 59–78 ms per 1,000 moves of a hundred-node subtree, against 4.5–6.2 ms
+for host DOM. Marking does not run again for a subtree that is already marked and
+still connected, so this no longer scales with how big the moved subtree is; it
+used to cost 254–297 ms.
+
 **Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
 marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
 in the host document, which never gets JS wrappers for its nodes at all.
 
-Answering `ownerDocument` and `baseURI` from the realm's `Node.prototype` instead
-of from own accessors on every node cut the marginal activation cost by about 30%
-(19.3 µs per element to 13.6) and the retained heap by about 86% (52 MB to 7.5 at
-50,000 elements). That is the whole of the improvement so far, and the numbers
-above are the post-improvement ones. What is left is the walk. Visiting every
-node once is irreducible for this design; re-walking a subtree each time it is
-re-parented is not, and is the largest untried item, but no version of this
-runtime has activated a large guest cheaply and none is planned.
+Two rounds of work produced the numbers above. Answering `ownerDocument` and
+`baseURI` from the realm's `Node.prototype` instead of from own accessors on every
+node cut the marginal activation cost by about 30% (19.3 µs per element to 13.6)
+and the retained heap by about 86% (52 MB to 7.5 at 50,000 elements). Skipping the
+walk for a subtree that is already marked and still connected then made
+re-parenting about 3.8x cheaper, without moving activation or insertion.
+
+What is left is the walk itself, and it is not going away: visiting every node
+once is irreducible for this design. No version of this runtime has activated a
+large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front

@@ -23,6 +23,8 @@ import { installBundle } from "../tests/support/mount-frame.js";
 const GUEST_SIZES = [1_000, 5_000, 20_000, 50_000];
 /** Elements appended one by one into an already-mounted guest. */
 const INSERTION_COUNT = 1_000;
+/** Re-parents of an already-settled subtree, measured in the same guest. */
+const MOVE_COUNT = 1_000;
 /** The guest the churn measurement runs against; its size is not what is measured. */
 const CHURN_GUEST_SIZE = 1_000;
 /**
@@ -37,6 +39,7 @@ const REPEATS = 3;
 
 interface BenchWindow extends Window {
   benchInsert(count: number): number;
+  benchMove(count: number): number;
   benchChurn(rows: number, cycles: number): void;
   benchCountObjects(): number;
 }
@@ -56,6 +59,8 @@ interface Sample {
   activation: number;
   /** Milliseconds to append `INSERTION_COUNT` elements into the settled tree. */
   insertion: number;
+  /** Milliseconds to re-parent an already-settled subtree `MOVE_COUNT` times. */
+  move: number;
   /** Bytes of JS heap the whole configuration retains, after a forced collection. */
   heap: number;
   /** Elements, attribute nodes and text nodes in the settled tree — what marking walks. */
@@ -86,6 +91,23 @@ window.benchInsert = (count) => {
     label.textContent = "inserted " + index;
     row.append(label);
     root.append(row);
+  }
+  return performance.now() - start;
+};
+
+// Re-parents subtrees that are already settled in the tree, which is what a list
+// or a virtualized view does when it reorders rows. Only the groups are moved, so
+// every move carries a subtree of about a hundred nodes rather than a lone node.
+window.benchMove = (count) => {
+  const root = document.querySelector("#bench-root");
+  if (root === null) throw new Error("bench root is missing");
+  const groups = Array.from(root.children).filter(
+    (child) => child.localName === "section",
+  );
+  if (groups.length === 0) throw new Error("the bench guest has no groups to move");
+  const start = performance.now();
+  for (let index = 0; index < count; index += 1) {
+    root.append(groups[index % groups.length]);
   }
   return performance.now() - start;
 };
@@ -226,9 +248,14 @@ function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap"
       const guest = frame.contentWindow;
       if (guest === null) throw new Error("the settled frame has no realm window");
       const objects = guest.benchCountObjects();
-      return { activation, objects, insertion: guest.benchInsert(options.count) };
+      return {
+        activation,
+        objects,
+        insertion: guest.benchInsert(options.count),
+        move: guest.benchMove(options.moves),
+      };
     },
-    { guestURL, count: INSERTION_COUNT },
+    { guestURL, count: INSERTION_COUNT, moves: MOVE_COUNT },
   );
 }
 
@@ -253,9 +280,10 @@ function measureHost(page: Page, guestURL: string): Promise<Omit<Sample, "heap">
         activation,
         objects: bench.benchCountObjects(),
         insertion: bench.benchInsert(options.count),
+        move: bench.benchMove(options.moves),
       };
     },
-    { guestURL, count: INSERTION_COUNT },
+    { guestURL, count: INSERTION_COUNT, moves: MOVE_COUNT },
   );
 }
 
@@ -377,6 +405,7 @@ function medianSample(samples: Sample[]): Sample {
   return {
     activation: median(samples.map((sample) => sample.activation)),
     insertion: median(samples.map((sample) => sample.insertion)),
+    move: median(samples.map((sample) => sample.move)),
     heap: median(samples.map((sample) => sample.heap)),
     objects: median(samples.map((sample) => sample.objects)),
   };
@@ -443,6 +472,16 @@ function report(measurements: Measurement[]): void {
       "v-frame": milliseconds(measurement.frame.insertion),
       "host DOM": milliseconds(measurement.host.insertion),
       overhead: ratio(measurement.frame.insertion, measurement.host.insertion),
+    })),
+  );
+
+  console.log(`\nre-parent — move a settled subtree ${MOVE_COUNT} times`);
+  console.table(
+    measurements.map((measurement) => ({
+      elements: measurement.size,
+      "v-frame": milliseconds(measurement.frame.move),
+      "host DOM": milliseconds(measurement.host.move),
+      overhead: ratio(measurement.frame.move, measurement.host.move),
     })),
   );
 

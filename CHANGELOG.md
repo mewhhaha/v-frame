@@ -66,7 +66,9 @@ from.
   version, needs no framework build step, and gains about 30 ms.
 - A benchmark for per-node marking (`pnpm bench`) and its findings note,
   [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md), which
-  now records the before and after of the optimization it motivated.
+  now records the before and after of both optimizations it motivated. Its
+  `re-parent` row moves a settled subtree rather than growing the tree, which is
+  the only measurement that distinguishes marking a node from re-marking one.
 - `docs/`: the README was split into
   [`limitations.md`](./docs/limitations.md), [`api.md`](./docs/api.md),
   [`navigation.md`](./docs/navigation.md), [`ssr.md`](./docs/ssr.md), and
@@ -106,6 +108,21 @@ from.
   from 19.3 µs to 13.6 µs. Nodes that do not inherit from the realm's prototypes
   — Gecko binds a `ShadowRoot` to its node document's global, so an adopted
   guest's shadow roots do not — keep the per-node accessors.
+- Marking no longer re-walks a subtree that is re-parented. Everything
+  `markVirtualNode` does is a statement about the node itself — the virtual-node
+  set the realm's identity accessors read, the authored style, `rel` and URL
+  attributes, the defused scripts and inline handlers — and none of it depends on
+  where the node hangs; the one input that is not per-node, the document base
+  URL, already rebases the whole tree when it changes. So a node that is already
+  marked and still inside the virtual tree is left alone, and one that is
+  detached is walked in full, because nothing observes a detached subtree while
+  the realm's `MutationObserver` hands every node added to a connected one back
+  to marking on its own. Measured by `pnpm bench`, which now has a `re-parent`
+  row, moving a settled hundred-node subtree 1,000 times drops from 254–297 ms to
+  59–78 ms — from 48–59x plain host DOM to 12–13x. Activation and insertion do
+  not change; the earlier note's guess that insertion was bound by this was
+  wrong, and [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md)
+  now records what a profile says it is bound by instead.
 - The facade no longer retains every node it ever marked. The descriptors it
   records so `dispose()` can put a node back the way it found it were held in a
   strong `Map` keyed by node, so a guest that churned rows grew for the lifetime

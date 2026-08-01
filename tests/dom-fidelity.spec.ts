@@ -187,6 +187,121 @@ test("marks attribute nodes created after their element joined the virtual tree"
   });
 });
 
+test("keeps a re-parented subtree virtual without walking it again", async ({ page }) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    const branch = virtualDocument.createElement("section");
+    branch.innerHTML =
+      '<article><a href="moved/link.html">moved</a><img src="moved/image.png"></article>';
+    root.append(branch);
+
+    // The move the optimization is about: everything below is already marked,
+    // and marking has to stay correct without re-descending into it.
+    const destination = virtualDocument.createElement("aside");
+    root.append(destination);
+    destination.append(branch);
+
+    const anchor = branch.querySelector("a") as HTMLAnchorElement;
+    const image = branch.querySelector("img") as HTMLImageElement;
+    const descendants = [branch, branch.firstElementChild, anchor, image];
+
+    // A node the guest adds through an API the facade does not intercept is
+    // reported to the realm's mutation observer, which is what lets the move
+    // above skip the walk. Read it after the observer has run.
+    anchor.insertAdjacentText("beforeend", " tail");
+    const unpatchedText = anchor.lastChild;
+
+    return new Promise<Record<string, unknown>>((settle) => {
+      setTimeout(() => {
+        settle({
+          ownerDocuments: descendants.every(
+            (node) => node?.ownerDocument === virtualDocument,
+          ),
+          roots: descendants.every((node) => node?.getRootNode() === virtualDocument),
+          baseURIs: descendants.every(
+            (node) => node?.baseURI === virtualDocument.baseURI,
+          ),
+          href: anchor.href,
+          src: image.src,
+          unpatchedTextOwner: unpatchedText?.ownerDocument === virtualDocument,
+        });
+      }, 0);
+    });
+  });
+
+  expect(result).toEqual({
+    ownerDocuments: true,
+    roots: true,
+    baseURIs: true,
+    href: `${fixture.origin}/documents/moved/link.html`,
+    src: `${fixture.origin}/documents/moved/image.png`,
+    unpatchedTextOwner: true,
+  });
+});
+
+test("marks a detached subtree that changed since it was last walked", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    // Marked once when it was created, then given children by two paths that do
+    // not mark what they create. Nothing observes a detached subtree, so the
+    // insertion below has to walk it again.
+    const detached = virtualDocument.createElement("section");
+    const labelled = virtualDocument.createElement("p");
+    labelled.textContent = "written";
+    detached.append(labelled);
+    const appended = virtualDocument.createElement("p");
+    detached.append(appended);
+    appended.insertAdjacentText("beforeend", "adjacent");
+    root.append(detached);
+
+    // Read synchronously: the walk on insertion is what has to have marked
+    // these, not the mutation observer a microtask later.
+    return {
+      writtenText: labelled.firstChild?.ownerDocument === virtualDocument,
+      adjacentText: appended.firstChild?.ownerDocument === virtualDocument,
+      writtenBase: labelled.firstChild?.baseURI === virtualDocument.baseURI,
+      adjacentBase: appended.firstChild?.baseURI === virtualDocument.baseURI,
+    };
+  });
+
+  expect(result).toEqual({
+    writtenText: true,
+    adjacentText: true,
+    writtenBase: true,
+    adjacentBase: true,
+  });
+});
+
 test("scopes shell selectors and root translation to the connected virtual tree", async ({
   page,
 }) => {
