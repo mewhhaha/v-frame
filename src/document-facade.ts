@@ -4,6 +4,13 @@ import walkCSS from "css-tree/walker";
 import type { DeclarationList } from "css-tree";
 import { rewriteStyleAttribute, translateShellSelector } from "./css.js";
 import {
+  createFacadeContext,
+  HTML_NAMESPACE,
+  SVG_NAMESPACE,
+  type DocumentFacadeOptions,
+  type NativeDocumentHandles,
+} from "./facade/context.js";
+import {
   type ListenerRecord,
   ListenerRegistry,
   listenerCapture,
@@ -15,7 +22,6 @@ import {
   XLINK_NAMESPACE,
 } from "./markup.js";
 import { createSelectionFacade } from "./selection-facade.js";
-import type { VFrameWindow } from "./types.js";
 
 const DOCUMENT_EVENT_HANDLER_NAMES = [
   "click",
@@ -53,8 +59,6 @@ const URL_PROPERTY_NAMES = [
   "data",
 ] as const;
 
-const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const INLINE_STYLE_SELECTOR_ID_COUNT = 32;
 
 function stylePropertyKey(property: string): string {
@@ -134,40 +138,10 @@ function updateAuthoredStyleProperty(
   return generateCSS(declarations);
 }
 
-export interface DocumentFacadeOptions {
-  host: HTMLElement;
-  shadowRoot: ShadowRoot;
-  window: VFrameWindow;
-  document: Document;
-  html: HTMLElement;
-  head: HTMLElement;
-  body: HTMLElement;
-  authoredURLAttributes: Map<Element, Map<string, string>>;
-  authoredStyleAttributes: Map<Element, string>;
-  inlineStyleSelectorAttribute: string;
-  inlineStyleSheet: HTMLStyleElement;
-  createHTML(source: string): string;
-  createScript(source: string): string;
-  updateTopLayerViewport(x: number, y: number): void;
-  getNonce(): string;
-  getBaseURL(): string;
-  getCurrentURL(): string;
-  getCurrentScript(): HTMLScriptElement | null;
-  onBaseElementChange(): void;
-  onEventHandlerError(error: unknown): void;
-  onDynamicScript(script: HTMLScriptElement, execution: "async" | "ordered"): void;
-  onStyleElementChange(style: HTMLStyleElement): void;
-  onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
-  onConnectedNodes(nodes: readonly Node[]): void;
-}
-
-export interface NativeDocumentHandles {
-  privateHead: HTMLHeadElement;
-  createElement<K extends keyof HTMLElementTagNameMap>(name: K): HTMLElementTagNameMap[K];
-  appendChild<T extends Node>(parent: Node, child: T): T;
-  getAttribute(element: Element, name: string): string | null;
-  setAttribute(element: Element, name: string, value: string): void;
-}
+export type {
+  DocumentFacadeOptions,
+  NativeDocumentHandles,
+} from "./facade/context.js";
 
 export interface DocumentFacade {
   native: NativeDocumentHandles;
@@ -337,139 +311,96 @@ function liveIndexedCollection<T extends object>(
 }
 
 export function installDocumentFacade(options: DocumentFacadeOptions): DocumentFacade {
-  const window = options.window;
-  const document = options.document;
-  const hostDocument = options.host.ownerDocument;
-  const privateHead = document.head;
-  const privateBody = document.body;
-  const documentPrototype = window.Document.prototype;
-  const nodePrototype = window.Node.prototype;
-  const characterDataPrototype = window.CharacterData.prototype;
-  const elementPrototype = window.Element.prototype;
-  const eventTargetPrototype = window.EventTarget.prototype;
-  const documentFragmentPrototype = window.DocumentFragment.prototype;
-  const nativeCreateElement = documentPrototype.createElement;
-  const nativeCreateElementNS = documentPrototype.createElementNS;
-  const nativeCreateTextNode = documentPrototype.createTextNode;
-  const nativeCreateComment = documentPrototype.createComment;
-  const nativeCreateDocumentFragment = documentPrototype.createDocumentFragment;
-  const nativeImportNode = documentPrototype.importNode;
-  const nativeCreateAttribute = documentPrototype.createAttribute;
-  const nativeCreateAttributeNS = documentPrototype.createAttributeNS;
-  const nativeAppendChild = nodePrototype.appendChild;
-  const nativeInsertBefore = nodePrototype.insertBefore;
-  const nativeReplaceChild = nodePrototype.replaceChild;
-  const nativeRemoveChild = nodePrototype.removeChild;
-  const nativeCloneNode = nodePrototype.cloneNode;
-  const nativeGetRootNode = nodePrototype.getRootNode;
-  const nativeOwnerDocument = Object.getOwnPropertyDescriptor(
+  const context = createFacadeContext(options);
+  const {
+    window,
+    document,
+    hostDocument,
+    privateHead,
     nodePrototype,
-    "ownerDocument",
-  );
-  const nativeTextContent = Object.getOwnPropertyDescriptor(nodePrototype, "textContent");
-  const nativeNodeValue = Object.getOwnPropertyDescriptor(nodePrototype, "nodeValue");
-  const nativeCharacterData = Object.getOwnPropertyDescriptor(
     characterDataPrototype,
-    "data",
-  );
-  const nativeAppendData = characterDataPrototype.appendData;
-  const nativeDeleteData = characterDataPrototype.deleteData;
-  const nativeInsertData = characterDataPrototype.insertData;
-  const nativeReplaceData = characterDataPrototype.replaceData;
-  const nativeAddEventListener = eventTargetPrototype.addEventListener;
-  const nativeRemoveEventListener = eventTargetPrototype.removeEventListener;
-  const nativeDispatchEvent = eventTargetPrototype.dispatchEvent;
-  const nativeGetAttribute = elementPrototype.getAttribute;
-  const nativeGetAttributeNS = elementPrototype.getAttributeNS;
-  const nativeGetAttributeNames = elementPrototype.getAttributeNames;
-  const nativeHasAttribute = elementPrototype.hasAttribute;
-  const nativeHasAttributeNS = elementPrototype.hasAttributeNS;
-  const nativeSetAttribute = elementPrototype.setAttribute;
-  const nativeSetAttributeNS = elementPrototype.setAttributeNS;
-  const nativeRemoveAttribute = elementPrototype.removeAttribute;
-  const nativeRemoveAttributeNS = elementPrototype.removeAttributeNS;
-  const nativeToggleAttribute = elementPrototype.toggleAttribute;
-  const nativeMatches = elementPrototype.matches;
-  const nativeClosest = elementPrototype.closest;
-  const nativeQuerySelector = elementPrototype.querySelector;
-  const nativeQuerySelectorAll = elementPrototype.querySelectorAll;
-  const nativeGetElementsByTagName = elementPrototype.getElementsByTagName;
-  const nativeGetElementsByTagNameNS = elementPrototype.getElementsByTagNameNS;
-  const nativeAttachShadow = elementPrototype.attachShadow;
-  const nativeGetBoundingClientRect = elementPrototype.getBoundingClientRect;
-  const nativeGetClientRects = elementPrototype.getClientRects;
-  const nativeInnerHTML = Object.getOwnPropertyDescriptor(elementPrototype, "innerHTML");
-  const nativeOuterHTML = Object.getOwnPropertyDescriptor(elementPrototype, "outerHTML");
-  const nativeElementRemove = elementPrototype.remove;
-  const nativeHTMLElementStyle = Object.getOwnPropertyDescriptor(
-    window.HTMLElement.prototype,
-    "style",
-  );
-  const nativeSVGElementStyle = Object.getOwnPropertyDescriptor(
-    window.SVGElement.prototype,
-    "style",
-  );
-  const nativeScriptAsync = Object.getOwnPropertyDescriptor(
-    window.HTMLScriptElement.prototype,
-    "async",
-  );
-  const nativeScriptText = Object.getOwnPropertyDescriptor(
-    window.HTMLScriptElement.prototype,
-    "text",
-  );
-  const nativeScriptType = Object.getOwnPropertyDescriptor(
-    window.HTMLScriptElement.prototype,
-    "type",
-  );
-  const nativeLinkRel = Object.getOwnPropertyDescriptor(
-    window.HTMLLinkElement.prototype,
-    "rel",
-  );
-  const nativeLinkRelList = Object.getOwnPropertyDescriptor(
-    window.HTMLLinkElement.prototype,
-    "relList",
-  );
-  const nativeCurrentScript = Object.getOwnPropertyDescriptor(
-    documentPrototype,
-    "currentScript",
-  )?.get;
-  const NativeMutationObserver = window.MutationObserver;
-  const isElementNode = (node: Node): node is Element => node.nodeType === 1;
-  const isDocumentFragmentNode = (node: Node): node is DocumentFragment =>
-    node.nodeType === 11;
-  const isHTMLElementNamed = (element: Element, localName: string): boolean =>
-    element.namespaceURI === "http://www.w3.org/1999/xhtml" &&
-    element.localName === localName;
-  const isHTMLTemplateElement = (element: Element): element is HTMLTemplateElement =>
-    isHTMLElementNamed(element, "template");
-  const isHTMLStyleElement = (element: Element): element is HTMLStyleElement =>
-    isHTMLElementNamed(element, "style");
-  const isHTMLLinkElement = (element: Element): element is HTMLLinkElement =>
-    isHTMLElementNamed(element, "link");
-  const isHTMLScriptElement = (element: Element): element is HTMLScriptElement =>
-    isHTMLElementNamed(element, "script");
-  const reachesVirtualDocument = (root: Node): boolean => {
-    let currentRoot = root;
-    while (isDocumentFragmentNode(currentRoot) && "host" in currentRoot) {
-      if (currentRoot === options.shadowRoot) {
-        return true;
-      }
-      currentRoot = nativeGetRootNode.call((currentRoot as ShadowRoot).host);
-    }
-    return currentRoot === options.shadowRoot;
-  };
-  const virtualGetRootNode = (node: Node, init?: GetRootNodeOptions): Node => {
-    const root = nativeGetRootNode.call(node);
-    if (root === options.shadowRoot) {
-      return document;
-    }
-    if (init?.composed !== true || !reachesVirtualDocument(root)) {
-      return nativeGetRootNode.call(node, init);
-    }
-    return document;
-  };
-  const isInVirtualDocumentTree = (node: Node): boolean =>
-    nativeGetRootNode.call(node) === options.shadowRoot;
+    elementPrototype,
+    eventTargetPrototype,
+    documentFragmentPrototype,
+    nativeCreateElement,
+    nativeCreateElementNS,
+    nativeCreateTextNode,
+    nativeCreateComment,
+    nativeCreateDocumentFragment,
+    nativeImportNode,
+    nativeCreateAttribute,
+    nativeCreateAttributeNS,
+    nativeAppendChild,
+    nativeInsertBefore,
+    nativeReplaceChild,
+    nativeRemoveChild,
+    nativeCloneNode,
+    nativeGetRootNode,
+    nativeOwnerDocument,
+    nativeTextContent,
+    nativeNodeValue,
+    nativeCharacterData,
+    nativeAppendData,
+    nativeDeleteData,
+    nativeInsertData,
+    nativeReplaceData,
+    nativeAddEventListener,
+    nativeRemoveEventListener,
+    nativeDispatchEvent,
+    nativeGetAttribute,
+    nativeGetAttributeNS,
+    nativeGetAttributeNames,
+    nativeHasAttribute,
+    nativeHasAttributeNS,
+    nativeSetAttribute,
+    nativeSetAttributeNS,
+    nativeRemoveAttribute,
+    nativeRemoveAttributeNS,
+    nativeToggleAttribute,
+    nativeMatches,
+    nativeClosest,
+    nativeQuerySelector,
+    nativeQuerySelectorAll,
+    nativeGetElementsByTagName,
+    nativeGetElementsByTagNameNS,
+    nativeAttachShadow,
+    nativeGetBoundingClientRect,
+    nativeGetClientRects,
+    nativeInnerHTML,
+    nativeOuterHTML,
+    nativeElementRemove,
+    nativeHTMLElementStyle,
+    nativeSVGElementStyle,
+    nativeScriptAsync,
+    nativeScriptText,
+    nativeScriptType,
+    nativeLinkRel,
+    nativeLinkRelList,
+    nativeCurrentScript,
+    NativeMutationObserver,
+    isElementNode,
+    isDocumentFragmentNode,
+    isHTMLTemplateElement,
+    isHTMLStyleElement,
+    isHTMLLinkElement,
+    isHTMLScriptElement,
+    virtualGetRootNode,
+    isInVirtualDocumentTree,
+    isBaseElement,
+    subtreeHasBaseElement,
+    connectedBaseElementChanged,
+    virtualNodes,
+    createdScripts,
+    protectedScriptAttributes,
+    eventAttributeValues,
+    cssomMutatedStyleElements,
+    authoredLinkRelValues,
+    logicalEventTargets,
+    patch,
+    getVirtualBoundingClientRect,
+    getVirtualClientRects,
+    toHostViewportPoint,
+  } = context;
   const styleMutationBatches = new WeakSet<HTMLStyleElement>();
   const styleElementForMutation = (node: Node): HTMLStyleElement | null => {
     if (isElementNode(node) && isHTMLStyleElement(node)) {
@@ -489,20 +420,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       options.onStyleElementChange(style);
     }
   };
-  const virtualNodes = new WeakSet<Node>();
-  const createdScripts = new WeakSet<HTMLScriptElement>();
-  const protectedScriptAttributes = new WeakMap<
-    HTMLScriptElement,
-    Map<"src" | "type", string>
-  >();
-  const eventAttributeValues = new WeakMap<Element, Map<string, string>>();
   const physicalURLAttributeValues = new WeakMap<Element, Map<string, string | null>>();
   const physicalStyleAttributeValues = new WeakMap<Element, string | null>();
   const styleSelectorValues = new WeakMap<Element, string>();
   const styleDeclarations = new WeakMap<Element, CSSStyleDeclaration>();
   const styleFacades = new WeakMap<Element, CSSStyleDeclaration>();
-  const cssomMutatedStyleElements = new WeakSet<Element>();
-  const authoredLinkRelValues = new WeakMap<HTMLLinkElement, string | null>();
   const linkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
   const nativeLinkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
   const elementHandlerValues = new WeakMap<Element, Map<string, EventListener | null>>();
@@ -516,7 +438,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const listenerEvents = new WeakMap<Event, Event>();
   const logicalCurrentTargets = new WeakMap<Event, EventTarget>();
   const logicalEventPhases = new WeakMap<Event, number>();
-  const logicalEventTargets = new WeakMap<Event, EventTarget>();
   const immediatePropagationStopped = new WeakSet<Event>();
   const virtualPropagationStopped = new WeakSet<Event>();
   const boundaryPropagationStopped = new WeakSet<Event>();
@@ -528,28 +449,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     Node,
     Map<PropertyKey, PropertyDescriptor | undefined>
   >();
-  let executeConnectedScript = (_script: HTMLScriptElement): void => undefined;
-  const patchedDescriptors: Array<{
-    target: object;
-    key: PropertyKey;
-    descriptor: PropertyDescriptor | undefined;
-  }> = [];
   let readyState: DocumentReadyState = "loading";
   let eventHandlerSequence = 0;
 
-  const isBaseElement = (element: Element): boolean =>
-    isHTMLElementNamed(element, "base");
-  const subtreeHasBaseElement = (node: Node): boolean => {
-    if (isElementNode(node) && isBaseElement(node)) {
-      return true;
-    }
-    return "querySelector" in node && (node as ParentNode).querySelector("base") !== null;
-  };
-  const connectedBaseElementChanged = (element: Element): void => {
-    if (isBaseElement(element) && isInVirtualDocumentTree(element)) {
-      options.onBaseElementChange();
-    }
-  };
   const urlAttributeKey = (
     element: Element,
     attributeName: string,
@@ -605,87 +507,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     }
     rememberPhysicalURLAttribute(element, attributeName, null);
   };
-
-  if (
-    privateHead === null ||
-    privateBody === null ||
-    nativeInnerHTML?.set === undefined
-  ) {
-    throw new Error(
-      "The about:blank execution document has no usable head, body, or HTML parser",
-    );
-  }
-
-  const patch = (target: object, key: PropertyKey, descriptor: PropertyDescriptor) => {
-    patchedDescriptors.push({
-      target,
-      key,
-      descriptor: Object.getOwnPropertyDescriptor(target, key),
-    });
-    Object.defineProperty(target, key, { configurable: true, ...descriptor });
-  };
-
-  const viewportOrigin = (): { x: number; y: number } => {
-    const hostRect = options.host.getBoundingClientRect();
-    return {
-      x: hostRect.left + options.host.clientLeft,
-      y: hostRect.top + options.host.clientTop,
-    };
-  };
-  const toVirtualDOMRect = (rect: DOMRectReadOnly): DOMRect => {
-    const origin = viewportOrigin();
-    return new window.DOMRect(
-      rect.x - origin.x,
-      rect.y - origin.y,
-      rect.width,
-      rect.height,
-    );
-  };
-  const getVirtualBoundingClientRect = (element: Element): DOMRect =>
-    toVirtualDOMRect(nativeGetBoundingClientRect.call(element));
-  const getVirtualClientRects = (element: Element): DOMRectList => {
-    const rects = Array.from(nativeGetClientRects.call(element), (rect) =>
-      toVirtualDOMRect(rect),
-    ) as DOMRect[] & { item(index: number): DOMRect | null };
-    Object.defineProperty(rects, "item", {
-      configurable: true,
-      value: (index: number) => rects[index] ?? null,
-    });
-    return rects as unknown as DOMRectList;
-  };
-  const toHostViewportPoint = (x: number, y: number): { x: number; y: number } => {
-    const origin = viewportOrigin();
-    return { x: x + origin.x, y: y + origin.y };
-  };
-
-  const hostWindow = hostDocument.defaultView;
-  let topLayerViewportActivated = false;
-  const refreshTopLayerViewportStyle = (): void => {
-    if (!topLayerViewportActivated) return;
-    const origin = viewportOrigin();
-    // Promotion changes the CSS viewport to the host page; translate it back
-    // to the child viewport while preserving the browser's top-layer clipping escape.
-    options.updateTopLayerViewport(origin.x, origin.y);
-  };
-  const refreshOpeningTopLayer: EventListener = (event) => {
-    if ((event as Event & { newState?: string }).newState === "open") {
-      topLayerViewportActivated = true;
-      refreshTopLayerViewportStyle();
-    }
-  };
-  const topLayerListenerLifetime = new AbortController();
-  options.html.addEventListener("beforetoggle", refreshOpeningTopLayer, {
-    capture: true,
-    signal: topLayerListenerLifetime.signal,
-  });
-  hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle, {
-    signal: topLayerListenerLifetime.signal,
-  });
-  hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, {
-    capture: true,
-    signal: topLayerListenerLifetime.signal,
-  });
-
   const styleDeclarationDocument = new window.DOMParser().parseFromString(
     options.createHTML("<!doctype html><html><body></body></html>"),
     "text/html",
@@ -1992,7 +1813,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     return source !== null || script.text !== "";
   };
 
-  executeConnectedScript = (script: HTMLScriptElement): void => {
+  context.executeConnectedScript = (script: HTMLScriptElement): void => {
     if (
       !script.isConnected ||
       !createdScripts.has(script) ||
@@ -2028,7 +1849,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     for (const node of nodes) {
       for (const element of collectElements(node)) {
         if (isHTMLScriptElement(element)) {
-          executeConnectedScript(element);
+          context.executeConnectedScript(element);
         }
       }
     }
@@ -2058,7 +1879,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     if (parent.isConnected) {
       finishInsertion(nodes, baseElementChanged);
       if (parent instanceof window.HTMLScriptElement) {
-        executeConnectedScript(parent);
+        context.executeConnectedScript(parent);
       }
     }
     return result;
@@ -2163,7 +1984,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (this.isConnected) {
         finishInsertion(nodes, baseElementChanged);
         if (this instanceof window.HTMLScriptElement) {
-          executeConnectedScript(this);
+          context.executeConnectedScript(this);
         }
       }
       return result;
@@ -2886,7 +2707,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       attributeName === "src"
     ) {
       protectedScriptAttributes.get(element)?.set("src", physicalValue);
-      executeConnectedScript(element);
+      context.executeConnectedScript(element);
     } else {
       setPhysicalURLAttribute(element, attributeName, physicalValue);
     }
@@ -2953,7 +2774,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       attributeName === "src"
     ) {
       protectedScriptAttributes.get(element)?.set("src", nextValue);
-      executeConnectedScript(element);
+      context.executeConnectedScript(element);
       return;
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
@@ -3484,7 +3305,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       set(this: HTMLScriptElement, value: string) {
         nativeScriptText.set?.call(this, value);
         if (virtualNodes.has(this)) {
-          executeConnectedScript(this);
+          context.executeConnectedScript(this);
         }
       },
     });
@@ -3518,7 +3339,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           options.onBaseElementChange();
         }
         if (virtualNodes.has(this) && this instanceof window.HTMLScriptElement) {
-          executeConnectedScript(this);
+          context.executeConnectedScript(this);
         }
       },
     });
@@ -4305,7 +4126,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     },
     dispose() {
       disposed = true;
-      topLayerListenerLifetime.abort();
+      context.dispose();
       if (selectionChangeTimer !== undefined) {
         window.clearTimeout(selectionChangeTimer);
         selectionChangeTimer = undefined;
@@ -4333,13 +4154,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
           removeElementHandler(element, eventName);
         }
       }
-      for (const patched of patchedDescriptors.reverse()) {
-        if (patched.descriptor === undefined) {
-          delete (patched.target as Record<PropertyKey, unknown>)[patched.key];
-        } else {
-          Object.defineProperty(patched.target, patched.key, patched.descriptor);
-        }
-      }
+      context.restorePatches();
       for (const [node, descriptors] of nodeFacadeDescriptors) {
         for (const [property, descriptor] of descriptors) {
           if (descriptor === undefined) {
