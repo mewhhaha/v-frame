@@ -152,6 +152,12 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeDispatchEvent = eventTargetPrototype.dispatchEvent;
   const nativeGetAttribute = elementPrototype.getAttribute;
   const nativeGetAttributeNS = elementPrototype.getAttributeNS;
+  const nativeGetAttributeNode = elementPrototype.getAttributeNode;
+  const nativeGetAttributeNodeNS = elementPrototype.getAttributeNodeNS;
+  const nativeAttributes = Object.getOwnPropertyDescriptor(
+    elementPrototype,
+    "attributes",
+  );
   const nativeGetAttributeNames = elementPrototype.getAttributeNames;
   const nativeHasAttribute = elementPrototype.hasAttribute;
   const nativeHasAttributeNS = elementPrototype.hasAttributeNS;
@@ -379,6 +385,9 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeDispatchEvent,
     nativeGetAttribute,
     nativeGetAttributeNS,
+    nativeGetAttributeNode,
+    nativeGetAttributeNodeNS,
+    nativeAttributes,
     nativeGetAttributeNames,
     nativeHasAttribute,
     nativeHasAttributeNS,

@@ -187,6 +187,80 @@ test("marks attribute nodes created after their element joined the virtual tree"
   });
 });
 
+test("marks attribute nodes written past the facade on a node already in the tree", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(() => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow;
+    if (child === null) {
+      throw new Error("The fidelity frame has no child window");
+    }
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root");
+    if (root === null) {
+      throw new Error("The fidelity guest has no root element");
+    }
+
+    const guest = virtualDocument.createElement("span");
+    root.append(guest);
+
+    // The writes the facade never sees: the host page's own Element.prototype,
+    // used on a node it holds a reference to, and the reflected setters that
+    // never reach setAttribute at all. The element is marked and in the tree,
+    // so no later marking pass revisits it.
+    Element.prototype.setAttribute.call(guest, "data-outside", "written");
+    Element.prototype.setAttributeNS.call(
+      guest,
+      "http://example.test/ns",
+      "ex:outside",
+      "namespaced",
+    );
+    guest.id = "reflected";
+    guest.classList.add("reflected");
+
+    // Adopted from the host page rather than authored in the guest, then given
+    // an attribute by a reflected setter, which the facade the adoption
+    // installed on it does not cover either.
+    const adopted = document.createElement("span");
+    virtualDocument.adoptNode(adopted);
+    root.append(adopted);
+    adopted.id = "adopted";
+
+    const attributeNodes = [
+      guest.getAttributeNode("data-outside"),
+      guest.getAttributeNodeNS("http://example.test/ns", "outside"),
+      guest.getAttributeNode("id"),
+      Array.from(guest.attributes).find((attribute) => attribute.name === "class") ??
+        null,
+      adopted.getAttributeNode("id"),
+    ];
+
+    // Read in the same task as the writes: the marking has to be synchronous,
+    // not a mutation record delivered a microtask later.
+    return {
+      resolved: attributeNodes.every((attribute) => attribute !== null),
+      ownerDocuments: attributeNodes.map(
+        (attribute) => attribute?.ownerDocument === virtualDocument,
+      ),
+      baseURIs: attributeNodes.map((attribute) => attribute?.baseURI),
+      hostBaseURI: document.baseURI,
+    };
+  });
+
+  const guestBaseURI = `${fixture.origin}/documents/dom.html`;
+  expect(result).toEqual({
+    resolved: true,
+    ownerDocuments: [true, true, true, true, true],
+    baseURIs: [guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI, guestBaseURI],
+    hostBaseURI: `${fixture.origin}/`,
+  });
+});
+
 test("keeps a re-parented subtree virtual without walking it again", async ({ page }) => {
   await mountFidelityFrame(page);
 

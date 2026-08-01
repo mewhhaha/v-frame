@@ -48,6 +48,13 @@ export interface AttributeFacade {
     localName: string,
   ): boolean;
   getVirtualAttributeNames(element: Element): string[];
+  getVirtualAttributeNode(element: Element, qualifiedName: string): Attr | null;
+  getVirtualAttributeNodeNS(
+    element: Element,
+    namespaceURI: string | null,
+    localName: string,
+  ): Attr | null;
+  markAttributeNodes(element: Element, attributeNodes: NamedNodeMap): NamedNodeMap;
   setVirtualAttribute(element: Element, qualifiedName: string, value: string): void;
   removeVirtualAttribute(element: Element, qualifiedName: string): void;
   toggleVirtualAttribute(
@@ -86,6 +93,9 @@ export function installAttributeFacade(
     elementPrototype,
     nativeGetAttribute,
     nativeGetAttributeNS,
+    nativeGetAttributeNode,
+    nativeGetAttributeNodeNS,
+    nativeAttributes,
     nativeGetAttributeNames,
     nativeHasAttribute,
     nativeHasAttributeNS,
@@ -124,11 +134,54 @@ export function installAttributeFacade(
   // and on Gecko ownerDocument from the host document, because Gecko binds the
   // Attr to the node document the element was adopted into. So every physical
   // write on a virtual element hands the node it produced back to marking.
-  const markWrittenAttribute = (element: Element, attribute: Attr | null): void => {
+  const markAttributeNode = (element: Element, attribute: Attr | null): Attr | null => {
     if (attribute !== null && virtualNodes.has(element)) {
       context.markVirtualAttribute(attribute);
     }
+    return attribute;
   };
+
+  // Marking on write only reaches writes that come through the facade. A
+  // reflected IDL setter, classList, or the host page's own Element.prototype
+  // used on a node it adopted all reach the attribute past every patch, and
+  // marking the subtree again would not repair it either: a subtree that is
+  // already virtual and still in the tree is deliberately not re-walked. So the
+  // realm marks on the way out as well, wherever it hands an Attr node to
+  // script — which is the only place the node's identity is observable.
+  //
+  // The tradeoff: this is one WeakSet probe per Attr handed out, on a read path,
+  // instead of widening the realm's mutation observer to every attribute name.
+  // The observer sits on the hot mutation path and would have paid per write
+  // rather than per read, and it delivers a microtask late, so an attribute read
+  // back in the same task would still have answered wrong. What it does not
+  // cover is an Attr reached through the host realm's own accessors, or a
+  // NamedNodeMap held across a write from outside the facade; both hand out a
+  // node the realm never sees.
+  const markAttributeNodes = (
+    element: Element,
+    attributeNodes: NamedNodeMap,
+  ): NamedNodeMap => {
+    if (virtualNodes.has(element)) {
+      for (let index = 0; index < attributeNodes.length; index += 1) {
+        markAttributeNode(element, attributeNodes.item(index));
+      }
+    }
+    return attributeNodes;
+  };
+  const getVirtualAttributeNode = (
+    element: Element,
+    qualifiedName: string,
+  ): Attr | null =>
+    markAttributeNode(element, nativeGetAttributeNode.call(element, qualifiedName));
+  const getVirtualAttributeNodeNS = (
+    element: Element,
+    namespaceURI: string | null,
+    localName: string,
+  ): Attr | null =>
+    markAttributeNode(
+      element,
+      nativeGetAttributeNodeNS.call(element, namespaceURI, localName),
+    );
 
   const physicalURLAttributeValues = new WeakMap<Element, Map<string, string | null>>();
   const urlAttributeKey = (
@@ -173,10 +226,10 @@ export function installAttributeFacade(
   ): void => {
     if (attributeName === "xlink:href") {
       nativeSetAttributeNS.call(element, XLINK_NAMESPACE, attributeName, value);
-      markWrittenAttribute(element, element.getAttributeNodeNS(XLINK_NAMESPACE, "href"));
+      getVirtualAttributeNodeNS(element, XLINK_NAMESPACE, "href");
     } else {
       nativeSetAttribute.call(element, attributeName, value);
-      markWrittenAttribute(element, element.getAttributeNode(attributeName));
+      getVirtualAttributeNode(element, attributeName);
     }
     rememberPhysicalURLAttribute(element, attributeName, value);
   };
@@ -612,7 +665,7 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
-    markWrittenAttribute(element, element.getAttributeNode(qualifiedName));
+    getVirtualAttributeNode(element, qualifiedName);
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
@@ -707,7 +760,7 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttributeNS.call(element, namespace, qualifiedName, value);
-    markWrittenAttribute(element, element.getAttributeNodeNS(namespace, localName));
+    getVirtualAttributeNodeNS(element, namespace, localName);
   }
 
   function removeVirtualAttributeNS(
@@ -827,6 +880,29 @@ export function installAttributeFacade(
         return getVirtualAttributeNames(this);
       },
     });
+    patch(elementPrototype, "getAttributeNode", {
+      writable: true,
+      value(this: Element, qualifiedName: string): Attr | null {
+        return getVirtualAttributeNode(this, qualifiedName);
+      },
+    });
+    patch(elementPrototype, "getAttributeNodeNS", {
+      writable: true,
+      value(this: Element, namespaceURI: string | null, localName: string): Attr | null {
+        return getVirtualAttributeNodeNS(this, namespaceURI, localName);
+      },
+    });
+    const nativeAttributesGetter = nativeAttributes?.get;
+    if (nativeAttributesGetter !== undefined) {
+      patch(elementPrototype, "attributes", {
+        get(this: Element): NamedNodeMap {
+          return markAttributeNodes(
+            this,
+            nativeAttributesGetter.call(this) as NamedNodeMap,
+          );
+        },
+      });
+    }
 
     patch(elementPrototype, "setAttribute", {
       writable: true,
@@ -887,6 +963,9 @@ export function installAttributeFacade(
     hasVirtualAttribute,
     hasVirtualAttributeNS,
     getVirtualAttributeNames,
+    getVirtualAttributeNode,
+    getVirtualAttributeNodeNS,
+    markAttributeNodes,
     setVirtualAttribute,
     removeVirtualAttribute,
     toggleVirtualAttribute,

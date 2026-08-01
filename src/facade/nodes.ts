@@ -61,6 +61,7 @@ export function installNodeFacade(
     nativeInsertData,
     nativeReplaceData,
     nativeGetAttribute,
+    nativeAttributes,
     nativeSetAttribute,
     nativeSetAttributeNS,
     nativeRemoveAttribute,
@@ -114,6 +115,9 @@ export function installNodeFacade(
     hasVirtualAttribute,
     hasVirtualAttributeNS,
     getVirtualAttributeNames,
+    getVirtualAttributeNode,
+    getVirtualAttributeNodeNS,
+    markAttributeNodes,
     setVirtualAttribute,
     removeVirtualAttribute,
     toggleVirtualAttribute,
@@ -709,6 +713,21 @@ export function installNodeFacade(
           writable: true,
           value: () => getVirtualAttributeNames(element),
         },
+        // A foreign element resolves these on the host realm's prototype, where
+        // the facade's patches are not, so the Attr nodes it hands out would
+        // never reach marking.
+        getAttributeNode: {
+          configurable: true,
+          writable: true,
+          value: (qualifiedName: string) =>
+            getVirtualAttributeNode(element, qualifiedName),
+        },
+        getAttributeNodeNS: {
+          configurable: true,
+          writable: true,
+          value: (namespaceURI: string | null, localName: string) =>
+            getVirtualAttributeNodeNS(element, namespaceURI, localName),
+        },
         setAttribute: {
           configurable: true,
           writable: true,
@@ -740,6 +759,17 @@ export function installNodeFacade(
             setVirtualAttributeNS(element, namespace, qualifiedName, value),
         },
       };
+      const nativeAttributesGetter = nativeAttributes?.get;
+      if (nativeAttributesGetter !== undefined) {
+        descriptors.attributes = {
+          configurable: true,
+          get: () =>
+            markAttributeNodes(
+              element,
+              nativeAttributesGetter.call(element) as NamedNodeMap,
+            ),
+        };
+      }
       if (namespaceURI === HTML_NAMESPACE || namespaceURI === SVG_NAMESPACE) {
         descriptors.style = {
           configurable: true,
