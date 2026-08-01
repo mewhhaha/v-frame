@@ -36,7 +36,9 @@
     "format:check": "biome format .",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "size": "node scripts/bundle-size.mjs",
-    "test": "pnpm build && playwright test"
+    "test": "pnpm build && playwright test",
+    "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
+    "bench": "pnpm build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts"
   },
   "keywords": [],
   "author": "",

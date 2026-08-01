@@ -32,6 +32,8 @@ jobs:
 
       - run: pnpm size
 
+      - run: pnpm test:unit
+
       - run: pnpm exec playwright test --project=chromium --project=firefox
 
       - if: failure()
