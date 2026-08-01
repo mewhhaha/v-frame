@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "vite build && vite build --ssr src/index.ts",
+    "build": "pnpm run types && vite build && vite build --ssr src/index.ts",
     "dev": "pnpm run build && wrangler dev",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types worker-configuration.d.ts"
