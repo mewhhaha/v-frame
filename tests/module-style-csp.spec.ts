@@ -1,58 +1,56 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
-
-interface FixtureServer {
-  origin: string;
-  close(): Promise<void>;
-}
+import {
+  bundleRoute,
+  htmlDocument as html,
+  type HTTPFixture,
+  type Route,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { mountFrame } from "./support/mount-frame";
 
 const nonce = "module-style-csp-nonce";
 const nextNonce = "module-style-csp-next-nonce";
 const contentSecurityPolicy = `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'nonce-${nextNonce}'; object-src 'none'`;
 const trustedTypesContentSecurityPolicy = `${contentSecurityPolicy}; trusted-types v-frame-test; require-trusted-types-for 'script'`;
-let fixture: FixtureServer;
+let fixture: HTTPFixture;
 
-function html(body: string, head = ""): string {
-  return `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
+const hostPage = html(
+  '<div id="host"></div><script type="module" nonce="module-style-csp-nonce">import { defineVFrame } from "/dist/index.js"; defineVFrame();</script>',
+);
+
+function javascript(body: string): Route {
+  return { type: "text/javascript", body };
 }
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  contentType: string,
-  body: string,
-  responseContentSecurityPolicy?: string,
-): void {
-  response.writeHead(status, {
-    "cache-control": "no-store",
-    "content-type": contentType,
-    ...(responseContentSecurityPolicy === undefined
-      ? {}
-      : {
-          "content-security-policy": responseContentSecurityPolicy,
-        }),
-  });
-  response.end(body);
+function stylesheet(body: string): Route {
+  return { type: "text/css", body };
 }
 
-function documentSource(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/documents/external-module.html":
-      return html(
+function startFixtureServer(): Promise<HTTPFixture> {
+  return startHTTPFixture({
+    routes: {
+      "/": {
+        body: hostPage,
+        headers: { "content-security-policy": contentSecurityPolicy },
+      },
+      "/trusted-types": {
+        body: hostPage,
+        headers: { "content-security-policy": trustedTypesContentSecurityPolicy },
+      },
+      "/dist/index.js": bundleRoute,
+      "/documents/external-module.html": html(
         '<output id="module-result">pending</output><script id="external-module" type="module" src="../modules/entry.js"></script>',
-      );
-    case "/documents/external-module-fetch-failure.html":
-      return html('<script type="module" src="../modules/missing.js"></script>');
-    case "/documents/external-module-link-failure.html":
-      return html('<script type="module" src="../modules/link-failure.js"></script>');
-    case "/documents/external-module-evaluation-failure.html":
-      return html(
+      ),
+      "/documents/external-module-fetch-failure.html": html(
+        '<script type="module" src="../modules/missing.js"></script>',
+      ),
+      "/documents/external-module-link-failure.html": html(
+        '<script type="module" src="../modules/link-failure.js"></script>',
+      ),
+      "/documents/external-module-evaluation-failure.html": html(
         '<script type="module" src="../modules/evaluation-failure.js"></script>',
-      );
-    case "/documents/nonce-styles.html":
-      return html(
+      ),
+      "/documents/nonce-styles.html": html(
         `<p id="initial-inline">initial inline</p>
           <p id="source-inline" data-literal="quoted > <style> style=" style="color: rgb(61, 62, 63)">source inline</p>
           <p id="imported">imported</p><p id="linked">linked</p><p id="dynamic">dynamic</p>
@@ -60,23 +58,14 @@ function documentSource(pathname: string): string | undefined {
           <!-- literal comment: <style> style= -->
           <script id="literal-script" type="application/json">{"literal":"<style> style="}</script>`,
         `<style id="initial-style">@import url("../styles/imported.css"); #initial-inline { --style-literal: "<style> & style="; color: rgb(11, 12, 13); } #cascade-style-target { color: rgb(141, 142, 143); } #cascade-important-target { color: rgb(171, 172, 173) !important; }</style><link rel="stylesheet" href="../styles/linked.css">`,
-      );
-    case "/documents/trusted-types.html":
-      return html(
+      ),
+      "/documents/trusted-types.html": html(
         `<output id="trusted-html">Trusted source</output>
           <button id="trusted-handler" onclick="this.dataset.inlineHandler = 'ran'">Run handler</button>
           <script src="../modules/trusted-types.js"></script>
           <script>document.body.insertAdjacentHTML("beforeend", '<output id="trusted-fragment">Trusted source</output>');</script>`,
-      );
-    default:
-      return undefined;
-  }
-}
-
-function moduleSource(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/modules/entry.js":
-      return `import { dependencyRealm } from "./dependency.js";
+      ),
+      "/modules/entry.js": javascript(`import { dependencyRealm } from "./dependency.js";
 window.__externalModuleEvents = ["entry-start:" + document.readyState];
 await new Promise((resolve) => setTimeout(resolve, 25));
 window.__externalModuleEvents.push("entry-after-await:" + document.readyState);
@@ -86,108 +75,21 @@ window.__externalModuleState = {
   realm: globalThis === window,
 };
 document.querySelector("#module-result").textContent = "module settled";
-window.addEventListener("load", () => window.__externalModuleEvents.push("load:" + document.readyState));`;
-    case "/modules/dependency.js":
-      return "export const dependencyRealm = globalThis === window;";
-    case "/modules/link-failure.js":
-      return 'import "./missing-dependency.js";';
-    case "/modules/evaluation-failure.js":
-      return 'throw new Error("external module evaluation failure");';
-    case "/modules/trusted-types.js":
-      return 'document.querySelector("#trusted-html").dataset.externalScript = "ran";';
-    default:
-      return undefined;
-  }
-}
-
-function stylesheetSource(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/styles/imported.css":
-      return "#imported { color: rgb(21, 22, 23); }";
-    case "/styles/linked.css":
-      return "#linked { color: rgb(31, 32, 33); }";
-    default:
-      return undefined;
-  }
-}
-
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
+window.addEventListener("load", () => window.__externalModuleEvents.push("load:" + document.readyState));`),
+      "/modules/dependency.js": javascript(
+        "export const dependencyRealm = globalThis === window;",
+      ),
+      "/modules/link-failure.js": javascript('import "./missing-dependency.js";'),
+      "/modules/evaluation-failure.js": javascript(
+        'throw new Error("external module evaluation failure");',
+      ),
+      "/modules/trusted-types.js": javascript(
+        'document.querySelector("#trusted-html").dataset.externalScript = "ran";',
+      ),
+      "/styles/imported.css": stylesheet("#imported { color: rgb(21, 22, 23); }"),
+      "/styles/linked.css": stylesheet("#linked { color: rgb(31, 32, 33); }"),
+    },
   });
-}
-
-async function startFixtureServer(): Promise<FixtureServer> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
-    if (pathname === "/") {
-      reply(
-        response,
-        200,
-        "text/html",
-        html(
-          '<div id="host"></div><script type="module" nonce="module-style-csp-nonce">import { defineVFrame } from "/dist/index.js"; defineVFrame();</script>',
-        ),
-        contentSecurityPolicy,
-      );
-      return;
-    }
-    if (pathname === "/trusted-types") {
-      reply(
-        response,
-        200,
-        "text/html",
-        html(
-          '<div id="host"></div><script type="module" nonce="module-style-csp-nonce">import { defineVFrame } from "/dist/index.js"; defineVFrame();</script>',
-        ),
-        trustedTypesContentSecurityPolicy,
-      );
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-
-    const document = documentSource(pathname);
-    if (document !== undefined) {
-      reply(response, 200, "text/html", document);
-      return;
-    }
-    const module = moduleSource(pathname);
-    if (module !== undefined) {
-      reply(response, 200, "text/javascript", module);
-      return;
-    }
-    const stylesheet = stylesheetSource(pathname);
-    if (stylesheet !== undefined) {
-      reply(response, 200, "text/css", stylesheet);
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
-  });
-
-  await new Promise<void>((resolveListening) =>
-    server.listen(0, "127.0.0.1", resolveListening),
-  );
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Module and CSP fixture did not expose a TCP address");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => closeServer(server),
-  };
 }
 
 test.beforeAll(async () => {
@@ -198,6 +100,7 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
+/** The host page defines the element itself from a nonce-bearing module script. */
 async function installBundle(page: Page): Promise<void> {
   await page.goto(fixture.origin);
   await expect
@@ -205,17 +108,12 @@ async function installBundle(page: Page): Promise<void> {
     .toBe(true);
 }
 
-async function mountFrame(page: Page, pathname: string): Promise<Locator> {
-  await page.evaluate(
-    ({ frameNonce, source }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { src: string };
-      frame.nonce = frameNonce;
-      frame.src = source;
-      document.querySelector("#host")?.append(frame);
-    },
-    { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
-  );
-  return page.locator("v-frame");
+function mountNonceFrame(page: Page, pathname: string): Promise<Locator> {
+  return mountFrame(page, {
+    src: `${fixture.origin}${pathname}`,
+    nonce,
+    settle: "none",
+  });
 }
 
 async function childValue<T>(
@@ -235,7 +133,7 @@ test("runs an external module with a relative import and top-level await before 
   page,
 }) => {
   await installBundle(page);
-  const frame = await mountFrame(page, "/documents/external-module.html");
+  const frame = await mountNonceFrame(page, "/documents/external-module.html");
 
   await expect
     .poll(() =>
@@ -485,7 +383,7 @@ test("uses the frame nonce for initial, linked, imported, and changing dynamic s
   });
 
   await installBundle(page);
-  const frame = await mountFrame(page, "/documents/nonce-styles.html");
+  const frame = await mountNonceFrame(page, "/documents/nonce-styles.html");
   await expect
     .poll(() =>
       frame.evaluate((element: HTMLElement & { status: string }) => element.status),
@@ -571,7 +469,7 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
   const consoleViolations: string[] = [];
 
   await installBundle(page);
-  const frame = await mountFrame(page, "/documents/nonce-styles.html");
+  const frame = await mountNonceFrame(page, "/documents/nonce-styles.html");
   await expect
     .poll(() =>
       frame.evaluate((element: HTMLElement & { status: string }) => element.status),
