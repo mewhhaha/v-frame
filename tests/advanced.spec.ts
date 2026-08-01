@@ -99,6 +99,11 @@ test("preserves insertion order for dynamic external scripts with async false", 
   await installBundle(page, fixture.origin);
   const frame = await mountDocument(page, "/documents/dynamic-external-order.html");
 
+  // The guarantee is insertion order despite arrival order, so the first script answers
+  // only once the second one's response has already been written.
+  await fixture.dynamicScriptOrder.secondServed;
+  await fixture.dynamicScriptOrder.releaseFirst();
+
   await expect
     .poll(() => childValue(frame, (window) => (window as any).__dynamicExternalEvents))
     .toEqual(["first", "second"]);
