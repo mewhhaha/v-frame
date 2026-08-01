@@ -5,12 +5,20 @@
  * Every configuration is measured twice — once through a mounted v-frame, once as the
  * same markup parsed and inserted straight into the host document — so the numbers are
  * an overhead multiple rather than an unanchored millisecond count. Run it with
- * `pnpm bench`; it drives headless chromium because the heap readings come from CDP.
+ * `pnpm bench`; it drives both headless engines, and reports heap on the one that can
+ * give a collected reading.
  */
 import { existsSync } from "node:fs";
 import { cpus } from "node:os";
 import { resolve } from "node:path";
-import { chromium, type Browser, type CDPSession, type Page } from "@playwright/test";
+import {
+  chromium,
+  firefox,
+  type Browser,
+  type BrowserType,
+  type CDPSession,
+  type Page,
+} from "@playwright/test";
 import {
   bundleRoute,
   htmlDocument,
@@ -18,6 +26,14 @@ import {
   startHTTPFixture,
 } from "../tests/support/http-fixture.js";
 import { installBundle } from "../tests/support/mount-frame.js";
+
+/**
+ * Both engines the test suite runs on, so a timing claim is never made from one of
+ * them. They are measured one after the other rather than in parallel — the numbers
+ * are wall-clock main-thread work and two browsers competing for the machine would
+ * measure the machine.
+ */
+const ENGINES: BrowserType[] = [chromium, firefox];
 
 /** Element counts of the guest document, chosen to expose a per-node slope. */
 const GUEST_SIZES = [1_000, 5_000, 20_000, 50_000];
@@ -61,8 +77,11 @@ interface Sample {
   insertion: number;
   /** Milliseconds to re-parent an already-settled subtree `MOVE_COUNT` times. */
   move: number;
-  /** Bytes of JS heap the whole configuration retains, after a forced collection. */
-  heap: number;
+  /**
+   * Bytes of JS heap the whole configuration retains after a forced collection, or
+   * null on an engine that cannot be asked for one.
+   */
+  heap: number | null;
   /** Elements, attribute nodes and text nodes in the settled tree — what marking walks. */
   objects: number;
 }
@@ -212,8 +231,23 @@ function benchRoutes(): Record<string, Route> {
   return routes;
 }
 
+/**
+ * Heap is measured over CDP, which only chromium speaks; the standard alternative,
+ * `performance.measureUserAgentSpecificMemory`, is chromium-only as well. On any other
+ * engine the timings are still taken and the heap is reported as unmeasured rather
+ * than guessed at.
+ */
+function measuresHeap(engine: BrowserType): boolean {
+  return engine.name() === "chromium";
+}
+
+function openHeapSession(page: Page, engine: BrowserType): Promise<CDPSession> | null {
+  return measuresHeap(engine) ? page.context().newCDPSession(page) : null;
+}
+
 /** A collected heap reading; without the forced GC the deltas are pure noise. */
-async function heapUsage(cdp: CDPSession): Promise<number> {
+async function heapUsage(cdp: CDPSession | null): Promise<number | null> {
+  if (cdp === null) return null;
   await cdp.send("HeapProfiler.collectGarbage");
   const usage = await cdp.send("Runtime.getHeapUsage");
   return usage.usedSize;
@@ -226,7 +260,13 @@ async function heapUsage(cdp: CDPSession): Promise<number> {
  */
 async function settledHeapUsage(cdp: CDPSession): Promise<number> {
   await heapUsage(cdp);
-  return heapUsage(cdp);
+  const usage = await heapUsage(cdp);
+  if (usage === null) throw new Error("the churn measurement needs a heap reading");
+  return usage;
+}
+
+function heapDelta(after: number | null, before: number | null): number | null {
+  return after === null || before === null ? null : after - before;
 }
 
 function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap">> {
@@ -288,34 +328,36 @@ function measureHost(page: Page, guestURL: string): Promise<Omit<Sample, "heap">
 }
 
 async function sampleFrame(
+  engine: BrowserType,
   browser: Browser,
   origin: string,
   size: number,
 ): Promise<Sample> {
   const page = await browser.newPage();
-  const cdp = await page.context().newCDPSession(page);
+  const cdp = await openHeapSession(page, engine);
   try {
     await installBundle(page, origin);
     const before = await heapUsage(cdp);
     const timings = await measureFrame(page, `${origin}${guestPath(size)}`);
-    return { ...timings, heap: (await heapUsage(cdp)) - before };
+    return { ...timings, heap: heapDelta(await heapUsage(cdp), before) };
   } finally {
     await page.close();
   }
 }
 
 async function sampleHost(
+  engine: BrowserType,
   browser: Browser,
   origin: string,
   size: number,
 ): Promise<Sample> {
   const page = await browser.newPage();
-  const cdp = await page.context().newCDPSession(page);
+  const cdp = await openHeapSession(page, engine);
   try {
     await page.goto(`${origin}/baseline`);
     const before = await heapUsage(cdp);
     const timings = await measureHost(page, `${origin}${guestPath(size)}`);
-    return { ...timings, heap: (await heapUsage(cdp)) - before };
+    return { ...timings, heap: heapDelta(await heapUsage(cdp), before) };
   } finally {
     await page.close();
   }
@@ -401,12 +443,22 @@ function median(values: number[]): number {
   return middle;
 }
 
+/** An engine that reports no heap reports none for every run, so one null is all null. */
+function medianHeap(samples: Sample[]): number | null {
+  const readings: number[] = [];
+  for (const sample of samples) {
+    if (sample.heap === null) return null;
+    readings.push(sample.heap);
+  }
+  return median(readings);
+}
+
 function medianSample(samples: Sample[]): Sample {
   return {
     activation: median(samples.map((sample) => sample.activation)),
     insertion: median(samples.map((sample) => sample.insertion)),
     move: median(samples.map((sample) => sample.move)),
-    heap: median(samples.map((sample) => sample.heap)),
+    heap: medianHeap(samples),
     objects: median(samples.map((sample) => sample.objects)),
   };
 }
@@ -454,6 +506,28 @@ function perNodeMicroseconds(
   return (cost * 1_000) / (last.size - first.size);
 }
 
+/** Rows for the engine that gives collected readings; a note for the one that does not. */
+function reportHeap(measurements: Measurement[]): void {
+  const rows: Record<string, number | string>[] = [];
+  for (const measurement of measurements) {
+    const frameHeap = measurement.frame.heap;
+    const hostHeap = measurement.host.heap;
+    if (frameHeap === null || hostHeap === null) {
+      console.log("\nretained JS heap: not measurable on this engine");
+      return;
+    }
+    rows.push({
+      elements: measurement.size,
+      "marked objects": measurement.frame.objects,
+      "v-frame": kilobytes(frameHeap),
+      "host DOM": kilobytes(hostHeap),
+      "bytes/object": Math.round(frameHeap / measurement.frame.objects),
+    });
+  }
+  console.log("\nretained JS heap after a forced collection");
+  console.table(rows);
+}
+
 function report(measurements: Measurement[]): void {
   console.log("\nactivation — fetch, parse and insert the whole guest");
   console.table(
@@ -485,16 +559,7 @@ function report(measurements: Measurement[]): void {
     })),
   );
 
-  console.log("\nretained JS heap after a forced collection");
-  console.table(
-    measurements.map((measurement) => ({
-      elements: measurement.size,
-      "marked objects": measurement.frame.objects,
-      "v-frame": kilobytes(measurement.frame.heap),
-      "host DOM": kilobytes(measurement.host.heap),
-      "bytes/object": Math.round(measurement.frame.heap / measurement.frame.objects),
-    })),
-  );
+  reportHeap(measurements);
 
   const frameSlope = perNodeMicroseconds(measurements, "frame");
   const hostSlope = perNodeMicroseconds(measurements, "host");
@@ -520,30 +585,46 @@ function reportChurn(frameHeap: number, hostHeap: number): void {
   ]);
 }
 
+async function measureEngine(engine: BrowserType, origin: string): Promise<void> {
+  const browser = await engine.launch();
+  try {
+    console.log(
+      `\n=== ${engine.name()} ${browser.version()} on ` +
+        `${cpus()[0]?.model ?? "unknown CPU"} ===`,
+    );
+    const measurements: Measurement[] = [];
+    for (const size of GUEST_SIZES) {
+      measurements.push({
+        size,
+        frame: await repeat(() => sampleFrame(engine, browser, origin, size)),
+        host: await repeat(() => sampleHost(engine, browser, origin, size)),
+      });
+    }
+    report(measurements);
+    // The churn measurement has no timing half — what it reports is retained heap —
+    // so it is skipped entirely rather than reported empty.
+    if (measuresHeap(engine)) {
+      reportChurn(
+        await repeatHeap(() => sampleFrameChurn(browser, origin)),
+        await repeatHeap(() => sampleHostChurn(browser, origin)),
+      );
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 async function main(): Promise<void> {
   if (!existsSync(resolve(process.cwd(), "dist/index.js"))) {
     throw new Error("dist/index.js is missing — run `pnpm build` first");
   }
 
   const fixture = await startHTTPFixture({ routes: benchRoutes() });
-  const browser = await chromium.launch();
   try {
-    console.log(`chromium ${browser.version()} on ${cpus()[0]?.model ?? "unknown CPU"}`);
-    const measurements: Measurement[] = [];
-    for (const size of GUEST_SIZES) {
-      measurements.push({
-        size,
-        frame: await repeat(() => sampleFrame(browser, fixture.origin, size)),
-        host: await repeat(() => sampleHost(browser, fixture.origin, size)),
-      });
+    for (const engine of ENGINES) {
+      await measureEngine(engine, fixture.origin);
     }
-    report(measurements);
-    reportChurn(
-      await repeatHeap(() => sampleFrameChurn(browser, fixture.origin)),
-      await repeatHeap(() => sampleHostChurn(browser, fixture.origin)),
-    );
   } finally {
-    await browser.close();
     await fixture.close();
   }
 }

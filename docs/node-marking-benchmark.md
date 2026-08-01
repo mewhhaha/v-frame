@@ -23,7 +23,7 @@ pnpm bench
 ```
 
 `bench/mark-virtual-node.ts` serves a generated guest document of *N* elements and
-measures it two ways in headless chromium:
+measures it two ways, in each of the two headless engines the test suite runs on:
 
 - **v-frame** — mount a `v-frame`, time from assigning `src` to `v-frame-load`.
 - **host DOM** — `fetch` the same URL, `DOMParser.parseFromString`, `adoptNode` the body
@@ -42,6 +42,15 @@ A fifth measurement churns rather than grows: it creates 2,000 rows in a settled
 removes them and drops every reference, and reports the heap that survives. That one reads
 twice, because the registries hold weak references and the first collection only clears
 them — the second collects what their finalizers released.
+
+The timings are taken on both engines; the two heap measurements are chromium-only,
+because CDP is the only way to ask a browser for a collected heap size that
+Playwright can drive, and `performance.measureUserAgentSpecificMemory` — the
+standard alternative — is chromium-only as well. On firefox the run prints the three
+timing tables, says the heap is not measurable, and skips the churn, which has no
+timing half. The engines run one after the other rather than together: these are
+wall-clock main-thread numbers, and two browsers competing for the machine would
+measure the machine.
 
 "Marked objects" counts what marking actually walks: every element, every attribute node
 and every text node. The generated guest averages three of those per element.
@@ -301,7 +310,10 @@ and it is a separate change from this one.
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and
   its own-property cost model differs; on firefox the retention is covered by
   `tests/node-retention.spec.ts`, which runs on both engines through
-  `page.requestGC()`, not by this benchmark.
+  `page.requestGC()`, not by this benchmark. What firefox *retains* for a large guest
+  is therefore still unknown. Its timings are not: they are in
+  [`limitations.md`](./limitations.md#what-firefox-costs), and the before/after tables
+  on this page predate the second engine, so they are chromium throughout.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
 - Detached subtrees are still walked in full every time they are inserted, and a guest that

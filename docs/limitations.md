@@ -262,7 +262,8 @@ used to cost 254–297 ms.
 
 **Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
 marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
-in the host document, which never gets JS wrappers for its nodes at all.
+in the host document, which never gets JS wrappers for its nodes at all. This one
+is chromium-only; see [below](#what-firefox-costs).
 
 Two rounds of work produced the numbers above. Answering `ownerDocument` and
 `baseURI` from the realm's `Node.prototype` instead of from own accessors on every
@@ -292,8 +293,49 @@ of nodes at once, an `<iframe>` pays the browser's own parser and no facade at
 all, and is the cheaper tool; the overlay and layout advantages in [the
 README](../README.md#what-you-are-trading) are what you would be giving up.
 
-Only chromium is measured. Firefox correctness is covered by the test suite, but
-no comparable numbers were taken there.
+### What firefox costs
+
+The tables above are chromium. Firefox pays the same shape of cost and more of
+it: the same guests, the same harness, the same machine, `pnpm bench` measuring
+both engines in one run.
+
+| guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
+| --- | --- | --- | --- | --- |
+| 1,000 | 37 ms | 35 ms | 2.3 ms | 2 ms |
+| 5,000 | 83 ms | 92 ms | 4.7 ms | 7 ms |
+| 20,000 | 276 ms | 340 ms | 17 ms | 23 ms |
+| 50,000 | 694 ms | 846 ms | 33 ms | 52 ms |
+
+Firefox 151.0 and chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D,
+2026-08-01. All four columns come from one `pnpm bench` run, so they are
+comparable to each other; they are a *different* run from the chromium table
+above, which is why its cells differ by up to 20% — that is the run-to-run
+spread, and it is why the ratio rather than any cell is the figure to read.
+
+The two runs taken that day put the marginal activation cost at **16.6 µs per
+element for firefox against 13.4 for chromium**, then 13.4 against 11.4. The
+absolute numbers moved together with the machine; the ratio did not, at 1.24x and
+1.17x. Activation on firefox is roughly a fifth dearer.
+
+Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
+chromium's 32–44** across the two runs — very close to double — and still flat in
+the size of the tree already there. Re-parenting is the narrower one, 66–96 ms
+against 57–91 ms, because the work the gate skips is skipped in both engines.
+
+Every firefox reading above is a whole millisecond, and that is the clock rather
+than a coincidence: 20 consecutive `performance.now()` calls in a Playwright
+firefox page all return integers, where chromium returns tenths of a microsecond.
+The coarsening is invisible in the 50,000-element cells and dominant in the
+host-DOM ones, where the true value is a couple of milliseconds.
+
+**Retained heap is not measured on firefox at all.** The reading needs a
+collected heap size, which Playwright can only get through CDP's
+`Runtime.getHeapUsage`; `performance.measureUserAgentSpecificMemory` is
+chromium-only as well. What firefox retains for a large guest is therefore
+unknown, and the 7.5 MB above should not be read as a cross-engine number. That
+guest nodes are *released* rather than retained is covered on both engines by
+[`tests/node-retention.spec.ts`](../tests/node-retention.spec.ts), which counts
+survivors rather than bytes.
 
 ## What is *not* a limitation
 

@@ -72,7 +72,11 @@ from.
   [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md), which
   now records the before and after of both optimizations it motivated. Its
   `re-parent` row moves a settled subtree rather than growing the tree, which is
-  the only measurement that distinguishes marking a node from re-marking one.
+  the only measurement that distinguishes marking a node from re-marking one. It
+  times both engines the suite runs on, one after the other; the two heap
+  measurements stay chromium-only, because a collected heap size needs CDP and
+  `performance.measureUserAgentSpecificMemory` is chromium-only as well, so on
+  firefox the run says the heap is not measurable and skips the churn.
 - `docs/`: the README was split into
   [`limitations.md`](./docs/limitations.md), [`api.md`](./docs/api.md),
   [`navigation.md`](./docs/navigation.md), [`ssr.md`](./docs/ssr.md), and
@@ -86,6 +90,12 @@ from.
   guest the design suits and which is better served by an `<iframe>`, citing
   those numbers instead of describing them. This was previously discoverable only
   by building something large and being disappointed.
+- Firefox numbers behind that ceiling, so it no longer rests on one engine.
+  Activation is about a fifth dearer than chromium's (1.24x and 1.17x on the two
+  runs taken) and insertion close to double, while re-parenting is within the
+  spread. Retained heap is still unmeasured on firefox and `limitations.md` now
+  says so where the figure appears, instead of leaving a chromium number reading
+  as a cross-engine one.
 
 ### Changed
 
