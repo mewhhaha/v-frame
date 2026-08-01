@@ -6,9 +6,9 @@
 // child mutation — throw rather than lie.
 
 import {
+  type CollectionFacade,
   staticCollection,
   staticNodeList,
-  type CollectionFacade,
 } from "./collections.js";
 import type { FacadeContext } from "./context.js";
 import { DOCUMENT_EVENT_HANDLER_NAMES, type EventFacade } from "./events.js";

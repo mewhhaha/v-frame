@@ -5,8 +5,8 @@
 // authored attributes remembered, and has its scripts and inline handlers
 // defused. Insertion, cloning and markup parsing all funnel back through it.
 
-import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { AttributeFacade } from "./attributes.js";
+import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
 import type { StyleFacade } from "./style.js";
 
