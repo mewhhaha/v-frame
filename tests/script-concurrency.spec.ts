@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
-
-interface FixtureServer {
-  origin: string;
-  close(): Promise<void>;
-}
+import {
+  bundleRoute,
+  htmlDocument,
+  type HTTPFixture,
+  type Route,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle } from "./support/mount-frame";
 
 interface RecordedFailure {
   phase: string;
@@ -16,52 +16,40 @@ interface RecordedFailure {
 }
 
 const nonce = "script-concurrency-nonce";
-let fixture: FixtureServer;
+let fixture: HTTPFixture;
 
-function html(body: string): string {
-  return `<!doctype html><html><head></head><body>${body}</body></html>`;
+function module(body: string): Route {
+  return { type: "text/javascript", body };
 }
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  contentType: string,
-  body: string,
-): void {
-  response.writeHead(status, {
-    "cache-control": "no-store",
-    "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-    "content-type": contentType,
-  });
-  response.end(body);
-}
-
-function documentSource(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/documents/inline-failure-external-success.html":
-      return html(`
+function startFixtureServer(): Promise<HTTPFixture> {
+  return startHTTPFixture({
+    headers: {
+      "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
+    },
+    routes: {
+      "/": htmlDocument('<div id="host"></div>'),
+      "/dist/index.js": bundleRoute,
+      "/documents/inline-failure-external-success.html": htmlDocument(`
         <script type="module" async src="../modules/external-tla-success.js"></script>
         <script type="module">import "../modules/inline-dependency-failure.js";</script>
-      `);
-    case "/documents/external-failure-inline-success.html":
-      return html(`
+      `),
+      "/documents/external-failure-inline-success.html": htmlDocument(`
         <script type="module" async src="../modules/external-dependency-entry.js"></script>
         <script type="module">
           window.__inlineTlaStarted = true;
           await new Promise((resolve) => setTimeout(resolve, 100));
           window.__inlineTlaFulfilled = true;
         </script>
-      `);
-    case "/documents/concurrent-external-failures.html":
-      return html(`
+      `),
+      "/documents/concurrent-external-failures.html": htmlDocument(`
         <script type="module" async src="../modules/shared-failure-a.js"></script>
         <script type="module" async src="../modules/shared-failure-b.js"></script>
         <script type="module">
           setTimeout(() => { throw new Error("unrelated runtime failure"); }, 10);
         </script>
-      `);
-    case "/documents/async-inline-order.html":
-      return html(`
+      `),
+      "/documents/async-inline-order.html": htmlDocument(`
         <script>window.__asyncInlineEvents = [];</script>
         <script type="module" async>
           window.__asyncInlineEvents.push("A-start");
@@ -71,9 +59,8 @@ function documentSource(pathname: string): string | undefined {
         <script type="module" async>
           window.__asyncInlineEvents.push("B");
         </script>
-      `);
-    case "/documents/concurrent-inline-failures.html":
-      return html(`
+      `),
+      "/documents/concurrent-inline-failures.html": htmlDocument(`
         <script>window.__concurrentInlineEvents = [];</script>
         <script type="module" async>
           window.__concurrentInlineEvents.push("failure-a-start");
@@ -90,9 +77,8 @@ function documentSource(pathname: string): string | undefined {
           await new Promise((resolve) => setTimeout(resolve, 100));
           window.__concurrentInlineEvents.push("success-end");
         </script>
-      `);
-    case "/documents/external-and-concurrent-inline-failures.html":
-      return html(`
+      `),
+      "/documents/external-and-concurrent-inline-failures.html": htmlDocument(`
         <script type="module" async src="../modules/external-dependency-entry.js"></script>
         <script type="module" async>
           window.__inlineTlaStarted = true;
@@ -103,102 +89,37 @@ function documentSource(pathname: string): string | undefined {
           await new Promise((resolve) => setTimeout(resolve, 50));
           throw new Error("concurrent inline failure");
         </script>
-      `);
-    case "/documents/blank.html":
-      return html("<main>blank</main>");
-    default:
-      return undefined;
-  }
-}
-
-function moduleSource(pathname: string): string | undefined {
-  switch (pathname) {
-    case "/modules/external-tla-success.js":
-      return `
+      `),
+      "/documents/blank.html": htmlDocument("<main>blank</main>"),
+      "/modules/external-tla-success.js": module(`
         window.__externalTlaStarted = true;
         await new Promise((resolve) => setTimeout(resolve, 100));
         window.__externalTlaFulfilled = true;
-      `;
-    case "/modules/inline-dependency-failure.js":
-      return 'throw new Error("inline dependency failure");';
-    case "/modules/external-dependency-entry.js":
-      return 'import "./external-dependency-failure.js";';
-    case "/modules/external-dependency-failure.js":
-      return `
+      `),
+      "/modules/inline-dependency-failure.js": module(
+        'throw new Error("inline dependency failure");',
+      ),
+      "/modules/external-dependency-entry.js": module(
+        'import "./external-dependency-failure.js";',
+      ),
+      "/modules/external-dependency-failure.js": module(`
         while (!window.__inlineTlaStarted) {
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
         throw new Error("external dependency failure");
-      `;
-    case "/modules/shared-failure-a.js":
-      return `
+      `),
+      "/modules/shared-failure-a.js": module(`
         await new Promise((resolve) => setTimeout(resolve, 50));
         window.__sharedExternalFailure ??= new Error("shared external failure");
         throw window.__sharedExternalFailure;
-      `;
-    case "/modules/shared-failure-b.js":
-      return `
+      `),
+      "/modules/shared-failure-b.js": module(`
         await new Promise((resolve) => setTimeout(resolve, 75));
         window.__sharedExternalFailure ??= new Error("shared external failure");
         throw window.__sharedExternalFailure;
-      `;
-    default:
-      return undefined;
-  }
-}
-
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
+      `),
+    },
   });
-}
-
-async function startFixtureServer(): Promise<FixtureServer> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
-    if (pathname === "/") {
-      reply(response, 200, "text/html", html('<div id="host"></div>'));
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-
-    const document = documentSource(pathname);
-    if (document !== undefined) {
-      reply(response, 200, "text/html", document);
-      return;
-    }
-    const module = moduleSource(pathname);
-    if (module !== undefined) {
-      reply(response, 200, "text/javascript", module);
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
-  });
-
-  await new Promise<void>((resolveListening) =>
-    server.listen(0, "127.0.0.1", resolveListening),
-  );
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Script concurrency fixture did not expose a TCP address");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => closeServer(server),
-  };
 }
 
 test.beforeAll(async () => {
@@ -208,14 +129,6 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await fixture.close();
 });
-
-async function installBundle(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-}
 
 async function loadFrame(
   page: Page,
@@ -275,7 +188,7 @@ async function loadFrame(
 test("attributes an inline dependency failure while an async external module is pending", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const pathname = "/documents/inline-failure-external-success.html";
   const result = await loadFrame(page, pathname);
 
@@ -299,7 +212,7 @@ test("attributes an inline dependency failure while an async external module is 
 test("attributes an external dependency failure while an inline module has pending top-level await", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const pathname = "/documents/external-failure-inline-success.html";
   const result = await loadFrame(page, pathname);
 
@@ -323,7 +236,7 @@ test("attributes an external dependency failure while an inline module has pendi
 test("reports two concurrent external failures and an unrelated runtime failure once each", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await loadFrame(page, "/documents/concurrent-external-failures.html");
 
   expect(result.status).toBe("ready");
@@ -354,7 +267,7 @@ test("reports two concurrent external failures and an unrelated runtime failure 
 test("runs async inline modules concurrently while preserving their native start order", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame") as HTMLElement & {
@@ -399,7 +312,7 @@ test("runs async inline modules concurrently while preserving their native start
 test("settles concurrent failing and successful inline modules without duplicate reports", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const pathname = "/documents/concurrent-inline-failures.html";
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
@@ -485,7 +398,7 @@ test("settles concurrent failing and successful inline modules without duplicate
 test("separates an external failure from overlapping concurrent inline modules", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const pathname = "/documents/external-and-concurrent-inline-failures.html";
   const result = await loadFrame(page, pathname);
 
@@ -513,7 +426,7 @@ test("separates an external failure from overlapping concurrent inline modules",
 test("serializes dynamic inline modules whose async property is false", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame") as HTMLElement & {
