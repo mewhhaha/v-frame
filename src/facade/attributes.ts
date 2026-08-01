@@ -147,16 +147,20 @@ export function installAttributeFacade(
   // marking the subtree again would not repair it either: a subtree that is
   // already virtual and still in the tree is deliberately not re-walked. So the
   // realm marks on the way out as well, wherever it hands an Attr node to
-  // script — which is the only place the node's identity is observable.
+  // script — which is where the node's identity is observable in practice,
+  // though not the only place it can be reached. See the exclusions below.
   //
   // The tradeoff: this is one WeakSet probe per Attr handed out, on a read path,
   // instead of widening the realm's mutation observer to every attribute name.
   // The observer sits on the hot mutation path and would have paid per write
   // rather than per read, and it delivers a microtask late, so an attribute read
   // back in the same task would still have answered wrong. What it does not
-  // cover is an Attr reached through the host realm's own accessors, or a
-  // NamedNodeMap held across a write from outside the facade; both hand out a
-  // node the realm never sees.
+  // cover: an Attr reached through the host realm's own accessors; a
+  // NamedNodeMap held across a write from outside the facade, since indexed
+  // access on the map cannot be intercepted; and an Attr the guest builds with
+  // createAttribute and attaches with setAttributeNode, which stays unmarked
+  // until something hands it back out through a marked element. All three hand
+  // out a node the realm never sees.
   const markAttributeNodes = (
     element: Element,
     attributeNodes: NamedNodeMap,
