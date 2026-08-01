@@ -49,9 +49,6 @@ examples/ssr/
 │   ├── qwik/           Qwik + Vite + Cloudflare Worker
 │   ├── angular/        Angular application builder + Angular SSR
 │   └── solid/          SolidStart + Cloudflare module preset
-├── shared/
-│   ├── materialize-v-frame.ts
-│   └── routing.ts
 ├── tests/
 └── package.json
 ```
@@ -103,8 +100,7 @@ bindings without making the guest deployments depend on host code.
 ## Compose a guest response
 
 For a host route, the Worker requests the guest's ordinary HTML through its
-service binding. [`materialize-v-frame.ts`](./shared/materialize-v-frame.ts)
-then:
+service binding. `materializeVFrameDocument` from `v-frame/server` then:
 
 - changes `html`, `head`, and `body` into materializable document elements;
 - rewrites inline CSS selectors and URLs for the public guest URL;
@@ -135,11 +131,18 @@ their hashed chunks remain same-origin and pass through the host proxy.
 
 ## Routing
 
-Each guest's Location and History APIs remain scoped to that guest. React and
-Qwik additionally demonstrate optional shell coordination through the small,
-versioned `BroadcastChannel` contract in [`routing.ts`](./shared/routing.ts).
-Angular and Solid need no host-specific routing code; they simply run at their
-mounted base paths.
+Each guest's Location and History APIs remain scoped to that guest, and no guest
+imports a host routing API. The shell coordinates routes with the element itself:
+
+- it moves a frontend onto the route the current page owns with
+  `frame.navigate(route, { replace: true })`, which the guest sees as a
+  same-document navigation and an ordinary `popstate`; and
+- it follows a frontend that routes itself by listening for `v-frame-navigated`
+  and switching to whichever page owns the route the guest moved to.
+
+The Qwik application handles `popstate` the way any client-side router does, so
+the shell can drive it. React Router, Angular, and Solid need nothing at all;
+they simply run at their mounted base paths.
 
 ## Verify and deploy
 

@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,115 +12,136 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
-}
-
-async function mountFrame(
-  page: import("@playwright/test").Page,
-  path: string,
-  nonce?: string,
-) {
-  await page.evaluate(({ source, nonceValue }) => {
-    const frame = document.createElement("v-frame");
-    if (nonceValue !== undefined) {
-      frame.nonce = nonceValue;
-    }
-    frame.src = source;
-    document.querySelector("#host")?.append(frame);
-  }, { source: `${fixture.origin}${path}`, nonceValue: nonce });
-  return page.locator("v-frame");
+function mountDocument(page: Page, path: string): Promise<Locator> {
+  return mountFrame(page, { src: `${fixture.origin}${path}`, settle: "none" });
 }
 
 async function childValue<T>(
-  frame: import("@playwright/test").Locator,
+  frame: Locator,
   expression: (window: Window & typeof globalThis) => T,
 ) {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate(
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+    );
   }, expression.toString()) as Promise<T>;
 }
 
-test("executes an insertAdjacentElement script only in the child realm", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/dynamic-insert.html");
+test("executes an insertAdjacentElement script only in the child realm", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/dynamic-insert.html");
 
-  await expect(frame.locator("#dynamic-insert-result")).toHaveText("child realm executed");
+  await expect(frame.locator("#dynamic-insert-result")).toHaveText(
+    "child realm executed",
+  );
   expect(await page.evaluate(() => "__dynamicInsertRealm" in window)).toBe(false);
-  expect(await childValue(frame, (window) => (window as any).__dynamicInsertRealm === window)).toBe(true);
+  expect(
+    await childValue(frame, (window) => (window as any).__dynamicInsertRealm === window),
+  ).toBe(true);
 });
 
 test("loads a network v-frame nested inside a child document", async ({ page }) => {
-  await installBundle(page);
-  const outerFrame = await mountFrame(page, "/documents/nested-network.html");
+  await installBundle(page, fixture.origin);
+  const outerFrame = await mountDocument(page, "/documents/nested-network.html");
   const innerFrame = outerFrame.locator("#nested-network-frame");
 
-  await expect.poll(() => innerFrame.evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+  await expect
+    .poll(() =>
+      innerFrame.evaluate(
+        (element) => (element as HTMLElement & { status: string }).status,
+      ),
+    )
+    .toBe("ready");
   await expect(innerFrame.locator("#nested-network-copy")).toHaveText(
     "Nested network frame loaded",
   );
 });
 
-test("waits for an inline module top-level await before becoming ready", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/inline-module.html");
+test("waits for an inline module top-level await before becoming ready", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/inline-module.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
   await expect(frame.locator("#module-result")).toHaveText("module settled");
 });
 
-test("runs classic, deferred, and async scripts with their current script and ready state", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/script-order.html");
+test("runs classic, deferred, and async scripts with their current script and ready state", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/script-order.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
-  await expect.poll(() => childValue(frame, (window) => (window as any).__scriptEvents)).toEqual([
-    "classic-inline:classic-inline:loading",
-    "classic-external:classic-external:loading",
-    "defer-external:deferred-external:interactive",
-    "async-external:async-external:interactive",
-    "load:complete",
-  ]);
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  await expect
+    .poll(() => childValue(frame, (window) => (window as any).__scriptEvents))
+    .toEqual([
+      "classic-inline:classic-inline:loading",
+      "classic-external:classic-external:loading",
+      "defer-external:deferred-external:interactive",
+      "async-external:async-external:interactive",
+      "load:complete",
+    ]);
 });
 
-test("preserves insertion order for dynamic external scripts with async false", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/dynamic-external-order.html");
+test("preserves insertion order for dynamic external scripts with async false", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/dynamic-external-order.html");
 
-  await expect.poll(() => childValue(frame, (window) => (window as any).__dynamicExternalEvents)).toEqual(["first", "second"]);
+  // The guarantee is insertion order despite arrival order, so the first script answers
+  // only once the second one's response has already been written.
+  await fixture.dynamicScriptOrder.secondServed;
+  await fixture.dynamicScriptOrder.releaseFirst();
+
+  await expect
+    .poll(() => childValue(frame, (window) => (window as any).__dynamicExternalEvents))
+    .toEqual(["first", "second"]);
 });
 
-test("applies imported supports rules and preserves root selector specificity", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/import-and-root.html");
+test("applies imported supports rules and preserves root selector specificity", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/import-and-root.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
   await expect(frame.locator("#root-colour")).toHaveCSS("color", "rgb(8, 9, 10)");
   await expect(frame.locator("#imported-colour")).toHaveCSS("color", "rgb(13, 14, 15)");
 });
 
-test("keeps the signal and credentials when a Request is constructed from another request", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/request-abort.html");
+test("keeps the signal and credentials when a Request is constructed from another request", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/request-abort.html");
 
   await expect(frame.locator("#request-result")).toHaveText(
     "true:true:include:include:AbortError",
   );
 });
 
-test("updates document base URLs after pushState without an explicit base", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/base-after-push.html");
+test("updates document base URLs after pushState without an explicit base", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/base-after-push.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
   expect(await childValue(frame, (window) => (window as any).__baseAfterPush)).toEqual({
     baseURI: `${fixture.origin}/documents/nested/state.html`,
     src: `${fixture.origin}/documents/nested/asset.png`,
@@ -127,20 +149,28 @@ test("updates document base URLs after pushState without an explicit base", asyn
 });
 
 test("preserves an explicit base URL after pushState", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/explicit-base-after-push.html");
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/explicit-base-after-push.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
-  expect(await childValue(frame, (window) => (window as any).__explicitBaseAfterPush)).toEqual({
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  expect(
+    await childValue(frame, (window) => (window as any).__explicitBaseAfterPush),
+  ).toEqual({
     baseURI: `${fixture.origin}/base-root/`,
     src: `${fixture.origin}/base-root/asset.png`,
   });
 });
 
-test("forwards bubbling child-realm scroll events from document to window", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/scroll-events.html");
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+test("forwards bubbling child-realm scroll events from document to window", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/scroll-events.html");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
 
   await childValue(frame, (window) => {
     const events: Array<{
@@ -168,53 +198,76 @@ test("forwards bubbling child-realm scroll events from document to window", asyn
         bubbles: event.bubbles,
       });
     });
-    (window as Window & { __viewportScrollEvents: typeof events }).__viewportScrollEvents = events;
+    (
+      window as Window & typeof globalThis & { __viewportScrollEvents: typeof events }
+    ).__viewportScrollEvents = events;
   });
   await frame.evaluate((element) => {
     element.setAttribute("style", "height: 100px;");
     element.scrollTop = 40;
   });
-  await expect.poll(() => childValue(frame, (window) => (
-    (window as Window & { __viewportScrollEvents: unknown[] }).__viewportScrollEvents
-  ))).toEqual([
-    {
-      listener: "document",
-      childRealm: true,
-      target: true,
-      currentTarget: true,
-      bubbles: true,
-    },
-    {
-      listener: "window",
-      childRealm: true,
-      target: true,
-      currentTarget: true,
-      bubbles: true,
-    },
-  ]);
+  await expect
+    .poll(() =>
+      childValue(
+        frame,
+        (window) =>
+          (window as Window & typeof globalThis & { __viewportScrollEvents: unknown[] })
+            .__viewportScrollEvents,
+      ),
+    )
+    .toEqual([
+      {
+        listener: "document",
+        childRealm: true,
+        target: true,
+        currentTarget: true,
+        bubbles: true,
+      },
+      {
+        listener: "window",
+        childRealm: true,
+        target: true,
+        currentTarget: true,
+        bubbles: true,
+      },
+    ]);
 });
 
 test("reflects the nonce property and attribute", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/nonce.html", "first-nonce");
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/nonce.html`,
+    nonce: "first-nonce",
+    settle: "none",
+  });
 
-  await expect.poll(() => frame.evaluate((element) => (element as any).status)).toBe("ready");
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
   await expect(frame).toHaveAttribute("nonce", "first-nonce");
-  expect(await frame.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe("first-nonce");
+  expect(await frame.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe(
+    "first-nonce",
+  );
   await frame.evaluate((element) => element.setAttribute("nonce", "second-nonce"));
-  expect(await frame.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe("second-nonce");
+  expect(await frame.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe(
+    "second-nonce",
+  );
 });
 
-test("stops virtual history when navigation approval removes the frame", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/application.html");
-  await expect.poll(() => frame.evaluate((element) => (
-    element as HTMLElement & { status: string }
-  ).status)).toBe("ready");
+test("stops virtual history when navigation approval removes the frame", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/application.html");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
 
   const result = await frame.evaluate((element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       status: string;
     };
@@ -232,10 +285,7 @@ test("stops virtual history when navigation approval removes the frame", async (
     if (shadowRoot === null) {
       throw new Error("The v-frame did not expose its shadow root");
     }
-    shadowRoot.adoptedStyleSheets = [
-      ...shadowRoot.adoptedStyleSheets,
-      hostStyleSheet,
-    ];
+    shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, hostStyleSheet];
 
     let navigationCount = 0;
     let errorCount = 0;
@@ -290,16 +340,20 @@ test("stops virtual history when navigation approval removes the frame", async (
   });
 });
 
-test("stops old virtual history when navigation approval reloads the frame", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/documents/application.html");
-  await expect.poll(() => frame.evaluate((element) => (
-    element as HTMLElement & { status: string }
-  ).status)).toBe("ready");
+test("stops old virtual history when navigation approval reloads the frame", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountDocument(page, "/documents/application.html");
+  await expect
+    .poll(() =>
+      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
+    )
+    .toBe("ready");
 
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       reload(): Promise<void>;
       status: string;
@@ -376,22 +430,23 @@ test("stops old virtual history when navigation approval reloads the frame", asy
 });
 
 test("disposes retained virtual history when realm bootstrap fails", async ({ page }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const failure = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       reload(): Promise<void>;
+      src: string;
       status: string;
     };
-    let retainedHistory: History | null = null;
+    const retained: { history: History | null } = { history: null };
     let navigationCount = 0;
     const failures: Array<{ phase: string; fatal: boolean }> = [];
     const realmObserver = new MutationObserver((records) => {
       for (const record of records) {
         for (const addedNode of record.addedNodes) {
           if (addedNode instanceof HTMLIFrameElement) {
-            retainedHistory = addedNode.contentWindow?.history ?? null;
+            retained.history = addedNode.contentWindow?.history ?? null;
           }
         }
       }
@@ -425,24 +480,24 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
       await bootstrapFailure;
       reloadRejection = await reload.then(
         () => null,
-        (error: unknown) => error instanceof Error ? error.message : String(error),
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
       );
     } finally {
       if (matchMediaDescriptor === undefined) {
-        delete (window as Window & { matchMedia?: typeof matchMedia }).matchMedia;
+        delete (window as unknown as { matchMedia?: typeof matchMedia }).matchMedia;
       } else {
         Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
       }
       realmObserver.disconnect();
     }
 
-    if (retainedHistory === null) {
+    if (retained.history === null) {
       throw new Error("The bootstrap failure did not expose its child history");
     }
     let retainedException: string | null = null;
     try {
-      retainedHistory.pushState({ attempt: 1 }, "", "http://[");
-      retainedHistory.replaceState({ attempt: 2 }, "", "http://[");
+      retained.history.pushState({ attempt: 1 }, "", "http://[");
+      retained.history.replaceState({ attempt: 2 }, "", "http://[");
     } catch (error) {
       retainedException = String(error);
     }

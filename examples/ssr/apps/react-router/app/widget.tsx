@@ -2,12 +2,6 @@ import { Button } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 
-import { useWidgetRouteAdapter } from "./routing";
-
-export const widgetRoutes = ["/activity", "/research", "/brief", "/plugins"] as const;
-
-export type WidgetRoute = typeof widgetRoutes[number];
-
 interface TranscriptStep {
   detail: string;
   title: string;
@@ -27,43 +21,70 @@ const threadTranscripts = {
     articleKey: "migration",
     articleTitle: "blue–green deployment",
     heading: "Migration conversation",
-    prompt: "Help me plan the platform migration. I need a safe rollout sequence that keeps the current API available while teams move over.",
-    response: "I’d split the migration into three reversible stages so each team can move independently.",
+    prompt:
+      "Help me plan the platform migration. I need a safe rollout sequence that keeps the current API available while teams move over.",
+    response:
+      "I’d split the migration into three reversible stages so each team can move independently.",
     steps: [
-      { title: "Stabilize the boundary.", detail: "Wrap the current API in a measured compatibility layer." },
-      { title: "Mirror read traffic.", detail: "Compare both paths before moving any writes." },
-      { title: "Move one owner at a time.", detail: "Keep a short rollback window after every cutover." },
+      {
+        title: "Stabilize the boundary.",
+        detail: "Wrap the current API in a measured compatibility layer.",
+      },
+      {
+        title: "Mirror read traffic.",
+        detail: "Compare both paths before moving any writes.",
+      },
+      {
+        title: "Move one owner at a time.",
+        detail: "Keep a short rollback window after every cutover.",
+      },
     ],
   },
   research: {
     articleKey: "research",
     articleTitle: "thematic analysis",
     heading: "Customer research conversation",
-    prompt: "Turn our customer interviews into a focused readout with themes, evidence, and a clear next decision.",
-    response: "I’d organize the interviews around repeated needs, then separate observations from product implications.",
+    prompt:
+      "Turn our customer interviews into a focused readout with themes, evidence, and a clear next decision.",
+    response:
+      "I’d organize the interviews around repeated needs, then separate observations from product implications.",
     steps: [
-      { title: "Code the evidence.", detail: "Tag concrete statements before translating them into feature requests." },
-      { title: "Group repeated needs.", detail: "Cluster observations and note which customer segments share each pattern." },
-      { title: "Choose the next question.", detail: "Use the strongest unresolved theme to shape a follow-up study." },
+      {
+        title: "Code the evidence.",
+        detail: "Tag concrete statements before translating them into feature requests.",
+      },
+      {
+        title: "Group repeated needs.",
+        detail:
+          "Cluster observations and note which customer segments share each pattern.",
+      },
+      {
+        title: "Choose the next question.",
+        detail: "Use the strongest unresolved theme to shape a follow-up study.",
+      },
     ],
   },
   brief: {
     articleKey: "brief",
     articleTitle: "executive summary",
     heading: "Weekly brief conversation",
-    prompt: "Draft a weekly brief for stakeholders. It should cover progress, risks, and the decisions we need next week.",
-    response: "I’d lead with the change in status, then give each risk an owner and a dated next action.",
+    prompt:
+      "Draft a weekly brief for stakeholders. It should cover progress, risks, and the decisions we need next week.",
+    response:
+      "I’d lead with the change in status, then give each risk an owner and a dated next action.",
     steps: [
       { title: "State the movement.", detail: "Open with what changed since last week." },
-      { title: "Name the exposure.", detail: "Give each risk an impact, owner, and mitigation." },
-      { title: "Request decisions.", detail: "End with the smallest choices that unblock the coming week." },
+      {
+        title: "Name the exposure.",
+        detail: "Give each risk an impact, owner, and mitigation.",
+      },
+      {
+        title: "Request decisions.",
+        detail: "End with the smallest choices that unblock the coming week.",
+      },
     ],
   },
 } as const satisfies Record<string, ThreadTranscript>;
-
-export function isWidgetRoute(value: string): value is WidgetRoute {
-  return (widgetRoutes as readonly string[]).includes(value);
-}
 
 function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
   const [responseSaved, setResponseSaved] = useState(false);
@@ -92,7 +113,9 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
         hostViewport.innerWidth - previewWidth - horizontalMargin,
       );
       const previewHeight = previewPopover.offsetHeight;
-      const fitsBelow = anchor.bottom + anchorGap + previewHeight <= hostViewport.innerHeight - horizontalMargin;
+      const fitsBelow =
+        anchor.bottom + anchorGap + previewHeight <=
+        hostViewport.innerHeight - horizontalMargin;
       const top = fitsBelow
         ? anchor.bottom + anchorGap
         : Math.max(horizontalMargin, anchor.top - anchorGap - previewHeight);
@@ -113,10 +136,11 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
       closeTimer = globalThis.setTimeout(() => {
         closeTimer = undefined;
         if (
-          previewTrigger.matches(":hover")
-          || previewTrigger === previewTrigger.ownerDocument.activeElement
-          || previewPopover.matches(":hover")
-        ) return;
+          previewTrigger.matches(":hover") ||
+          previewTrigger === previewTrigger.ownerDocument.activeElement ||
+          previewPopover.matches(":hover")
+        )
+          return;
         closePreview();
       }, 80);
     };
@@ -151,17 +175,24 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
 
   return (
     <section id="transcript" aria-labelledby="transcript-title">
-      <h2 id="transcript-title" className="sr-only">{transcript.heading}</h2>
+      <h2 id="transcript-title" className="sr-only">
+        {transcript.heading}
+      </h2>
       <div className="conversation-thread">
         <article className="conversation-message conversation-message-user">
-          <div className="message-content"><p>{transcript.prompt}</p></div>
+          <div className="message-content">
+            <p>{transcript.prompt}</p>
+          </div>
         </article>
         <article className="conversation-message conversation-message-assistant">
           <div className="message-content">
             <p>{transcript.response}</p>
             <ol className="activity-list">
               {transcript.steps.map((step) => (
-                <li key={step.title}><strong>{step.title}</strong><span>{step.detail}</span></li>
+                <li key={step.title}>
+                  <strong>{step.title}</strong>
+                  <span>{step.detail}</span>
+                </li>
               ))}
             </ol>
             <p className="reference-copy">
@@ -183,7 +214,10 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
               popover="manual"
               role="tooltip"
             >
-              <div className="nested-widget-surface" data-composition-label="Qwik Wikipedia preview frontend">
+              <div
+                className="nested-widget-surface"
+                data-composition-label="Qwik Wikipedia preview frontend"
+              >
                 <v-frame
                   adopt
                   className="nested-workspace-widget"
@@ -193,7 +227,9 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
               </div>
             </div>
             <div className="activity-actions">
-              <Button type="button" onClick={() => setResponseSaved(true)}>♡ Save</Button>
+              <Button type="button" onClick={() => setResponseSaved(true)}>
+                ♡ Save
+              </Button>
               <output aria-live="polite">{responseSaved ? "Saved" : ""}</output>
             </div>
           </div>
@@ -207,20 +243,29 @@ function PluginsPage() {
   const [enabledPlugins, setEnabledPlugins] = useState(["wikipedia", "files"]);
   const [searchQuery, setSearchQuery] = useState("");
   const togglePlugin = (plugin: string) => {
-    setEnabledPlugins((currentPlugins) => currentPlugins.includes(plugin)
-      ? currentPlugins.filter((enabledPlugin) => enabledPlugin !== plugin)
-      : [...currentPlugins, plugin]);
+    setEnabledPlugins((currentPlugins) =>
+      currentPlugins.includes(plugin)
+        ? currentPlugins.filter((enabledPlugin) => enabledPlugin !== plugin)
+        : [...currentPlugins, plugin],
+    );
   };
 
   const plugins = [
-    ["wikipedia", "W", "Wikipedia", "Preview relevant articles beside terms in a response."],
+    [
+      "wikipedia",
+      "W",
+      "Wikipedia",
+      "Preview relevant articles beside terms in a response.",
+    ],
     ["files", "F", "File search", "Find supporting passages in workspace documents."],
     ["analysis", "D", "Data analysis", "Inspect tables and calculate quick comparisons."],
   ] as const;
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase();
   const visiblePlugins = plugins.filter(([, , name, description]) => {
-    return normalizedSearchQuery === ""
-      || `${name} ${description}`.toLocaleLowerCase().includes(normalizedSearchQuery);
+    return (
+      normalizedSearchQuery === "" ||
+      `${name} ${description}`.toLocaleLowerCase().includes(normalizedSearchQuery)
+    );
   });
 
   return (
@@ -228,7 +273,9 @@ function PluginsPage() {
       <header className="plugin-heading">
         <div>
           <h2 id="plugins-title">Plugins</h2>
-          <p className="widget-copy">Work across your favorite tools from one conversation.</p>
+          <p className="widget-copy">
+            Work across your favorite tools from one conversation.
+          </p>
         </div>
         <label className="plugin-search">
           <span className="sr-only">Search plugins</span>
@@ -247,9 +294,13 @@ function PluginsPage() {
       <section className="installed-plugins" aria-labelledby="installed-plugins-title">
         <h3 id="installed-plugins-title">Installed</h3>
         <div className="installed-row">
-          {plugins.filter(([key]) => enabledPlugins.includes(key)).map(([key, mark, name]) => (
-            <span className="plugin-mark" title={name} key={key}>{mark}</span>
-          ))}
+          {plugins
+            .filter(([key]) => enabledPlugins.includes(key))
+            .map(([key, mark, name]) => (
+              <span className="plugin-mark" title={name} key={key}>
+                {mark}
+              </span>
+            ))}
         </div>
       </section>
       <section className="plugin-category" aria-labelledby="featured-plugins-title">
@@ -259,9 +310,18 @@ function PluginsPage() {
             const enabled = enabledPlugins.includes(key);
             return (
               <article className="plugin" key={key}>
-                <span className="plugin-mark" aria-hidden="true">{mark}</span>
-                <div><strong>{name}</strong><p>{description}</p></div>
-                <Button type="button" aria-pressed={enabled} onClick={() => togglePlugin(key)}>
+                <span className="plugin-mark" aria-hidden="true">
+                  {mark}
+                </span>
+                <div>
+                  <strong>{name}</strong>
+                  <p>{description}</p>
+                </div>
+                <Button
+                  type="button"
+                  aria-pressed={enabled}
+                  onClick={() => togglePlugin(key)}
+                >
                   {enabled ? "Enabled" : "Enable"}
                 </Button>
               </article>
@@ -273,19 +333,22 @@ function PluginsPage() {
   );
 }
 
-export interface ReleaseActivityWidgetProps {
-  routingFrameId: string;
-}
-
-export function ReleaseActivityWidget({ routingFrameId }: ReleaseActivityWidgetProps) {
-  useWidgetRouteAdapter(routingFrameId);
-
+export function ReleaseActivityWidget() {
   return (
     <main className="activity-widget">
       <Routes>
-        <Route path="/activity" element={<TranscriptPage transcript={threadTranscripts.migration} />} />
-        <Route path="/research" element={<TranscriptPage transcript={threadTranscripts.research} />} />
-        <Route path="/brief" element={<TranscriptPage transcript={threadTranscripts.brief} />} />
+        <Route
+          path="/activity"
+          element={<TranscriptPage transcript={threadTranscripts.migration} />}
+        />
+        <Route
+          path="/research"
+          element={<TranscriptPage transcript={threadTranscripts.research} />}
+        />
+        <Route
+          path="/brief"
+          element={<TranscriptPage transcript={threadTranscripts.brief} />}
+        />
         <Route path="/plugins" element={<PluginsPage />} />
         <Route path="*" element={<Navigate replace to="/activity" />} />
       </Routes>

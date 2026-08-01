@@ -1,4 +1,4 @@
-import type { NativeDocumentHandles, DocumentFacade } from "./document-facade.js";
+import type { NativeDocumentHandles, DocumentFacade } from "./facade/index.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
 type ScriptCategory = "classic" | "module" | "importmap" | "inert";
@@ -85,9 +85,7 @@ function scriptCategory(script: HTMLScriptElement): ScriptCategory {
     type === "text/x-ecmascript" ||
     type === "text/x-javascript"
   ) {
-    return script.hasAttribute("nomodule") || script.noModule
-      ? "inert"
-      : "classic";
+    return script.hasAttribute("nomodule") || script.noModule ? "inert" : "classic";
   }
   return "inert";
 }
@@ -102,9 +100,11 @@ function errorComesFromCurrentDocument(filename: string, currentURL: string): bo
   }
   const currentDocumentURL = new URL(currentURL);
   currentDocumentURL.hash = "";
-  return filename === currentDocumentURL.href ||
+  return (
+    filename === currentDocumentURL.href ||
     filename.startsWith(`${currentDocumentURL.href} `) ||
-    filename.startsWith(`${currentDocumentURL.href}:`);
+    filename.startsWith(`${currentDocumentURL.href}:`)
+  );
 }
 
 export class ScriptRunner {
@@ -158,10 +158,7 @@ export class ScriptRunner {
       const externalCandidates = comesFromCurrentDocument
         ? new Set<ExternalModuleSettlement>()
         : new Set(this.#externalModuleSettlements);
-      if (
-        this.#inlineModuleSettlements.size === 0 &&
-        externalCandidates.size === 0
-      ) {
+      if (this.#inlineModuleSettlements.size === 0 && externalCandidates.size === 0) {
         return;
       }
 
@@ -170,7 +167,7 @@ export class ScriptRunner {
       const deferredModuleError: DeferredModuleError = {
         reason: event.error,
         failure: {
-          url: comesFromCurrentDocument ? currentURL : (event.filename || currentURL),
+          url: comesFromCurrentDocument ? currentURL : event.filename || currentURL,
           error: event.error ?? new Error(event.message),
         },
         externalCandidates,
@@ -198,16 +195,25 @@ export class ScriptRunner {
         return;
       }
       const candidate = this.#inlineClassicCandidates.shift();
-      candidate?.fail(new Error(
-        `Inline script blocked by ${event.effectiveDirective}: ${event.originalPolicy}`,
-      ));
+      candidate?.fail(
+        new Error(
+          `Inline script blocked by ${event.effectiveDirective}: ${event.originalPolicy}`,
+        ),
+      );
     };
     nativeAddEventListener("securitypolicyviolation", securityPolicyViolationListener);
-    this.#signal.addEventListener("abort", () => {
-      nativeRemoveEventListener("error", moduleErrorListener);
-      nativeRemoveEventListener("securitypolicyviolation", securityPolicyViolationListener);
-      this.#inlineClassicCandidates.length = 0;
-    }, { once: true });
+    this.#signal.addEventListener(
+      "abort",
+      () => {
+        nativeRemoveEventListener("error", moduleErrorListener);
+        nativeRemoveEventListener(
+          "securitypolicyviolation",
+          securityPolicyViolationListener,
+        );
+        this.#inlineClassicCandidates.length = 0;
+      },
+      { once: true },
+    );
   }
 
   get currentScript(): HTMLScriptElement | null {
@@ -279,13 +285,19 @@ export class ScriptRunner {
           const pendingErrors = [seed];
           while (pendingErrors.length > 0) {
             const deferredModuleError = pendingErrors.pop();
-            if (deferredModuleError === undefined || componentErrors.has(deferredModuleError)) {
+            if (
+              deferredModuleError === undefined ||
+              componentErrors.has(deferredModuleError)
+            ) {
               continue;
             }
             componentErrors.add(deferredModuleError);
             visitedErrors.add(deferredModuleError);
             for (const settlement of deferredModuleError.inlineCandidates) {
-              if (settlement.status !== "pending" || componentSettlements.has(settlement)) {
+              if (
+                settlement.status !== "pending" ||
+                componentSettlements.has(settlement)
+              ) {
                 continue;
               }
               componentSettlements.add(settlement);
@@ -297,7 +309,10 @@ export class ScriptRunner {
             }
           }
 
-          const errorBySettlement = new Map<InlineModuleSettlement, DeferredModuleError>();
+          const errorBySettlement = new Map<
+            InlineModuleSettlement,
+            DeferredModuleError
+          >();
           const assignError = (
             deferredModuleError: DeferredModuleError,
             visitedSettlements: Set<InlineModuleSettlement>,
@@ -325,10 +340,12 @@ export class ScriptRunner {
             continue;
           }
 
-          const failures = [...errorBySettlement].map(([settlement, deferredModuleError]) => ({
-            settlement,
-            deferredModuleError,
-          }));
+          const failures = [...errorBySettlement].map(
+            ([settlement, deferredModuleError]) => ({
+              settlement,
+              deferredModuleError,
+            }),
+          );
           for (const { deferredModuleError } of failures) {
             this.#consumeModuleError(deferredModuleError);
           }
@@ -360,13 +377,15 @@ export class ScriptRunner {
       }
 
       const external = hasExternalSource(script);
-      const asynchronous = script.hasAttribute("async") && (external || category === "module");
+      const asynchronous =
+        script.hasAttribute("async") && (external || category === "module");
       if (asynchronous) {
         asyncScripts.push(this.#execute(script, "async"));
         continue;
       }
 
-      const deferred = category === "module" || (external && script.hasAttribute("defer"));
+      const deferred =
+        category === "module" || (external && script.hasAttribute("defer"));
       if (deferred) {
         deferredScripts.push(script);
         continue;
@@ -381,7 +400,7 @@ export class ScriptRunner {
 
     this.#facade.setReadyState("interactive");
     const deferredExecutions = deferredScripts.map((script) =>
-      this.#executeScript(script, "ordered")
+      this.#executeScript(script, "ordered"),
     );
     await Promise.all(deferredExecutions);
 
@@ -407,10 +426,7 @@ export class ScriptRunner {
     this.#window.dispatchEvent(new this.#window.Event("load"));
   }
 
-  executeDynamic(
-    script: HTMLScriptElement,
-    execution: "async" | "ordered",
-  ): void {
+  executeDynamic(script: HTMLScriptElement, execution: "async" | "ordered"): void {
     if (scriptCategory(script) === "inert" || this.#signal.aborted) {
       return;
     }
@@ -453,7 +469,7 @@ export class ScriptRunner {
     pseudoScript: HTMLScriptElement,
     source: string,
   ): ExternalModuleObservation {
-    const sequence = this.#externalModuleSequence += 1;
+    const sequence = (this.#externalModuleSequence += 1);
     const fulfilledName = `__vFrameExternalModuleFulfilled${sequence}`;
     const rejectedName = `__vFrameExternalModuleRejected${sequence}`;
     const settlement: ExternalModuleSettlement = {
@@ -528,10 +544,11 @@ export class ScriptRunner {
         });
         observer.addEventListener(
           "error",
-          () => finish({
-            status: "rejected",
-            error: new Error(`Module observer for ${source} failed to execute`),
-          }),
+          () =>
+            finish({
+              status: "rejected",
+              error: new Error(`Module observer for ${source} failed to execute`),
+            }),
           { once: true },
         );
 
@@ -616,7 +633,7 @@ export class ScriptRunner {
     const externalModule = category === "module" && external;
     const needsSettlement = external || inlineModule;
     const completionName = inlineModule
-      ? `__vFrameModuleCompletion${this.#inlineModuleSequence += 1}`
+      ? `__vFrameModuleCompletion${(this.#inlineModuleSequence += 1)}`
       : null;
     const externalModuleObservation = externalModule
       ? this.#prepareExternalModule(pseudoScript, companion.src)
@@ -656,13 +673,17 @@ export class ScriptRunner {
           this.#inlineClassicCandidates.splice(candidateIndex, 1);
         }
       }, 100);
-      companion.addEventListener("error", () => {
-        if (failureReported) {
-          return;
-        }
-        const url = this.#getCurrentURL();
-        candidate.fail(new Error(`Script ${url} failed to execute`));
-      }, { once: true });
+      companion.addEventListener(
+        "error",
+        () => {
+          if (failureReported) {
+            return;
+          }
+          const url = this.#getCurrentURL();
+          candidate.fail(new Error(`Script ${url} failed to execute`));
+        },
+        { once: true },
+      );
     }
     let inlineModuleSettlement: InlineModuleSettlement | null = null;
     const settled = new Promise<void>((resolve) => {
@@ -729,16 +750,8 @@ export class ScriptRunner {
         });
         this.#inlineModuleSettlements.add(inlineModuleSettlement);
       }
-      companion.addEventListener(
-        "load",
-        finishLoaded,
-        { once: true },
-      );
-      companion.addEventListener(
-        "error",
-        () => finishFailed(),
-        { once: true },
-      );
+      companion.addEventListener("load", finishLoaded, { once: true });
+      companion.addEventListener("error", () => finishFailed(), { once: true });
       const abort = () => {
         if (inlineModuleSettlement !== null) {
           inlineModuleSettlement.status = "aborted";

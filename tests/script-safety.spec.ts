@@ -1,15 +1,15 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
-
-interface FixtureServer {
-  origin: string;
-  close(): Promise<void>;
-}
+import {
+  bundleRoute,
+  htmlDocument as documentSource,
+  type HTTPFixture,
+  type RouteResponse,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 const nonce = "fixture-nonce";
-let fixture: FixtureServer;
+let fixture: HTTPFixture;
 
 const legacyJavaScriptTypes = [
   "text/javascript",
@@ -36,39 +36,28 @@ const inertJavaScriptTypes = [
   "application/x-unknown",
 ] as const;
 
-const documentSource = (body: string, head = "") =>
-  `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
-
-function reply(
-  response: ServerResponse,
-  status: number,
-  contentType: string,
-  body: string,
-): void {
-  response.writeHead(status, {
-    "cache-control": "no-store",
-    "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-    "content-type": contentType,
-  });
-  response.end(body);
-}
-
-function pageSource(pathname: string): string | null {
-  switch (pathname) {
-    case "/module-parse.html":
-      return documentSource("<main>parse failure</main>", '<script type="module">export const = 1</script>');
-    case "/module-link.html":
-      return documentSource("<main>link failure</main>", '<script type="module">import "./missing-module.js";</script>');
-    case "/module-evaluation.html":
-      return documentSource("<main>evaluation failure</main>", '<script type="module">throw new Error("module evaluation rejected")</script>');
-    case "/module-tla.html":
-      return documentSource("<main>TLA failure</main>", '<script type="module">await Promise.reject(new Error("module TLA rejected"))</script>');
-    case "/blank.html":
-      return documentSource('<main id="script-root">Script safety</main>');
-    case "/bad-src.html":
-      return documentSource('<main id="script-root">Bad src</main><script src="http://["></script><script>window.__afterBadSrc = true;</script>');
-    case "/nomodule.html":
-      return documentSource(`
+const pages: Record<string, string> = {
+  "/module-parse.html": documentSource(
+    "<main>parse failure</main>",
+    '<script type="module">export const = 1</script>',
+  ),
+  "/module-link.html": documentSource(
+    "<main>link failure</main>",
+    '<script type="module">import "./missing-module.js";</script>',
+  ),
+  "/module-evaluation.html": documentSource(
+    "<main>evaluation failure</main>",
+    '<script type="module">throw new Error("module evaluation rejected")</script>',
+  ),
+  "/module-tla.html": documentSource(
+    "<main>TLA failure</main>",
+    '<script type="module">await Promise.reject(new Error("module TLA rejected"))</script>',
+  ),
+  "/blank.html": documentSource('<main id="script-root">Script safety</main>'),
+  "/bad-src.html": documentSource(
+    '<main id="script-root">Bad src</main><script src="http://["></script><script>window.__afterBadSrc = true;</script>',
+  ),
+  "/nomodule.html": documentSource(`
         <main id="script-root">Script safety</main>
         <script id="initial-nomodule" nomodule>
           window.__initialNomodule = true;
@@ -76,16 +65,14 @@ function pageSource(pathname: string): string | null {
         <script id="initial-classic">
           window.__initialClassic = true;
         </script>
-      `);
-    case "/legacy-mime.html":
-      return documentSource(`
+      `),
+  "/legacy-mime.html": documentSource(`
         <main id="script-root">Script safety</main>
         <script>window.__initialLegacyTypes = []; window.__initialInertTypes = [];</script>
         ${legacyJavaScriptTypes.map((type) => `<script type="${type}">window.__initialLegacyTypes.push(${JSON.stringify(type)});</script>`).join("")}
         ${inertJavaScriptTypes.map((type) => `<script type="${type}">window.__initialInertTypes.push(${JSON.stringify(type)});</script>`).join("")}
-      `);
-    case "/events.html":
-      return documentSource(`
+      `),
+  "/events.html": documentSource(`
         <a id="prevented" href="/prevented-navigation" onclick="window.__inlineHandler = { realm: globalThis === window, event: event instanceof MouseEvent, view: event.view === window, target: event.target === this, currentTarget: event.currentTarget === this }; return false">Prevented</a>
         <a id="stopped" href="/stopped-navigation">Stopped</a>
         <script>
@@ -130,11 +117,11 @@ function pageSource(pathname: string): string | null {
           document.body.append(dynamicProperty);
           document.querySelector('#stopped').addEventListener('click', (event) => event.stopPropagation());
         </script>
-      `);
-    case "/stopped-navigation":
-      return documentSource('<main id="stopped-destination">Stopped propagation still navigated</main>');
-    case "/window-events.html":
-      return documentSource(`
+      `),
+  "/stopped-navigation": documentSource(
+    '<main id="stopped-destination">Stopped propagation still navigated</main>',
+  ),
+  "/window-events.html": documentSource(`
         <button id="event-target">Dispatch event</button>
         <input id="input-target">
         <a id="blocked-link" href="/blocked-by-window-handler">Blocked link</a>
@@ -242,83 +229,34 @@ function pageSource(pathname: string): string | null {
             }, { once: true });
           };
         </script>
-      `);
-    default:
-      return null;
-  }
+      `),
+};
+
+function script(body: string): RouteResponse {
+  return { type: "text/javascript", body };
 }
 
-async function startFixtureServer(): Promise<FixtureServer> {
-  const distFile = resolve(process.cwd(), "dist/index.js");
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
-    if (pathname === "/") {
-      reply(response, 200, "text/html", documentSource('<div id="host"></div>'));
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(distFile)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(distFile).pipe(response);
-      return;
-    }
-    if (pathname === "/late-external.js") {
-      reply(
-        response,
-        200,
-        "text/javascript",
+function startFixtureServer(): Promise<HTTPFixture> {
+  return startHTTPFixture({
+    headers: {
+      "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
+    },
+    routes: {
+      "/": documentSource('<div id="host"></div>'),
+      "/dist/index.js": bundleRoute,
+      "/late-external.js": script(
         "window.__lateExternal = (window.__lateExternal ?? 0) + 1;",
-      );
-      return;
-    }
-    if (pathname === "/fragment-order-first.js") {
-      setTimeout(() => {
-        reply(
-          response,
-          200,
-          "text/javascript",
-          'window.__fragmentExternalEvents.push("first");',
-        );
-      }, 50);
-      return;
-    }
-    if (pathname === "/fragment-order-second.js") {
-      reply(
-        response,
-        200,
-        "text/javascript",
+      ),
+      "/fragment-order-first.js": {
+        ...script('window.__fragmentExternalEvents.push("first");'),
+        delay: 50,
+      },
+      "/fragment-order-second.js": script(
         'window.__fragmentExternalEvents.push("second");',
-      );
-      return;
-    }
-
-    const source = pageSource(pathname);
-    if (source !== null) {
-      reply(response, 200, "text/html", source);
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
+      ),
+      ...pages,
+    },
   });
-
-  await new Promise<void>((resolveListening) => {
-    server.listen(0, "127.0.0.1", resolveListening);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("Script safety fixture did not expose a TCP address");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolveClosed, reject) => {
-      server.close((error) => error === undefined ? resolveClosed() : reject(error));
-    }),
-  };
 }
 
 test.beforeAll(async () => {
@@ -329,25 +267,8 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-}
-
-async function mountFrame(page: Page, pathname: string, id = "subject"): Promise<Locator> {
-  await page.evaluate(({ frameID, frameNonce, source }) => {
-    const frame = document.createElement("v-frame");
-    frame.id = frameID;
-    frame.setAttribute("nonce", frameNonce);
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, { frameID: id, frameNonce: nonce, source: `${fixture.origin}${pathname}` });
-  const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
-  return frame;
+function mountSubject(page: Page, pathname: string, id = "subject"): Promise<Locator> {
+  return mountFrame(page, { src: `${fixture.origin}${pathname}`, id, nonce });
 }
 
 async function childValue<T>(
@@ -356,7 +277,10 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate(
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+    );
   }, expression.toString()) as Promise<T>;
 }
 
@@ -366,25 +290,32 @@ for (const [name, pathname] of [
   ["evaluation", "/module-evaluation.html"],
   ["top-level await", "/module-tla.html"],
 ] as const) {
-  test(`reports an inline module ${name} failure and still becomes ready`, async ({ page }) => {
-    await installBundle(page);
-    const result = await page.evaluate(async ({ frameNonce, source }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { status: string };
-      const failures: Array<{ phase: string; fatal: boolean }> = [];
-      frame.setAttribute("nonce", frameNonce);
-      frame.addEventListener("v-frame-error", (event) => {
-        const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
-        failures.push({ phase: detail.phase, fatal: detail.fatal });
-      });
-      const loaded = new Promise<void>((resolve) => {
-        frame.addEventListener("v-frame-load", () => resolve(), { once: true });
-      });
-      frame.setAttribute("src", source);
-      document.querySelector("#host")?.append(frame);
-      await loaded;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return { failures, status: frame.status };
-    }, { frameNonce: nonce, source: `${fixture.origin}${pathname}` });
+  test(`reports an inline module ${name} failure and still becomes ready`, async ({
+    page,
+  }) => {
+    await installBundle(page, fixture.origin);
+    const result = await page.evaluate(
+      async ({ frameNonce, source }) => {
+        const frame = document.createElement("v-frame") as HTMLElement & {
+          status: string;
+        };
+        const failures: Array<{ phase: string; fatal: boolean }> = [];
+        frame.setAttribute("nonce", frameNonce);
+        frame.addEventListener("v-frame-error", (event) => {
+          const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
+          failures.push({ phase: detail.phase, fatal: detail.fatal });
+        });
+        const loaded = new Promise<void>((resolve) => {
+          frame.addEventListener("v-frame-load", () => resolve(), { once: true });
+        });
+        frame.setAttribute("src", source);
+        document.querySelector("#host")?.append(frame);
+        await loaded;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { failures, status: frame.status };
+      },
+      { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
+    );
 
     expect(result).toEqual({
       failures: [{ phase: "script", fatal: false }],
@@ -393,36 +324,43 @@ for (const [name, pathname] of [
   });
 }
 
-test("reports an unresolvable script source as an Error without failing the load", async ({ page }) => {
-  await installBundle(page);
-  const result = await page.evaluate(async ({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame") as HTMLElement & {
-      status: string;
-      contentWindow: (Window & { __afterBadSrc?: boolean }) | null;
-    };
-    const failures: Array<{ phase: string; fatal: boolean; isError: boolean }> = [];
-    frame.setAttribute("nonce", frameNonce);
-    frame.addEventListener("v-frame-error", (event) => {
-      const detail = (event as CustomEvent<{ phase: string; fatal: boolean; error: unknown }>).detail;
-      failures.push({
-        phase: detail.phase,
-        fatal: detail.fatal,
-        isError: detail.error instanceof Error,
+test("reports an unresolvable script source as an Error without failing the load", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const result = await page.evaluate(
+    async ({ frameNonce, source }) => {
+      const frame = document.createElement("v-frame") as HTMLElement & {
+        status: string;
+        contentWindow: (Window & { __afterBadSrc?: boolean }) | null;
+      };
+      const failures: Array<{ phase: string; fatal: boolean; isError: boolean }> = [];
+      frame.setAttribute("nonce", frameNonce);
+      frame.addEventListener("v-frame-error", (event) => {
+        const detail = (
+          event as CustomEvent<{ phase: string; fatal: boolean; error: unknown }>
+        ).detail;
+        failures.push({
+          phase: detail.phase,
+          fatal: detail.fatal,
+          isError: detail.error instanceof Error,
+        });
       });
-    });
-    const loaded = new Promise<void>((resolve) => {
-      frame.addEventListener("v-frame-load", () => resolve(), { once: true });
-    });
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-    await loaded;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    return {
-      failures,
-      status: frame.status,
-      ranFollowing: frame.contentWindow?.__afterBadSrc === true,
-    };
-  }, { frameNonce: nonce, source: `${fixture.origin}/bad-src.html` });
+      const loaded = new Promise<void>((resolve) => {
+        frame.addEventListener("v-frame-load", () => resolve(), { once: true });
+      });
+      frame.setAttribute("src", source);
+      document.querySelector("#host")?.append(frame);
+      await loaded;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        failures,
+        status: frame.status,
+        ranFollowing: frame.contentWindow?.__afterBadSrc === true,
+      };
+    },
+    { frameNonce: nonce, source: `${fixture.origin}/bad-src.html` },
+  );
 
   expect(result).toEqual({
     failures: [{ phase: "script", fatal: false, isError: true }],
@@ -431,9 +369,11 @@ test("reports an unresolvable script source as an Error without failing the load
   });
 });
 
-test("routes late and cloned dynamic scripts through the child runner only", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/blank.html");
+test("routes late and cloned dynamic scripts through the child runner only", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/blank.html");
 
   const immediate = await childValue(frame, (window) => {
     const document = window.document;
@@ -461,15 +401,17 @@ test("routes late and cloned dynamic scripts through the child runner only", asy
     document.body.append(executedSource.cloneNode(true));
 
     const parsedContainer = document.createElement("div");
-    parsedContainer.innerHTML = '<script>window.__parsedScript = true</script>';
+    parsedContainer.innerHTML = "<script>window.__parsedScript = true</script>";
     document.body.append(parsedContainer);
     document.body.append(parsedContainer.querySelector("script")!.cloneNode(true));
 
     return {
       lateText: (window as typeof window & { __lateText?: number }).__lateText,
       lateTyped: (window as typeof window & { __lateTyped?: number }).__lateTyped,
-      eligibleClone: (window as typeof window & { __eligibleClone?: number }).__eligibleClone,
-      executedSource: (window as typeof window & { __executedSource?: number }).__executedSource,
+      eligibleClone: (window as typeof window & { __eligibleClone?: number })
+        .__eligibleClone,
+      executedSource: (window as typeof window & { __executedSource?: number })
+        .__executedSource,
       parsedScript: "__parsedScript" in window,
       logicalCloneType: eligibleClone.getAttribute("type"),
     };
@@ -483,17 +425,25 @@ test("routes late and cloned dynamic scripts through the child runner only", asy
     parsedScript: false,
     logicalCloneType: null,
   });
-  await expect.poll(() => childValue(frame, (window) =>
-    (window as typeof window & { __lateExternal?: number }).__lateExternal,
-  )).toBe(1);
-  expect(await page.evaluate(() => ({
-    lateText: "__lateText" in window,
-    lateExternal: "__lateExternal" in window,
-    lateTyped: "__lateTyped" in window,
-    eligibleClone: "__eligibleClone" in window,
-    executedSource: "__executedSource" in window,
-    parsedScript: "__parsedScript" in window,
-  }))).toEqual({
+  await expect
+    .poll(() =>
+      childValue(
+        frame,
+        (window) =>
+          (window as typeof window & { __lateExternal?: number }).__lateExternal,
+      ),
+    )
+    .toBe(1);
+  expect(
+    await page.evaluate(() => ({
+      lateText: "__lateText" in window,
+      lateExternal: "__lateExternal" in window,
+      lateTyped: "__lateTyped" in window,
+      eligibleClone: "__eligibleClone" in window,
+      executedSource: "__executedSource" in window,
+      parsedScript: "__parsedScript" in window,
+    })),
+  ).toEqual({
     lateText: false,
     lateExternal: false,
     lateTyped: false,
@@ -503,13 +453,17 @@ test("routes late and cloned dynamic scripts through the child runner only", asy
   });
 });
 
-test("executes eligible scripts inserted through fragments once in document order", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/blank.html");
+test("executes eligible scripts inserted through fragments once in document order", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/blank.html");
 
   const immediate = await frame.evaluate((element) => {
-    const childWindow = (element as HTMLElement & { contentWindow: Window | null })
-      .contentWindow as Window & typeof globalThis & {
+    const childWindow = (
+      element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+    ).contentWindow as Window &
+      typeof globalThis & {
         __fragmentEvents: string[];
         __fragmentExternalEvents: string[];
         __parsedFragmentScript?: boolean;
@@ -619,93 +573,126 @@ test("executes eligible scripts inserted through fragments once in document orde
     foreignRanInChild: false,
     foreignRanInHost: false,
   });
-  await expect.poll(() => childValue(frame, (window) =>
-    (window as typeof window & { __fragmentExternalEvents: string[] })
-      .__fragmentExternalEvents,
-  )).toEqual(["first", "second"]);
+  await expect
+    .poll(() =>
+      childValue(
+        frame,
+        (window) =>
+          (window as typeof window & { __fragmentExternalEvents: string[] })
+            .__fragmentExternalEvents,
+      ),
+    )
+    .toEqual(["first", "second"]);
   expect(await page.evaluate(() => "__fragmentEvents" in window)).toBe(false);
 });
 
-test("executes every browser-recognized legacy JavaScript MIME alias initially", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/legacy-mime.html");
+test("executes every browser-recognized legacy JavaScript MIME alias initially", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/legacy-mime.html");
 
-  expect(await childValue(frame, (window) => ({
-    executed: (window as typeof window & { __initialLegacyTypes: string[] }).__initialLegacyTypes,
-    inert: (window as typeof window & { __initialInertTypes: string[] }).__initialInertTypes,
-  }))).toEqual({ executed: [...legacyJavaScriptTypes], inert: [] });
-  expect(await page.evaluate(() => ({
-    executed: "__initialLegacyTypes" in window,
-    inert: "__initialInertTypes" in window,
-  }))).toEqual({ executed: false, inert: false });
+  expect(
+    await childValue(frame, (window) => ({
+      executed: (window as typeof window & { __initialLegacyTypes: string[] })
+        .__initialLegacyTypes,
+      inert: (window as typeof window & { __initialInertTypes: string[] })
+        .__initialInertTypes,
+    })),
+  ).toEqual({ executed: [...legacyJavaScriptTypes], inert: [] });
+  expect(
+    await page.evaluate(() => ({
+      executed: "__initialLegacyTypes" in window,
+      inert: "__initialInertTypes" in window,
+    })),
+  ).toEqual({ executed: false, inert: false });
 });
 
-test("executes every browser-recognized legacy JavaScript MIME alias dynamically", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/blank.html");
+test("executes every browser-recognized legacy JavaScript MIME alias dynamically", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/blank.html");
 
-  const state = await frame.evaluate((element, options) => {
-    const childWindow = (element as HTMLElement & { contentWindow: Window | null }).contentWindow as Window & {
-      __dynamicLegacyTypes?: string[];
-      __dynamicInertTypes?: string[];
-    };
-    const childDocument = childWindow.document;
-    childWindow.__dynamicLegacyTypes = [];
-    childWindow.__dynamicInertTypes = [];
-    for (const type of options.legacy) {
-      const script = childDocument.createElement("script");
-      script.type = type;
-      script.text = `window.__dynamicLegacyTypes.push(${JSON.stringify(type)});`;
-      childDocument.body.append(script);
-    }
-    for (const type of options.inert) {
-      const script = childDocument.createElement("script");
-      script.type = type;
-      script.text = `window.__dynamicInertTypes.push(${JSON.stringify(type)});`;
-      childDocument.body.append(script);
-    }
-    return {
-      executed: childWindow.__dynamicLegacyTypes,
-      inert: childWindow.__dynamicInertTypes,
-    };
-  }, { legacy: [...legacyJavaScriptTypes], inert: [...inertJavaScriptTypes] });
+  const state = await frame.evaluate(
+    (element, options) => {
+      const childWindow = (
+        element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
+      ).contentWindow as Window & {
+        __dynamicLegacyTypes?: string[];
+        __dynamicInertTypes?: string[];
+      };
+      const childDocument = childWindow.document;
+      childWindow.__dynamicLegacyTypes = [];
+      childWindow.__dynamicInertTypes = [];
+      for (const type of options.legacy) {
+        const script = childDocument.createElement("script");
+        script.type = type;
+        script.text = `window.__dynamicLegacyTypes.push(${JSON.stringify(type)});`;
+        childDocument.body.append(script);
+      }
+      for (const type of options.inert) {
+        const script = childDocument.createElement("script");
+        script.type = type;
+        script.text = `window.__dynamicInertTypes.push(${JSON.stringify(type)});`;
+        childDocument.body.append(script);
+      }
+      return {
+        executed: childWindow.__dynamicLegacyTypes,
+        inert: childWindow.__dynamicInertTypes,
+      };
+    },
+    { legacy: [...legacyJavaScriptTypes], inert: [...inertJavaScriptTypes] },
+  );
 
   expect(state).toEqual({ executed: [...legacyJavaScriptTypes], inert: [] });
-  expect(await page.evaluate(() => ({
-    executed: "__dynamicLegacyTypes" in window,
-    inert: "__dynamicInertTypes" in window,
-  }))).toEqual({ executed: false, inert: false });
+  expect(
+    await page.evaluate(() => ({
+      executed: "__dynamicLegacyTypes" in window,
+      inert: "__dynamicInertTypes" in window,
+    })),
+  ).toEqual({ executed: false, inert: false });
 });
 
-test("keeps initial nomodule scripts logical without executing them in either realm", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/nomodule.html");
+test("keeps initial nomodule scripts logical without executing them in either realm", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/nomodule.html");
 
-  expect(await childValue(frame, (window) => {
-    const script = window.document.querySelector("#initial-nomodule") as HTMLScriptElement | null;
-    return {
-      present: script !== null,
-      attribute: script?.getAttribute("nomodule"),
-      property: script?.noModule,
-      nomoduleRan: "__initialNomodule" in window,
-      classicRan: "__initialClassic" in window,
-    };
-  })).toEqual({
+  expect(
+    await childValue(frame, (window) => {
+      const script = window.document.querySelector(
+        "#initial-nomodule",
+      ) as HTMLScriptElement | null;
+      return {
+        present: script !== null,
+        attribute: script?.getAttribute("nomodule"),
+        property: script?.noModule,
+        nomoduleRan: "__initialNomodule" in window,
+        classicRan: "__initialClassic" in window,
+      };
+    }),
+  ).toEqual({
     present: true,
     attribute: "",
     property: true,
     nomoduleRan: false,
     classicRan: true,
   });
-  expect(await page.evaluate(() => ({
-    nomoduleRan: "__initialNomodule" in window,
-    classicRan: "__initialClassic" in window,
-  }))).toEqual({ nomoduleRan: false, classicRan: false });
+  expect(
+    await page.evaluate(() => ({
+      nomoduleRan: "__initialNomodule" in window,
+      classicRan: "__initialClassic" in window,
+    })),
+  ).toEqual({ nomoduleRan: false, classicRan: false });
 });
 
-test("keeps dynamically created nomodule scripts logical without executing them in either realm", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/blank.html");
+test("keeps dynamically created nomodule scripts logical without executing them in either realm", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/blank.html");
 
   const state = await childValue(frame, (window) => {
     const attributeScript = window.document.createElement("script");
@@ -739,23 +726,29 @@ test("keeps dynamically created nomodule scripts logical without executing them 
     attribute: { present: true, value: true, ran: false },
     property: { present: true, value: true, attribute: "", ran: false },
   });
-  expect(await page.evaluate(() => ({
-    attributeRan: "__dynamicNomoduleAttribute" in window,
-    propertyRan: "__dynamicNomoduleProperty" in window,
-  }))).toEqual({ attributeRan: false, propertyRan: false });
+  expect(
+    await page.evaluate(() => ({
+      attributeRan: "__dynamicNomoduleAttribute" in window,
+      propertyRan: "__dynamicNomoduleProperty" in window,
+    })),
+  ).toEqual({ attributeRan: false, propertyRan: false });
 });
 
-test("runs declarative and property event handlers in the child realm", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/events.html");
+test("runs declarative and property event handlers in the child realm", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/events.html");
 
   await frame.locator("#prevented").click();
   await frame.locator("#dynamic-attribute").click();
   await frame.locator("#dynamic-property").click();
   const state = await childValue(frame, (window) => ({
     inline: (window as typeof window & { __inlineHandler?: unknown }).__inlineHandler,
-    dynamicAttribute: (window as typeof window & { __dynamicAttribute?: unknown }).__dynamicAttribute,
-    dynamicProperty: (window as typeof window & { __dynamicProperty?: unknown }).__dynamicProperty,
+    dynamicAttribute: (window as typeof window & { __dynamicAttribute?: unknown })
+      .__dynamicAttribute,
+    dynamicProperty: (window as typeof window & { __dynamicProperty?: unknown })
+      .__dynamicProperty,
   }));
 
   const expectedHandlerState = {
@@ -770,16 +763,20 @@ test("runs declarative and property event handlers in the child realm", async ({
     dynamicAttribute: expectedHandlerState,
     dynamicProperty: expectedHandlerState,
   });
-  expect(await page.evaluate(() => ({
-    inline: "__inlineHandler" in window,
-    dynamicAttribute: "__dynamicAttribute" in window,
-    dynamicProperty: "__dynamicProperty" in window,
-  }))).toEqual({ inline: false, dynamicAttribute: false, dynamicProperty: false });
+  expect(
+    await page.evaluate(() => ({
+      inline: "__inlineHandler" in window,
+      dynamicAttribute: "__dynamicAttribute" in window,
+      dynamicProperty: "__dynamicProperty" in window,
+    })),
+  ).toEqual({ inline: false, dynamicAttribute: false, dynamicProperty: false });
 });
 
-test("preserves the logical window event path and window handler properties", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/window-events.html");
+test("preserves the logical window event path and window handler properties", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/window-events.html");
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigations: string[] }).navigations = [];
     element.addEventListener("v-frame-navigate", (event) => {
@@ -791,8 +788,9 @@ test("preserves the logical window event path and window handler properties", as
 
   await frame.locator("#event-target").click();
   const initialState = await childValue(frame, (window) => {
-    (window as typeof window & { __dispatchWindowEventChecks(): void })
-      .__dispatchWindowEventChecks();
+    (
+      window as typeof window & { __dispatchWindowEventChecks(): void }
+    ).__dispatchWindowEventChecks();
     return (window as typeof window & { __windowEventFidelity: unknown })
       .__windowEventFidelity;
   });
@@ -828,14 +826,16 @@ test("preserves the logical window event path and window handler properties", as
         eventPhase: 3,
       },
     ],
-    nonBubbling: [{
-      scope: "window-capture",
-      event: true,
-      target: true,
-      currentTarget: true,
-      eventPhase: 1,
-      defaultPrevented: true,
-    }],
+    nonBubbling: [
+      {
+        scope: "window-capture",
+        event: true,
+        target: true,
+        currentTarget: true,
+        eventPhase: 1,
+        defaultPrevented: true,
+      },
+    ],
     nonBubblingDispatchResult: false,
     firstClickCalls: 0,
     firstInputCalls: 0,
@@ -880,8 +880,11 @@ test("preserves the logical window event path and window handler properties", as
 
   await frame.locator("#blocked-link").click();
   await page.waitForTimeout(20);
-  const canceledState = await childValue(frame, (window) =>
-    (window as typeof window & { __windowEventFidelity: unknown }).__windowEventFidelity
+  const canceledState = await childValue(
+    frame,
+    (window) =>
+      (window as typeof window & { __windowEventFidelity: unknown })
+        .__windowEventFidelity,
   );
   expect(canceledState).toMatchObject({
     cancelingHandler: {
@@ -893,25 +896,36 @@ test("preserves the logical window event path and window handler properties", as
     },
     cancellationObserved: true,
   });
-  expect(await frame.evaluate((element) =>
-    (element as HTMLElement & { navigations: string[] }).navigations
-  )).toEqual([]);
+  expect(
+    await frame.evaluate(
+      (element) => (element as HTMLElement & { navigations: string[] }).navigations,
+    ),
+  ).toEqual([]);
 });
 
-test("cancels navigation only when child event listeners prevent the default", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "/events.html");
+test("cancels navigation only when child event listeners prevent the default", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSubject(page, "/events.html");
   await frame.evaluate((element) => {
-    (element as HTMLElement & { navigations: Array<{ from: string; to: string }> }).navigations = [];
+    (
+      element as HTMLElement & { navigations: Array<{ from: string; to: string }> }
+    ).navigations = [];
     element.addEventListener("v-frame-navigate", (event) => {
       const detail = (event as CustomEvent<{ from: string; to: string }>).detail;
-      (element as HTMLElement & {
-        navigations: Array<{ from: string; to: string }>;
-      }).navigations.push({ from: detail.from, to: detail.to });
-      sessionStorage.setItem("script-safety-navigation", JSON.stringify({
-        from: detail.from,
-        to: detail.to,
-      }));
+      (
+        element as HTMLElement & {
+          navigations: Array<{ from: string; to: string }>;
+        }
+      ).navigations.push({ from: detail.from, to: detail.to });
+      sessionStorage.setItem(
+        "script-safety-navigation",
+        JSON.stringify({
+          from: detail.from,
+          to: detail.to,
+        }),
+      );
     });
   });
   const hostURL = page.url();
@@ -920,8 +934,10 @@ test("cancels navigation only when child event listeners prevent the default", a
   const state = await childValue(frame, async (window) => {
     window.document.dispatchEvent(new window.Event("realm-document"));
     return {
-      events: (window as typeof window & { __listenerEvents: unknown[] }).__listenerEvents,
-      documentEvent: (window as typeof window & { __documentEvent: unknown }).__documentEvent,
+      events: (window as typeof window & { __listenerEvents: unknown[] })
+        .__listenerEvents,
+      documentEvent: (window as typeof window & { __documentEvent: unknown })
+        .__documentEvent,
     };
   });
 
@@ -950,9 +966,11 @@ test("cancels navigation only when child event listeners prevent the default", a
   await expect(frame.locator("#stopped-destination")).toHaveText(
     "Stopped propagation still navigated",
   );
-  expect(await page.evaluate(() => JSON.parse(
-    sessionStorage.getItem("script-safety-navigation") ?? "null",
-  ))).toEqual({
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("script-safety-navigation") ?? "null"),
+    ),
+  ).toEqual({
     from: `${fixture.origin}/events.html`,
     to: `${fixture.origin}/stopped-navigation`,
   });

@@ -1,8 +1,9 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,29 +15,20 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "fidelity-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}/documents/dom.html`);
-  await expect.poll(() => page.locator("#fidelity-frame").evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+async function mountFidelityFrame(page: Page): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/dom.html`,
+    id: "fidelity-frame",
+  });
 }
 
 test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -50,7 +42,10 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
 
     const sourceImage = document.createElement("img");
     sourceImage.setAttribute("src", "../assets/imported.png");
-    const importedImage = child.document.importNode(sourceImage, true) as HTMLImageElement;
+    const importedImage = child.document.importNode(
+      sourceImage,
+      true,
+    ) as HTMLImageElement;
     child.document.body.append(importedImage);
 
     const subtree = document.createElement("section");
@@ -65,10 +60,7 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
     foreignScript.textContent = "window.__foreignScriptHostRan = true";
     child.document.body.append(foreignScript);
     const foreignButton = document.createElement("button");
-    foreignButton.setAttribute(
-      "onclick",
-      "window.__foreignInlineChildRan = true",
-    );
+    foreignButton.setAttribute("onclick", "window.__foreignInlineChildRan = true");
     child.document.body.append(foreignButton);
     foreignButton.click();
 
@@ -94,14 +86,11 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
       adoptedRootIsFacade: adoptedAnchor.getRootNode() === child.document,
       parentPrototypeUntouched: document.createElement("html").matches("html"),
       foreignScriptStayedInert:
-        !("__foreignScriptHostRan" in window) &&
-        !("__foreignScriptHostRan" in child),
+        !("__foreignScriptHostRan" in window) && !("__foreignScriptHostRan" in child),
       foreignInlineRanInChild:
-        !("__foreignInlineChildRan" in window) &&
-        "__foreignInlineChildRan" in child,
+        !("__foreignInlineChildRan" in window) && "__foreignInlineChildRan" in child,
       foreignInlineAttribute:
-        foreignButton.getAttribute("onclick") ===
-        "window.__foreignInlineChildRan = true",
+        foreignButton.getAttribute("onclick") === "window.__foreignInlineChildRan = true",
     };
 
     child.history.pushState({}, "", "nested/state.html");
@@ -141,12 +130,14 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
   });
 });
 
-test("scopes shell selectors and root translation to the connected virtual tree", async ({ page }) => {
-  await mountFrame(page);
+test("scopes shell selectors and root translation to the connected virtual tree", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -187,8 +178,8 @@ test("scopes shell selectors and root translation to the connected virtual tree"
         bodyMatches: virtualDocument.body.matches("body"),
         bodyClosest: connected.closest("body") === virtualDocument.body,
         rootMatches: virtualDocument.documentElement.matches(":root"),
-        rootQuery: virtualDocument.querySelector(":root") ===
-          virtualDocument.documentElement,
+        rootQuery:
+          virtualDocument.querySelector(":root") === virtualDocument.documentElement,
       },
       parsedSelectors: {
         htmlMatches: parsed.documentElement.matches("html"),
@@ -257,11 +248,11 @@ test("scopes shell selectors and root translation to the connected virtual tree"
 });
 
 test("parses and clones virtual template contents", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -291,12 +282,14 @@ test("parses and clones virtual template contents", async ({ page }) => {
   });
 });
 
-test("reports element geometry in the virtual viewport coordinate space", async ({ page }) => {
-  await mountFrame(page);
+test("reports element geometry in the virtual viewport coordinate space", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -355,11 +348,11 @@ test("reports element geometry in the virtual viewport coordinate space", async 
 });
 
 test("positions native popovers in the virtual viewport", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -402,10 +395,8 @@ test("positions native popovers in the virtual viewport", async ({ page }) => {
       expectedPhysicalTop: frameRect.top + frame.clientTop + 280,
       extendsPastFrame:
         physicalRect.right > frameRect.right && physicalRect.bottom > frameRect.bottom,
-      outsideHitRetargetsToFrame: document.elementFromPoint(
-        frameRect.right + 20,
-        physicalRect.top + 15,
-      ) === frame,
+      outsideHitRetargetsToFrame:
+        document.elementFromPoint(frameRect.right + 20, physicalRect.top + 15) === frame,
     };
     popover.hidePopover();
     return result;
@@ -421,11 +412,11 @@ test("positions native popovers in the virtual viewport", async ({ page }) => {
 });
 
 test("keeps document collections live with stable identities", async ({ page }) => {
-  await mountFrame(page);
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -456,7 +447,8 @@ test("keeps document collections live with stable identities", async ({ page }) 
       allElements: allElements.length,
       rootTags: rootTags.length,
       shellClasses: shellClasses.length,
-      rootByID: virtualDocument.getElementById("virtual-root") ===
+      rootByID:
+        virtualDocument.getElementById("virtual-root") ===
         virtualDocument.documentElement,
       rootByTag: rootTags[0] === virtualDocument.documentElement,
       rootByClass: shellClasses.item(0) === virtualDocument.documentElement,
@@ -599,12 +591,14 @@ test("keeps document collections live with stable identities", async ({ page }) 
   });
 });
 
-test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({ page }) => {
-  await mountFrame(page);
+test("iterates live collections, resolves null-namespace attributes, and trusts real clicks", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
 
   await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
     const named = virtualDocument.createElement("input");
@@ -627,7 +621,7 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
     const iterated: string[] = [];
@@ -653,17 +647,22 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
   });
 });
 
-test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({ page }) => {
-  await mountFrame(page);
+test("matches foreign tag names case-sensitively and keeps unknown on-attributes plain", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
 
     const svg = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-    const gradient = virtualDocument.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+    const gradient = virtualDocument.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "linearGradient",
+    );
     svg.append(gradient);
     virtualDocument.body.append(svg);
 

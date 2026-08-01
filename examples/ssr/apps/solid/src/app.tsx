@@ -62,8 +62,8 @@ export default function App() {
           <p class="signals__eyebrow">SolidStart · server rendered</p>
           <h1>Signal review</h1>
           <p>
-            The widget owns its route, server render, client entry, and reactive
-            state. The host only launches its document through v-frame.
+            The widget owns its route, server render, client entry, and reactive state.
+            The host only launches its document through v-frame.
           </p>
           <button
             type="button"

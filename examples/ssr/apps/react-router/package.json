@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "react-router build",
+    "build": "pnpm run types && react-router build",
     "dev": "react-router dev",
     "preview": "vite preview",
     "typecheck": "react-router typegen && tsc -b",

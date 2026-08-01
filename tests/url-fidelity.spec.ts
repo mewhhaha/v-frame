@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
-import { startFixtureServer, type FixtureServer } from "./support/fixture-server";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
 
@@ -11,29 +12,22 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "url-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}/documents/dynamic-base-urls.html`);
-  await expect.poll(() => page.locator("#url-frame").evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+async function mountURLFrame(page: Page): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/dynamic-base-urls.html`,
+    id: "url-frame",
+  });
 }
 
-test("updates the first valid connected base and HTML URL properties synchronously", async ({ page }) => {
-  await mountFrame(page);
+test("updates the first valid connected base and HTML URL properties synchronously", async ({
+  page,
+}) => {
+  await mountURLFrame(page);
 
   const states = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -45,7 +39,9 @@ test("updates the first valid connected base and HTML URL properties synchronous
     const image = virtualDocument.querySelector("#initial-image") as HTMLImageElement;
     const form = virtualDocument.querySelector("#initial-form") as HTMLFormElement;
     const initialBase = virtualDocument.querySelector("#initial-base") as HTMLBaseElement;
-    const secondaryBase = virtualDocument.querySelector("#secondary-base") as HTMLBaseElement;
+    const secondaryBase = virtualDocument.querySelector(
+      "#secondary-base",
+    ) as HTMLBaseElement;
     const invalidBase = virtualDocument.querySelector("#invalid-base") as HTMLBaseElement;
     const snapshot = () => ({
       baseURI: virtualDocument.baseURI,
@@ -198,12 +194,14 @@ test("updates the first valid connected base and HTML URL properties synchronous
   });
 });
 
-test("keeps authored srcset candidates while rebasing their physical URLs", async ({ page }) => {
-  await mountFrame(page);
+test("keeps authored srcset candidates while rebasing their physical URLs", async ({
+  page,
+}) => {
+  await mountURLFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -213,7 +211,9 @@ test("keeps authored srcset candidates while rebasing their physical URLs", asyn
     const virtualDocument = child.document;
     const image = virtualDocument.querySelector("#initial-srcset") as HTMLImageElement;
     const initialBase = virtualDocument.querySelector("#initial-base") as HTMLBaseElement;
-    const secondaryBase = virtualDocument.querySelector("#secondary-base") as HTMLBaseElement;
+    const secondaryBase = virtualDocument.querySelector(
+      "#secondary-base",
+    ) as HTMLBaseElement;
     const invalidBase = virtualDocument.querySelector("#invalid-base") as HTMLBaseElement;
     const physicalSrcset = (element: Element) =>
       Element.prototype.getAttribute.call(element, "srcset");
@@ -309,12 +309,14 @@ test("keeps authored srcset candidates while rebasing their physical URLs", asyn
   });
 });
 
-test("updates baseURI synchronously when textContent removes a base subtree", async ({ page }) => {
-  await mountFrame(page);
+test("updates baseURI synchronously when textContent removes a base subtree", async ({
+  page,
+}) => {
+  await mountURLFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -341,12 +343,14 @@ test("updates baseURI synchronously when textContent removes a base subtree", as
   });
 });
 
-test("synchronizes base changes made through host-realm DOM methods", async ({ page }) => {
-  await mountFrame(page);
+test("synchronizes base changes made through host-realm DOM methods", async ({
+  page,
+}) => {
+  await mountURLFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -381,12 +385,14 @@ test("synchronizes base changes made through host-realm DOM methods", async ({ p
   });
 });
 
-test("rebases SVG href and xlink resources without replacing SVGAnimatedString", async ({ page }) => {
-  await mountFrame(page);
+test("rebases SVG href and xlink resources without replacing SVGAnimatedString", async ({
+  page,
+}) => {
+  await mountURLFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       shadowRoot: ShadowRoot | null;
     };
     const child = frame.contentWindow;
@@ -397,9 +403,13 @@ test("rebases SVG href and xlink resources without replacing SVGAnimatedString",
     const virtualDocument = child.document;
     const svgImage = virtualDocument.querySelector("#svg-image") as SVGImageElement;
     const svgUse = virtualDocument.querySelector("#svg-use") as SVGUseElement;
-    const filterImage = virtualDocument.querySelector("#svg-filter-image") as SVGFEImageElement;
+    const filterImage = virtualDocument.querySelector(
+      "#svg-filter-image",
+    ) as SVGFEImageElement;
     const initialBase = virtualDocument.querySelector("#initial-base") as HTMLBaseElement;
-    const secondaryBase = virtualDocument.querySelector("#secondary-base") as HTMLBaseElement;
+    const secondaryBase = virtualDocument.querySelector(
+      "#secondary-base",
+    ) as HTMLBaseElement;
     const invalidBase = virtualDocument.querySelector("#invalid-base") as HTMLBaseElement;
     const xlinkNamespace = "http://www.w3.org/1999/xlink";
     const physicalAttribute = (element: Element, name: string) =>
@@ -435,8 +445,14 @@ test("rebases SVG href and xlink resources without replacing SVGAnimatedString",
     states.changedBase = snapshot();
 
     const svgNamespace = "http://www.w3.org/2000/svg";
-    const dynamicImage = virtualDocument.createElementNS(svgNamespace, "image") as SVGImageElement;
-    const dynamicUse = virtualDocument.createElementNS(svgNamespace, "use") as SVGUseElement;
+    const dynamicImage = virtualDocument.createElementNS(
+      svgNamespace,
+      "image",
+    ) as SVGImageElement;
+    const dynamicUse = virtualDocument.createElementNS(
+      svgNamespace,
+      "use",
+    ) as SVGUseElement;
     const dynamicFilterImage = virtualDocument.createElementNS(
       svgNamespace,
       "feImage",
@@ -444,11 +460,9 @@ test("rebases SVG href and xlink resources without replacing SVGAnimatedString",
     dynamicImage.href.baseVal = "dynamic-image.svg";
     dynamicUse.setAttributeNS(xlinkNamespace, "xlink:href", "dynamic-symbols.svg#shape");
     dynamicFilterImage.setAttribute("href", "dynamic-filter.svg");
-    virtualDocument.querySelector("svg")?.append(
-      dynamicImage,
-      dynamicUse,
-      dynamicFilterImage,
-    );
+    virtualDocument
+      .querySelector("svg")
+      ?.append(dynamicImage, dynamicUse, dynamicFilterImage);
     const dynamic = {
       image: [
         dynamicImage.getAttribute("href"),

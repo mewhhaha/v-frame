@@ -1,6 +1,6 @@
 {
   "name": "v-frame",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Render fetched pages in a shadow tree backed by a disposable iframe realm",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +14,10 @@
     "./register": {
       "types": "./dist/register.d.ts",
       "import": "./dist/register.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
     }
   },
   "files": [
@@ -28,8 +32,13 @@
   "scripts": {
     "build": "pnpm typecheck && node esbuild.mjs && tsc --emitDeclarationOnly",
     "prepack": "pnpm build",
-    "typecheck": "tsc --noEmit",
-    "test": "pnpm build && playwright test"
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "size": "node scripts/bundle-size.mjs",
+    "test": "pnpm build && playwright test",
+    "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
+    "bench": "pnpm build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts"
   },
   "keywords": [],
   "author": "",
@@ -43,8 +52,10 @@
     "css-tree": "3.2.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.6",
     "@playwright/test": "1.61.1",
     "@types/css-tree": "2.3.11",
+    "@types/node": "26.1.1",
     "esbuild": "0.28.1",
     "typescript": "7.0.2"
   }

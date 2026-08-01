@@ -23,7 +23,8 @@ import { Component, signal } from "@angular/core";
       </button>
     </main>
   `,
-  styles: [`
+  styles: [
+    `
     :host { display: block; min-height: 100%; }
     * { box-sizing: border-box; }
     .angular-dashboard { min-height: 100%; padding: 3rem 1.5rem; background: #000; color: #f5f5f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -45,7 +46,8 @@ import { Component, signal } from "@angular/core";
       article:first-child { border-top: 0; }
       button { min-height: 3rem; font-size: 1rem; }
     }
-  `],
+  `,
+  ],
 })
 export class DeliveryDashboard {
   protected readonly checks = [

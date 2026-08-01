@@ -1,33 +1,29 @@
 /** @jsxImportSource @builder.io/qwik */
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
-import {
-  isRoutingMessage,
-  openRoutingChannel,
-  postRoutingMessage,
-  routingProtocol,
-  routingSessionId,
-  routingVersion,
-} from "../../../shared/routing";
-
 export type WidgetRoute = "/inventory" | "/catalog";
-export type RoutingFrameId = "" | "qwik";
 export type WikipediaArticleKey = "brief" | "migration" | "research";
+
+/** Where the host mounts this application; standalone visits have no prefix. */
+const widgetBasePath = "/widgets/qwik";
 
 const wikipediaArticles = {
   migration: {
     title: "Blue–green deployment",
-    extract: "A release strategy that runs two production environments so traffic can move to a new version with a quick rollback path.",
+    extract:
+      "A release strategy that runs two production environments so traffic can move to a new version with a quick rollback path.",
     href: "https://en.wikipedia.org/wiki/Blue%E2%80%93green_deployment",
   },
   research: {
     title: "Thematic analysis",
-    extract: "A qualitative method for identifying, analyzing, and reporting recurring patterns within a collection of material.",
+    extract:
+      "A qualitative method for identifying, analyzing, and reporting recurring patterns within a collection of material.",
     href: "https://en.wikipedia.org/wiki/Thematic_analysis",
   },
   brief: {
     title: "Executive summary",
-    extract: "A short document or section that presents the purpose, major findings, and recommendations of a longer report.",
+    extract:
+      "A short document or section that presents the purpose, major findings, and recommendations of a longer report.",
     href: "https://en.wikipedia.org/wiki/Executive_summary",
   },
 } as const;
@@ -36,193 +32,177 @@ export function isWidgetRoute(value: string): value is WidgetRoute {
   return value === "/inventory" || value === "/catalog";
 }
 
+/** Reads this application's own route out of whichever path it is mounted at. */
+export function routeFromPathname(pathname: string): WidgetRoute | null {
+  const route = pathname.startsWith(widgetBasePath)
+    ? pathname.slice(widgetBasePath.length)
+    : pathname;
+  return isWidgetRoute(route) ? route : null;
+}
+
 export interface WorkspaceWidgetProps {
   articleKey: WikipediaArticleKey;
   initialRoute: WidgetRoute;
-  routingFrameId: RoutingFrameId;
   surface: "definition" | "page" | "profile";
 }
 
-export const WorkspaceWidget = component$(({
-  articleKey,
-  initialRoute,
-  routingFrameId,
-  surface,
-}: WorkspaceWidgetProps) => {
-  const currentRoute = useSignal<WidgetRoute>(initialRoute);
-  const draftMessage = useSignal("");
-  const messageStatus = useSignal("Relay can make mistakes. Check important details.");
-  const pendingRouteReady = useSignal<WidgetRoute>();
-  const routeSurface = useSignal<HTMLElement>();
+export const WorkspaceWidget = component$(
+  ({ articleKey, initialRoute, surface }: WorkspaceWidgetProps) => {
+    const currentRoute = useSignal<WidgetRoute>(initialRoute);
+    const draftMessage = useSignal("");
+    const messageStatus = useSignal("Relay can make mistakes. Check important details.");
 
-  useVisibleTask$(({ cleanup }) => {
-    if (routingFrameId === "") return;
-    const sessionId = routingSessionId();
-    if (sessionId === null) return;
-    const channel = openRoutingChannel(sessionId);
-    if (channel === null) return;
+    // An ordinary client-side router. The shell moves this application with
+    // `frame.navigate()`, which arrives here as a popstate at the new URL.
+    useVisibleTask$(
+      ({ cleanup }) => {
+        const followLocation = () => {
+          const route = routeFromPathname(location.pathname);
+          if (route !== null) currentRoute.value = route;
+        };
 
-    const receiveRouteChange = (event: MessageEvent<unknown>) => {
-      if (event.origin !== location.origin || !isRoutingMessage(event.data)) return;
-      const message = event.data;
-      if (
-        message.sessionId !== sessionId
-        || message.source !== "host"
-        || message.target !== routingFrameId
-        || message.kind !== "route-change"
-        || message.route === undefined
-        || !isWidgetRoute(message.route)
-      ) return;
-      if (currentRoute.value === message.route) {
-        postRoutingMessage(channel, {
-          protocol: routingProtocol,
-          version: routingVersion,
-          sessionId,
-          source: routingFrameId,
-          target: "host",
-          kind: "route-ready",
-          route: message.route,
+        addEventListener("popstate", followLocation);
+        // Resumption is asynchronous, so publish when this router starts listening.
+        document.documentElement.dataset.qwikRouterReady = "true";
+        cleanup(() => {
+          removeEventListener("popstate", followLocation);
+          delete document.documentElement.dataset.qwikRouterReady;
         });
-        return;
-      }
+      },
+      { strategy: "document-ready" },
+    );
 
-      routeSurface.value = undefined;
-      currentRoute.value = message.route;
-      pendingRouteReady.value = message.route;
-    };
-
-    channel.addEventListener("message", receiveRouteChange);
-    const didPostHello = postRoutingMessage(channel, {
-      protocol: routingProtocol,
-      version: routingVersion,
-      sessionId,
-      source: routingFrameId,
-      target: "host",
-      kind: "hello",
-    });
-    if (!didPostHello) {
-      channel.removeEventListener("message", receiveRouteChange);
-      channel.close();
-      return;
+    if (surface === "definition") {
+      const article = wikipediaArticles[articleKey];
+      return (
+        <article class="wikipedia-preview">
+          <span class="widget-kicker">Wikipedia</span>
+          <h2>{article.title}</h2>
+          <p>{article.extract}</p>
+          <a href={article.href} target="_blank" rel="noreferrer">
+            Read the article
+          </a>
+        </article>
+      );
     }
 
-    cleanup(() => {
-      channel.removeEventListener("message", receiveRouteChange);
-      channel.close();
-    });
-  }, { strategy: "document-ready" });
-
-  useVisibleTask$(({ track }) => {
-    const requestedRoute = track(() => pendingRouteReady.value);
-    const renderedSurface = track(() => routeSurface.value);
-    if (requestedRoute === undefined || renderedSurface === undefined) return;
-
-    const sessionId = routingSessionId();
-    if (sessionId === null) return;
-    const channel = openRoutingChannel(sessionId);
-    if (channel === null) return;
-    const didPostRouteReady = postRoutingMessage(channel, {
-      protocol: routingProtocol,
-      version: routingVersion,
-      sessionId,
-      source: routingFrameId,
-      target: "host",
-      kind: "route-ready",
-      route: requestedRoute,
-    });
-    channel.close();
-    if (didPostRouteReady) pendingRouteReady.value = undefined;
-  }, { strategy: "document-ready" });
-
-  if (surface === "definition") {
-    const article = wikipediaArticles[articleKey];
-    return (
-      <article class="wikipedia-preview">
-        <span class="widget-kicker">Wikipedia</span>
-        <h2>{article.title}</h2>
-        <p>{article.extract}</p>
-        <a href={article.href} target="_blank" rel="noreferrer">Read the article</a>
-      </article>
-    );
-  }
-
-  if (surface === "profile") {
-    return (
-      <section class="profile-widget" aria-label="Account">
-        <button type="button" class="profile-trigger" popovertarget="profile-menu">
-          <span class="profile-avatar" aria-hidden="true">AM</span>
-          <span class="profile-copy"><strong>Avery Morgan</strong><small>Team workspace</small></span>
-          <span class="profile-more" aria-hidden="true">···</span>
-        </button>
-        <div id="profile-menu" class="profile-menu" popover="auto">
-          <p>Avery Morgan</p>
-          <button type="button">Settings</button>
-          <button type="button">Keyboard shortcuts</button>
-          <button type="button">Sign out</button>
-        </div>
-      </section>
-    );
-  }
-
-  if (currentRoute.value === "/catalog") {
-    return (
-      <main ref={routeSurface} class="usage-widget" aria-labelledby="usage-title">
-        <header class="usage-heading">
-          <div>
-            <h2 id="usage-title">Usage</h2>
-            <p class="usage-copy">Workspace activity for the current billing period.</p>
+    if (surface === "profile") {
+      return (
+        <section class="profile-widget" aria-label="Account">
+          <button type="button" class="profile-trigger" popovertarget="profile-menu">
+            <span class="profile-avatar" aria-hidden="true">
+              AM
+            </span>
+            <span class="profile-copy">
+              <strong>Avery Morgan</strong>
+              <small>Team workspace</small>
+            </span>
+            <span class="profile-more" aria-hidden="true">
+              ···
+            </span>
+          </button>
+          <div id="profile-menu" class="profile-menu" popover="auto">
+            <p>Avery Morgan</p>
+            <button type="button">Settings</button>
+            <button type="button">Keyboard shortcuts</button>
+            <button type="button">Sign out</button>
           </div>
-          <button type="button">July 2026⌄</button>
-        </header>
-        <section id="usage-summary" class="usage-overview" aria-label="Usage summary">
-          <article><span>Messages</span><strong>1,284</strong><small>32% of plan</small></article>
-          <article><span>Context</span><strong>3.8M</strong><small>tokens processed</small></article>
-          <article><span>Plugin calls</span><strong>216</strong><small>this month</small></article>
         </section>
-        <section class="usage-breakdown" aria-labelledby="usage-breakdown-title">
-          <div class="section-heading"><h3 id="usage-breakdown-title">Usage by frontend</h3><span>Messages</span></div>
-          <table>
-            <tbody>
-              <tr><td><span class="frontend-mark react-mark" />React conversations</td><td>937</td><td>73%</td></tr>
-              <tr><td><span class="frontend-mark qwik-mark" />Qwik composer and widgets</td><td>347</td><td>27%</td></tr>
-            </tbody>
-          </table>
-        </section>
-      </main>
-    );
-  }
+      );
+    }
 
-  return (
-    <form
-      ref={routeSurface}
-      class="composer-widget"
-      onSubmit$={(event: SubmitEvent) => {
-        event.preventDefault();
-        if (draftMessage.value.trim() === "") return;
-        draftMessage.value = "";
-        messageStatus.value = "Message sent.";
-      }}
-    >
-      <div class="composer-row">
-        <button type="button" class="attach-button" aria-label="Attach files">+</button>
-        <textarea
-          name="message"
-          aria-label="Message Relay"
-          placeholder="Ask anything"
-          value={draftMessage.value}
-          onInput$={(event: InputEvent) => {
-            const messageInput = event.target as { value: string } | null;
-            if (messageInput === null) return;
-            draftMessage.value = messageInput.value;
-            messageStatus.value = "Relay can make mistakes. Check important details.";
-          }}
-        />
-        <button type="submit" class="send-button" aria-label="Send message">↑</button>
-      </div>
-      <p aria-live="polite">{messageStatus.value}</p>
-    </form>
-  );
-});
+    if (currentRoute.value === "/catalog") {
+      return (
+        <main class="usage-widget" aria-labelledby="usage-title">
+          <header class="usage-heading">
+            <div>
+              <h2 id="usage-title">Usage</h2>
+              <p class="usage-copy">Workspace activity for the current billing period.</p>
+            </div>
+            <button type="button">July 2026⌄</button>
+          </header>
+          <section id="usage-summary" class="usage-overview" aria-label="Usage summary">
+            <article>
+              <span>Messages</span>
+              <strong>1,284</strong>
+              <small>32% of plan</small>
+            </article>
+            <article>
+              <span>Context</span>
+              <strong>3.8M</strong>
+              <small>tokens processed</small>
+            </article>
+            <article>
+              <span>Plugin calls</span>
+              <strong>216</strong>
+              <small>this month</small>
+            </article>
+          </section>
+          <section class="usage-breakdown" aria-labelledby="usage-breakdown-title">
+            <div class="section-heading">
+              <h3 id="usage-breakdown-title">Usage by frontend</h3>
+              <span>Messages</span>
+            </div>
+            <table>
+              <tbody>
+                <tr>
+                  <td>
+                    <span class="frontend-mark react-mark" />
+                    React conversations
+                  </td>
+                  <td>937</td>
+                  <td>73%</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="frontend-mark qwik-mark" />
+                    Qwik composer and widgets
+                  </td>
+                  <td>347</td>
+                  <td>27%</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </main>
+      );
+    }
+
+    return (
+      <form
+        class="composer-widget"
+        onSubmit$={(event: SubmitEvent) => {
+          event.preventDefault();
+          if (draftMessage.value.trim() === "") return;
+          draftMessage.value = "";
+          messageStatus.value = "Message sent.";
+        }}
+      >
+        <div class="composer-row">
+          <button type="button" class="attach-button" aria-label="Attach files">
+            +
+          </button>
+          <textarea
+            name="message"
+            aria-label="Message Relay"
+            placeholder="Ask anything"
+            value={draftMessage.value}
+            onInput$={(event: InputEvent) => {
+              const messageInput = event.target as { value: string } | null;
+              if (messageInput === null) return;
+              draftMessage.value = messageInput.value;
+              messageStatus.value = "Relay can make mistakes. Check important details.";
+            }}
+          />
+          <button type="submit" class="send-button" aria-label="Send message">
+            ↑
+          </button>
+        </div>
+        <p aria-live="polite">{messageStatus.value}</p>
+      </form>
+    );
+  },
+);
 
 export const widgetStyle = `
   :root { color-scheme: only dark; }

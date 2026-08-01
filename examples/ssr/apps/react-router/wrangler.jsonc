@@ -5,9 +5,7 @@
   "compatibility_date": "2026-07-21",
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "binding": "ASSETS" },
-  "services": [
-    { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }
-  ],
+  "services": [{ "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" }],
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },

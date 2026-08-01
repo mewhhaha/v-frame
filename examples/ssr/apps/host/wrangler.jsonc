@@ -6,7 +6,10 @@
   "assets": { "directory": "./dist/client" },
   "services": [
     { "binding": "ANGULAR_WIDGET", "service": "v-frame-example-angular-widget" },
-    { "binding": "REACT_ROUTER_WIDGET", "service": "v-frame-example-react-router-widget" },
+    {
+      "binding": "REACT_ROUTER_WIDGET",
+      "service": "v-frame-example-react-router-widget"
+    },
     { "binding": "QWIK_WIDGET", "service": "v-frame-example-qwik-widget" },
     { "binding": "SOLID_WIDGET", "service": "v-frame-example-solid-widget" }
   ],

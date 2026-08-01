@@ -41,10 +41,11 @@ function resolveFile(pathname) {
   const requested = resolve(root, `.${decodeURIComponent(pathname)}`);
   const pathFromRoot = relative(root, requested);
   if (
-    pathFromRoot === ".."
-    || pathFromRoot.startsWith(`..${sep}`)
-    || isAbsolute(pathFromRoot)
-  ) return null;
+    pathFromRoot === ".." ||
+    pathFromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(pathFromRoot)
+  )
+    return null;
   if (existsSync(requested) && statSync(requested).isFile()) return requested;
   return null;
 }
@@ -62,7 +63,10 @@ const server = createServer((req, res) => {
     return;
   }
 
-  res.setHeader("Content-Type", CONTENT_TYPES[extname(file)] ?? "application/octet-stream");
+  res.setHeader(
+    "Content-Type",
+    CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
+  );
   createReadStream(file)
     .on("error", (error) => {
       res.statusCode = 404;

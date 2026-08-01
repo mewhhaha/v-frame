@@ -14,5 +14,5 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["worker-configuration.d.ts", "src", "../../shared/routing.ts"]
+  "include": ["worker-configuration.d.ts", "src"]
 }

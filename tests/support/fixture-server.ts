@@ -1,29 +1,37 @@
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  bundleRoute,
+  htmlDocument as html,
+  type HTTPFixture,
+  registerBundleRoute,
+  type Route,
+  type RouteHandler,
+  type RouteResponse,
+  sendResponse,
+  startHTTPFixture,
+} from "./http-fixture";
 
-export interface FixtureServer {
-  origin: string;
-  requests: string[];
-  close(): Promise<void>;
+/**
+ * Hands the dynamic script order fixture to the test: the second script answers
+ * immediately, the first one waits until the test releases it.
+ */
+export interface DynamicScriptOrder {
+  /** Resolves once the second script's response has been written in full. */
+  secondServed: Promise<void>;
+  /** Answers the first-script request, waiting for it to arrive when it has not yet. */
+  releaseFirst(): Promise<void>;
 }
 
-const html = (body: string, head = "") => `<!doctype html>
-<html><head>${head}</head><body>${body}</body></html>`;
-
-function reply(response: ServerResponse, status: number, type: string, body: string | Buffer) {
-  response.writeHead(status, { "content-type": type, "cache-control": "no-store" });
-  response.end(body);
+export interface FixtureServer extends HTTPFixture {
+  dynamicScriptOrder: DynamicScriptOrder;
 }
 
-function pathname(request: IncomingMessage) {
-  return new URL(request.url ?? "/", "http://fixture.test").pathname;
-}
+export type ContractFixtureServers = HTTPFixture;
 
-function pageFor(path: string) {
-  switch (path) {
-    case "/documents/adopted-host.html":
-      return html(`<v-frame adopt src="/documents/adopted-entry.html">
+const documentRoutes: Record<string, Route> = {
+  "/": html('<div id="host"></div>'),
+  "/documents/adopted-host.html":
+    html(`<v-frame adopt src="/documents/adopted-entry.html">
         <template shadowrootmode="open">
           <v-html lang="en">
             <v-head>
@@ -41,9 +49,9 @@ function pageFor(path: string) {
             </v-body>
           </v-html>
         </template>
-      </v-frame>`);
-    case "/documents/nested-adopted-host.html":
-      return html(`<v-frame id="outer-frame" adopt src="/documents/outer-adopted-entry.html">
+      </v-frame>`),
+  "/documents/nested-adopted-host.html":
+    html(`<v-frame id="outer-frame" adopt src="/documents/outer-adopted-entry.html">
         <template shadowrootmode="open" shadowrootserializable>
           <v-html lang="en">
             <v-head></v-head>
@@ -68,59 +76,65 @@ function pageFor(path: string) {
             </v-body>
           </v-html>
         </template>
-      </v-frame>`);
-    case "/documents/adopted-entry.html":
-      return html('<main id="network-reload">Fetched by reload</main>');
-    case "/documents/first.html":
-      return html('<main id="first">First document <a id="next" href="second.html">next</a></main>');
-    case "/documents/second.html":
-      return html('<main id="second">Second document</main>');
-    case "/first-window-base/first":
-      return html('<main id="first-window-document">First window document</main>');
-    case "/second-window-base/second":
-      return html('<main id="second-window-document">Second window document</main>');
-    case "/svg-base/destination.html":
-      return html('<main id="svg-destination">SVG destination document</main>');
-    case "/documents/scripted.html":
-      return html('<main id="before-script">Before script</main><script src="../assets/append-content.js"></script>');
-    case "/documents/styled.html":
-      return html('<img id="relative-image" src="../assets/pixel.png"><p id="styled-copy">Styled</p>', '<link rel="stylesheet" href="../assets/document.css">');
-    case "/documents/application.html":
-      return html(`<button id="load">Load</button><button id="push">Push history</button><output id="result"></output>
+      </v-frame>`),
+  "/documents/adopted-entry.html": html(
+    '<main id="network-reload">Fetched by reload</main>',
+  ),
+  "/documents/first.html": html(
+    '<main id="first">First document <a id="next" href="second.html">next</a></main>',
+  ),
+  "/documents/second.html": html('<main id="second">Second document</main>'),
+  "/first-window-base/first": html(
+    '<main id="first-window-document">First window document</main>',
+  ),
+  "/second-window-base/second": html(
+    '<main id="second-window-document">Second window document</main>',
+  ),
+  "/svg-base/destination.html": html(
+    '<main id="svg-destination">SVG destination document</main>',
+  ),
+  "/documents/scripted.html": html(
+    '<main id="before-script">Before script</main><script src="../assets/append-content.js"></script>',
+  ),
+  "/documents/styled.html": html(
+    '<img id="relative-image" src="../assets/pixel.png"><p id="styled-copy">Styled</p>',
+    '<link rel="stylesheet" href="../assets/document.css">',
+  ),
+  "/documents/application.html":
+    html(`<button id="load">Load</button><button id="push">Push history</button><output id="result"></output>
         <script>
           document.querySelector('#load').addEventListener('click', async () => {
             document.querySelector('#result').textContent = await (await fetch('../api/message')).text();
           });
           document.querySelector('#push').addEventListener('click', () => history.pushState({}, '', 'history-state'));
-        </script>`);
-    case "/documents/dynamic-insert.html":
-      return html(`<main id="dynamic-target">Dynamic script fixture</main>
+        </script>`),
+  "/documents/dynamic-insert.html":
+    html(`<main id="dynamic-target">Dynamic script fixture</main>
         <script>
           const script = document.createElement('script');
           script.text = "window.__dynamicInsertRealm = window; document.body.insertAdjacentHTML('beforeend', '<output id=\\\"dynamic-insert-result\\\">child realm executed</output>');";
           document.querySelector('#dynamic-target').insertAdjacentElement('afterend', script);
-        </script>`);
-    case "/documents/nested-network.html":
-      return html('<v-frame id="nested-network-frame" src="/documents/inner-network.html"></v-frame>');
-    case "/documents/inner-network.html":
-      return html('<p id="nested-network-copy">Nested network frame loaded</p>');
-    case "/documents/inline-module.html":
-      return html(`<output id="module-result">pending</output>
+        </script>`),
+  "/documents/nested-network.html": html(
+    '<v-frame id="nested-network-frame" src="/documents/inner-network.html"></v-frame>',
+  ),
+  "/documents/inner-network.html": html(
+    '<p id="nested-network-copy">Nested network frame loaded</p>',
+  ),
+  "/documents/inline-module.html": html(`<output id="module-result">pending</output>
         <script type="module">
           await new Promise((resolve) => setTimeout(resolve, 25));
           document.querySelector('#module-result').textContent = 'module settled';
-        </script>`);
-    case "/documents/import-map.html":
-      return html(`<output id="import-map-result">pending</output>
+        </script>`),
+  "/documents/import-map.html": html(`<output id="import-map-result">pending</output>
         <script type="importmap">
           { "imports": { "fixture-message": "../assets/import-map-message.js" } }
         </script>
         <script type="module">
           import { message } from 'fixture-message';
           document.querySelector('#import-map-result').textContent = message;
-        </script>`);
-    case "/documents/child-custom-elements.html":
-      return html(`<div id="dynamic-root"></div>
+        </script>`),
+  "/documents/child-custom-elements.html": html(`<div id="dynamic-root"></div>
         <script>
           const label = new URL(location.href).searchParams.get('label');
           class ChildGreeting extends HTMLElement {
@@ -141,18 +155,16 @@ function pageFor(path: string) {
             parsed: document.querySelector('#parsed') instanceof ChildGreeting,
             ownerDocument: dynamic.ownerDocument === document,
           };
-        </script>`);
-    case "/documents/script-order.html":
-      return html(`<script id="classic-inline">
+        </script>`),
+  "/documents/script-order.html": html(`<script id="classic-inline">
           window.__scriptEvents = [];
           window.__scriptEvents.push('classic-inline:' + document.currentScript?.id + ':' + document.readyState);
           window.addEventListener('load', () => window.__scriptEvents.push('load:' + document.readyState));
         </script>
         <script id="classic-external" src="../assets/classic-order.js"></script>
         <script id="deferred-external" defer src="../assets/defer-order.js"></script>
-        <script id="async-external" async src="../assets/async-order.js"></script>`);
-    case "/documents/dynamic-external-order.html":
-      return html(`<script>
+        <script id="async-external" async src="../assets/async-order.js"></script>`),
+  "/documents/dynamic-external-order.html": html(`<script>
           window.__dynamicExternalEvents = [];
           const first = document.createElement('script');
           first.async = false;
@@ -162,15 +174,16 @@ function pageFor(path: string) {
           second.async = false;
           second.src = '../assets/dynamic-second.js';
           document.body.append(second);
-        </script>`);
-    case "/documents/import-and-root.html":
-      return html(`<p id="root-colour">Root specificity</p><p id="imported-colour" class="imported">Imported supports</p>`, `<style>
+        </script>`),
+  "/documents/import-and-root.html": html(
+    `<p id="root-colour">Root specificity</p><p id="imported-colour" class="imported">Imported supports</p>`,
+    `<style>
           @import url('../assets/imported-supports.css') supports(display: grid);
           :root { color: rgb(8, 9, 10); }
           html { color: rgb(50, 51, 52); }
-        </style>`);
-    case "/documents/request-abort.html":
-      return html(`<output id="request-result">pending</output>
+        </style>`,
+  ),
+  "/documents/request-abort.html": html(`<output id="request-result">pending</output>
         <script>
           (async () => {
             const controller = new AbortController();
@@ -192,27 +205,27 @@ function pageFor(path: string) {
               await pending,
             ].join(':');
           })();
-        </script>`);
-    case "/documents/base-after-push.html":
-      return html(`<script>
+        </script>`),
+  "/documents/base-after-push.html": html(`<script>
           history.pushState({}, '', 'nested/state.html');
           const image = document.createElement('img');
           image.src = 'asset.png';
           image.id = 'created-image';
           document.body.append(image);
           window.__baseAfterPush = { baseURI: document.baseURI, src: image.src };
-        </script>`);
-    case "/documents/explicit-base-after-push.html":
-      return html(`<script>
+        </script>`),
+  "/documents/explicit-base-after-push.html": html(
+    `<script>
           history.pushState({}, '', 'nested/state.html');
           const image = document.createElement('img');
           image.src = 'asset.png';
           image.id = 'created-image';
           document.body.append(image);
           window.__explicitBaseAfterPush = { baseURI: document.baseURI, src: image.src };
-        </script>`, '<base href="/base-root/">');
-    case "/documents/dynamic-base-urls.html":
-      return `<!doctype html><html><head>
+        </script>`,
+    '<base href="/base-root/">',
+  ),
+  "/documents/dynamic-base-urls.html": `<!doctype html><html><head>
         <base id="invalid-base" href="http://[">
         <base id="initial-base" href="/initial-base/">
         <base id="secondary-base" href="/secondary-base/">
@@ -226,138 +239,216 @@ function pageFor(path: string) {
           <use id="svg-use" xlink:href="symbols.svg#shape"></use>
           <feImage id="svg-filter-image" href="filter.svg"></feImage>
         </svg>
-      </body></html>`;
-    case "/documents/scroll-events.html":
-      return html(`<div style="height: 300px">Scrollable fixture</div><script>
+      </body></html>`,
+  "/documents/scroll-events.html":
+    html(`<div style="height: 300px">Scrollable fixture</div><script>
           window.__scrollEvents = 0;
           window.addEventListener('scroll', () => window.__scrollEvents += 1);
-        </script>`);
-    case "/documents/nonce.html":
-      return html('<p id="nonce-copy">Nonce fixture</p>', '<style>#nonce-copy { color: rgb(7, 8, 9); }</style>');
-    case "/documents/noscript.html":
-      return html(
-        '<p id="noscript-copy">Scripted</p><noscript><link rel="stylesheet" href="/assets/noscript-only.css"><p id="noscript-fallback">Fallback</p></noscript>',
-        '<noscript><style>#noscript-copy { color: rgb(200, 0, 0); }</style></noscript>',
-      );
-    case "/documents/direct-location.html":
-      return html('<script>location.assign("/documents/second.html");</script>');
-    case "/documents/broken.html":
-      return null;
-    default:
-      return undefined;
-  }
+        </script>`),
+  "/documents/nonce.html": html(
+    '<p id="nonce-copy">Nonce fixture</p>',
+    "<style>#nonce-copy { color: rgb(7, 8, 9); }</style>",
+  ),
+  "/documents/noscript.html": html(
+    '<p id="noscript-copy">Scripted</p><noscript><link rel="stylesheet" href="/assets/noscript-only.css"><p id="noscript-fallback">Fallback</p></noscript>',
+    "<noscript><style>#noscript-copy { color: rgb(200, 0, 0); }</style></noscript>",
+  ),
+  "/documents/direct-location.html": html(
+    '<script>location.assign("/documents/second.html");</script>',
+  ),
+  "/documents/broken.html": { status: 500, type: "text/plain", body: "Fixture failure" },
+};
+
+const assetRoutes: Record<string, Route> = {
+  "/dist/index.js": bundleRoute,
+  "/assets/append-content.js": {
+    type: "text/javascript",
+    body: `document.body.insertAdjacentHTML('beforeend', '<p id="script-added">Script executed</p>');`,
+  },
+  "/assets/classic-order.js": {
+    type: "text/javascript",
+    body: "window.__scriptEvents.push('classic-external:' + document.currentScript?.id + ':' + document.readyState);",
+  },
+  "/assets/defer-order.js": {
+    type: "text/javascript",
+    body: "window.__scriptEvents.push('defer-external:' + document.currentScript?.id + ':' + document.readyState);",
+  },
+  "/assets/async-order.js": {
+    type: "text/javascript",
+    body: "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);",
+    delay: 50,
+  },
+  "/assets/import-map-message.js": {
+    type: "text/javascript",
+    body: "export const message = 'resolved through import map';",
+  },
+  "/assets/imported-supports.css": {
+    type: "text/css",
+    body: ".imported { color: rgb(13, 14, 15); }",
+  },
+  "/assets/document.css": {
+    type: "text/css",
+    body: "#styled-copy { background-image: url('./pixel.png'); color: rgb(12, 34, 56); }",
+  },
+  "/assets/pixel.png": {
+    type: "image/png",
+    body: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9sAAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  },
+  "/api/message": { type: "text/plain", body: "Fetched from fixture" },
+  "/api/slow": { type: "text/plain", body: "Too slow", delay: 100 },
+};
+
+const dynamicFirstScript: RouteResponse = {
+  type: "text/javascript",
+  body: "window.__dynamicExternalEvents.push('first');",
+};
+
+const dynamicSecondScript: RouteResponse = {
+  type: "text/javascript",
+  body: "window.__dynamicExternalEvents.push('second');",
+};
+
+interface DynamicScriptOrderState {
+  parkedFirst: ServerResponse | null;
+  firstRequested: Promise<void>;
+  resolveFirstRequested: () => void;
+  secondServed: Promise<void>;
+  resolveSecondServed: () => void;
 }
 
-export async function startFixtureServer(): Promise<FixtureServer> {
-  const requests: string[] = [];
-  const distFile = resolve(process.cwd(), "dist/index.js");
-  const server = createServer((request, response) => {
-    const path = pathname(request);
-    requests.push(path);
-
-    if (path === "/") return reply(response, 200, "text/html", html('<div id="host"></div>'));
-    if (path === "/dist/index.js") {
-      if (!existsSync(distFile)) return reply(response, 404, "text/plain", "Build output not found");
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
-      createReadStream(distFile).pipe(response);
-      return;
-    }
-    if (path === "/assets/append-content.js") {
-      return reply(response, 200, "text/javascript", `document.body.insertAdjacentHTML('beforeend', '<p id="script-added">Script executed</p>');`);
-    }
-    if (path === "/assets/classic-order.js") {
-      return reply(response, 200, "text/javascript", "window.__scriptEvents.push('classic-external:' + document.currentScript?.id + ':' + document.readyState);");
-    }
-    if (path === "/assets/defer-order.js") {
-      return reply(response, 200, "text/javascript", "window.__scriptEvents.push('defer-external:' + document.currentScript?.id + ':' + document.readyState);");
-    }
-    if (path === "/assets/async-order.js") {
-      setTimeout(() => reply(response, 200, "text/javascript", "window.__scriptEvents.push('async-external:' + document.currentScript?.id + ':' + document.readyState);"), 50);
-      return;
-    }
-    if (path === "/assets/dynamic-first.js") {
-      setTimeout(() => reply(response, 200, "text/javascript", "window.__dynamicExternalEvents.push('first');"), 50);
-      return;
-    }
-    if (path === "/assets/dynamic-second.js") {
-      return reply(response, 200, "text/javascript", "window.__dynamicExternalEvents.push('second');");
-    }
-    if (path === "/assets/import-map-message.js") {
-      return reply(response, 200, "text/javascript", "export const message = 'resolved through import map';");
-    }
-    if (path === "/assets/imported-supports.css") {
-      return reply(response, 200, "text/css", ".imported { color: rgb(13, 14, 15); }");
-    }
-    if (path === "/assets/document.css") {
-      return reply(response, 200, "text/css", "#styled-copy { background-image: url('./pixel.png'); color: rgb(12, 34, 56); }");
-    }
-    if (path === "/assets/pixel.png") {
-      return reply(response, 200, "image/png", Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9sAAAAABJRU5ErkJggg==", "base64"));
-    }
-    if (path === "/api/message") return reply(response, 200, "text/plain", "Fetched from fixture");
-    if (path === "/api/slow") {
-      setTimeout(() => reply(response, 200, "text/plain", "Too slow"), 100);
-      return;
-    }
-
-    const page = pageFor(path);
-    if (page === null) return reply(response, 500, "text/plain", "Fixture failure");
-    if (page !== undefined) return reply(response, 200, "text/html", page);
-    return reply(response, 404, "text/plain", `No fixture for ${path}`);
+/** Arms both gates, so a repeated run of the test waits for its own two responses. */
+function armDynamicScriptOrder(state: DynamicScriptOrderState) {
+  state.firstRequested = new Promise<void>((resolve) => {
+    state.resolveFirstRequested = resolve;
   });
+  state.secondServed = new Promise<void>((resolve) => {
+    state.resolveSecondServed = resolve;
+  });
+}
 
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Fixture server did not expose a TCP address");
+function dynamicScriptOrderState(): DynamicScriptOrderState {
+  const state: DynamicScriptOrderState = {
+    parkedFirst: null,
+    firstRequested: Promise.resolve(),
+    resolveFirstRequested: () => undefined,
+    secondServed: Promise.resolve(),
+    resolveSecondServed: () => undefined,
+  };
+  armDynamicScriptOrder(state);
+  return state;
+}
 
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    requests,
-    close: () => new Promise((resolveClosed, reject) => server.close((error) => error ? reject(error) : resolveClosed())),
+/** Parks the request so the test decides when the first script's bytes are written. */
+function parkFirstDynamicScript(state: DynamicScriptOrderState): RouteHandler {
+  return (_request, response) => {
+    if (state.parkedFirst !== null) {
+      return {
+        status: 409,
+        type: "text/plain",
+        body: "Duplicate request for /assets/dynamic-first.js",
+      };
+    }
+    state.parkedFirst = response;
+    state.resolveFirstRequested();
+    return undefined;
   };
 }
 
-export interface ContractFixtureServers {
-  origin: string;
-  requests: string[];
-  close(): Promise<void>;
+/**
+ * "finish" fires once the body has been flushed to the socket, so a first-script release
+ * that waits for it cannot reach the browser before the second script does.
+ */
+function serveSecondDynamicScript(state: DynamicScriptOrderState): RouteHandler {
+  return (_request, response) => {
+    response.on("finish", state.resolveSecondServed);
+    return dynamicSecondScript;
+  };
 }
 
-function contractHTML(body: string, head = "") {
-  return `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
-}
-
-function contractPathname(request: IncomingMessage) {
-  return new URL(request.url ?? "/", "http://contract-fixture.test").pathname;
-}
-
-function contractReply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  body: string | Buffer,
-) {
-  response.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store",
+export async function startFixtureServer(): Promise<FixtureServer> {
+  const state = dynamicScriptOrderState();
+  const server = await startHTTPFixture({
+    routes: {
+      ...documentRoutes,
+      ...assetRoutes,
+      "/assets/dynamic-first.js": parkFirstDynamicScript(state),
+      "/assets/dynamic-second.js": serveSecondDynamicScript(state),
+    },
   });
-  response.end(body);
+
+  // The two requests race each other on separate sockets, so a release that arrives
+  // before the first script has even been asked for waits for it instead of failing.
+  const releaseFirst = async () => {
+    await state.firstRequested;
+    const parked = state.parkedFirst;
+    if (parked === null) {
+      throw new Error("/assets/dynamic-first.js was already released");
+    }
+    state.parkedFirst = null;
+    sendResponse(parked, dynamicFirstScript);
+    armDynamicScriptOrder(state);
+  };
+
+  return {
+    ...server,
+    dynamicScriptOrder: {
+      get secondServed() {
+        return state.secondServed;
+      },
+      releaseFirst,
+    },
+    // A parked request keeps its socket open, which would otherwise stall the close of a
+    // server whose test failed before releasing it.
+    close: async () => {
+      state.parkedFirst?.destroy();
+      state.parkedFirst = null;
+      await server.close();
+    },
+  };
 }
 
-function contractPageFor(path: string) {
-  switch (path) {
-    case "/documents/reconnect.html":
-      return contractHTML('<main id="reconnect-copy">Reconnect fixture</main>');
-    case "/documents/slow.html":
-      return contractHTML('<main id="slow-copy">Slow document</main>');
-    case "/documents/fast.html":
-      return contractHTML('<main id="fast-copy">Fast document</main>');
-    case "/documents/redirected.html":
-      return contractHTML('<main id="redirect-copy">Redirect destination</main>');
-    case "/documents/dom.html":
-      return contractHTML('<main id="dom-root"><input id="focus-target"><button id="click-target">Click</button></main>');
-    case "/documents/inline-body-load.html":
-      return `<!doctype html><html><head><script>
+/** The shell only serves the host page to a top-level document request. */
+function boundShell(request: IncomingMessage): RouteResponse {
+  if (request.headers["sec-fetch-dest"] === "document") {
+    return { body: html('<div id="host"></div>') };
+  }
+  return {
+    body: html(`<output id="bound-result">bound</output>
+        <script>
+          window.__boundPopStates = [];
+          window.addEventListener('popstate', (event) => window.__boundPopStates.push(event.state));
+        </script>`),
+  };
+}
+
+const contractRoutes: Record<string, Route> = {
+  "/": html(
+    '<div id="host"></div><p id="host-isolated">Host CSS</p>',
+    "<style>#host-isolated { color: rgb(91, 92, 93); }</style>",
+  ),
+  "/dist/index.js": bundleRoute,
+  "/dist/register.js": registerBundleRoute,
+  "/documents/bound-shell.html": boundShell,
+  "/documents/reconnect.html": html('<main id="reconnect-copy">Reconnect fixture</main>'),
+  "/documents/slow.html": {
+    body: html('<main id="slow-copy">Slow document</main>'),
+    delay: 500,
+  },
+  "/documents/fast.html": html('<main id="fast-copy">Fast document</main>'),
+  "/documents/redirect.html": {
+    status: 302,
+    headers: { location: "/documents/redirected.html" },
+  },
+  "/documents/redirected.html": html(
+    '<main id="redirect-copy">Redirect destination</main>',
+  ),
+  "/documents/dom.html": html(
+    '<main id="dom-root"><input id="focus-target"><button id="click-target">Click</button></main>',
+  ),
+  "/documents/inline-body-load.html": `<!doctype html><html><head><script>
         window.__documentLifecycle = { bodyLoads: 0, readyStates: [] };
         document.onreadystatechange = function (event) {
           window.__documentLifecycle.readyStates.push({
@@ -367,28 +458,25 @@ function contractPageFor(path: string) {
             thisValue: this === document,
           });
         };
-      </script></head><body onload="window.__documentLifecycle.bodyLoads += 1"></body></html>`;
-    case "/documents/property-body-load.html":
-      return contractHTML(`<script>
+      </script></head><body onload="window.__documentLifecycle.bodyLoads += 1"></body></html>`,
+  "/documents/property-body-load.html": html(`<script>
         window.__bodyPropertyLoads = { replaced: 0, active: 0 };
         document.body.onload = () => window.__bodyPropertyLoads.replaced += 1;
         document.body.onload = null;
         document.body.onload = () => window.__bodyPropertyLoads.active += 1;
-      </script>`);
-    case "/documents/messaging.html":
-      return contractHTML(`<output id="message-result">waiting</output>
+      </script>`),
+  "/documents/messaging.html": html(`<output id="message-result">waiting</output>
         <script>
           window.addEventListener('message', (event) => {
             document.querySelector('#message-result').textContent = event.data.kind;
             window.parent.postMessage({ kind: event.data.kind, realm: 'child' }, event.origin);
           });
-        </script>`);
-    case "/documents/scripts.html":
-      return contractHTML('<main id="script-root">Script fixture</main>');
-    case "/documents/styles.html":
-      return contractHTML('<main><p id="host-isolated">Host CSS must not leak here</p></main>');
-    case "/documents/history.html":
-      return contractHTML(`<main>
+        </script>`),
+  "/documents/scripts.html": html('<main id="script-root">Script fixture</main>'),
+  "/documents/styles.html": html(
+    '<main><p id="host-isolated">Host CSS must not leak here</p></main>',
+  ),
+  "/documents/history.html": html(`<main>
         <a id="top-link" href="#">Top</a>
         <a id="blocked-link" href="blocked-link.html">Blocked link</a>
         <a id="new-context-link" href="new-context.html">New context link</a>
@@ -399,9 +487,8 @@ function contractPageFor(path: string) {
           <button id="override-submit" name="submitter" value="override" formaction="override-form.html?ignored=submitter" formmethod="get" formtarget="_blank">Override form</button>
         </form>
         <div style="height: 600px"></div>
-      </main>`);
-    case "/documents/location.html":
-      return contractHTML(`<script>
+      </main>`),
+  "/documents/location.html": html(`<script>
         window.__initialLocationSnapshot = {
           href: location.href,
           origin: location.origin,
@@ -417,103 +504,20 @@ function contractPageFor(path: string) {
         };
         window.__originHistoryAnimationFrameCount = 0;
         requestAnimationFrame(() => window.__originHistoryAnimationFrameCount += 1);
-      </script>`);
-    case "/documents/viewport.html":
-      return contractHTML(`<div style="height: 800px">Viewport fixture</div>
+      </script>`),
+  "/documents/viewport.html": html(`<div style="height: 800px">Viewport fixture</div>
         <script>
           window.__viewportEvents = { resize: 0, scroll: 0, ticks: 0 };
           window.addEventListener('resize', () => window.__viewportEvents.resize += 1);
           window.addEventListener('scroll', () => window.__viewportEvents.scroll += 1);
           window.setInterval(() => window.__viewportEvents.ticks += 1, 10);
-        </script>`);
-    default:
-      return undefined;
-  }
-}
+        </script>`),
+  "/assets/dynamic-linked.css": {
+    type: "text/css",
+    body: "#dynamic-linked { color: rgb(31, 32, 33); }",
+  },
+};
 
-function closeContractServer(server: Server): Promise<void> {
-  return new Promise((resolveClosed, reject) => {
-    server.close((error) => error === undefined ? resolveClosed() : reject(error));
-  });
-}
-
-export async function startContractFixtureServers(): Promise<ContractFixtureServers> {
-  const requests: string[] = [];
-  const distFile = resolve(process.cwd(), "dist/index.js");
-  const registerFile = resolve(process.cwd(), "dist/register.js");
-  const server = createServer((request, response) => {
-    const path = contractPathname(request);
-    requests.push(path);
-
-    if (path === "/") {
-      return contractReply(
-        response,
-        200,
-        "text/html",
-        contractHTML('<div id="host"></div><p id="host-isolated">Host CSS</p>', '<style>#host-isolated { color: rgb(91, 92, 93); }</style>'),
-      );
-    }
-    if (path === "/documents/bound-shell.html") {
-      if (request.headers["sec-fetch-dest"] === "document") {
-        return contractReply(
-          response,
-          200,
-          "text/html",
-          contractHTML('<div id="host"></div>'),
-        );
-      }
-      return contractReply(response, 200, "text/html", contractHTML(`<output id="bound-result">bound</output>
-        <script>
-          window.__boundPopStates = [];
-          window.addEventListener('popstate', (event) => window.__boundPopStates.push(event.state));
-        </script>`));
-    }
-    if (path === "/dist/index.js") {
-      if (!existsSync(distFile)) {
-        return contractReply(response, 404, "text/plain", "Build output not found");
-      }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
-      createReadStream(distFile).pipe(response);
-      return;
-    }
-    if (path === "/dist/register.js") {
-      if (!existsSync(registerFile)) {
-        return contractReply(response, 404, "text/plain", "Register build output not found");
-      }
-      response.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" });
-      createReadStream(registerFile).pipe(response);
-      return;
-    }
-    if (path === "/documents/slow.html") {
-      setTimeout(() => contractReply(response, 200, "text/html", contractPageFor(path) ?? ""), 500);
-      return;
-    }
-    if (path === "/documents/redirect.html") {
-      response.writeHead(302, { location: "/documents/redirected.html", "cache-control": "no-store" });
-      response.end();
-      return;
-    }
-    if (path === "/assets/dynamic-linked.css") {
-      return contractReply(response, 200, "text/css", "#dynamic-linked { color: rgb(31, 32, 33); }");
-    }
-
-    const page = contractPageFor(path);
-    if (page !== undefined) {
-      return contractReply(response, 200, "text/html", page);
-    }
-    return contractReply(response, 404, "text/plain", `No contract fixture for ${path}`);
-  });
-
-  await new Promise<void>((resolveListening) => server.listen(0, "127.0.0.1", resolveListening));
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    await closeContractServer(server);
-    throw new Error("Contract fixture server did not expose a TCP address");
-  }
-
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    requests,
-    close: () => closeContractServer(server),
-  };
+export function startContractFixtureServers(): Promise<ContractFixtureServers> {
+  return startHTTPFixture({ routes: contractRoutes });
 }

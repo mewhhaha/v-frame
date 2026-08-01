@@ -24,12 +24,17 @@ export const requestHandler = createRequestHandler(async (request) => {
 });
 
 export default {
-  async fetch(request: Request, environment: AngularWorkerEnvironment): Promise<Response> {
+  async fetch(
+    request: Request,
+    environment: AngularWorkerEnvironment,
+  ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/widgets/angular/")) {
       const assetURL = new URL(request.url);
       assetURL.pathname = url.pathname.slice("/widgets/angular".length);
-      const assetResponse = await environment.ASSETS.fetch(new Request(assetURL, request));
+      const assetResponse = await environment.ASSETS.fetch(
+        new Request(assetURL, request),
+      );
       if (assetResponse.status !== 404) return assetResponse;
     }
 

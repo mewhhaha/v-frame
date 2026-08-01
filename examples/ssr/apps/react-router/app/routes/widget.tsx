@@ -1,5 +1,5 @@
 import { ReleaseActivityWidget } from "../widget";
 
 export default function WidgetRoute() {
-  return <ReleaseActivityWidget routingFrameId="react-router" />;
+  return <ReleaseActivityWidget />;
 }

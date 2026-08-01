@@ -73,9 +73,8 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       return [];
     }
 
-    const ranges = Array.from(
-      { length: selection.rangeCount },
-      (_, index) => selection.getRangeAt(index),
+    const ranges = Array.from({ length: selection.rangeCount }, (_, index) =>
+      selection.getRangeAt(index),
     );
     return ranges.every(containsVirtualRange) ? ranges : [];
   };
@@ -146,7 +145,10 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       return false;
     }
     const selection = nativeSelection();
-    return selection !== null && (selection.rangeCount === 0 || virtualNativeRanges().length > 0);
+    return (
+      selection !== null &&
+      (selection.rangeCount === 0 || virtualNativeRanges().length > 0)
+    );
   };
   const setRange = (state: SelectionState): boolean => {
     if (!nativeSelectionCanChange()) {
@@ -213,14 +215,20 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       : "forward";
   };
   const invalidSelectionState = (): never => {
-    throw new options.window.DOMException("There is no range in the selection", "InvalidStateError");
+    throw new options.window.DOMException(
+      "There is no range in the selection",
+      "InvalidStateError",
+    );
   };
   const currentRanges = (): Range[] =>
     privateSelection === null ? virtualNativeRanges() : [privateSelection.range];
   const rangeAt = (index: number): Range => {
     const range = currentRanges()[index];
     if (range === undefined) {
-      throw new options.window.DOMException("The selection has no range at that index", "IndexSizeError");
+      throw new options.window.DOMException(
+        "The selection has no range at that index",
+        "IndexSizeError",
+      );
     }
     return range;
   };
@@ -366,8 +374,10 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
 
         const nodeRange = options.hostDocument.createRange();
         nodeRange.selectNode(node);
-        return range.compareBoundaryPoints(Range.START_TO_START, nodeRange) <= 0 &&
-          range.compareBoundaryPoints(Range.END_TO_END, nodeRange) >= 0;
+        return (
+          range.compareBoundaryPoints(Range.START_TO_START, nodeRange) <= 0 &&
+          range.compareBoundaryPoints(Range.END_TO_END, nodeRange) >= 0
+        );
       },
     },
     deleteFromDocument: {
@@ -418,12 +428,13 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           return [];
         }
         return currentRanges().map(
-          (range) => new options.window.StaticRange({
-            startContainer: range.startContainer,
-            startOffset: range.startOffset,
-            endContainer: range.endContainer,
-            endOffset: range.endOffset,
-          }),
+          (range) =>
+            new options.window.StaticRange({
+              startContainer: range.startContainer,
+              startOffset: range.startOffset,
+              endContainer: range.endContainer,
+              endOffset: range.endOffset,
+            }),
         );
       },
     },
@@ -452,14 +463,20 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         const previous = selectionSnapshot(currentSelection());
         if (privateSelection !== null) {
           if (privateSelection.range !== range) {
-            throw new options.window.DOMException("The range is not selected", "NotFoundError");
+            throw new options.window.DOMException(
+              "The range is not selected",
+              "NotFoundError",
+            );
           }
           privateSelection = null;
           notifySelectionChange(previous);
           return;
         }
         if (virtualNativeRanges().length === 0) {
-          throw new options.window.DOMException("The range is not selected", "NotFoundError");
+          throw new options.window.DOMException(
+            "The range is not selected",
+            "NotFoundError",
+          );
         }
 
         nativeSelection()?.removeRange(range);

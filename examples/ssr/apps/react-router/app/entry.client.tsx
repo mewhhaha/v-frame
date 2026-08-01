@@ -10,7 +10,7 @@ function HydratedWidget() {
     document.documentElement.dataset.reactHydrated = "true";
   }, []);
 
-  return <ReleaseActivityWidget routingFrameId="react-router" />;
+  return <ReleaseActivityWidget />;
 }
 
 const root = document.getElementById("react-router-root");

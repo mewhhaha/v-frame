@@ -1,8 +1,9 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,29 +15,23 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(page: Page, pathname = "/documents/dom.html"): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "event-fidelity-frame";
-    frame.setAttribute("src", source);
-    document.querySelector("#host")?.append(frame);
-  }, `${fixture.origin}${pathname}`);
-  await expect.poll(() => page.locator("#event-fidelity-frame").evaluate(
-    (element) => (element as HTMLElement & { status: string }).status,
-  )).toBe("ready");
+async function mountEventFrame(
+  page: Page,
+  pathname = "/documents/dom.html",
+): Promise<Locator> {
+  await installBundle(page, fixture.origin);
+  return mountFrame(page, {
+    src: `${fixture.origin}${pathname}`,
+    id: "event-fidelity-frame",
+  });
 }
 
 test("uses standards mode in the child document", async ({ page }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const documentMode = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -52,11 +47,11 @@ test("uses standards mode in the child document", async ({ page }) => {
 });
 
 test("preserves properties from physical event subclasses", async ({ page }) => {
-  await mountFrame(page);
+  await mountEventFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -70,7 +65,11 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
 
     const target = child.document.createElement("button");
     child.document.body.append(target);
-    let observed: { childEvent: boolean; newState?: string; oldState?: string } | null = null;
+    let observed: {
+      childEvent: boolean;
+      newState?: string | undefined;
+      oldState?: string | undefined;
+    } | null = null;
     child.document.addEventListener("state-change", (event) => {
       const stateEvent = event as Event & { newState?: string; oldState?: string };
       observed = {
@@ -79,10 +78,12 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
         oldState: stateEvent.oldState,
       };
     });
-    target.dispatchEvent(new StateChangeEvent("state-change", {
-      bubbles: true,
-      composed: true,
-    }));
+    target.dispatchEvent(
+      new StateChangeEvent("state-change", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
     return observed;
   });
 
@@ -93,12 +94,14 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
   });
 });
 
-test("uses one logical event across the element, document, and window path", async ({ page }) => {
-  await mountFrame(page);
+test("uses one logical event across the element, document, and window path", async ({
+  page,
+}) => {
+  await mountEventFrame(page);
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -116,8 +119,8 @@ test("uses one logical event across the element, document, and window path", asy
       phase: number;
     }> = [];
     const events: Event[] = [];
-    const record = (scope: string, expectedCurrentTarget: EventTarget) =>
-      (event: Event) => {
+    const record =
+      (scope: string, expectedCurrentTarget: EventTarget) => (event: Event) => {
         events.push(event);
         order.push({
           scope,
@@ -151,11 +154,13 @@ test("uses one logical event across the element, document, and window path", asy
     child.addEventListener("logical-path", record("window-bubble", child));
 
     let escapedEvents = 0;
-    frame.addEventListener("logical-path", () => escapedEvents += 1);
-    target.dispatchEvent(new child.CustomEvent("logical-path", {
-      bubbles: true,
-      composed: true,
-    }));
+    frame.addEventListener("logical-path", () => (escapedEvents += 1));
+    target.dispatchEvent(
+      new child.CustomEvent("logical-path", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
     const retainedEvent = events[0];
 
     const stoppedScopes: string[] = [];
@@ -167,20 +172,26 @@ test("uses one logical event across the element, document, and window path", asy
       stoppedScopes.push("document");
     });
     child.addEventListener("stopped-at-html", () => stoppedScopes.push("window"));
-    target.dispatchEvent(new child.Event("stopped-at-html", {
-      bubbles: true,
-      composed: true,
-    }));
+    target.dispatchEvent(
+      new child.Event("stopped-at-html", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
 
     const directScopes: string[] = [];
     const directEvents: Event[] = [];
     virtualDocument.documentElement.addEventListener("document-direct", () => {
       directScopes.push("html");
     });
-    child.addEventListener("document-direct", (event) => {
-      directScopes.push("window-capture");
-      directEvents.push(event);
-    }, true);
+    child.addEventListener(
+      "document-direct",
+      (event) => {
+        directScopes.push("window-capture");
+        directEvents.push(event);
+      },
+      true,
+    );
     virtualDocument.addEventListener("document-direct", (event) => {
       directScopes.push("document");
       directEvents.push(event);
@@ -201,11 +212,7 @@ test("uses one logical event across the element, document, and window path", asy
     const recordRootTargetPhase = (scope: string) => (event: Event) => {
       rootTargetPhases.push({ scope, phase: event.eventPhase });
     };
-    child.addEventListener(
-      "root-target",
-      recordRootTargetPhase("window-capture"),
-      true,
-    );
+    child.addEventListener("root-target", recordRootTargetPhase("window-capture"), true);
     virtualDocument.addEventListener(
       "root-target",
       recordRootTargetPhase("document-capture"),
@@ -225,10 +232,12 @@ test("uses one logical event across the element, document, and window path", asy
       recordRootTargetPhase("document-bubble"),
     );
     child.addEventListener("root-target", recordRootTargetPhase("window-bubble"));
-    virtualDocument.documentElement.dispatchEvent(new child.Event("root-target", {
-      bubbles: true,
-      composed: true,
-    }));
+    virtualDocument.documentElement.dispatchEvent(
+      new child.Event("root-target", {
+        bubbles: true,
+        composed: true,
+      }),
+    );
 
     const physicalClickState = {
       scopes: [] as string[],
@@ -240,8 +249,8 @@ test("uses one logical event across the element, document, and window path", asy
       firstEvent: null as Event | null,
       escapedEvents: 0,
     };
-    const recordPhysicalClick = (scope: string, expectedCurrentTarget: EventTarget) =>
-      (event: Event) => {
+    const recordPhysicalClick =
+      (scope: string, expectedCurrentTarget: EventTarget) => (event: Event) => {
         if (physicalClickState.firstEvent === null) {
           physicalClickState.firstEvent = event;
         } else {
@@ -260,7 +269,7 @@ test("uses one logical event across the element, document, and window path", asy
       recordPhysicalClick("document", virtualDocument),
     );
     child.addEventListener("click", recordPhysicalClick("window", child));
-    frame.addEventListener("click", () => physicalClickState.escapedEvents += 1);
+    frame.addEventListener("click", () => (physicalClickState.escapedEvents += 1));
     Object.defineProperty(child, "__physicalClickState", {
       configurable: true,
       value: physicalClickState,
@@ -320,31 +329,35 @@ test("uses one logical event across the element, document, and window path", asy
   await page.locator("#event-fidelity-frame").locator("#physical-event-target").click();
   const physicalClick = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: (Window & {
-        __physicalClickState: {
-          scopes: string[];
-          oneEvent: boolean;
-          childMouseEvent: boolean;
-          targets: boolean;
-          currentTargets: boolean;
-          cancelBubbleClear: boolean;
-          firstEvent: Event | null;
-          escapedEvents: number;
-        };
-      }) | null;
+      contentWindow:
+        | (Window & {
+            __physicalClickState: {
+              scopes: string[];
+              oneEvent: boolean;
+              childMouseEvent: boolean;
+              targets: boolean;
+              currentTargets: boolean;
+              cancelBubbleClear: boolean;
+              firstEvent: Event | null;
+              escapedEvents: number;
+            };
+          })
+        | null;
     };
     const state = frame.contentWindow?.__physicalClickState;
-    return state === undefined ? null : {
-      scopes: state.scopes,
-      oneEvent: state.oneEvent,
-      childMouseEvent: state.childMouseEvent,
-      targets: state.targets,
-      currentTargets: state.currentTargets,
-      cancelBubbleClear: state.cancelBubbleClear,
-      retainedCurrentTarget: state.firstEvent?.currentTarget ?? null,
-      retainedPhase: state.firstEvent?.eventPhase,
-      escapedEvents: state.escapedEvents,
-    };
+    return state === undefined
+      ? null
+      : {
+          scopes: state.scopes,
+          oneEvent: state.oneEvent,
+          childMouseEvent: state.childMouseEvent,
+          targets: state.targets,
+          currentTargets: state.currentTargets,
+          cancelBubbleClear: state.cancelBubbleClear,
+          retainedCurrentTarget: state.firstEvent?.currentTarget ?? null,
+          retainedPhase: state.firstEvent?.eventPhase,
+          escapedEvents: state.escapedEvents,
+        };
   });
   expect(physicalClick).toEqual({
     scopes: ["target", "document", "window"],
@@ -359,12 +372,14 @@ test("uses one logical event across the element, document, and window path", asy
   });
 });
 
-test("keeps document structure, namespace collections, and observation logical", async ({ page }) => {
-  await mountFrame(page);
+test("keeps document structure, namespace collections, and observation logical", async ({
+  page,
+}) => {
+  await mountEventFrame(page);
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -419,10 +434,12 @@ test("keeps document structure, namespace collections, and observation logical",
       embeds: embeds.length,
     };
     const selectors = {
-      queryUsesShellFirst: virtualDocument.querySelector("html") ===
-        virtualDocument.documentElement,
+      queryUsesShellFirst:
+        virtualDocument.querySelector("html") === virtualDocument.documentElement,
       queryIncludesNested: virtualDocument.querySelectorAll("html").length,
-      nestedMatches: nestedHTML.matches("html") && nestedHead.matches("head") &&
+      nestedMatches:
+        nestedHTML.matches("html") &&
+        nestedHead.matches("head") &&
         nestedBody.matches("body"),
       nestedClosest: nestedBody.closest("html") === nestedHTML,
     };
@@ -436,14 +453,14 @@ test("keeps document structure, namespace collections, and observation logical",
         childNodes: Array.from(virtualDocument.childNodes).map((node) => node.nodeName),
         firstChildIsDoctype: virtualDocument.firstChild === virtualDocument.doctype,
         doctypeParent: virtualDocument.doctype?.parentNode === virtualDocument,
-        rootPreviousSibling: virtualDocument.documentElement.previousSibling ===
-          virtualDocument.doctype,
+        rootPreviousSibling:
+          virtualDocument.documentElement.previousSibling === virtualDocument.doctype,
       },
       selectors,
       ownership: {
         attribute: nameAttribute.ownerDocument === virtualDocument,
-        attachedAttribute: namedInput.getAttributeNode("name")?.ownerDocument ===
-          virtualDocument,
+        attachedAttribute:
+          namedInput.getAttributeNode("name")?.ownerDocument === virtualDocument,
         shadowRoot: nestedShadow.ownerDocument === virtualDocument,
       },
       collections: {
@@ -457,8 +474,8 @@ test("keeps document structure, namespace collections, and observation logical",
       },
       observation: {
         shallowRecords: shallowRecords.length,
-        deepTargets: deepRecords.map((record) =>
-          record.target === virtualDocument.documentElement
+        deepTargets: deepRecords.map(
+          (record) => record.target === virtualDocument.documentElement,
         ),
       },
       directMutationError,
@@ -495,7 +512,7 @@ test("keeps document structure, namespace collections, and observation logical",
 });
 
 test("runs document lifecycle and body load property handlers once", async ({ page }) => {
-  await mountFrame(page, "/documents/inline-body-load.html");
+  await mountEventFrame(page, "/documents/inline-body-load.html");
   const inlineResult = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
       contentWindow: (Window & { __documentLifecycle: unknown }) | null;
@@ -510,12 +527,14 @@ test("runs document lifecycle and body load property handlers once", async ({ pa
     ],
   });
 
-  await mountFrame(page, "/documents/property-body-load.html");
+  await mountEventFrame(page, "/documents/property-body-load.html");
   const propertyLoads = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: (Window & {
-        __bodyPropertyLoads: { replaced: number; active: number };
-      }) | null;
+      contentWindow:
+        | (Window & {
+            __bodyPropertyLoads: { replaced: number; active: number };
+          })
+        | null;
     };
     return frame.contentWindow?.__bodyPropertyLoads;
   });

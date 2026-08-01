@@ -1,8 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  startContractFixtureServers,
   type ContractFixtureServers,
+  startContractFixtureServers,
 } from "./support/fixture-server";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: ContractFixtureServers;
 
@@ -14,30 +15,15 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page) {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect.poll(() => page.evaluate(() => Boolean(customElements.get("v-frame")))).toBe(true);
+function mountSelectionFrame(page: Page, id = "selection-frame"): Promise<Locator> {
+  return mountFrame(page, { src: `${fixture.origin}/documents/dom.html`, id });
 }
 
-async function mountFrame(page: import("@playwright/test").Page, id = "selection-frame") {
-  await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
-    frame.id = source.id;
-    frame.src = source.url;
-    document.querySelector("#host")?.append(frame);
-  }, { id, url: `${fixture.origin}/documents/dom.html` });
-  const frame = page.locator(`#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
-  return frame;
-}
-
-test("dispatches one asynchronous selectionchange for each virtual native transition", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+test("dispatches one asynchronous selectionchange for each virtual native transition", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
 
   const events = await childValue(frame, async (window) => {
     const eventRecords: Array<{
@@ -47,18 +33,23 @@ test("dispatches one asynchronous selectionchange for each virtual native transi
       currentTargetIsDocument: boolean;
       childRealmEvent: boolean;
     }> = [];
-    const waitForEvent = () => new Promise<void>((resolve) => {
-      window.document.addEventListener("selectionchange", (event) => {
-        eventRecords.push({
-          bubbles: event.bubbles,
-          cancelable: event.cancelable,
-          targetIsDocument: event.target === window.document,
-          currentTargetIsDocument: event.currentTarget === window.document,
-          childRealmEvent: event instanceof window.Event,
-        });
-        resolve();
-      }, { once: true });
-    });
+    const waitForEvent = () =>
+      new Promise<void>((resolve) => {
+        window.document.addEventListener(
+          "selectionchange",
+          (event) => {
+            eventRecords.push({
+              bubbles: event.bubbles,
+              cancelable: event.cancelable,
+              targetIsDocument: event.target === window.document,
+              currentTargetIsDocument: event.currentTarget === window.document,
+              childRealmEvent: event instanceof window.Event,
+            });
+            resolve();
+          },
+          { once: true },
+        );
+      });
     const copy = window.document.createElement("p");
     copy.textContent = "virtual selection";
     window.document.body.append(copy);
@@ -107,9 +98,11 @@ test("dispatches one asynchronous selectionchange for each virtual native transi
   ]);
 });
 
-test("dispatches private selection transitions without exposing host selections", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+test("dispatches private selection transitions without exposing host selections", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
 
   await page.evaluate(() => {
     const copy = document.createElement("p");
@@ -142,12 +135,14 @@ test("dispatches private selection transitions without exposing host selections"
   });
 
   expect(result).toEqual({ eventCount: 2, selected: "private selection", rangeCount: 0 });
-  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("host selection");
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    "host selection",
+  );
 });
 
 test("supports replacing and clearing document.onselectionchange", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
 
   const result = await childValue(frame, async (window) => {
     const selection = window.getSelection()!;
@@ -157,7 +152,11 @@ test("supports replacing and clearing document.onselectionchange", async ({ page
     const range = window.document.createRange();
     range.selectNodeContents(copy);
     let firstCalls = 0;
-    const secondCalls: Array<{ thisIsDocument: boolean; targetIsDocument: boolean; childRealmEvent: boolean }> = [];
+    const secondCalls: Array<{
+      thisIsDocument: boolean;
+      targetIsDocument: boolean;
+      childRealmEvent: boolean;
+    }> = [];
 
     window.document.onselectionchange = () => firstCalls++;
     window.document.onselectionchange = function (event) {
@@ -182,19 +181,27 @@ test("supports replacing and clearing document.onselectionchange", async ({ page
 
   expect(result).toEqual({
     firstCalls: 0,
-    secondCalls: [{ thisIsDocument: true, targetIsDocument: true, childRealmEvent: true }],
+    secondCalls: [
+      { thisIsDocument: true, targetIsDocument: true, childRealmEvent: true },
+    ],
     cleared: true,
   });
 });
 
-test("notifies when a native selection leaves a frame while isolating host and sibling changes", async ({ page }) => {
-  await installBundle(page);
-  const first = await mountFrame(page, "first-selection-frame");
-  const second = await mountFrame(page, "second-selection-frame");
+test("notifies when a native selection leaves a frame while isolating host and sibling changes", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  await mountSelectionFrame(page, "first-selection-frame");
+  await mountSelectionFrame(page, "second-selection-frame");
 
   const result = await page.evaluate(async () => {
     const frameWindow = (id: string) =>
-      (document.querySelector(`#${id}`) as HTMLElement & { contentWindow: Window }).contentWindow;
+      (
+        document.querySelector(`#${id}`) as HTMLElement & {
+          contentWindow: Window & typeof globalThis;
+        }
+      ).contentWindow;
     const firstWindow = frameWindow("first-selection-frame");
     const secondWindow = frameWindow("second-selection-frame");
     let firstEvents = 0;
@@ -242,16 +249,17 @@ test("notifies when a native selection leaves a frame while isolating host and s
 });
 
 test("cancels queued selectionchange when the frame is removed", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+  await installBundle(page, fixture.origin);
+  await mountSelectionFrame(page);
 
   await page.evaluate(() => {
     const frame = document.querySelector("#selection-frame") as HTMLElement & {
-      contentWindow: Window;
+      contentWindow: Window & typeof globalThis;
     };
     const child = frame.contentWindow;
-    (window as Window & typeof globalThis & { __selectionChangeAfterDispose: number })
-      .__selectionChangeAfterDispose = 0;
+    (
+      window as Window & typeof globalThis & { __selectionChangeAfterDispose: number }
+    ).__selectionChangeAfterDispose = 0;
     child.document.addEventListener("selectionchange", () => {
       (window as Window & typeof globalThis & { __selectionChangeAfterDispose: number })
         .__selectionChangeAfterDispose++;
@@ -266,10 +274,13 @@ test("cancels queued selectionchange when the frame is removed", async ({ page }
   });
   await page.waitForTimeout(20);
 
-  expect(await page.evaluate(
-    () => (window as Window & typeof globalThis & { __selectionChangeAfterDispose: number })
-      .__selectionChangeAfterDispose,
-  )).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as Window & typeof globalThis & { __selectionChangeAfterDispose: number })
+          .__selectionChangeAfterDispose,
+    ),
+  ).toBe(0);
 });
 
 async function childValue<T>(
@@ -278,13 +289,18 @@ async function childValue<T>(
 ) {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate(
+      (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
+        .contentWindow,
+    );
   }, expression.toString()) as Promise<T>;
 }
 
-test("keeps host selections private while supporting virtual ranges", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+test("keeps host selections private while supporting virtual ranges", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
 
   await page.evaluate(() => {
     const copy = document.createElement("p");
@@ -352,28 +368,41 @@ test("keeps host selections private while supporting virtual ranges", async ({ p
     childRealmSelection: true,
     distinctHostSelection: true,
   });
-  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("host selection");
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(
+    "host selection",
+  );
 });
 
-test("uses the virtual document element for document-root traversal", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page);
+test("uses the virtual document element for document-root traversal", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
 
   const traversal = await childValue(frame, (window) => {
     const document = window.document;
-    const treeWalker = document.createTreeWalker(document, window.NodeFilter.SHOW_ELEMENT);
+    const treeWalker = document.createTreeWalker(
+      document,
+      window.NodeFilter.SHOW_ELEMENT,
+    );
     const treeWalkerNames = [(treeWalker.currentNode as Element).tagName.toLowerCase()];
     while (treeWalker.nextNode()) {
       treeWalkerNames.push((treeWalker.currentNode as Element).tagName.toLowerCase());
     }
 
-    const iterator = document.createNodeIterator(document, window.NodeFilter.SHOW_ELEMENT);
+    const iterator = document.createNodeIterator(
+      document,
+      window.NodeFilter.SHOW_ELEMENT,
+    );
     const iteratorNames: string[] = [];
     for (let node = iterator.nextNode(); node !== null; node = iterator.nextNode()) {
       iteratorNames.push((node as Element).tagName.toLowerCase());
     }
 
-    const bodyWalker = document.createTreeWalker(document.body, window.NodeFilter.SHOW_ELEMENT);
+    const bodyWalker = document.createTreeWalker(
+      document.body,
+      window.NodeFilter.SHOW_ELEMENT,
+    );
     return {
       treeWalkerRoot: treeWalker.root === document.documentElement,
       iteratorRoot: iterator.root === document.documentElement,
@@ -392,9 +421,11 @@ test("uses the virtual document element for document-root traversal", async ({ p
   });
 });
 
-test("reports direction with the spec enum values and ignores addRange on a set selection", async ({ page }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "direction-frame");
+test("reports direction with the spec enum values and ignores addRange on a set selection", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page, "direction-frame");
 
   const state = await childValue(frame, (window) => {
     const document = window.document;

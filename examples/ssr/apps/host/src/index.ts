@@ -1,10 +1,4 @@
-import {
-  routingChannelPrefix,
-  routingProtocol,
-  routingSessionStorageKey,
-  routingVersion,
-} from "../../../shared/routing";
-import { materializeVFrameDocument } from "../../../shared/materialize-v-frame";
+import { materializeVFrameDocument } from "v-frame/server";
 
 const qwikRoutes = new Set(["/inventory", "/catalog"]);
 const widgetDocumentRoutes = new Map([
@@ -22,7 +16,8 @@ const hostSections = {
     path: "/",
     kicker: "Thread",
     title: "Platform migration",
-    description: "Plan a reversible rollout and keep the implementation decisions in one place.",
+    description:
+      "Plan a reversible rollout and keep the implementation decisions in one place.",
   },
   research: {
     path: "/research",
@@ -34,7 +29,8 @@ const hostSections = {
     path: "/brief",
     kicker: "Thread",
     title: "Weekly brief",
-    description: "Shape this week’s progress, risks, and decisions into a concise update.",
+    description:
+      "Shape this week’s progress, risks, and decisions into a concise update.",
   },
   plugins: {
     path: "/plugins",
@@ -52,13 +48,15 @@ const hostSections = {
     path: "/angular",
     kicker: "Workspace",
     title: "Delivery readiness",
-    description: "Track launch reviews in an Angular app with its own server and client build.",
+    description:
+      "Track launch reviews in an Angular app with its own server and client build.",
   },
   solid: {
     path: "/solid",
     kicker: "Workspace",
     title: "Signal review",
-    description: "Review live signals in a SolidStart app with independently hydrated state.",
+    description:
+      "Review live signals in a SolidStart app with independently hydrated state.",
   },
 } as const;
 
@@ -75,7 +73,10 @@ const hostSectionRoutes = {
   solid: { solid: "/signals" },
 } as const;
 
-const pageFramePresentation: Record<PageFrameId, { className: string; surfaceId: string }> = {
+const pageFramePresentation: Record<
+  PageFrameId,
+  { className: string; surfaceId: string }
+> = {
   angular: { className: "widget-angular", surfaceId: "angular-surface" },
   qwik: { className: "widget-qwik", surfaceId: "qwik-surface" },
   "react-router": { className: "widget-react", surfaceId: "react-surface" },
@@ -90,13 +91,10 @@ function pageFrameLabel(frameId: PageFrameId, hostSection: HostSectionKey): stri
       ? "React plugins frontend"
       : "React transcript frontend";
   }
-  return hostSection === "usage"
-    ? "Qwik usage frontend"
-    : "Qwik composer frontend";
+  return hostSection === "usage" ? "Qwik usage frontend" : "Qwik composer frontend";
 }
 
 function pageFrameSource(frameId: PageFrameId, route: string): string {
-  if (frameId === "qwik") return `/widgets/qwik${route}?frameId=qwik`;
   return `/widgets/${frameId}${route}`;
 }
 
@@ -104,17 +102,23 @@ function shell(hostSection: HostSectionKey): string {
   const section = hostSections[hostSection];
   const sectionRoutes = hostSectionRoutes[hostSection];
   const frameIds = Object.keys(sectionRoutes) as PageFrameId[];
-  const threadSection = hostSection === "migration" || hostSection === "research" || hostSection === "brief";
+  const threadSection =
+    hostSection === "migration" || hostSection === "research" || hostSection === "brief";
   const compositionClasses = threadSection
     ? "page-composition"
     : `page-composition widget-grid-single widget-grid-${hostSection}`;
-  const workspaceSurfaces = frameIds.map((frameId) => {
-    const presentation = pageFramePresentation[frameId];
-    const label = pageFrameLabel(frameId, hostSection);
-    return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><div id="${frameId}-widget"></div></div>`;
-  }).join("");
+  const workspaceSurfaces = frameIds
+    .map((frameId) => {
+      const presentation = pageFramePresentation[frameId];
+      const label = pageFrameLabel(frameId, hostSection);
+      return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><div id="${frameId}-widget"></div></div>`;
+    })
+    .join("");
   const hostSectionDefinitions = JSON.stringify(hostSections).replaceAll("<", "\\u003c");
-  const hostSectionRouteDefinitions = JSON.stringify(hostSectionRoutes).replaceAll("<", "\\u003c");
+  const hostSectionRouteDefinitions = JSON.stringify(hostSectionRoutes).replaceAll(
+    "<",
+    "\\u003c",
+  );
   const initialRoutes = JSON.stringify(sectionRoutes).replaceAll("<", "\\u003c");
 
   return `<!doctype html>
@@ -292,16 +296,16 @@ function shell(hostSection: HostSectionKey): string {
               ${workspaceSurfaces}
             </div>
           </div>
-          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">${Object.entries(sectionRoutes).map(([frameId, route]) => `${frameId} ${route}`).join("; ")}</output></p>
+          <p class="host-route">Host routes: <output id="host-route" aria-live="polite">${Object.entries(
+            sectionRoutes,
+          )
+            .map(([frameId, route]) => `${frameId} ${route}`)
+            .join("; ")}</output></p>
         </main>
       </div>
     </div>
     <script type="module" src="/assets/v-frame.js"></script>
     <script>
-      const protocol = ${JSON.stringify(routingProtocol)};
-      const version = ${routingVersion};
-      const sessionKey = ${JSON.stringify(routingSessionStorageKey)};
-      const channelPrefix = ${JSON.stringify(routingChannelPrefix)};
       const hostSectionDefinitions = ${hostSectionDefinitions};
       const hostSectionRoutes = ${hostSectionRouteDefinitions};
       const initialRoutes = ${initialRoutes};
@@ -318,19 +322,6 @@ function shell(hostSection: HostSectionKey): string {
         "react-router": { className: "widget-react", surfaceId: "react-surface" },
         solid: { className: "widget-solid", surfaceId: "solid-surface" },
       };
-      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-      let sessionId = "";
-      let channel = null;
-      try {
-        if (typeof BroadcastChannel === "function") {
-          sessionId = crypto.randomUUID();
-          sessionStorage.setItem(sessionKey, sessionId);
-          channel = new BroadcastChannel(channelPrefix + sessionId);
-        }
-      } catch {
-        sessionId = "";
-      }
-      const seenMessages = new Set();
       const hostSidebar = document.querySelector("#host-sidebar");
       const sidebarToggle = document.querySelector("#sidebar-toggle");
       const compositionToggle = document.querySelector("#composition-toggle");
@@ -386,51 +377,67 @@ function shell(hostSection: HostSectionKey): string {
         showComposition(!document.documentElement.hasAttribute("data-composition-visible"));
       });
 
-      const routeFor = (frameId) => {
-        const route = frameRoutes[frameId];
+      const frameMountPath = (frameId) => "/widgets/" + frameId;
+
+      // The route a frontend is currently showing, read straight off the element and
+      // expressed in the shell's vocabulary.
+      const frameRoute = (frame) => {
+        const frameId = frame.dataset.frameId;
+        const currentURL = frame.currentURL ?? null;
+        if (frameId === undefined || currentURL === null) return null;
+        const mountPath = frameMountPath(frameId);
+        const pathname = new URL(currentURL).pathname;
+        if (!pathname.startsWith(mountPath)) return null;
+        const route = pathname.slice(mountPath.length);
         return allowedRoutes[frameId]?.has(route) ? route : null;
       };
-      const postRoute = (frameId, route, mode) => {
-        channel?.postMessage({
-          protocol,
-          version,
-          sessionId,
-          messageId: crypto.randomUUID(),
-          source: "host",
-          target: frameId,
-          kind: "route-change",
-          route,
-          mode,
-        });
+
+      // The route table that owns a frame: a staged frame answers to the destination
+      // composition, everything else to the page the shell is showing.
+      const routesFor = (frame) => {
+        const stagedComposition = frame.closest(".navigation-stage");
+        if (stagedComposition === null) return frameRoutes;
+        return pendingNavigation?.composition === stagedComposition
+          ? pendingNavigation.routes
+          : null;
       };
-      const rememberMessage = (messageId) => {
-        seenMessages.add(messageId);
-        if (seenMessages.size > 100) {
-          seenMessages.delete(seenMessages.values().next().value);
+      const expectedRoute = (frame) => {
+        const frameId = frame.dataset.frameId;
+        const routes = frameId === undefined ? null : routesFor(frame);
+        return routes?.[frameId] ?? null;
+      };
+
+      // The shell owns the route every frontend shows. One that booted or drifted
+      // elsewhere is moved with a same-document navigation, not a document reload.
+      const alignFrameRoute = (frame, route) => {
+        if (frameRoute(frame) === route) {
+          frame.setAttribute("data-routing-ready", "");
+          return;
         }
+        frame.removeAttribute("data-routing-ready");
+        frame
+          .navigate(frameMountPath(frame.dataset.frameId) + route, { replace: true })
+          .catch((error) => {
+            console.warn("Could not move the frontend onto the shell route", error);
+          });
       };
-      const validBase = (message) => {
-        return message !== null &&
-          typeof message === "object" &&
-          message.protocol === protocol &&
-          message.version === version &&
-          message.sessionId === sessionId &&
-          typeof message.messageId === "string" &&
-          uuid.test(message.messageId) &&
-          typeof message.source === "string" &&
-          Object.hasOwn(allowedRoutes, message.source) &&
-          message.target === "host";
+
+      const sectionOwning = (frameId, route) => {
+        const currentSection = Object.keys(hostSectionDefinitions).find(
+          (sectionKey) => hostSectionDefinitions[sectionKey].path === location.pathname,
+        );
+        const matchingSections = Object.keys(hostSectionRoutes).filter(
+          (sectionKey) => hostSectionRoutes[sectionKey][frameId] === route,
+        );
+        return currentSection !== undefined && matchingSections.includes(currentSection)
+          ? currentSection
+          : matchingSections[0];
       };
 
       const cancelPendingNavigation = () => {
         if (pendingNavigation === null) return;
         pendingNavigation.composition.remove();
         pendingNavigation = null;
-        try {
-          sessionStorage.setItem(sessionKey, sessionId);
-        } catch (error) {
-          console.warn("Could not restore the current routing session", error);
-        }
       };
 
       const beginHostSectionTransition = (sectionKey, mode) => {
@@ -440,27 +447,12 @@ function shell(hostSection: HostSectionKey): string {
         if (pendingNavigation?.sectionKey === sectionKey) return;
 
         cancelPendingNavigation();
-        let nextSessionId;
-        try {
-          nextSessionId = crypto.randomUUID();
-          sessionStorage.setItem(sessionKey, nextSessionId);
-        } catch (error) {
-          console.warn("Could not prepare the destination routing session", error);
-          if (mode === "push") {
-            location.assign(section.path);
-          } else {
-            location.replace(section.path);
-          }
-          return;
-        }
-
         const threadSection = sectionKey === "migration" || sectionKey === "research" || sectionKey === "brief";
         const composition = document.createElement("div");
         composition.className = threadSection
           ? "page-composition navigation-stage"
           : "page-composition widget-grid-single widget-grid-" + sectionKey + " navigation-stage";
         composition.dataset.hostComposition = "";
-        composition.dataset.navigationSession = nextSessionId;
         composition.setAttribute("aria-hidden", "true");
         composition.setAttribute("inert", "");
 
@@ -486,12 +478,7 @@ function shell(hostSection: HostSectionKey): string {
           const frame = document.createElement("v-frame");
           frame.dataset.frameId = frameId;
           frame.dataset.pendingFrame = "";
-          frame.setAttribute(
-            "src",
-            frameId === "qwik"
-              ? "/widgets/qwik" + route + "?frameId=qwik"
-              : "/widgets/" + frameId + route,
-          );
+          frame.setAttribute("src", frameMountPath(frameId) + route);
           frame.setAttribute("aria-label", label);
           surface.append(frame);
           composition.append(surface);
@@ -511,7 +498,6 @@ function shell(hostSection: HostSectionKey): string {
           mode,
           routes: sectionRoutes,
           sectionKey,
-          sessionId: nextSessionId,
         };
         document.querySelector(".mobile-navigation")?.removeAttribute("open");
         hostWorkspace.append(composition);
@@ -568,26 +554,15 @@ function shell(hostSection: HostSectionKey): string {
           history.replaceState(null, "", completedNavigation.destination);
         }
 
-        channel?.removeEventListener("message", receiveRoutingMessage);
-        channel?.close();
-        sessionId = completedNavigation.sessionId;
-        seenMessages.clear();
-        try {
-          channel = new BroadcastChannel(channelPrefix + sessionId);
-          channel.addEventListener("message", receiveRoutingMessage);
-        } catch (error) {
-          channel = null;
-          console.warn("Could not activate the destination routing channel", error);
-        }
         showComposition(document.documentElement.hasAttribute("data-composition-visible"));
-        for (const [frameId, route] of Object.entries(frameRoutes)) {
-          postRoute(frameId, route, "replace");
-        }
         hostSectionTitle?.focus();
       };
 
       document.addEventListener("v-frame-load", (event) => {
         if (!(event.target instanceof Element)) return;
+        const route = expectedRoute(event.target);
+        if (route !== null) alignFrameRoute(event.target, route);
+
         const stagedComposition = event.target.closest(".navigation-stage");
         if (stagedComposition !== null && pendingNavigation?.composition === stagedComposition) {
           const frameId = event.target.getAttribute("data-frame-id");
@@ -633,7 +608,7 @@ function shell(hostSection: HostSectionKey): string {
 
         const sectionKey = link.dataset.hostSection;
         const section = hostSectionDefinitions[sectionKey];
-        if (section === undefined || channel === null) return;
+        if (section === undefined) return;
         event.preventDefault();
         if (location.pathname === section.path) {
           cancelPendingNavigation();
@@ -643,67 +618,38 @@ function shell(hostSection: HostSectionKey): string {
         beginHostSectionTransition(sectionKey, "push");
       });
 
-      function receiveRoutingMessage(event) {
-        const message = event.data;
-        if (event.origin !== location.origin || !validBase(message)) return;
-        if (seenMessages.has(message.messageId)) return;
-        rememberMessage(message.messageId);
-
-        if (message.kind === "route-ready") {
-          const route = routeFor(message.source);
-          if (route === null || route !== message.route) return;
-          document.querySelector(
-            'v-frame[data-frame-id="' + message.source + '"]',
-          )?.setAttribute("data-routing-ready", "");
+      // A frontend that routes itself is the other half of shell routing: the shell
+      // follows it into whichever section owns the route it moved to.
+      document.addEventListener("v-frame-navigated", (event) => {
+        if (!(event.target instanceof Element)) return;
+        const frame = event.target;
+        const expected = expectedRoute(frame);
+        const route = frameRoute(frame);
+        if (expected === null || route === null) return;
+        if (route === expected) {
+          frame.setAttribute("data-routing-ready", "");
           return;
         }
 
-        const route = routeFor(message.source);
-        if (message.kind === "hello") {
-          if (route === null) return;
-          postRoute(message.source, route, "replace");
+        const sectionKey =
+          frame.closest(".navigation-stage") === null
+            ? sectionOwning(frame.dataset.frameId, route)
+            : undefined;
+        if (sectionKey === undefined) {
+          alignFrameRoute(frame, expected);
           return;
         }
-        if (
-          message.kind !== "navigate-request" ||
-          !allowedRoutes[message.source].has(message.route) ||
-          (message.mode !== "push" && message.mode !== "replace")
-        ) return;
-        if (route !== null && message.route === route) {
-          postRoute(message.source, route, "replace");
-          return;
-        }
+        beginHostSectionTransition(sectionKey, "push");
+      });
 
-        const currentHostSection = Object.keys(hostSectionDefinitions).find(
-          (sectionKey) => hostSectionDefinitions[sectionKey].path === location.pathname,
-        );
-        const matchingSections = Object.keys(hostSectionRoutes).filter(
-          (sectionKey) => hostSectionRoutes[sectionKey][message.source] === message.route,
-        );
-        const sectionKey = currentHostSection !== undefined && matchingSections.includes(currentHostSection)
-          ? currentHostSection
-          : matchingSections[0];
-        if (sectionKey === undefined) return;
-
-        beginHostSectionTransition(sectionKey, message.mode);
-      }
-
-      channel?.addEventListener("message", receiveRoutingMessage);
       addEventListener("popstate", () => {
         const sectionKey = Object.keys(hostSectionDefinitions).find(
           (candidate) => hostSectionDefinitions[candidate].path === location.pathname,
         );
         if (sectionKey === undefined) return;
-        if (channel === null) {
-          location.reload();
-          return;
-        }
         beginHostSectionTransition(sectionKey, "traverse");
       });
-      addEventListener("pagehide", () => {
-        cancelPendingNavigation();
-        channel?.close();
-      }, { once: true });
+      addEventListener("pagehide", cancelPendingNavigation, { once: true });
       addEventListener("pageshow", (event) => {
         if (event.persisted) location.reload();
       });
@@ -743,10 +689,9 @@ function widgetContent(
         `<v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
         { html: true },
       );
-      element.replace(
-        materializeVFrameDocument(response, definition.documentURL),
-        { html: true },
-      );
+      element.replace(materializeVFrameDocument(response, definition.documentURL), {
+        html: true,
+      });
       element.after("</template></v-frame>", { html: true });
     },
   };
@@ -762,7 +707,10 @@ function failedWidget(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "GET") {
-      return new Response("method not allowed", { status: 405, headers: { Allow: "GET" } });
+      return new Response("method not allowed", {
+        status: 405,
+        headers: { Allow: "GET" },
+      });
     }
 
     const url = new URL(request.url);
@@ -788,9 +736,6 @@ export default {
           route: mountedPath,
           base: "/widgets/qwik/build/",
         });
-        if (url.searchParams.get("frameId") === "qwik") {
-          componentParameters.set("frameId", "qwik");
-        }
         const surface = url.searchParams.get("surface");
         if (surface === "definition" || surface === "profile") {
           componentParameters.set("surface", surface);
@@ -801,9 +746,7 @@ export default {
         }
         componentPath = `/document?${componentParameters}`;
       }
-      return env.QWIK_WIDGET.fetch(
-        serviceRequest("qwik-widget", componentPath),
-      );
+      return env.QWIK_WIDGET.fetch(serviceRequest("qwik-widget", componentPath));
     }
     if (url.pathname.startsWith("/widgets/angular/")) {
       return env.ANGULAR_WIDGET.fetch(
@@ -844,7 +787,7 @@ export default {
             response = await env.QWIK_WIDGET.fetch(
               serviceRequest(
                 "qwik-widget",
-                `/document?route=${encodeURIComponent(route)}&base=/widgets/qwik/build/&frameId=qwik`,
+                `/document?route=${encodeURIComponent(route)}&base=/widgets/qwik/build/`,
               ),
             );
           }
@@ -852,11 +795,12 @@ export default {
             return { failureName: frameId, frameId, response, source };
           }
 
-          const article = route === "/research"
-            ? "research"
-            : route === "/brief"
-              ? "brief"
-              : "migration";
+          const article =
+            route === "/research"
+              ? "research"
+              : route === "/brief"
+                ? "brief"
+                : "migration";
           const nestedSource = `/widgets/qwik/inventory?surface=definition&article=${article}`;
           const nestedResponse = await env.QWIK_WIDGET.fetch(
             serviceRequest(
@@ -902,18 +846,21 @@ export default {
       pageWidgetsPromise,
       accountPromise,
     ]);
-    let failure = pageWidgets
-      .map(({ failureName, response }) => failedWidget(failureName, response))
-      .find((candidate) => candidate !== null) ?? null;
+    let failure =
+      pageWidgets
+        .map(({ failureName, response }) => failedWidget(failureName, response))
+        .find((candidate) => candidate !== null) ?? null;
     if (failure === null) {
       failure = failedWidget("account", account);
     }
     if (failure !== null) {
-      console.error(JSON.stringify({
-        message: "SSR widget composition failed",
-        widget: failure.name,
-        status: failure.response.status,
-      }));
+      console.error(
+        JSON.stringify({
+          message: "SSR widget composition failed",
+          widget: failure.name,
+          status: failure.response.status,
+        }),
+      );
       return new Response(
         `SSR widget ${failure.name} returned status ${failure.response.status}`,
         { status: 502 },

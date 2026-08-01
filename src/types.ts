@@ -60,9 +60,20 @@ export interface VFrameNavigateEventDetail {
   state: unknown;
 }
 
+export interface VFrameNavigatedEventDetail {
+  from: string;
+  to: string;
+  kind: VFrameNavigationKind;
+}
+
+export interface VFrameNavigateOptions {
+  replace?: boolean;
+}
+
 export interface VFrameEventMap {
   "v-frame-loadstart": CustomEvent<VFrameLoadStartEventDetail>;
   "v-frame-load": CustomEvent<VFrameLoadEventDetail>;
   "v-frame-error": CustomEvent<VFrameErrorEventDetail>;
   "v-frame-navigate": CustomEvent<VFrameNavigateEventDetail>;
+  "v-frame-navigated": CustomEvent<VFrameNavigatedEventDetail>;
 }

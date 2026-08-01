@@ -1,67 +1,48 @@
 # Client-composed microfrontends
 
-A React host presents a dark composer workspace with an independently rendered
-Angular transcript, Solid plugins page, and Qwik usage page. Additional Qwik
-surfaces provide the persistent composer, the sidebar account menu, and the
-Wikipedia preview nested inside each transcript.
+A React host presents a dark workspace whose entire content area is rendered by an
+independently built Solid application. The host owns the shell — sidebar, SPA
+navigation, and the `<v-frame>` elements — and nothing else.
 
-The workspace reads as one product by default. **Show composition** reveals
-the React host boundary and color-codes every Angular, Solid, and Qwik surface,
-including the nested preview, composer, and account frontends.
+**Show frontends** reveals the boundary: the React host shell and the Solid surface
+inside it are outlined and labelled.
 
-The three recent threads, Plugins, and Usage use host-owned SPA navigation.
-When a section is selected, the next frontend loads in an inactive frame while
-the current one remains visible. After `v-frame-load` fires, the host promotes
-the ready frame with the browser's View Transition API. A failed load leaves
-the current frontend in place.
-
-Transcript references use a manual native popover. The popover enters the
-browser's top layer and contains a nested Qwik `v-frame`, so its Wikipedia
-preview crosses the Angular frame's clipping boundary without moving ownership
-into the host.
+Plugins, Library, and Overlays use host-owned SPA navigation. When a section is
+selected the next surface loads in an inactive frame while the current one stays
+visible; a failed load leaves the current surface in place.
 
 ## Layout
 
 ```
 examples/client/
-  src/                    React shell (sidebar, SPA navigation, the <v-frame>)
-  scripts/serve-static.mjs  static file server used for the built microfrontends
+  src/                      React shell (sidebar, SPA navigation, the <v-frame>)
+  scripts/serve-static.mjs  static file server used for the built microfrontend
   microfrontends/
-    angular-app/          Angular 21 standalone app
-    react-app/            React overlay compatibility surface
-    solid-app/             SolidJS app
-    qwik-app/              Qwik app (client-rendered, no Qwik City)
+    solid-app/              SolidJS app, with Kobalte overlays on ?surface=overlays
 ```
 
-Each microfrontend app builds independently to its own `dist/` and has no
-runtime dependency on the host, `v-frame`, or on each other. Their links,
-History calls, and document navigation remain guest-owned; the host only
-chooses which launchpad element is visible. The React host uses the
-headless dialog and button primitives from `@comp0/react`; each frontend keeps
-its own framework and visual state.
+The microfrontend builds independently to its own `dist/` and has no runtime
+dependency on the host, on `v-frame`, or on the host's framework. Its links, History
+calls, and document navigation remain guest-owned; the host only chooses which frame
+is visible. The React host uses the headless dialog and button primitives from
+`@comp0/react`; the guest keeps its own framework and visual state.
 
 ## Ports
 
 | App | Port | Served from |
 | --- | --- | --- |
 | host | 43170 | `vite` dev server |
-| angular-app | 43171 | `microfrontends/angular-app/dist/angular-app/browser` |
 | solid-app | 43172 | `microfrontends/solid-app/dist` |
-| qwik-app | 43173 | `microfrontends/qwik-app/dist` |
-| react-app | 43174 | `microfrontends/react-app/dist` |
 
-The microfrontends remain independently served on ports 43171–43174, while the
-host exposes them through same-origin `/frontends/*` routes. Vite proxies
-document and asset requests to the owning server. The built applications use
-matching base paths so their assets continue through the correct proxy.
+The microfrontend stays independently served on port 43172 while the host exposes it
+through the same-origin `/frontends/solid/*` route. Vite proxies document and asset
+requests to the owning server, and the built application uses a matching base path so
+its assets continue through the proxy.
 
-This same-origin public route is required even when the application is
-deployed elsewhere. It gives guest Location, relative URLs, storage, and
-network calls one consistent public origin; `v-frame` itself requires no
-special proxy response or iframe route.
-
-Angular CLI 21 requires Node 22.22.3+, 24.15+, or 26+. Use the repository's
-Node 26 default to build every microfrontend.
+This same-origin public route is required even when the application is deployed
+elsewhere. It gives guest Location, relative URLs, storage, and network calls one
+consistent public origin; `v-frame` itself requires no special proxy response or
+iframe route.
 
 ## Run it
 
@@ -72,41 +53,32 @@ pnpm install
 pnpm --filter example-client run dev
 ```
 
-`dev` builds all four microfrontends once, then starts the host's `vite` dev
-server and the four static servers together. Open http://localhost:43170.
+`dev` builds the microfrontend once, then starts the host's `vite` dev server and the
+static server together. Open http://localhost:43170.
 
 Other scripts, run from `examples/client/`:
 
-- `build:mfe` — builds the four microfrontend apps.
-- `serve:mfe` — serves the four already-built microfrontends, without
-  rebuilding.
+- `build:mfe` — builds the microfrontend app.
+- `serve:mfe` — serves the already-built microfrontend, without rebuilding.
 - `build` — builds the host app itself (`vite build`).
 
-## Overlay compatibility lab
+## Overlays
 
-`overlay-lab.html` mounts the same tooltip, popover, and modal exercise in four
-clipped `v-frame` cards:
+The **Overlays** section mounts Kobalte's tooltip, popover, and modal primitives
+inside a deliberately clipped frame. Inside the child realm `document.body` is the
+rendered `v-body`, layout and hit-testing are reported in frame-local coordinates, and
+native popovers are translated back into that coordinate space after the browser
+promotes them to the top layer.
 
-Inside every child realm, `document.body` is the rendered `v-body`. The runtime
-also reports layout and hit-testing in frame-local coordinates and translates
-native popovers back to that coordinate space after the browser promotes them
-to the top layer.
+Regular body portals remain descendants of `v-body` and therefore obey the frame's
+clipping boundary. Libraries that need to cross it must use a native popover or dialog
+shell, or a host-owned overlay bridge.
 
-| Framework | Library | Compatibility result inside `v-frame` |
-| --- | --- | --- |
-| React | Radix UI 1.6.2 | Tooltip, popover, and modal lifecycle checks pass. The example adds a direct boundary-leave listener because Radix's delegated tooltip leave does not cross the shadow boundary. |
-| Angular | Angular Material 21.2.14 | Tooltip, menu, and dialog checks pass. The example rebases the CDK menu pane and explicitly cycles/restores dialog focus around the adopted shadow tree. |
-| Solid | Kobalte 0.13.12 | Kobalte mounts after virtual template contents preserve native `template.content` behavior; tooltip, popover, and modal checks pass. |
-| Qwik | Qwik UI Headless 0.7.7 | The explicit Qwik loader activates delegated handlers. Preserved `ToggleEvent` fields and top-layer viewport translation keep its tooltip, popover, and modal working. |
-
-Regular body portals remain descendants of `v-body` and therefore obey the
-frame's clipping boundary. Libraries that need to cross it must use a native
-popover/dialog shell or a host-owned overlay bridge. The Playwright suite runs
-the shared lifecycle, positioning, focus, and teardown contract in Chromium
+This section is a demonstration, not a test. The overlay lifecycle, focus, portal
+containment, and top-layer positioning contracts are asserted by
+`tests/overlays.spec.ts` in the repository root, which runs on every build in Chromium
 and Firefox.
 
-After building the microfrontends, run the lab tests with:
-
-```sh
-pnpm --filter example-client run test:overlays
-```
+That suite also bundles one Kobalte popover of its own, resolving `@kobalte/core` and
+`solid-js` from this microfrontend's `node_modules` so there is a single pinned
+version of each. Bumping them, or moving them, changes what the root suite tests.
