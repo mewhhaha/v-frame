@@ -4,6 +4,11 @@ import walkCSS from "css-tree/walker";
 import type { DeclarationList } from "css-tree";
 import { rewriteStyleAttribute, translateShellSelector } from "./css.js";
 import {
+  type ListenerRecord,
+  ListenerRegistry,
+  listenerCapture,
+} from "./listener-registry.js";
+import {
   absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
@@ -127,169 +132,6 @@ function updateAuthoredStyleProperty(
     }
   }
   return generateCSS(declarations);
-}
-
-interface ListenerRecord {
-  type: string;
-  listener: EventListenerOrEventListenerObject;
-  capture: boolean;
-  signal?: AbortSignal;
-  abort?: () => void;
-  wrapper: EventListener;
-}
-
-type AddNativeEventListener = (
-  type: string,
-  listener: EventListener,
-  options?: boolean | AddEventListenerOptions,
-) => void;
-
-type RemoveNativeEventListener = (
-  type: string,
-  listener: EventListener,
-  options?: boolean | EventListenerOptions,
-) => void;
-
-type EventForListener = (
-  event: Event,
-  currentTarget: EventTarget,
-  eventPhase?: number,
-) => Event;
-
-class ListenerBridge {
-  readonly #listenerThis: EventTarget;
-  readonly #eventForListener: EventForListener;
-  readonly #addToTarget: AddNativeEventListener;
-  readonly #removeFromTarget: RemoveNativeEventListener;
-  readonly #records: ListenerRecord[] = [];
-
-  constructor(
-    listenerThis: EventTarget,
-    eventForListener: EventForListener,
-    addToTarget: AddNativeEventListener,
-    removeFromTarget: RemoveNativeEventListener,
-  ) {
-    this.#listenerThis = listenerThis;
-    this.#eventForListener = eventForListener;
-    this.#addToTarget = addToTarget;
-    this.#removeFromTarget = removeFromTarget;
-  }
-
-  #removeRecord(record: ListenerRecord): void {
-    const index = this.#records.indexOf(record);
-    if (index !== -1) {
-      this.#records.splice(index, 1);
-    }
-    this.#removeFromTarget(record.type, record.wrapper, record.capture);
-    if (record.signal !== undefined && record.abort !== undefined) {
-      record.signal.removeEventListener("abort", record.abort);
-    }
-  }
-
-  add(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-    options?: boolean | AddEventListenerOptions,
-  ): void {
-    if (listener === null) {
-      return;
-    }
-    if (typeof options !== "boolean" && options?.signal?.aborted === true) {
-      return;
-    }
-
-    const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
-    if (
-      this.#records.some(
-        (record) =>
-          record.type === type &&
-          record.listener === listener &&
-          record.capture === capture,
-      )
-    ) {
-      return;
-    }
-
-    const record: ListenerRecord = {
-      type,
-      listener,
-      capture,
-      wrapper: () => undefined,
-    };
-    record.wrapper = (event) => {
-      try {
-        const eventPhase =
-          event.currentTarget === this.#listenerThis ? undefined : capture ? 1 : 3;
-        const listenerEvent = this.#eventForListener(
-          event,
-          this.#listenerThis,
-          eventPhase,
-        );
-        if (typeof listener === "function") {
-          listener.call(this.#listenerThis, listenerEvent);
-        } else {
-          listener.handleEvent(listenerEvent);
-        }
-      } finally {
-        if (typeof options !== "boolean" && options?.once === true) {
-          this.#removeRecord(record);
-        }
-      }
-    };
-    this.#records.push(record);
-    this.#addToTarget(type, record.wrapper, options);
-    if (typeof options !== "boolean" && options?.signal !== undefined) {
-      record.signal = options.signal;
-      record.abort = () => this.#removeRecord(record);
-      options.signal.addEventListener("abort", record.abort, { once: true });
-    }
-  }
-
-  invoke(event: Event, capture: boolean, shouldContinue: () => boolean): void {
-    for (const record of [...this.#records]) {
-      // A listener removed by an earlier listener in this dispatch is skipped,
-      // matching the DOM inner-invoke algorithm.
-      if (!this.#records.includes(record)) {
-        continue;
-      }
-      if (record.type === event.type && record.capture === capture) {
-        record.wrapper(event);
-        if (!shouldContinue()) {
-          return;
-        }
-      }
-    }
-  }
-
-  remove(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-    options?: boolean | EventListenerOptions,
-  ): void {
-    if (listener === null) {
-      return;
-    }
-
-    const capture = typeof options === "boolean" ? options : (options?.capture ?? false);
-    const index = this.#records.findIndex(
-      (record) =>
-        record.type === type &&
-        record.listener === listener &&
-        record.capture === capture,
-    );
-    const record = this.#records[index];
-    if (record === undefined) {
-      return;
-    }
-
-    this.#removeRecord(record);
-  }
-
-  dispose(): void {
-    for (const record of [...this.#records]) {
-      this.#removeRecord(record);
-    }
-  }
 }
 
 export interface DocumentFacadeOptions {
@@ -1540,16 +1382,33 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     return listenerEvent;
   };
 
-  const documentListeners = new ListenerBridge(
-    document,
-    eventForListener,
-    (type, listener, listenerOptions) => {
-      nativeAddEventListener.call(document, type, listener, listenerOptions);
+  // Document listeners run from the root relay rather than from the document
+  // itself, so an event that reaches the wrapper with a foreign currentTarget
+  // has to be told which phase the document would have seen it in.
+  const documentListenerWrapper = (
+    listener: EventListenerOrEventListenerObject,
+    capture: boolean,
+  ): EventListener => {
+    return (event) => {
+      const eventPhase = event.currentTarget === document ? undefined : capture ? 1 : 3;
+      const listenerEvent = eventForListener(event, document, eventPhase);
+      if (typeof listener === "function") {
+        listener.call(document, listenerEvent);
+      } else {
+        listener.handleEvent(listenerEvent);
+      }
+    };
+  };
+
+  const documentListeners = new ListenerRegistry({
+    createWrapper: documentListenerWrapper,
+    addToTargets: (type, wrapper, listenerOptions) => {
+      nativeAddEventListener.call(document, type, wrapper, listenerOptions);
     },
-    (type, listener, listenerOptions) => {
-      nativeRemoveEventListener.call(document, type, listener, listenerOptions);
+    removeFromTargets: (type, wrapper, capture) => {
+      nativeRemoveEventListener.call(document, type, wrapper, capture);
     },
-  );
+  });
 
   const removeElementHandler = (element: Element, eventName: string): void => {
     const wrapper = elementHandlerWrappers.get(element)?.get(eventName);
@@ -2736,10 +2595,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
         return;
       }
 
-      const capture =
-        typeof listenerOptions === "boolean"
-          ? listenerOptions
-          : (listenerOptions?.capture ?? false);
+      const capture = listenerCapture(listenerOptions);
       let records = virtualListenerRecords.get(this);
       if (records === undefined) {
         records = [];
@@ -2806,10 +2662,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       if (listener === null) {
         return;
       }
-      const capture =
-        typeof listenerOptions === "boolean"
-          ? listenerOptions
-          : (listenerOptions?.capture ?? false);
+      const capture = listenerCapture(listenerOptions);
       const record = virtualListenerRecords
         .get(this)
         ?.find(
@@ -4075,7 +3928,13 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     removeEventListener: {
       configurable: true,
       writable: true,
-      value: documentListeners.remove.bind(documentListeners),
+      value(
+        type: string,
+        listener: EventListenerOrEventListenerObject | null,
+        listenerOptions?: boolean | EventListenerOptions,
+      ) {
+        documentListeners.remove(type, listener, listenerOptions);
+      },
     },
     dispatchEvent: {
       configurable: true,

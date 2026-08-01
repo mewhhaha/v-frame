@@ -16,6 +16,7 @@ import {
   VirtualHistory,
   VirtualHistorySession,
 } from "./history.js";
+import { ListenerRegistry, listenerCapture } from "./listener-registry.js";
 import { prepareAdoptedMarkup, prepareMarkup, type PreparedMarkup } from "./markup.js";
 import { installNetworkPatches } from "./network.js";
 import { ScriptRunner } from "./scripts.js";
@@ -52,15 +53,6 @@ const STAGING_SELECTOR_SPECIFICITY = `:not(${Array.from(
   { length: 64 },
   (_value, index) => `#v-frame-staging-${index}`,
 ).join("")})`;
-
-interface BridgedWindowListener {
-  type: string;
-  listener: EventListenerOrEventListenerObject;
-  capture: boolean;
-  signal?: AbortSignal;
-  abort?: () => void;
-  wrapper: EventListener;
-}
 
 interface WindowEventHandler {
   listener: EventListener;
@@ -467,7 +459,6 @@ function installWindowEventBridge(
 ): () => void {
   const nativeAddEventListener = window.addEventListener.bind(window);
   const nativeRemoveEventListener = window.removeEventListener.bind(window);
-  const records: BridgedWindowListener[] = [];
   const eventHandlers = new Map<string, WindowEventHandler>();
   const patchedDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
@@ -476,17 +467,38 @@ function installWindowEventBridge(
     Object.defineProperty(window, name, { configurable: true, ...descriptor });
   };
 
-  const removeRecord = (record: BridgedWindowListener) => {
-    const index = records.indexOf(record);
-    if (index !== -1) {
-      records.splice(index, 1);
-    }
-    nativeRemoveEventListener(record.type, record.wrapper, record.capture);
-    virtualEventTarget.removeEventListener(record.type, record.wrapper, record.capture);
-    if (record.signal !== undefined && record.abort !== undefined) {
-      record.signal.removeEventListener("abort", record.abort);
-    }
+  const bridgedWindowListener = (
+    listener: EventListenerOrEventListenerObject,
+  ): EventListener => {
+    return (event) => {
+      const listenerEvent = eventForListener(event, window);
+      if (typeof listener === "function") {
+        listener.call(window, listenerEvent);
+      } else {
+        listener.handleEvent(listenerEvent);
+      }
+    };
   };
+
+  // Every window listener is mirrored onto the shadow root so guest events that
+  // never reach the realm window still walk the logical window path. `once` is
+  // deliberately withheld from both targets: the record has to be unwound from
+  // the pair together, which is the registry's job, not the native one's.
+  const windowListeners = new ListenerRegistry({
+    createWrapper: bridgedWindowListener,
+    addToTargets: (type, wrapper, options) => {
+      const listenerOptions =
+        typeof options === "boolean"
+          ? options
+          : { capture: listenerCapture(options), passive: options?.passive ?? false };
+      nativeAddEventListener(type, wrapper, listenerOptions);
+      virtualEventTarget.addEventListener(type, wrapper, listenerOptions);
+    },
+    removeFromTargets: (type, wrapper, capture) => {
+      nativeRemoveEventListener(type, wrapper, capture);
+      virtualEventTarget.removeEventListener(type, wrapper, capture);
+    },
+  });
 
   patch("addEventListener", {
     writable: true,
@@ -495,58 +507,7 @@ function installWindowEventBridge(
       listener: EventListenerOrEventListenerObject | null,
       options?: boolean | AddEventListenerOptions,
     ) {
-      if (listener === null) {
-        return;
-      }
-      if (typeof options !== "boolean" && options?.signal?.aborted === true) {
-        return;
-      }
-
-      const capture =
-        typeof options === "boolean" ? options : (options?.capture ?? false);
-      if (
-        records.some(
-          (record) =>
-            record.type === type &&
-            record.listener === listener &&
-            record.capture === capture,
-        )
-      ) {
-        return;
-      }
-
-      const record: BridgedWindowListener = {
-        type,
-        listener,
-        capture,
-        wrapper: () => undefined,
-      };
-      record.wrapper = (event) => {
-        try {
-          const listenerEvent = eventForListener(event, window);
-          if (typeof listener === "function") {
-            listener.call(window, listenerEvent);
-          } else {
-            listener.handleEvent(listenerEvent);
-          }
-        } finally {
-          if (typeof options !== "boolean" && options?.once === true) {
-            removeRecord(record);
-          }
-        }
-      };
-      records.push(record);
-      const listenerOptions =
-        typeof options === "boolean"
-          ? options
-          : { capture, passive: options?.passive ?? false };
-      nativeAddEventListener(type, record.wrapper, listenerOptions);
-      virtualEventTarget.addEventListener(type, record.wrapper, listenerOptions);
-      if (typeof options !== "boolean" && options?.signal !== undefined) {
-        record.signal = options.signal;
-        record.abort = () => removeRecord(record);
-        options.signal.addEventListener("abort", record.abort, { once: true });
-      }
+      windowListeners.add(type, listener, options);
     },
   });
   patch("removeEventListener", {
@@ -556,23 +517,7 @@ function installWindowEventBridge(
       listener: EventListenerOrEventListenerObject | null,
       options?: boolean | EventListenerOptions,
     ) {
-      if (listener === null) {
-        return;
-      }
-
-      const capture =
-        typeof options === "boolean" ? options : (options?.capture ?? false);
-      const index = records.findIndex(
-        (record) =>
-          record.type === type &&
-          record.listener === listener &&
-          record.capture === capture,
-      );
-      const record = records[index];
-      if (record === undefined) {
-        return;
-      }
-      removeRecord(record);
+      windowListeners.remove(type, listener, options);
     },
   });
 
@@ -623,9 +568,7 @@ function installWindowEventBridge(
   }
 
   return () => {
-    for (const record of [...records]) {
-      removeRecord(record);
-    }
+    windowListeners.dispose();
     eventHandlers.clear();
     for (const [name, descriptor] of [...patchedDescriptors].reverse()) {
       if (descriptor === undefined) {

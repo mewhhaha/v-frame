@@ -1,3 +1,4 @@
+import { ListenerRegistry } from "./listener-registry.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
 export interface NetworkPatchOptions {
@@ -5,18 +6,6 @@ export interface NetworkPatchOptions {
   signal: AbortSignal;
   credentials: VFrameCredentials;
   getBaseURL(): string;
-}
-
-interface NativeEventListenerRegistration {
-  listener: EventListenerOrEventListenerObject;
-  wrapper: EventListener;
-  capture: boolean;
-}
-
-function eventListenerCapture(
-  options: boolean | EventListenerOptions | undefined,
-): boolean {
-  return typeof options === "boolean" ? options : (options?.capture ?? false);
 }
 
 function resolveNetworkURL(
@@ -116,10 +105,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const nativeXHRCredentialsAssigned = new WeakSet<XMLHttpRequest>();
   const nativeXHRUploads = new WeakMap<XMLHttpRequestUpload, XMLHttpRequest>();
   const silencedNativeXHRS = new WeakSet<XMLHttpRequest>();
-  const nativeEventListeners = new WeakMap<
-    EventTarget,
-    Map<string, NativeEventListenerRegistration[]>
-  >();
+  const nativeEventRegistries = new WeakMap<EventTarget, ListenerRegistry>();
   const activeConnections = new Map<object, () => void>();
   const originals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
@@ -133,6 +119,40 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
     const request = nativeXHRUploads.get(target as XMLHttpRequestUpload);
     return request !== undefined && silencedNativeXHRS.has(request);
+  };
+
+  // Every listener goes through a wrapper so that teardown can mute a request
+  // the guest still holds a reference to, without unregistering its listeners.
+  const nativeEventRegistry = (
+    target: EventTarget,
+    nativeAddEventListener: typeof EventTarget.prototype.addEventListener,
+    nativeRemoveEventListener: typeof EventTarget.prototype.removeEventListener,
+  ): ListenerRegistry => {
+    const existing = nativeEventRegistries.get(target);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const registry = new ListenerRegistry({
+      createWrapper: (listener) => (event) => {
+        if (nativeEventTargetIsSilenced(target)) {
+          return;
+        }
+        if (typeof listener === "function") {
+          listener.call(target, event);
+          return;
+        }
+        listener.handleEvent(event);
+      },
+      addToTargets: (type, wrapper, options) => {
+        nativeAddEventListener.call(target, type, wrapper, options);
+      },
+      removeFromTargets: (type, wrapper, capture) => {
+        nativeRemoveEventListener.call(target, type, wrapper, capture);
+      },
+    });
+    nativeEventRegistries.set(target, registry);
+    return registry;
   };
 
   const patchNativeEventTarget = (
@@ -149,60 +169,22 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         nativeAddEventListener.call(this, type, listener, options);
         return;
       }
-      const capture = eventListenerCapture(options);
-      const registrations =
-        nativeEventListeners.get(this) ??
-        new Map<string, NativeEventListenerRegistration[]>();
-      const listeners = registrations.get(type) ?? [];
-      let registration = listeners.find(
-        (registered) =>
-          registered.listener === listener && registered.capture === capture,
+      nativeEventRegistry(this, nativeAddEventListener, nativeRemoveEventListener).add(
+        type,
+        listener,
+        options,
       );
-      if (registration === undefined) {
-        const wrapper: EventListener = (event) => {
-          if (nativeEventTargetIsSilenced(this)) {
-            return;
-          }
-          if (typeof listener === "function") {
-            listener.call(this, event);
-            return;
-          }
-          listener.handleEvent(event);
-        };
-        registration = { listener, wrapper, capture };
-        listeners.push(registration);
-        registrations.set(type, listeners);
-        nativeEventListeners.set(this, registrations);
-      }
-      nativeAddEventListener.call(this, type, registration.wrapper, options);
     };
     prototype.removeEventListener = function removeEventListener(
       type: string,
       listener: EventListenerOrEventListenerObject | null,
       options?: boolean | EventListenerOptions,
     ): void {
-      if (listener === null) {
+      // A listener this registry never saw was registered natively — before
+      // the patch, or on a target the patch does not own — so the native
+      // implementation is still the one holding it.
+      if (nativeEventRegistries.get(this)?.remove(type, listener, options) !== true) {
         nativeRemoveEventListener.call(this, type, listener, options);
-        return;
-      }
-      const registrations = nativeEventListeners.get(this);
-      const capture = eventListenerCapture(options);
-      const listeners = registrations?.get(type);
-      const registration = listeners?.find(
-        (registered) =>
-          registered.listener === listener && registered.capture === capture,
-      );
-      if (registration === undefined) {
-        nativeRemoveEventListener.call(this, type, listener, options);
-        return;
-      }
-      nativeRemoveEventListener.call(this, type, registration.wrapper, options);
-      const remaining =
-        listeners?.filter((registered) => registered !== registration) ?? [];
-      if (remaining.length === 0) {
-        registrations?.delete(type);
-      } else {
-        registrations?.set(type, remaining);
       }
     };
   };
