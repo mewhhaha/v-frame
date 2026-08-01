@@ -32,6 +32,18 @@ coupling, no response contract. The cost is that the runtime has to emulate a
 document, and emulation is never total. The gaps are enumerated in
 [Limitations](./docs/limitations.md); read that page before adopting.
 
+**How large a guest.** Emulation is paid per node. Activation costs about
+13.6 µs per element against 0.65–0.9 µs for putting the same markup straight into
+the host page, so a 1,000-element guest activates in 37 ms, a 20,000-element one
+in 359 ms, and a 50,000-element one in about 0.7 s; appending 1,000 rows to a
+settled guest costs about 39 ms whatever its size (chromium 149, Ryzen 7 7800X3D,
+`pnpm bench`). That suits a guest whose live DOM stays in the low thousands of
+elements — a form, a dashboard, a virtualized table — and does not suit one that
+materializes tens of thousands of nodes at once, which pays a visible fraction of
+a second on every activation and is better served by an `<iframe>` and the
+browser's own parser. The full measurements are in [Guest size and activation
+cost](./docs/limitations.md#guest-size-and-activation-cost).
+
 ## Requirements
 
 - A current browser with custom elements, Declarative Shadow DOM, and the

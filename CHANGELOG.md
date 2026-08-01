@@ -48,7 +48,7 @@ from.
 - Typechecking for `tests/`, `bench/` and `examples/*/tests/` through
   `tsconfig.test.json`.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
-  threshold.
+  threshold, currently 68,000 bytes against a measured 65,642.
 - Unit tests (`pnpm test:unit`, `node --test`) over the pure logic: `src/url.ts`,
   the `src/css.ts` rewriters, `absolutizeSrcset`, and `VirtualHistorySession`.
   180 tests that run in about a tenth of a second, without a browser.
@@ -72,6 +72,13 @@ from.
   [`troubleshooting.md`](./docs/troubleshooting.md). `limitations.md` enumerates,
   for the first time, every API the runtime deliberately refuses — most
   significantly `document.adoptedStyleSheets` and constructed stylesheets.
+- A stated guest-size ceiling. `limitations.md` now carries the measured
+  activation cost at four tree sizes, what the same markup costs inserted
+  straight into the host document, the retained heap, and the machine and browser
+  the numbers were taken on. The README's tradeoff section says which size of
+  guest the design suits and which is better served by an `<iframe>`, citing
+  those numbers instead of describing them. This was previously discoverable only
+  by building something large and being disappointed.
 
 ### Changed
 
@@ -86,7 +93,7 @@ from.
 - The published bundles are minified, and `css-tree` is imported through its
   `parser`, `generator`, and `walker` subpaths so the unused lexer tables are no
   longer shipped. Measured by `pnpm size`, which minifies and gzips
-  `src/index.ts` in memory, that is 97,514 bytes down to 65,442 — a third of the
+  `src/index.ts` in memory, that is 97,514 bytes down to 65,642 — a third of the
   payload. Every byte count in this entry comes from that command, so it is
   reproducible rather than remembered.
 - A guest node no longer carries the facade on itself. `ownerDocument` and
@@ -102,7 +109,11 @@ from.
   records so `dispose()` can put a node back the way it found it were held in a
   strong `Map` keyed by node, so a guest that churned rows grew for the lifetime
   of the frame; they are now a `WeakMap` behind a `FinalizationRegistry`-pruned
-  list of weak references. Nodes the guest still holds are still restored.
+  list of weak references. Nodes the guest still holds are still restored, and
+  `tests/node-retention.spec.ts` holds both halves — 2,000 churned rows survive a
+  forced collection zero times, and a removed node the guest still references
+  gets its native `ownerDocument` and `getRootNode` back when the frame goes
+  away.
 - Biome formats the repository, freezing the existing house style.
 - `examples/ssr` imports `v-frame/server` instead of reaching into `src/`, and
   routes host-driven navigation through the element's own API.
@@ -120,6 +131,11 @@ from.
 - Every Playwright fixture server is one parameterized route table in
   `tests/support/`, and every spec mounts frames through one shared
   `mountFrame` helper.
+- The dynamic-script insertion-order test no longer leaves the arrival order it
+  exercises to browser scheduling. It used a 50 ms fixture delay, which failed
+  roughly one full-suite run in five on firefox; the first script's response is
+  now parked until the second's body has reached the socket, so the order the
+  test claims is the order it gets under any load.
 
 ### Removed
 

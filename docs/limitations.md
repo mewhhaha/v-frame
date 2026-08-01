@@ -22,6 +22,11 @@ the Navigation API, Declarative Shadow DOM, and custom elements; every guest URL
 must be same-origin `http:` or `https:`; and the guest is trusted code, not
 sandboxed code. See [the README](../README.md#requirements).
 
+One more constraint is a ceiling rather than a refusal: the runtime touches
+every node the guest owns, so a large enough guest is slow enough to be the
+wrong tool. See [Guest size and activation
+cost](#guest-size-and-activation-cost) for the measured numbers.
+
 ## `document.write`, `writeln`, `open` and `close`
 
 **Throws** a `NotSupportedError` `DOMException` from the guest realm, for all
@@ -207,6 +212,78 @@ frame.addEventListener("v-frame-navigate", (event) => {
   }
 });
 ```
+
+## Guest size and activation cost
+
+**Does not throw.** Nothing refuses a large guest. A guest costs in proportion to
+how many nodes it has, at a rate that is inherent to emulating a document, and
+past some size that rate is itself the reason not to use `v-frame`.
+
+**Why.** Before a guest node renders it has to be marked: added to the
+virtual-node set that the realm's prototype accessors are gated on, plus the
+attribute, URL and event-handler work marking has always done. The facade cannot
+decide a node is virtual without touching it, so activation walks the whole guest
+tree and every later insertion walks the inserted subtree. Plain host DOM does
+none of that, and Blink never materializes a JS wrapper for a node nobody has
+touched.
+
+**Activation** — fetch, parse and insert the whole guest, both columns including
+the fetch and the parse. "Plain host DOM" is the same markup fetched,
+`DOMParser`-parsed and adopted into the host tree.
+
+| guest elements | `v-frame` | plain host DOM | overhead |
+| --- | --- | --- | --- |
+| 1,000 | 37 ms | 2.3 ms | 16x |
+| 5,000 | 102 ms | 5.5 ms | 19x |
+| 20,000 | 359 ms | 14.7 ms | 24x |
+| 50,000 | 702 ms | 36 ms | 20x |
+
+Chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D, 2026-08-01. Each
+cell is the median of three runs and run-to-run spread is about ±10%, so read the
+slope rather than a cell; the overhead column is the noisiest of the four, because
+its denominator is a few milliseconds. The stable figure is the marginal cost:
+**13.6 µs per element for `v-frame`, 0.65–0.9 µs for host DOM**. Reproduce with
+`pnpm bench`; the method, and the same measurement before and after the
+optimization below, are in
+[`node-marking-benchmark.md`](./node-marking-benchmark.md).
+
+**Insertion into a settled guest** costs about 39 ms per 1,000 appended elements
+— 39 µs each against 1.5 µs for host DOM — and is flat in the size of the tree
+already there, because marking is per inserted subtree rather than per document.
+Two 60 Hz frames per thousand rows is the budget to plan against.
+
+**Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
+marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
+in the host document, which never gets JS wrappers for its nodes at all.
+
+Answering `ownerDocument` and `baseURI` from the realm's `Node.prototype` instead
+of from own accessors on every node cut the marginal activation cost by about 30%
+(19.3 µs per element to 13.6) and the retained heap by about 86% (52 MB to 7.5 at
+50,000 elements). That is the whole of the improvement so far, and the numbers
+above are the post-improvement ones. What is left is the walk. Visiting every
+node once is irreducible for this design; re-walking a subtree each time it is
+re-parented is not, and is the largest untried item, but no version of this
+runtime has activated a large guest cheaply and none is planned.
+
+**What that means.** A guest whose rendered DOM is a few thousand elements pays
+tens of milliseconds once, which is below the noise of the network fetch in front
+of it. At 20,000 elements activation is a third of a second, and at 50,000 it is
+about 0.7 seconds from `src` to `v-frame-load`, most of it synchronous work on
+the main thread — long enough that the choice of runtime is the dominant cost of
+the page. The [SSR path](./ssr.md) moves that cost rather than removing it: the
+server markup paints immediately, so the delay is before the guest is live rather
+than before anything is visible, but the realm still re-parses and marks the same
+tree.
+
+**Instead.** Render pages rather than datasets — virtualize or paginate long
+lists, which keeps the tree at the size the viewport implies instead of the size
+the data implies. For a guest that genuinely has to materialize tens of thousands
+of nodes at once, an `<iframe>` pays the browser's own parser and no facade at
+all, and is the cheaper tool; the overlay and layout advantages in [the
+README](../README.md#what-you-are-trading) are what you would be giving up.
+
+Only chromium is measured. Firefox correctness is covered by the test suite, but
+no comparable numbers were taken there.
 
 ## What is *not* a limitation
 
