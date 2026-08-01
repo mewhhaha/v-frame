@@ -85,6 +85,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nodePrototype,
     "ownerDocument",
   );
+  const nativeBaseURI = Object.getOwnPropertyDescriptor(nodePrototype, "baseURI");
   const nativeTextContent = Object.getOwnPropertyDescriptor(nodePrototype, "textContent");
   const nativeNodeValue = Object.getOwnPropertyDescriptor(nodePrototype, "nodeValue");
   const nativeCharacterData = Object.getOwnPropertyDescriptor(
@@ -336,6 +337,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeCloneNode,
     nativeGetRootNode,
     nativeOwnerDocument,
+    nativeBaseURI,
     nativeTextContent,
     nativeNodeValue,
     nativeCharacterData,

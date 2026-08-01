@@ -64,9 +64,8 @@ from.
   `examples/client` already pins, so the root suite keeps its single pinned
   version, needs no framework build step, and gains about 30 ms.
 - A benchmark for per-node marking (`pnpm bench`) and its findings note,
-  [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md). Marking
-  is measurably expensive; no optimization was applied, so the decision is now
-  recorded against a number instead of an intuition.
+  [`docs/node-marking-benchmark.md`](./docs/node-marking-benchmark.md), which
+  now records the before and after of the optimization it motivated.
 - `docs/`: the README was split into
   [`limitations.md`](./docs/limitations.md), [`api.md`](./docs/api.md),
   [`navigation.md`](./docs/navigation.md), [`ssr.md`](./docs/ssr.md), and
@@ -90,6 +89,20 @@ from.
   `src/index.ts` in memory, that is 97,514 bytes down to 65,442 — a third of the
   payload. Every byte count in this entry comes from that command, so it is
   reproducible rather than remembered.
+- A guest node no longer carries the facade on itself. `ownerDocument` and
+  `baseURI` are answered by accessors on the realm's `Node.prototype`, gated on
+  the same virtual-node set `getRootNode` was already gated on, instead of three
+  own accessors installed on every node and every attribute node. Measured by
+  `pnpm bench` on a 50,000-element guest, activation drops from 994 ms to 702 ms
+  and retained JS heap from 52 MB to 7.5 MB; the marginal cost per element falls
+  from 19.3 µs to 13.6 µs. Nodes that do not inherit from the realm's prototypes
+  — Gecko binds a `ShadowRoot` to its node document's global, so an adopted
+  guest's shadow roots do not — keep the per-node accessors.
+- The facade no longer retains every node it ever marked. The descriptors it
+  records so `dispose()` can put a node back the way it found it were held in a
+  strong `Map` keyed by node, so a guest that churned rows grew for the lifetime
+  of the frame; they are now a `WeakMap` behind a `FinalizationRegistry`-pruned
+  list of weak references. Nodes the guest still holds are still restored.
 - Biome formats the repository, freezing the existing house style.
 - `examples/ssr` imports `v-frame/server` instead of reaching into `src/`, and
   routes host-driven navigation through the element's own API.

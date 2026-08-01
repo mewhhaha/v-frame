@@ -1,9 +1,10 @@
 // Guest nodes are created in the realm so they keep the prototypes this facade
 // patches, then inserted into the host shadow tree so they render in host
 // layout. Marking is what makes that lie hold: every node that crosses into the
-// virtual tree gets ownerDocument, baseURI and getRootNode of its own, has its
-// authored attributes remembered, and has its scripts and inline handlers
-// defused. Insertion, cloning and markup parsing all funnel back through it.
+// virtual tree joins the virtual-node set that the realm's ownerDocument,
+// baseURI and getRootNode accessors answer from, has its authored attributes
+// remembered, and has its scripts and inline handlers defused. Insertion,
+// cloning and markup parsing all funnel back through it.
 
 import type { AttributeFacade } from "./attributes.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
@@ -49,6 +50,8 @@ export function installNodeFacade(
     nativeCloneNode,
     nativeImportNode,
     nativeGetRootNode,
+    nativeOwnerDocument,
+    nativeBaseURI,
     nativeTextContent,
     nativeNodeValue,
     nativeCharacterData,
@@ -116,6 +119,15 @@ export function installNodeFacade(
     setVirtualAttributeNS,
     removeVirtualAttributeNS,
   } = attributes;
+
+  // Narrowed once here rather than through an optional chain inside the patched
+  // getters, which sit on the hottest read path the facade has. If a realm keeps
+  // either accessor somewhere Node.prototype cannot answer for, marking falls
+  // back to per-node accessors rather than silently reporting the host document.
+  const nativeOwnerDocumentGetter = nativeOwnerDocument?.get;
+  const nativeBaseURIGetter = nativeBaseURI?.get;
+  const nodeIdentityIsPrototypeWide =
+    nativeOwnerDocumentGetter !== undefined && nativeBaseURIGetter !== undefined;
 
   const styleMutationBatches = new WeakSet<HTMLStyleElement>();
   const styleElementForMutation = (node: Node): HTMLStyleElement | null => {
@@ -193,30 +205,41 @@ export function installNodeFacade(
     Object.defineProperties(node, descriptors);
   };
 
+  // ownerDocument, baseURI and getRootNode are answered by accessors on the
+  // realm's Node.prototype, gated on the virtual-node set. A node that does not
+  // inherit from those prototypes never reaches them and still needs its own —
+  // Gecko binds a ShadowRoot to its node document's global, so the shadow roots
+  // a guest attaches after adoption come from the host realm rather than this one.
+  const installForeignNodeFacade = (node: Node): void => {
+    try {
+      defineNodeFacade(node, {
+        ownerDocument: {
+          configurable: true,
+          get: () => document,
+        },
+        baseURI: {
+          configurable: true,
+          get: options.getBaseURL,
+        },
+        getRootNode: {
+          configurable: true,
+          writable: true,
+          value(init?: GetRootNodeOptions) {
+            return virtualGetRootNode(node, init);
+          },
+        },
+      });
+    } catch {
+      // DOM internals still use the adopted host document; the facade remains usable without expandos.
+    }
+  };
+
   const markVirtualNode = (node: Node): void => {
     const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
       virtualNodes.add(node);
-      try {
-        defineNodeFacade(node, {
-          ownerDocument: {
-            configurable: true,
-            get: () => document,
-          },
-          baseURI: {
-            configurable: true,
-            get: options.getBaseURL,
-          },
-          getRootNode: {
-            configurable: true,
-            writable: true,
-            value(init?: GetRootNodeOptions) {
-              return virtualGetRootNode(node, init);
-            },
-          },
-        });
-      } catch {
-        // DOM internals still use the adopted host document; the facade remains usable without expandos.
+      if (!nodeIdentityIsPrototypeWide || !(node instanceof window.Node)) {
+        installForeignNodeFacade(node);
       }
     }
 
@@ -785,6 +808,29 @@ export function installNodeFacade(
           : nativeGetRootNode.call(this, init);
       },
     });
+    // The other two thirds of the lie about where a guest node lives. These were
+    // own accessors installed by markVirtualNode on every node and every
+    // attribute node, which cost a hidden-class transition each on the hot DOM
+    // path; asking the virtual-node set from one prototype accessor answers the
+    // same question without touching the node.
+    if (nativeOwnerDocumentGetter !== undefined) {
+      patch(nodePrototype, "ownerDocument", {
+        get(this: Node): Document | null {
+          return virtualNodes.has(this)
+            ? document
+            : (nativeOwnerDocumentGetter.call(this) as Document | null);
+        },
+      });
+    }
+    if (nativeBaseURIGetter !== undefined) {
+      patch(nodePrototype, "baseURI", {
+        get(this: Node): string {
+          return virtualNodes.has(this)
+            ? options.getBaseURL()
+            : (nativeBaseURIGetter.call(this) as string);
+        },
+      });
+    }
     patch(nodePrototype, "cloneNode", {
       writable: true,
       value(this: Node, deep = false): Node {
