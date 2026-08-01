@@ -12,7 +12,7 @@ import {
 import { installNodeFacade } from "./facade/nodes.js";
 import { DOCUMENT_EVENT_HANDLER_NAMES, installEventFacade } from "./facade/events.js";
 import { installStyleFacade } from "./facade/style.js";
-import { createSelectionFacade } from "./selection-facade.js";
+import { installSelectionFacade } from "./facade/selection.js";
 
 export type {
   DocumentFacadeOptions,
@@ -60,7 +60,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     nativeSetAttribute,
     nativeQuerySelector,
     nativeCurrentScript,
-    subtreeHasBaseElement,
     virtualNodes,
     createdScripts,
     logicalEventTargets,
@@ -100,9 +99,6 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     markVirtualNode,
     virtualDoctype,
     virtualCreateElement,
-    prepareInsertion,
-    insertedNodes,
-    finishInsertion,
     finishVirtualClone,
     installMutationPatches,
     installNodePatches,
@@ -137,61 +133,11 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     installPatches: installCollectionPatches,
   } = installCollectionFacade(context);
   installCollectionPatches();
-  const createVirtualRange = (): Range => {
-    const range = hostDocument.createRange();
-    const nativeInsertNode = range.insertNode.bind(range);
-    const nativeSurroundContents = range.surroundContents.bind(range);
-    Object.defineProperties(range, {
-      insertNode: {
-        configurable: true,
-        value(node: Node) {
-          prepareInsertion(node);
-          const nodes = insertedNodes(node);
-          const baseElementChanged = nodes.some(subtreeHasBaseElement);
-          nativeInsertNode(node);
-          if (range.startContainer.isConnected) {
-            finishInsertion(nodes, baseElementChanged);
-          }
-        },
-      },
-      surroundContents: {
-        configurable: true,
-        value(node: Node) {
-          prepareInsertion(node);
-          const nodes = insertedNodes(node);
-          const baseElementChanged = nodes.some(subtreeHasBaseElement);
-          nativeSurroundContents(node);
-          if (range.startContainer.isConnected) {
-            finishInsertion(nodes, baseElementChanged);
-          }
-        },
-      },
-    });
-    return range;
-  };
-  let disposed = false;
-  let selectionChangeTimer: number | undefined;
-  const dispatchSelectionChange = (): void => {
-    if (disposed || selectionChangeTimer !== undefined) {
-      return;
-    }
-    selectionChangeTimer = window.setTimeout(() => {
-      selectionChangeTimer = undefined;
-      if (disposed) {
-        return;
-      }
-      const event = new window.Event("selectionchange");
-      logicalEventTargets.set(event, document);
-      nativeDispatchEvent.call(document, event);
-    }, 0);
-  };
-  const selectionFacade = createSelectionFacade({
-    window,
-    hostDocument,
-    root: options.html,
-    onSelectionChange: dispatchSelectionChange,
-  });
-  const selection = selectionFacade.selection;
+  const {
+    selection,
+    createVirtualRange,
+    dispose: disposeSelectionFacade,
+  } = installSelectionFacade(context, nodes);
   const documentChildNodes = staticNodeList([virtualDoctype, options.html]);
   const documentChildren = staticCollection([options.html]);
 
@@ -657,13 +603,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       return nativeDispatchEvent.call(document, event);
     },
     dispose() {
-      disposed = true;
+      disposeSelectionFacade();
       context.dispose();
-      if (selectionChangeTimer !== undefined) {
-        window.clearTimeout(selectionChangeTimer);
-        selectionChangeTimer = undefined;
-      }
-      selectionFacade.dispose();
       disposeEventFacade();
       context.restorePatches();
       disposeNodeFacade();
