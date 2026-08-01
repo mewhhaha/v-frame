@@ -1,12 +1,12 @@
-import { createReadStream, existsSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
-import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+  bundleRoute,
+  requestPathname,
+  type Route,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
 interface ObservedRequest {
   body: string;
@@ -23,45 +23,7 @@ interface NetworkFixture {
   close(): Promise<void>;
 }
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  body: string,
-  headers: Record<string, string> = {},
-): void {
-  response.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store",
-    ...headers,
-  });
-  response.end(body);
-}
-
-function requestPath(request: IncomingMessage): string {
-  return new URL(request.url ?? "/", "http://network-fixture.test").pathname;
-}
-
-function listen(server: Server): Promise<number> {
-  return new Promise((resolveListening, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("The network fixture did not expose a TCP port"));
-        return;
-      }
-      resolveListening(address.port);
-    });
-  });
-}
-
-function close(server: Server): Promise<void> {
-  return new Promise((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
-  });
-}
+let fixture: NetworkFixture;
 
 function observeRequest(request: IncomingMessage): Promise<ObservedRequest> {
   return new Promise((resolveObserved) => {
@@ -75,90 +37,73 @@ function observeRequest(request: IncomingMessage): Promise<ObservedRequest> {
         body,
         cookie: request.headers.cookie ?? "",
         method: request.method ?? "",
-        path: requestPath(request),
+        path: requestPathname(request),
         requestHeader: String(request.headers["x-network-request"] ?? ""),
       }),
     );
   });
 }
 
-async function startNetworkFixture(): Promise<NetworkFixture> {
-  const requests: ObservedRequest[] = [];
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  let origin = "";
-
-  const primary = createServer(async (request, response) => {
-    const path = requestPath(request);
-    if (path === "/") {
-      reply(response, 200, "text/html", '<!doctype html><div id="host"></div>');
-      return;
-    }
-    if (path === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "content-type": "text/javascript",
-        "cache-control": "no-store",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-    if (path === "/documents/network.html") {
-      reply(
-        response,
-        200,
-        "text/html",
-        '<!doctype html><html><head><base href="http://["><base id="network-base" href="/initial-base/"></head><body></body></html>',
-      );
-      return;
-    }
+/**
+ * Anything the route table does not name is echoed back as JSON, which is how the guest
+ * observes what its request actually carried.
+ */
+function echoRequest(
+  requests: ObservedRequest[],
+  headers?: Record<string, string>,
+): Route {
+  return async (request) => {
+    const path = requestPathname(request);
     if (path.endsWith("/worker.js")) {
-      reply(
-        response,
-        200,
-        "text/javascript",
-        "self.postMessage(self.location.pathname);",
-      );
-      return;
+      return {
+        type: "text/javascript",
+        body: "self.postMessage(self.location.pathname);",
+      };
     }
     if (path.endsWith("/shared-worker.js")) {
-      reply(
-        response,
-        200,
-        "text/javascript",
-        "onconnect = (event) => event.ports[0].postMessage(self.location.pathname);",
-      );
-      return;
+      return {
+        type: "text/javascript",
+        body: "onconnect = (event) => event.ports[0].postMessage(self.location.pathname);",
+      };
     }
-
     const observed = await observeRequest(request);
     requests.push(observed);
-    reply(response, 200, "application/json", JSON.stringify(observed));
-  });
-  const primaryPort = await listen(primary);
-  origin = `http://127.0.0.1:${primaryPort}`;
-
-  const cors = createServer(async (request, response) => {
-    const observed = await observeRequest(request);
-    requests.push(observed);
-    reply(response, 200, "application/json", JSON.stringify(observed), {
-      "access-control-allow-credentials": "true",
-      "access-control-allow-origin": origin,
-    });
-  });
-  const corsPort = await listen(cors);
-
-  return {
-    origin,
-    corsOrigin: `http://127.0.0.1:${corsPort}`,
-    requests,
-    close: () => Promise.all([close(primary), close(cors)]).then(() => undefined),
+    return {
+      type: "application/json",
+      body: JSON.stringify(observed),
+      ...(headers === undefined ? {} : { headers }),
+    };
   };
 }
 
-let fixture: NetworkFixture;
+async function startNetworkFixture(): Promise<NetworkFixture> {
+  const requests: ObservedRequest[] = [];
+  const primary = await startHTTPFixture({
+    record: () => undefined,
+    routes: {
+      "/": '<!doctype html><div id="host"></div>',
+      "/dist/index.js": bundleRoute,
+      "/documents/network.html":
+        '<!doctype html><html><head><base href="http://["><base id="network-base" href="/initial-base/"></head><body></body></html>',
+    },
+    fallback: echoRequest(requests),
+  });
+  const cors = await startHTTPFixture({
+    record: () => undefined,
+    routes: {},
+    fallback: echoRequest(requests, {
+      "access-control-allow-credentials": "true",
+      "access-control-allow-origin": primary.origin,
+    }),
+  });
+
+  return {
+    origin: primary.origin,
+    corsOrigin: cors.origin,
+    requests,
+    close: () => Promise.all([primary.close(), cors.close()]).then(() => undefined),
+  };
+}
 
 test.beforeAll(async () => {
   fixture = await startNetworkFixture();
@@ -168,50 +113,23 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: import("@playwright/test").Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await expect
-    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
-    .toBe(true);
-}
-
-async function mountFrame(
-  page: import("@playwright/test").Page,
+function mountNetworkFrame(
+  page: Page,
   id: string,
   credentials: "omit" | "same-origin" | "include",
-): Promise<import("@playwright/test").Locator> {
-  await page.evaluate(
-    ({ frameID, frameCredentials, source }) => {
-      const frame = document.createElement("v-frame");
-      frame.id = frameID;
-      frame.setAttribute("credentials", frameCredentials);
-      frame.setAttribute("src", source);
-      document.querySelector("#host")?.append(frame);
-    },
-    {
-      frameID: id,
-      frameCredentials: credentials,
-      source: `${fixture.origin}/documents/network.html`,
-    },
-  );
-  const frame = page.locator(`v-frame#${id}`);
-  await expect
-    .poll(() =>
-      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
-    )
-    .toBe("ready");
-  return frame;
+): Promise<Locator> {
+  return mountFrame(page, {
+    src: `${fixture.origin}/documents/network.html`,
+    id,
+    credentials,
+  });
 }
 
 test("network constructors and requests follow the live first-valid document base", async ({
   page,
 }) => {
-  await installBundle(page);
-  const frame = await mountFrame(page, "dynamic-base", "same-origin");
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "dynamic-base", "same-origin");
 
   const result = await frame.evaluate(async (element) => {
     const window = (
@@ -300,8 +218,8 @@ test("network constructors and requests follow the live first-valid document bas
 test("foreign-realm POST Requests preserve metadata, consume bodies, and use child-realm TypeErrors", async ({
   page,
 }) => {
-  await installBundle(page);
-  await mountFrame(page, "foreign-request", "same-origin");
+  await installBundle(page, fixture.origin);
+  await mountNetworkFrame(page, "foreign-request", "same-origin");
 
   const result = await page.evaluate(
     async ({ origin }) => {
@@ -399,8 +317,8 @@ test("include-mode XHR keeps an explicit withCredentials opt-out", async ({
       sameSite: "Lax",
     },
   ]);
-  await installBundle(page);
-  const frame = await mountFrame(page, "xhr-opt-out", "include");
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "xhr-opt-out", "include");
 
   const result = await frame.evaluate(async (element, corsOrigin) => {
     const window = (
