@@ -1,4 +1,13 @@
-import { installDocumentFacade, type DocumentFacade } from "./facade/index.js";
+// createRealm composes the modules in this directory around one closure. The
+// closure is the design: markup, the facade, the script runner and the history
+// all become available at different points during bootstrap, so the modules
+// receive getters rather than values and read the current one when they run.
+//
+// The order below is load-bearing. Nothing here is a free reordering: patches
+// have to land in the order a real document would install them, and the
+// disposers unwind in the reverse of that order.
+
+import { installDocumentFacade, type DocumentFacade } from "../facade/index.js";
 import {
   BoundHistory,
   type DocumentHistoryMode,
@@ -6,39 +15,35 @@ import {
   type NavigationControls,
   VirtualHistory,
   VirtualHistorySession,
-} from "./history.js";
-import { prepareAdoptedMarkup, prepareMarkup, type PreparedMarkup } from "./markup.js";
-import { installNetworkPatches } from "./network.js";
-import {
-  abortError,
-  type RealmFailure,
-  type RealmTrustedTypes,
-} from "./realm/connect.js";
-import { createDynamicStyles } from "./realm/dynamic-styles.js";
+} from "../history.js";
+import { prepareAdoptedMarkup, prepareMarkup, type PreparedMarkup } from "../markup.js";
+import { installNetworkPatches } from "../network.js";
+import { ScriptRunner } from "../scripts.js";
+import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
+import { createDynamicStyles } from "./dynamic-styles.js";
 import {
   installRealmNavigation,
   type NativeLocationNavigationMode,
-} from "./realm/navigation.js";
+} from "./navigation.js";
 import {
   installInternalStyles,
   installStagingStyles,
   installViewportPatches,
   installWindowEventBridge,
-} from "./realm/window-patches.js";
-import { ScriptRunner } from "./scripts.js";
+} from "./window-patches.js";
 import type {
   VFrameCredentials,
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
   VFrameWindow,
-} from "./types.js";
+} from "../types.js";
 
 export {
   connectRealmIframe,
   type ConnectedRealmIframe,
   type RealmFailure,
   type RealmTrustedTypes,
-} from "./realm/connect.js";
+} from "./connect.js";
 
 export interface CreateRealmOptions {
   host: HTMLElement;

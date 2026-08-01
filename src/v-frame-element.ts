@@ -4,7 +4,7 @@ import {
   createRealm,
   type RealmFailure,
   type VFrameRealm,
-} from "./realm.js";
+} from "./realm/index.js";
 import { type DocumentHistoryMode, VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { VFrameStatus } from "./types.js";
