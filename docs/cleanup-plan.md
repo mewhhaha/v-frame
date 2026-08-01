@@ -2,6 +2,19 @@
 
 Handoff document. Written 2026-08-01 against `main` @ `c52c920`.
 
+## Decisions taken (2026-08-01)
+
+Both open questions in §5 have been answered by the maintainer:
+
+- **Task 2.1 — `credentials="omit"`: delete it.** Remove `src/credentialless-xhr.ts`
+  entirely. `credentials` applies only to v-frame's own entry and stylesheet fetches, and
+  the README must say so.
+- **Task 5.3 — examples: trim.** Keep `examples/ssr` as the flagship. Reduce
+  `examples/client` to a single guest framework. Promote
+  `examples/client/tests/overlays.spec.ts` into `tests/` so CI runs it.
+
+No task in this plan is blocked on further input.
+
 ---
 
 ## 1. What this project is
