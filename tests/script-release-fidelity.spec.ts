@@ -1,12 +1,15 @@
-import { expect, test, type Page } from "@playwright/test";
-import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
-
-interface FixtureServer {
-  origin: string;
-  close(): Promise<void>;
-}
+import { expect, test } from "@playwright/test";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  bundleRoute,
+  htmlDocument,
+  type HTTPFixture,
+  type Route,
+  type RouteResponse,
+  sendResponse,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle } from "./support/mount-frame";
 
 interface RecordedFailure {
   phase: string;
@@ -15,35 +18,111 @@ interface RecordedFailure {
 }
 
 const nonce = "script-release-fidelity-nonce";
-let fixture: FixtureServer;
+const contentSecurityPolicy = {
+  "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
+};
+let fixture: HTTPFixture;
 let deferredSecondRequested = false;
 const pendingDeferredFirstResponses = new Set<ServerResponse>();
 
 function html(body: string): string {
-  return `<!doctype html><html><head></head><body>${body}</body></html>`;
+  return htmlDocument(body);
 }
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  contentType: string,
-  body: string,
-): void {
-  response.writeHead(status, {
-    "cache-control": "no-store",
-    "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-    "content-type": contentType,
-  });
-  response.end(body);
+function script(body: string): RouteResponse {
+  return { type: "text/javascript", body };
 }
 
-function documentSource(
-  pathname: string,
-  searchParams: URLSearchParams,
-): string | undefined {
-  switch (pathname) {
-    case "/documents/script-events.html":
-      return html(`
+function searchParamsOf(request: IncomingMessage): URLSearchParams {
+  return new URL(request.url ?? "/", "http://fixture.invalid").searchParams;
+}
+
+/**
+ * The teardown fixture keys its scripts by token so each test can hold, and later
+ * release, only the responses its own frame requested.
+ */
+function teardownDocument(request: IncomingMessage): RouteResponse {
+  const token = JSON.stringify(searchParamsOf(request).get("token") ?? "missing");
+  return {
+    body: html(`
+        <script>
+          window.__teardownStarted = true;
+          const classic = document.createElement('script');
+          classic.src = '../scripts/teardown-classic.js?token=' + ${token};
+          const module = document.createElement('script');
+          module.type = 'module';
+          module.src = '../scripts/teardown-module.js?token=' + ${token};
+          document.head.append(classic, module);
+        </script>
+      `),
+  };
+}
+
+/** Holds the first deferred script until the second one has been requested. */
+function deferredFirst(): Route {
+  return (_request, response) => {
+    if (deferredSecondRequested) {
+      return script("window.__deferredEvents.push('first');");
+    }
+    pendingDeferredFirstResponses.add(response);
+    response.on("close", () => pendingDeferredFirstResponses.delete(response));
+    return undefined;
+  };
+}
+
+function deferredSecond(): Route {
+  return () => {
+    deferredSecondRequested = true;
+    setTimeout(() => {
+      for (const firstResponse of pendingDeferredFirstResponses) {
+        sendResponse(
+          firstResponse,
+          script("window.__deferredEvents.push('first');"),
+          contentSecurityPolicy,
+        );
+      }
+      pendingDeferredFirstResponses.clear();
+    }, 50);
+    return script("window.__deferredEvents.push('second');");
+  };
+}
+
+function startFixtureServer(): Promise<HTTPFixture> {
+  const pendingTeardownResponses = new Map<string, Set<ServerResponse>>();
+  const releasedTeardownTokens = new Set<string>();
+
+  const holdTeardownScript: Route = (request, response) => {
+    const token = searchParamsOf(request).get("token") ?? "missing";
+    if (releasedTeardownTokens.has(token)) {
+      return script("window.__staleTeardownScriptExecuted = true;");
+    }
+    const responses = pendingTeardownResponses.get(token) ?? new Set<ServerResponse>();
+    responses.add(response);
+    pendingTeardownResponses.set(token, responses);
+    response.on("close", () => responses.delete(response));
+    return undefined;
+  };
+
+  const releaseTeardownScripts: Route = (request) => {
+    const token = searchParamsOf(request).get("token") ?? "missing";
+    releasedTeardownTokens.add(token);
+    for (const pendingResponse of pendingTeardownResponses.get(token) ?? []) {
+      sendResponse(
+        pendingResponse,
+        script("window.__staleTeardownScriptExecuted = true;"),
+        contentSecurityPolicy,
+      );
+    }
+    pendingTeardownResponses.delete(token);
+    return { status: 204, type: "text/plain", body: "" };
+  };
+
+  return startHTTPFixture({
+    headers: contentSecurityPolicy,
+    routes: {
+      "/": html('<div id="host"></div>'),
+      "/dist/index.js": bundleRoute,
+      "/documents/script-events.html": html(`
         <script>window.__scriptEventChecks = [];</script>
         <script
           id="loaded-script"
@@ -60,20 +139,17 @@ function documentSource(
           src=""
           onerror="window.__scriptEventChecks.push({ kind: 'empty', logicalThis: this === document.querySelector('#empty-source'), logicalTarget: event.target === this, logicalCurrentTarget: event.currentTarget === this })"
         >window.__emptySourceExecuted = true;</script>
-      `);
-    case "/documents/csp-inline.html":
-      return html(`
+      `),
+      "/documents/csp-inline.html": html(`
         <script src="../scripts/install-blocked-listener.js"></script>
         <script id="blocked-inline">window.__blockedInlineExecuted = true;</script>
-      `);
-    case "/documents/deferred-concurrency.html":
-      return html(`
+      `),
+      "/documents/deferred-concurrency.html": html(`
         <script>window.__deferredEvents = [];</script>
         <script defer src="../scripts/deferred-first.js"></script>
         <script type="module" src="../scripts/deferred-second.js"></script>
-      `);
-    case "/documents/dynamic-blockers.html":
-      return html(`
+      `),
+      "/documents/dynamic-blockers.html": html(`
         <script>
           window.__dynamicBlockerEvents = [];
           const classic = document.createElement('script');
@@ -94,211 +170,45 @@ function documentSource(
             document.head.append(postReady);
           });
         </script>
-      `);
-    case "/documents/pending-external-module.html":
-      return html(`
+      `),
+      "/documents/pending-external-module.html": html(`
         <script type="module" async src="../scripts/pending-module.js"></script>
         <script>setTimeout(() => { throw new Error('timer failure while external module is pending'); }, 10);</script>
-      `);
-    case "/documents/teardown.html": {
-      const token = JSON.stringify(searchParams.get("token") ?? "missing");
-      return html(`
-        <script>
-          window.__teardownStarted = true;
-          const classic = document.createElement('script');
-          classic.src = '../scripts/teardown-classic.js?token=' + ${token};
-          const module = document.createElement('script');
-          module.type = 'module';
-          module.src = '../scripts/teardown-module.js?token=' + ${token};
-          document.head.append(classic, module);
-        </script>
-      `);
-    }
-    case "/documents/blank.html":
-      return html("<main>replacement</main>");
-    default:
-      return undefined;
-  }
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
-  });
-}
-
-async function startFixtureServer(): Promise<FixtureServer> {
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const pendingTeardownResponses = new Map<string, Set<ServerResponse>>();
-  const releasedTeardownTokens = new Set<string>();
-  const server = createServer((request, response) => {
-    const requestURL = new URL(request.url ?? "/", "http://fixture.invalid");
-    const { pathname, searchParams } = requestURL;
-    if (pathname === "/") {
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-security-policy": `script-src 'self' 'nonce-${nonce}'; object-src 'none'`,
-        "content-type": "text/html",
-      });
-      response.end(html('<div id="host"></div>'));
-      return;
-    }
-    if (pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        reply(response, 404, "text/plain", "Build output not found");
-        return;
-      }
-      response.writeHead(200, {
-        "cache-control": "no-store",
-        "content-type": "text/javascript",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-
-    const document = documentSource(pathname, searchParams);
-    if (document !== undefined) {
-      reply(response, 200, "text/html", document);
-      return;
-    }
-    if (pathname === "/scripts/loaded.js") {
-      reply(response, 200, "text/javascript", "window.__loadedScriptExecuted = true;");
-      return;
-    }
-    if (pathname === "/scripts/missing.js") {
-      reply(response, 404, "text/javascript", "missing");
-      return;
-    }
-    if (pathname === "/scripts/install-blocked-listener.js") {
-      reply(
-        response,
-        200,
-        "text/javascript",
-        `
+      `),
+      "/documents/teardown.html": teardownDocument,
+      "/documents/blank.html": html("<main>replacement</main>"),
+      "/scripts/loaded.js": script("window.__loadedScriptExecuted = true;"),
+      "/scripts/missing.js": { status: 404, type: "text/javascript", body: "missing" },
+      "/scripts/install-blocked-listener.js": script(`
         window.__blockedInlineErrors = 0;
         document.querySelector('#blocked-inline').addEventListener('error', () => window.__blockedInlineErrors += 1);
-      `,
-      );
-      return;
-    }
-    if (pathname === "/scripts/deferred-first.js") {
-      if (deferredSecondRequested) {
-        reply(response, 200, "text/javascript", "window.__deferredEvents.push('first');");
-        return;
-      }
-      pendingDeferredFirstResponses.add(response);
-      response.on("close", () => pendingDeferredFirstResponses.delete(response));
-      return;
-    }
-    if (pathname === "/scripts/deferred-second.js") {
-      deferredSecondRequested = true;
-      reply(response, 200, "text/javascript", "window.__deferredEvents.push('second');");
-      setTimeout(() => {
-        for (const firstResponse of pendingDeferredFirstResponses) {
-          reply(
-            firstResponse,
-            200,
-            "text/javascript",
-            "window.__deferredEvents.push('first');",
-          );
-        }
-        pendingDeferredFirstResponses.clear();
-      }, 50);
-      return;
-    }
-    if (pathname === "/scripts/dynamic-classic.js") {
-      setTimeout(
-        () =>
-          reply(
-            response,
-            200,
-            "text/javascript",
-            "window.__dynamicClassicSettled = true; window.__dynamicBlockerEvents.push('classic-execute');",
-          ),
-        75,
-      );
-      return;
-    }
-    if (pathname === "/scripts/dynamic-module.js") {
-      setTimeout(
-        () =>
-          reply(
-            response,
-            200,
-            "text/javascript",
-            "window.__dynamicModuleSettled = true; window.__dynamicBlockerEvents.push('module-execute');",
-          ),
-        125,
-      );
-      return;
-    }
-    if (pathname === "/scripts/post-ready.js") {
-      setTimeout(
-        () =>
-          reply(
-            response,
-            200,
-            "text/javascript",
-            "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
-          ),
-        100,
-      );
-      return;
-    }
-    if (pathname === "/scripts/pending-module.js") {
-      reply(response, 200, "text/javascript", "await new Promise(() => undefined);");
-      return;
-    }
-    if (
-      pathname === "/scripts/teardown-classic.js" ||
-      pathname === "/scripts/teardown-module.js"
-    ) {
-      const token = searchParams.get("token") ?? "missing";
-      if (releasedTeardownTokens.has(token)) {
-        reply(
-          response,
-          200,
-          "text/javascript",
-          "window.__staleTeardownScriptExecuted = true;",
-        );
-        return;
-      }
-      const responses = pendingTeardownResponses.get(token) ?? new Set<ServerResponse>();
-      responses.add(response);
-      pendingTeardownResponses.set(token, responses);
-      response.on("close", () => responses.delete(response));
-      return;
-    }
-    if (pathname === "/release-teardown") {
-      const token = searchParams.get("token") ?? "missing";
-      releasedTeardownTokens.add(token);
-      for (const pendingResponse of pendingTeardownResponses.get(token) ?? []) {
-        reply(
-          pendingResponse,
-          200,
-          "text/javascript",
-          "window.__staleTeardownScriptExecuted = true;",
-        );
-      }
-      pendingTeardownResponses.delete(token);
-      reply(response, 204, "text/plain", "");
-      return;
-    }
-    reply(response, 404, "text/plain", `No fixture for ${pathname}`);
+      `),
+      "/scripts/deferred-first.js": deferredFirst(),
+      "/scripts/deferred-second.js": deferredSecond(),
+      "/scripts/dynamic-classic.js": {
+        ...script(
+          "window.__dynamicClassicSettled = true; window.__dynamicBlockerEvents.push('classic-execute');",
+        ),
+        delay: 75,
+      },
+      "/scripts/dynamic-module.js": {
+        ...script(
+          "window.__dynamicModuleSettled = true; window.__dynamicBlockerEvents.push('module-execute');",
+        ),
+        delay: 125,
+      },
+      "/scripts/post-ready.js": {
+        ...script(
+          "window.__postReadyScriptSettled = true; window.__dynamicBlockerEvents.push('post-ready');",
+        ),
+        delay: 100,
+      },
+      "/scripts/pending-module.js": script("await new Promise(() => undefined);"),
+      "/scripts/teardown-classic.js": holdTeardownScript,
+      "/scripts/teardown-module.js": holdTeardownScript,
+      "/release-teardown": releaseTeardownScripts,
+    },
   });
-
-  await new Promise<void>((resolveListening) =>
-    server.listen(0, "127.0.0.1", resolveListening),
-  );
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Script release fixture did not expose a TCP address");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => closeServer(server),
-  };
 }
 
 test.beforeAll(async () => {
@@ -309,18 +219,10 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function installBundle(page: Page): Promise<void> {
-  await page.goto(fixture.origin);
-  await page.evaluate(async (url) => {
-    const bundle = await import(url);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-}
-
 test("dispatches one logical handler event and reports an empty source as a script failure", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame") as HTMLElement & {
@@ -427,7 +329,7 @@ test("dispatches one logical handler event and reports an empty source as a scri
 test("reports a CSP-blocked inline classic once without dispatching load", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(async (source) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
       contentWindow: (Window & Record<string, unknown>) | null;
@@ -464,7 +366,7 @@ test("reports a CSP-blocked inline classic once without dispatching load", async
 test("starts deferred classic and module fetches together while executing in document order", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame") as HTMLElement & {
@@ -502,7 +404,7 @@ test("starts deferred classic and module fetches together while executing in doc
 test("waits for bootstrap dynamic resources before child and frame load", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame") as HTMLElement & {
@@ -550,7 +452,7 @@ test("waits for bootstrap dynamic resources before child and frame load", async 
 test("reports a timer error immediately while an external module remains pending", async ({
   page,
 }) => {
-  await installBundle(page);
+  await installBundle(page, fixture.origin);
   const result = await page.evaluate(
     async ({ frameNonce, source }) => {
       const frame = document.createElement("v-frame");
@@ -612,7 +514,7 @@ for (const action of ["disconnect", "supersede"] as const) {
   test(`does not publish delayed classic or module settlements after ${action}`, async ({
     page,
   }) => {
-    await installBundle(page);
+    await installBundle(page, fixture.origin);
     const token = `${action}-${test.info().project.name}-${Date.now()}`;
     const result = await page.evaluate(
       async ({ action, frameNonce, origin, token }) => {
