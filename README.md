@@ -115,11 +115,13 @@ the trusted document:
 - Scripts become parser-inert while preserving their original type.
 - The materialized document receives its required display rules.
 
-The repository's Cloudflare example implements this streaming adapter in
-[`materialize-v-frame.ts`](./examples/ssr/shared/materialize-v-frame.ts).
-It accepts a normal `Response` and the public guest URL:
+`v-frame/server` ships this transformation. On Cloudflare Workers,
+`materializeVFrameDocument` streams it through `HTMLRewriter`; it accepts a
+normal `Response` and the public guest URL:
 
 ```ts
+import { materializeVFrameDocument } from "v-frame/server";
+
 const guestURL = new URL("/applications/orders/", request.url);
 const guestResponse = await ordersService.fetch(
   new Request("https://orders.internal/document"),
@@ -137,12 +139,14 @@ const materializedResponse = materializeVFrameDocument(
 );
 ```
 
-The adapter is currently an example rather than a portable package export
-because server HTML transformation APIs differ between runtimes. A Node host
-can perform the same conversion with a standards-compliant streaming HTML
-parser. Do not transform HTML with regular expressions.
+Server HTML transformation APIs differ between runtimes, so only the
+`HTMLRewriter` adapter is runtime-specific. A host on another runtime drives the
+same decisions — `rewriteShellElement`, `rewriteScriptElement`, and
+`materializeStylesheet`, all exported from `v-frame/server` — from a
+standards-compliant streaming HTML parser. Do not transform HTML with regular
+expressions.
 
-For first-paint fidelity, the experimental adapter expects critical CSS to be
+For first-paint fidelity, the adapter expects critical CSS to be
 inline and markup asset URLs to be root-relative or absolute. Linked
 stylesheets and relative markup URLs work after activation, but need additional
 host-side rebasing to be correct in the inert server preview.

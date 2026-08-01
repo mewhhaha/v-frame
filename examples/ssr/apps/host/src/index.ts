@@ -4,7 +4,7 @@ import {
   routingSessionStorageKey,
   routingVersion,
 } from "../../../shared/routing";
-import { materializeVFrameDocument } from "../../../shared/materialize-v-frame";
+import { materializeVFrameDocument } from "v-frame/server";
 
 const qwikRoutes = new Set(["/inventory", "/catalog"]);
 const widgetDocumentRoutes = new Map([

@@ -10,10 +10,7 @@
     // the browser-only root project deliberately leaves out.
     "types": ["node"]
   },
-  "include": ["tests/**/*.ts", "examples/*/shared/**/*.ts"],
-  // materialize-v-frame.ts is Cloudflare Workers code (HTMLRewriter, workerd's
-  // Text/Element chunk types) and cannot be checked against the DOM lib this
-  // project uses. It is checked by examples/ssr/apps/*/tsconfig.json, which
-  // pulls in the generated worker types instead.
-  "exclude": ["examples/ssr/shared/materialize-v-frame.ts"]
+  // Specs that import src/ pull the css-tree subpath declarations in with them,
+  // and an ambient declaration file is only visible when the project lists it.
+  "include": ["src/css-tree-subpaths.d.ts", "tests/**/*.ts", "examples/*/shared/**/*.ts"]
 }

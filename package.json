@@ -1,6 +1,6 @@
 {
   "name": "v-frame",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Render fetched pages in a shadow tree backed by a disposable iframe realm",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +14,10 @@
     "./register": {
       "types": "./dist/register.d.ts",
       "import": "./dist/register.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
     }
   },
   "files": [

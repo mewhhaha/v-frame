@@ -50,7 +50,6 @@ examples/ssr/
 │   ├── angular/        Angular application builder + Angular SSR
 │   └── solid/          SolidStart + Cloudflare module preset
 ├── shared/
-│   ├── materialize-v-frame.ts
 │   └── routing.ts
 ├── tests/
 └── package.json
@@ -103,8 +102,7 @@ bindings without making the guest deployments depend on host code.
 ## Compose a guest response
 
 For a host route, the Worker requests the guest's ordinary HTML through its
-service binding. [`materialize-v-frame.ts`](./shared/materialize-v-frame.ts)
-then:
+service binding. `materializeVFrameDocument` from `v-frame/server` then:
 
 - changes `html`, `head`, and `body` into materializable document elements;
 - rewrites inline CSS selectors and URLs for the public guest URL;
