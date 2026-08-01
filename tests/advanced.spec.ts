@@ -26,7 +26,7 @@ async function mountFrame(
   nonce?: string,
 ) {
   await page.evaluate(({ source, nonceValue }) => {
-    const frame = document.createElement("v-frame");
+    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
     if (nonceValue !== undefined) {
       frame.nonce = nonceValue;
     }
@@ -42,7 +42,7 @@ async function childValue<T>(
 ) {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 
@@ -168,14 +168,14 @@ test("forwards bubbling child-realm scroll events from document to window", asyn
         bubbles: event.bubbles,
       });
     });
-    (window as Window & { __viewportScrollEvents: typeof events }).__viewportScrollEvents = events;
+    (window as Window & typeof globalThis & { __viewportScrollEvents: typeof events }).__viewportScrollEvents = events;
   });
   await frame.evaluate((element) => {
     element.setAttribute("style", "height: 100px;");
     element.scrollTop = 40;
   });
   await expect.poll(() => childValue(frame, (window) => (
-    (window as Window & { __viewportScrollEvents: unknown[] }).__viewportScrollEvents
+    (window as Window & typeof globalThis & { __viewportScrollEvents: unknown[] }).__viewportScrollEvents
   ))).toEqual([
     {
       listener: "document",
@@ -214,7 +214,7 @@ test("stops virtual history when navigation approval removes the frame", async (
 
   const result = await frame.evaluate((element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       status: string;
     };
@@ -299,7 +299,7 @@ test("stops old virtual history when navigation approval reloads the frame", asy
 
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       reload(): Promise<void>;
       status: string;
@@ -379,19 +379,20 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
   await installBundle(page);
   const failure = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       reload(): Promise<void>;
+      src: string;
       status: string;
     };
-    let retainedHistory: History | null = null;
+    const retained: { history: History | null } = { history: null };
     let navigationCount = 0;
     const failures: Array<{ phase: string; fatal: boolean }> = [];
     const realmObserver = new MutationObserver((records) => {
       for (const record of records) {
         for (const addedNode of record.addedNodes) {
           if (addedNode instanceof HTMLIFrameElement) {
-            retainedHistory = addedNode.contentWindow?.history ?? null;
+            retained.history = addedNode.contentWindow?.history ?? null;
           }
         }
       }
@@ -429,20 +430,20 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
       );
     } finally {
       if (matchMediaDescriptor === undefined) {
-        delete (window as Window & { matchMedia?: typeof matchMedia }).matchMedia;
+        delete (window as unknown as { matchMedia?: typeof matchMedia }).matchMedia;
       } else {
         Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
       }
       realmObserver.disconnect();
     }
 
-    if (retainedHistory === null) {
+    if (retained.history === null) {
       throw new Error("The bootstrap failure did not expose its child history");
     }
     let retainedException: string | null = null;
     try {
-      retainedHistory.pushState({ attempt: 1 }, "", "http://[");
-      retainedHistory.replaceState({ attempt: 2 }, "", "http://[");
+      retained.history.pushState({ attempt: 1 }, "", "http://[");
+      retained.history.replaceState({ attempt: 2 }, "", "http://[");
     } catch (error) {
       retainedException = String(error);
     }

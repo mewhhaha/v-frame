@@ -449,7 +449,10 @@ test("waits for bootstrap dynamic resources before child and frame load", async 
   await installBundle(page);
   const result = await page.evaluate(async ({ frameNonce, source }) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: (Window & { __dynamicBlockerEvents?: string[] }) | null;
+      contentWindow: (Window & {
+        __dynamicBlockerEvents?: string[];
+        __postReadyScriptSettled?: boolean;
+      }) | null;
     };
     let frameLoadCalls = 0;
     frame.setAttribute("nonce", frameNonce);

@@ -36,7 +36,7 @@ test("adopts, imports, and directly inserts foreign URL subtrees", async ({ page
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -146,7 +146,7 @@ test("scopes shell selectors and root translation to the connected virtual tree"
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -261,7 +261,7 @@ test("parses and clones virtual template contents", async ({ page }) => {
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -296,7 +296,7 @@ test("reports element geometry in the virtual viewport coordinate space", async 
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -359,7 +359,7 @@ test("positions native popovers in the virtual viewport", async ({ page }) => {
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -425,7 +425,7 @@ test("keeps document collections live with stable identities", async ({ page }) 
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -604,7 +604,7 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
 
   await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
     const named = virtualDocument.createElement("input");
@@ -627,7 +627,7 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
     const iterated: string[] = [];
@@ -658,7 +658,7 @@ test("matches foreign tag names case-sensitively and keeps unknown on-attributes
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const virtualDocument = frame.contentWindow!.document;
 

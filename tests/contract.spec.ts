@@ -47,7 +47,7 @@ async function childValue<T>(
 ) {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 
@@ -78,7 +78,7 @@ test("keeps a missing source idle and recreates its realm after reconnection", a
 
   const state = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string | null;
       status: string;
       src: string;
@@ -179,7 +179,7 @@ test("binds an explicit host-navigation frame to shell location and history", as
     document.querySelector("#host")?.append(frame);
   }, `${fixture.origin}/dist/index.js`);
   const frame = page.locator("v-frame");
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   expect(await childValue(frame, (window) => ({
     href: window.location.href,
@@ -193,9 +193,9 @@ test("binds an explicit host-navigation frame to shell location and history", as
     window.history.pushState({ owner: "child" }, "", "/documents/bound-child");
   });
   await expect(page).toHaveURL(`${fixture.origin}/documents/bound-child`);
-  await expect.poll(() => frame.evaluate((element) => (
-    element as { currentURL: string | null }
-  ).currentURL)).toBe(`${fixture.origin}/documents/bound-child`);
+  await expect.poll(() => frame.evaluate(
+    (element: HTMLElement & { currentURL: string | null }) => element.currentURL,
+  )).toBe(`${fixture.origin}/documents/bound-child`);
 
   await page.evaluate(() => {
     history.replaceState({ owner: "host" }, "", "/documents/bound-host");
@@ -212,7 +212,7 @@ test("binds an explicit host-navigation frame to shell location and history", as
   });
 
   expect(await frame.evaluate((element) => {
-    const childHistory = (element as HTMLElement & { contentWindow: Window }).contentWindow.history;
+    const childHistory = (element as HTMLElement & { contentWindow: Window & typeof globalThis }).contentWindow.history;
     element.remove();
     childHistory.back();
     return history.pushState === (
@@ -281,7 +281,7 @@ test("preserves an entry fragment in currentURL and the load event", async ({ pa
 test("provides document queries, mutations, focus, and listeners through the child realm", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "dom", `${fixture.origin}/documents/dom.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   const state = await childValue(frame, async (window) => {
     const document = window.document;
@@ -330,12 +330,12 @@ test("routes postMessage through the child window and keeps two realms separate"
   await installBundle(page);
   const first = await mountFrame(page, "first-realm", `${fixture.origin}/documents/messaging.html`);
   const second = await mountFrame(page, "second-realm", `${fixture.origin}/documents/messaging.html`);
-  await expect.poll(() => first.evaluate((element) => (element as { status: string }).status)).toBe("ready");
-  await expect.poll(() => second.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => first.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  await expect.poll(() => second.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   const message = await page.evaluate(async (origin) => {
-    const firstFrame = document.querySelector("#first-realm") as HTMLElement & { contentWindow: Window | null };
-    const secondFrame = document.querySelector("#second-realm") as HTMLElement & { contentWindow: Window | null };
+    const firstFrame = document.querySelector("#first-realm") as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
+    const secondFrame = document.querySelector("#second-realm") as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
     const firstWindow = firstFrame.contentWindow;
     const secondWindow = secondFrame.contentWindow;
     if (firstWindow === null || secondWindow === null) {
@@ -370,10 +370,10 @@ test("routes postMessage through the child window and keeps two realms separate"
 test("keeps innerHTML scripts inert while running dynamic scripts and reporting runtime failures", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "scripts", `${fixture.origin}/documents/scripts.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   const result = await page.evaluate(async () => {
-    const frame = document.querySelector("#scripts") as HTMLElement & { contentWindow: Window | null };
+    const frame = document.querySelector("#scripts") as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
     const child = frame.contentWindow;
     if (child === null) {
       throw new Error("Script fixture did not expose a child window");
@@ -414,7 +414,7 @@ test("keeps innerHTML scripts inert while running dynamic scripts and reporting 
 test("rewrites dynamic inline and linked styles without crossing the shadow boundary", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "styles", `${fixture.origin}/documents/styles.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await childValue(frame, (window) => {
     const inlineCopy = window.document.createElement("p");
@@ -443,7 +443,7 @@ test("rewrites dynamic inline and linked styles without crossing the shadow boun
 test("traverses virtual history with popstate and hashchange without changing host history", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "history", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   const hostHistory = await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }));
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigationEvents?: Array<{ kind: string; cancelable: boolean }> }).navigationEvents = [];
@@ -470,7 +470,7 @@ test("traverses virtual history with popstate and hashchange without changing ho
     return { beforeTraversalTasks, events, state: window.history.state, length: window.history.length };
   });
 
-  await expect.poll(() => frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(
     `${fixture.origin}/documents/history.html#two`,
   );
   expect(state).toEqual({
@@ -508,7 +508,7 @@ test("traverses virtual history with popstate and hashchange without changing ho
 test("delivers composed DOM events to child window listeners before link defaults", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "window-events", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigationCount?: number }).navigationCount = 0;
@@ -548,7 +548,7 @@ test("delivers composed DOM events to child window listeners before link default
 test("treats an empty hash as a local fragment and scrolls to the top", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "empty-fragment", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   await frame.evaluate((element) => {
     element.setAttribute("style", "display: block; height: 80px; overflow: auto;");
     element.scrollTop = 120;
@@ -602,8 +602,8 @@ test("treats an empty hash as a local fragment and scrolls to the top", async ({
 test("reports but does not perform canceled link and form navigation", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "canceled-navigation", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
-  const before = await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL);
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
+  const before = await frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL);
   const hostHistory = await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }));
 
   await page.evaluate(() => {
@@ -627,7 +627,7 @@ test("reports but does not perform canceled link and form navigation", async ({ 
   await frame.locator("#blocked-form button").click();
 
   await expect.poll(() => page.evaluate(() => (window as Window & { contractNavigations?: unknown[] }).contractNavigations?.length ?? 0)).toBe(3);
-  expect(await page.evaluate(() => (window as Window & {
+  expect(await page.evaluate(() => (window as Window & typeof globalThis & {
     contractNavigations: Array<{ kind: string; to: string; cancelable: boolean }>;
   }).contractNavigations)).toEqual([
     {
@@ -649,7 +649,7 @@ test("reports but does not perform canceled link and form navigation", async ({ 
   expect(await childValue(frame, (window) =>
     (window as Window & typeof globalThis & { __canceledFragmentEvents: string[] }).__canceledFragmentEvents,
   )).toEqual([]);
-  expect(await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(before);
+  expect(await frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(before);
   expect(await page.evaluate(() => ({ href: location.href, length: history.length, state: history.state }))).toEqual(hostHistory);
 });
 
@@ -660,7 +660,7 @@ test("loads an allowed same-context link inside the guest", async ({ page }) => 
     (element) => (element as HTMLElement & { status: string }).status,
   )).toBe("ready");
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     const link = child?.document.createElement("a");
     if (child === null || child === undefined || link === undefined) {
       throw new Error("The staged-navigation frame has no child window");
@@ -682,7 +682,7 @@ test("loads an allowed same-context link inside the guest", async ({ page }) => 
 test("gates modified primary and middle link activations before opening a new context", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "new-context-navigation", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   const hostURL = page.url();
   await frame.evaluate((element) => {
     const controlledFrame = element as HTMLElement & {
@@ -753,7 +753,7 @@ test("gates modified primary and middle link activations before opening a new co
     cancelable: true,
   })));
   expect(openedPages).toHaveLength(2);
-  expect(await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(
+  expect(await frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(
     `${fixture.origin}/documents/history.html`,
   );
   expect(page.url()).toBe(hostURL);
@@ -762,7 +762,7 @@ test("gates modified primary and middle link activations before opening a new co
 test("uses submitter overrides and replacement query data for gated GET form windows", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "submitter-navigation", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   await frame.evaluate((element) => {
     const controlledFrame = element as HTMLElement & {
       allowNavigation: boolean;
@@ -815,7 +815,7 @@ test("uses submitter overrides and replacement query data for gated GET form win
     state: null,
   })));
   expect(openedPages).toHaveLength(1);
-  expect(await frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(
+  expect(await frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(
     `${fixture.origin}/documents/history.html`,
   );
 });
@@ -824,20 +824,20 @@ test("uses the page viewport and frame scroll state then stops child timers when
   await page.setViewportSize({ width: 900, height: 600 });
   await installBundle(page);
   const frame = await mountFrame(page, "viewport", `${fixture.origin}/documents/viewport.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await frame.evaluate((element) => {
     element.setAttribute("style", "width: 320px; height: 120px;");
     element.scrollTop = 40;
   });
   const resizeEventsBeforePageResize = await childValue(frame, (window) => (
-    window as Window & { __viewportEvents: { resize: number } }
+    window as Window & typeof globalThis & { __viewportEvents: { resize: number } }
   ).__viewportEvents.resize);
   await page.setViewportSize({ width: 760, height: 520 });
   await expect.poll(() => childValue(frame, (window) => (
-    window as Window & { __viewportEvents: { resize: number } }
+    window as Window & typeof globalThis & { __viewportEvents: { resize: number } }
   ).__viewportEvents.resize)).toBeGreaterThan(resizeEventsBeforePageResize);
-  await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { scroll: number } }).__viewportEvents.scroll)).toBeGreaterThan(0);
+  await expect.poll(() => childValue(frame, (window) => (window as Window & typeof globalThis & { __viewportEvents: { scroll: number } }).__viewportEvents.scroll)).toBeGreaterThan(0);
   expect(await childValue(frame, (window) => window.scrollY)).toBe(40);
   const childViewport = await childValue(frame, (window) => ({
     innerHeight: window.innerHeight,
@@ -859,7 +859,7 @@ test("uses the page viewport and frame scroll state then stops child timers when
   }));
   expect(childViewport).toEqual(pageViewport);
   expect(childViewport.innerWidth).not.toBe(320);
-  await expect.poll(() => childValue(frame, (window) => (window as Window & { __viewportEvents: { ticks: number } }).__viewportEvents.ticks)).toBeGreaterThan(2);
+  await expect.poll(() => childValue(frame, (window) => (window as Window & typeof globalThis & { __viewportEvents: { ticks: number } }).__viewportEvents.ticks)).toBeGreaterThan(2);
 
   const teardown = await page.evaluate(async () => {
     const frame = document.querySelector("#viewport") as HTMLElement & {
@@ -896,7 +896,7 @@ test("uses the page viewport and frame scroll state then stops child timers when
 test("uses the virtual document element as the scrolling element", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "viewport-scroll", `${fixture.origin}/documents/viewport.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await frame.evaluate((element) => element.setAttribute("style", "height: 100px;"));
   const scrollingElement = await childValue(frame, (window) => ({
@@ -987,7 +987,7 @@ test("emits bubbling composed lifecycle details and a fatal entry error", async 
 test("closes dialog form submissions natively without emitting navigation", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "dialog-form", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigationKinds?: string[] }).navigationKinds = [];
     element.addEventListener("v-frame-navigate", (event) => {
@@ -1023,7 +1023,7 @@ test("closes dialog form submissions natively without emitting navigation", asyn
 test("replaces the history entry when a fragment link targets the current URL", async ({ page }) => {
   await installBundle(page);
   const frame = await mountFrame(page, "repeat-fragment", `${fixture.origin}/documents/history.html`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   await frame.evaluate((element) => {
     (element as HTMLElement & { navigationKinds?: string[] }).navigationKinds = [];
     element.addEventListener("v-frame-navigate", (event) => {

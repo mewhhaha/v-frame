@@ -25,13 +25,13 @@ async function installBundle(page: import("@playwright/test").Page) {
 
 async function mountFrame(page: import("@playwright/test").Page, id = "selection-frame") {
   await page.evaluate((source) => {
-    const frame = document.createElement("v-frame");
+    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
     frame.id = source.id;
     frame.src = source.url;
     document.querySelector("#host")?.append(frame);
   }, { id, url: `${fixture.origin}/documents/dom.html` });
   const frame = page.locator(`#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -189,12 +189,12 @@ test("supports replacing and clearing document.onselectionchange", async ({ page
 
 test("notifies when a native selection leaves a frame while isolating host and sibling changes", async ({ page }) => {
   await installBundle(page);
-  const first = await mountFrame(page, "first-selection-frame");
-  const second = await mountFrame(page, "second-selection-frame");
+  await mountFrame(page, "first-selection-frame");
+  await mountFrame(page, "second-selection-frame");
 
   const result = await page.evaluate(async () => {
     const frameWindow = (id: string) =>
-      (document.querySelector(`#${id}`) as HTMLElement & { contentWindow: Window }).contentWindow;
+      (document.querySelector(`#${id}`) as HTMLElement & { contentWindow: Window & typeof globalThis }).contentWindow;
     const firstWindow = frameWindow("first-selection-frame");
     const secondWindow = frameWindow("second-selection-frame");
     let firstEvents = 0;
@@ -243,11 +243,11 @@ test("notifies when a native selection leaves a frame while isolating host and s
 
 test("cancels queued selectionchange when the frame is removed", async ({ page }) => {
   await installBundle(page);
-  const frame = await mountFrame(page);
+  await mountFrame(page);
 
   await page.evaluate(() => {
     const frame = document.querySelector("#selection-frame") as HTMLElement & {
-      contentWindow: Window;
+      contentWindow: Window & typeof globalThis;
     };
     const child = frame.contentWindow;
     (window as Window & typeof globalThis & { __selectionChangeAfterDispose: number })
@@ -278,7 +278,7 @@ async function childValue<T>(
 ) {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 

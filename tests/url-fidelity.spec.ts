@@ -33,7 +33,7 @@ test("updates the first valid connected base and HTML URL properties synchronous
 
   const states = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -203,7 +203,7 @@ test("keeps authored srcset candidates while rebasing their physical URLs", asyn
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -314,7 +314,7 @@ test("updates baseURI synchronously when textContent removes a base subtree", as
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -346,7 +346,7 @@ test("synchronizes base changes made through host-realm DOM methods", async ({ p
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -386,7 +386,7 @@ test("rebases SVG href and xlink resources without replacing SVGAnimatedString",
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#url-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       shadowRoot: ShadowRoot | null;
     };
     const child = frame.contentWindow;

@@ -36,7 +36,7 @@ test("resolves history URLs against the live base and preserves the URL when omi
   const frame = await mountFrame(page);
 
   const result = await frame.evaluate((element, origin) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -117,7 +117,7 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
   }));
 
   const result = await frame.evaluate(async (element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -137,7 +137,7 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
     const missingArguments: Array<{ method: string; childTypeError: boolean }> = [];
     for (const method of ["pushState", "replaceState"] as const) {
       try {
-        child.history[method]({});
+        (child.history[method] as (state: unknown) => void)({});
       } catch (error) {
         missingArguments.push({ method, childTypeError: error instanceof child.TypeError });
       }
@@ -149,7 +149,7 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
       illegalReceiverIsChildTypeError = error instanceof child.TypeError;
     }
 
-    prototype.go.call(child.history, "-1");
+    prototype.go.call(child.history, "-1" as unknown as number);
     await new Promise((resolve) => child.setTimeout(resolve, 0));
     const afterStringTraversal = child.document.URL;
     const events: string[] = [];
@@ -163,7 +163,7 @@ test("keeps prototype history calls virtual and applies child-realm Web IDL sema
     const numericFailures: boolean[] = [];
     for (const value of [Symbol("delta"), 1n]) {
       try {
-        prototype.go.call(child.history, value);
+        prototype.go.call(child.history, value as unknown as number);
       } catch (error) {
         numericFailures.push(error instanceof child.TypeError);
       }
@@ -212,7 +212,7 @@ test("keeps retained prototype history methods inert after disposal", async ({ p
   }));
 
   const result = await frame.evaluate((element) => {
-    const controlledFrame = element as HTMLElement & { contentWindow: Window | null };
+    const controlledFrame = element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
     const child = controlledFrame.contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
@@ -231,10 +231,10 @@ test("keeps retained prototype history methods inert after disposal", async ({ p
     try {
       retainedPrototype.pushState.call(retainedHistory, () => undefined, "", "http://[");
       retainedPrototype.replaceState.call(retainedHistory, () => undefined, "", "http://[");
-      retainedPrototype.pushState.call(retainedHistory);
+      (retainedPrototype.pushState as (this: History) => void).call(retainedHistory);
       retainedPrototype.back.call(retainedHistory);
       retainedPrototype.forward.call(retainedHistory);
-      retainedPrototype.go.call(retainedHistory, Symbol("disposed"));
+      retainedPrototype.go.call(retainedHistory, Symbol("disposed") as unknown as number);
       retainedHistory.scrollRestoration = "manual";
     } catch (error) {
       exception = String(error);
@@ -278,7 +278,7 @@ test("documents javascript Location evaluation without document replacement as u
   const frame = await mountFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: (Window & { __javascriptLocationExecuted?: boolean }) | null;
+      contentWindow: (Window & typeof globalThis & { __javascriptLocationExecuted?: boolean }) | null;
       currentURL: string | null;
       status: string;
     };
@@ -337,18 +337,18 @@ test("loads links and GET forms while preserving guest document history", async 
   )).toBe(`${fixture.origin}/documents/second.html`);
   expect(await frame.getAttribute("src")).toBe(`${fixture.origin}/documents/first.html`);
   expect(await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     return child?.history.length;
   })).toBe(2);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.history.back();
   });
   await expect(frame.locator("#first")).toContainText("First document");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     const form = child?.document.createElement("form");
     if (child === null || child === undefined || form === undefined) {
       throw new Error("The restored document has no child window");
@@ -371,12 +371,12 @@ test("loads links and GET forms while preserving guest document history", async 
   )).toBe(`${fixture.origin}/documents/second.html?query=fixture`);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.history.back();
   });
   await expect(frame.locator("#first")).toContainText("First document");
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.history.forward();
   });
   await expect(frame.locator("#second")).toHaveText("Second document");
@@ -388,7 +388,7 @@ test("loads links and GET forms while preserving guest document history", async 
 test("restores the live guest when a document navigation fails", async ({ page }) => {
   const frame = await mountFrame(page);
   const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow);
   const failure = frame.evaluate((element) => new Promise<{
     fatal: boolean;
@@ -411,7 +411,7 @@ test("restores the live guest when a document navigation fails", async ({ page }
     }, { once: true });
   }));
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     const link = child?.document.createElement("a");
     if (child === null || child === undefined || link === undefined) {
       throw new Error("The navigation frame has no child window");
@@ -431,7 +431,7 @@ test("restores the live guest when a document navigation fails", async ({ page }
   });
   await expect(frame.locator("#load")).toHaveText("Load");
   expect(await frame.evaluate((element, previousWindow) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow === previousWindow, originalWindow)).toBe(true);
 });
 
@@ -439,7 +439,7 @@ test("keeps a direct Location hash change inside the guest", async ({ page }) =>
   const frame = await mountFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string;
     };
     const child = controlledFrame.contentWindow;
@@ -470,7 +470,7 @@ test("restores the virtual URL when the host cancels a direct hash change", asyn
   const frame = await mountFrame(page);
   const result = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       currentURL: string;
     };
     const child = controlledFrame.contentWindow;
@@ -516,7 +516,7 @@ test("reports unsupported same-context POST forms without leaving the document",
     }, { once: true });
   }));
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     const form = child?.document.createElement("form");
     if (child === null || child === undefined || form === undefined) {
       throw new Error("The navigation frame has no child window");
@@ -554,7 +554,7 @@ test("reports window and SVG link destinations resolved against the live base", 
   });
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -564,7 +564,7 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.open("first", "_self");
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -574,7 +574,7 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.open("second", "_self");
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -592,9 +592,9 @@ test("reports window and SVG link destinations resolved against the live base", 
     child.document.body.append(svg);
   });
   await frame.evaluate(async (element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     const anchor = child?.document.querySelector("#svg-navigation-link");
-    if (child === null || child === undefined || anchor === null) {
+    if (child === null || child === undefined || anchor === null || anchor === undefined) {
       throw new Error("The SVG navigation link is unavailable");
     }
     anchor.dispatchEvent(new MouseEvent("click", {
@@ -627,7 +627,7 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
     });
   });
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -670,7 +670,7 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
   )).toBe(`${fixture.origin}/documents/application.html`);
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The navigation frame has no child window");
     }
@@ -693,7 +693,7 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
   });
   await frame.locator("#malformed-fragment-link").click();
   await expect.poll(() => frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     return (child as Window & { __legacyScrollCount?: number } | null)?.__legacyScrollCount;
   })).toBe(1);
   expect(await frame.evaluate(

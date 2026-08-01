@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { createReadStream, existsSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 
 interface FixtureServer {
@@ -346,7 +346,7 @@ async function mountFrame(page: Page, pathname: string, id = "subject"): Promise
     document.querySelector("#host")?.append(frame);
   }, { frameID: id, frameNonce: nonce, source: `${fixture.origin}${pathname}` });
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -356,7 +356,7 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 
@@ -508,7 +508,7 @@ test("executes eligible scripts inserted through fragments once in document orde
   const frame = await mountFrame(page, "/blank.html");
 
   const immediate = await frame.evaluate((element) => {
-    const childWindow = (element as HTMLElement & { contentWindow: Window | null })
+    const childWindow = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
       .contentWindow as Window & typeof globalThis & {
         __fragmentEvents: string[];
         __fragmentExternalEvents: string[];
@@ -645,7 +645,7 @@ test("executes every browser-recognized legacy JavaScript MIME alias dynamically
   const frame = await mountFrame(page, "/blank.html");
 
   const state = await frame.evaluate((element, options) => {
-    const childWindow = (element as HTMLElement & { contentWindow: Window | null }).contentWindow as Window & {
+    const childWindow = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow as Window & {
       __dynamicLegacyTypes?: string[];
       __dynamicInertTypes?: string[];
     };

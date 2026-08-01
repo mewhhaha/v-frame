@@ -155,7 +155,7 @@ test("uses the guest route as native Location without an iframe request", async 
 
   await expect(frame.locator("#native-entry")).toHaveText("Native entry");
   expect(await frame.evaluate((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow?.location.href)).toBe(`${fixture.origin}/routes/entry.html`);
   const routeRequests = fixture.requests.slice(requestStart).filter(
     (request) => request.path === "/routes/entry.html",
@@ -175,13 +175,13 @@ test("preserves replace semantics for native Location navigation", async ({
   const frame = await mountFrame(pageInstance);
   await frame.evaluate((element) => new Promise<void>((resolve) => {
     element.addEventListener("v-frame-load", () => resolve(), { once: true });
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.location.replace("/routes/destination.html");
   }));
 
   await expect(frame.locator("#shell-destination")).toHaveText("Top-level destination");
   expect(await frame.evaluate((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow?.history.length)).toBe(1);
 });
 
@@ -202,10 +202,10 @@ test("lets a guest Navigation interceptor own same-document routing", async ({
   const requestStart = fixture.requests.length;
   const frame = await mountFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow);
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.navigation.addEventListener("navigate", (event) => {
       if (!event.destination.url.endsWith("/routes/spa.html")) {
         return;
@@ -224,7 +224,7 @@ test("lets a guest Navigation interceptor own same-document routing", async ({
     element as HTMLElement & { currentURL: string | null }
   ).currentURL)).toBe(`${fixture.origin}/routes/spa.html`);
   expect(await frame.evaluate((element, previousWindow) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow === previousWindow, originalWindow)).toBe(true);
   expect(fixture.requests.slice(requestStart).some(
     (request) => request.path === "/routes/spa.html",
@@ -236,14 +236,14 @@ test("honors guest cancellation of native Location navigation", async ({
 }) => {
   const frame = await mountFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow);
   const loadStarted = await frame.evaluate(async (element) => {
     let started = false;
     element.addEventListener("v-frame-loadstart", () => {
       started = true;
     }, { once: true });
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.navigation.addEventListener("navigate", (event) => {
       event.preventDefault();
     }, { once: true });
@@ -254,7 +254,7 @@ test("honors guest cancellation of native Location navigation", async ({
 
   expect(loadStarted).toBe(false);
   expect(await frame.evaluate((element, previousWindow) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     return {
       currentURL: (element as HTMLElement & { currentURL: string | null }).currentURL,
       retainedWindow: child === previousWindow,
@@ -270,16 +270,16 @@ test("reloads the guest without adding a document history entry", async ({
 }) => {
   const frame = await mountFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow);
   await frame.evaluate((element) => new Promise<void>((resolve) => {
     element.addEventListener("v-frame-load", () => resolve(), { once: true });
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.location.reload();
   }));
 
   expect(await frame.evaluate((element, previousWindow) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     return {
       historyLength: child?.history.length,
       replacedWindow: child !== previousWindow,
@@ -308,13 +308,13 @@ test("keeps the current realm when direct navigation is canceled", async ({
 }) => {
   const frame = await mountFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle((element) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow);
   await frame.evaluate((element) => {
     element.addEventListener("v-frame-navigate", (event) => event.preventDefault(), {
       once: true,
     });
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     child?.location.assign("/routes/destination.html");
   });
 
@@ -323,7 +323,7 @@ test("keeps the current realm when direct navigation is canceled", async ({
     (element) => (element as HTMLElement & { status: string }).status,
   )).toBe("ready");
   expect(await frame.evaluate((element, previousWindow) => (
-    element as HTMLElement & { contentWindow: Window | null }
+    element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
   ).contentWindow === previousWindow, originalWindow)).toBe(true);
   expect(pageInstance.url()).toBe(`${fixture.origin}/`);
 });

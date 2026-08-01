@@ -208,7 +208,7 @@ test("ignores late imports in initial, imported, linked, and dynamic stylesheets
   const frame = page.locator("v-frame");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null })
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
       .contentWindow!;
     const inlineStyle = child.document.createElement("style");
     inlineStyle.textContent = `
@@ -271,13 +271,13 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
   const frame = page.locator("v-frame");
 
   const fills = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null })
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
       .contentWindow!;
     const fragmentStyle = child.document.querySelector(
       "#fragment-style",
     ) as HTMLStyleElement;
     const rules = Array.from(fragmentStyle.sheet!.cssRules) as CSSStyleRule[];
-    const cssomRule = rules[2];
+    const cssomRule = rules[2]!;
     cssomRule.style.cssText = "fill: url('#paint')";
 
     const dynamicAttribute = child.document.querySelector(
@@ -286,8 +286,8 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
     dynamicAttribute.setAttribute("style", "fill: url(#paint)");
 
     return {
-      stylesheetUnquoted: rules[0].style.fill,
-      stylesheetQuoted: rules[1].style.fill,
+      stylesheetUnquoted: rules[0]!.style.fill,
+      stylesheetQuoted: rules[1]!.style.fill,
       attributeUnquoted: dynamicAttribute.style.fill,
       cssom: cssomRule.style.fill,
       computed: child.getComputedStyle(

@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The root project emits declarations out of "src"; this project only checks.
+    "noEmit": true,
+    "declaration": false,
+    "emitDeclarationOnly": false,
+    "rootDir": ".",
+    // The fixture servers run on Node, so the specs need the Node globals that
+    // the browser-only root project deliberately leaves out.
+    "types": ["node"]
+  },
+  "include": ["tests/**/*.ts", "examples/*/shared/**/*.ts"],
+  // materialize-v-frame.ts is Cloudflare Workers code (HTMLRewriter, workerd's
+  // Text/Element chunk types) and cannot be checked against the DOM lib this
+  // project uses. It is checked by examples/ssr/apps/*/tsconfig.json, which
+  // pulls in the generated worker types instead.
+  "exclude": ["examples/ssr/shared/materialize-v-frame.ts"]
+}

@@ -36,7 +36,7 @@ test("uses standards mode in the child document", async ({ page }) => {
 
   const documentMode = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -56,7 +56,7 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -70,7 +70,7 @@ test("preserves properties from physical event subclasses", async ({ page }) => 
 
     const target = child.document.createElement("button");
     child.document.body.append(target);
-    let observed: { childEvent: boolean; newState?: string; oldState?: string } | null = null;
+    let observed: { childEvent: boolean; newState?: string | undefined; oldState?: string | undefined } | null = null;
     child.document.addEventListener("state-change", (event) => {
       const stateEvent = event as Event & { newState?: string; oldState?: string };
       observed = {
@@ -98,7 +98,7 @@ test("uses one logical event across the element, document, and window path", asy
 
   const result = await page.evaluate(() => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {
@@ -364,7 +364,7 @@ test("keeps document structure, namespace collections, and observation logical",
 
   const result = await page.evaluate(async () => {
     const frame = document.querySelector("#event-fidelity-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const child = frame.contentWindow;
     if (child === null) {

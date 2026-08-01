@@ -68,7 +68,7 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   await expect(frame.locator("iframe")).toHaveCSS("pointer-events", "none");
 
   const state = await frame.evaluate((element) => {
-    const value = element as HTMLElement & { currentURL: string; contentWindow: Window | null };
+    const value = element as HTMLElement & { currentURL: string; contentWindow: (Window & typeof globalThis) | null };
     return { currentURL: value.currentURL, hasContentWindow: value.contentWindow !== null };
   });
   expect(state.currentURL).toBe(`${fixture.origin}/documents/first.html`);
@@ -161,7 +161,7 @@ test("preserves nested adopted frames without fetching either entry document", a
   ).length;
   await page.goto(`${fixture.origin}/documents/nested-adopted-host.html`);
   await page.evaluate(() => {
-    let releaseOuterModule = () => undefined;
+    let releaseOuterModule: () => void = () => undefined;
     const outerModuleGate = new Promise<void>((resolve) => {
       releaseOuterModule = resolve;
     });
@@ -238,7 +238,7 @@ test("preserves nested adopted frames without fetching either entry document", a
 test("keeps adopted preview visible until its initial module completes", async ({ page }) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {
-    let releaseModule = () => undefined;
+    let releaseModule: () => void = () => undefined;
     const moduleGate = new Promise<void>((resolve) => {
       releaseModule = resolve;
     });
@@ -297,16 +297,16 @@ test("keeps adopted preview visible until its initial module completes", async (
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
       liveOverlaysPreview:
-        physicalRect(markup[1]).top === physicalRect(markup[0]).top,
+        physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
       frameHeightMatchesPreview:
-        frameRect.height === physicalRect(markup[0]).height,
+        frameRect.height === physicalRect(markup[0]!).height,
       copyPointerEvents: markup.map((html) =>
         getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents
       ),
       copyVisibilities: markup.map((html) =>
         getComputedStyle(html.querySelector("#adopted-copy")!).visibility
       ),
-      liveHeight: physicalRect(markup[1]).height,
+      liveHeight: physicalRect(markup[1]!).height,
       markupText: markup.map((html) =>
         html.querySelector("#adopted-copy")?.textContent
       ),
@@ -420,7 +420,7 @@ test("reveals adopted markup synchronously without starting a view transition", 
 test("reveals simultaneous adopted handoffs independently", async ({ page }) => {
   await page.goto(fixture.origin);
   await page.evaluate(() => {
-    let releaseFirstModule = () => undefined;
+    let releaseFirstModule: () => void = () => undefined;
     const firstModuleGate = new Promise<void>((resolve) => {
       releaseFirstModule = resolve;
     });
@@ -478,7 +478,7 @@ test("does not restore adopted markup after removal during activation", async ({
   ).length;
   await page.goto(fixture.origin);
   await page.evaluate(() => {
-    let releaseHeldModule = () => undefined;
+    let releaseHeldModule: () => void = () => undefined;
     const heldModuleGate = new Promise<void>((resolve) => {
       releaseHeldModule = resolve;
     });

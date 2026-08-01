@@ -28,7 +28,8 @@
   "scripts": {
     "build": "pnpm typecheck && node esbuild.mjs && tsc --emitDeclarationOnly",
     "prepack": "pnpm build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "size": "node scripts/bundle-size.mjs",
     "test": "pnpm build && playwright test"
   },
   "keywords": [],
@@ -45,6 +46,7 @@
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "@types/css-tree": "2.3.11",
+    "@types/node": "26.1.1",
     "esbuild": "0.28.1",
     "typescript": "7.0.2"
   }

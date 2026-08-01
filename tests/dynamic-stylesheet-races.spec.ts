@@ -185,7 +185,7 @@ async function appendStyle(
   source: string,
 ): Promise<void> {
   await frame.evaluate((element, values) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow;
     if (child === null) {
       throw new Error("The race frame did not expose its child window");
     }
@@ -228,7 +228,7 @@ test("keeps the third dynamic inline stylesheet revision when its first import f
   await fixture.waitForRequest("/styles/inline-first.css");
 
   const transientHostBackground = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#inline-race-style") as HTMLStyleElement;
     style.textContent = "#race-target { color: rgb(21, 22, 23); }";
     style.textContent = ":host { background-color: rgb(101, 102, 103); } body { color: rgb(201, 202, 203); } #race-target { color: rgb(31, 32, 33); }";
@@ -247,7 +247,7 @@ test("keeps a page observer revision that reacts to implementation neutralizatio
   await installBundle(page);
   const frame = await mountFrame(page, "observer-race");
   await frame.evaluate(async (element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.createElement("style");
     style.id = "observer-race-style";
     style.textContent = '@import url("/styles/inline-observer.css"); #race-target { color: rgb(1, 2, 3); }';
@@ -285,7 +285,7 @@ test("keeps an authored clear while an inline rewrite is pending", async ({ page
   );
   await fixture.waitForRequest("/styles/inline-clear.css");
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#clear-race-style") as HTMLStyleElement;
     style.textContent = "";
   });
@@ -298,7 +298,7 @@ test("keeps an authored clear while an inline rewrite is pending", async ({ page
 
   await expect(frame.locator("#race-target")).toHaveCSS("color", "rgb(0, 0, 0)");
   expect(await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     return child.document.querySelector("#clear-race-style")?.textContent;
   })).toBe("");
 });
@@ -307,7 +307,7 @@ test("processes batched child and innerHTML style mutations as complete authored
   await installBundle(page);
   const frame = await mountFrame(page, "style-batches");
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.createElement("style");
     style.id = "style-batches-style";
     child.document.head.append(style);
@@ -319,7 +319,7 @@ test("processes batched child and innerHTML style mutations as complete authored
   await expect(frame.locator("#race-target")).toHaveCSS("color", "rgb(101, 102, 103)");
 
   const transientHostBackground = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#style-batches-style") as HTMLStyleElement;
     style.innerHTML = ":host { background-color: rgb(111, 112, 113); } body { color: rgb(121, 122, 123); } #race-target { color: rgb(131, 132, 133); }";
     return getComputedStyle(element).backgroundColor;
@@ -342,7 +342,7 @@ test("installs CSSOM rewriting on rules created by an asynchronous dynamic style
   await expect(frame.locator("#race-target")).toHaveCSS("color", "rgb(71, 72, 73)");
 
   const result = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#dynamic-cssom-style") as HTMLStyleElement;
     const rule = style.sheet!.cssRules[0] as CSSStyleRule;
     rule.selectorText = ":host";
@@ -372,7 +372,7 @@ test("ignores a stale inline import failure and reports the current final failur
   await fixture.waitForRequest("/styles/inline-stale-failure.css");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#failure-race-style") as HTMLStyleElement;
     style.textContent = "#race-target { color: rgb(21, 22, 23); }";
     style.textContent = '@import url("/styles/final-failure.css"); #race-target { color: rgb(41, 42, 43); }';
@@ -403,7 +403,7 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
   );
   await fixture.waitForRequest("/styles/removal.css");
   await removedFrame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const style = child.document.querySelector("#removed-style") as HTMLStyleElement;
     (child as Window & { removedRaceStyle?: HTMLStyleElement }).removedRaceStyle = style;
     style.remove();
@@ -416,7 +416,7 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
   );
   await fixture.waitForRequest("/styles/teardown.css");
   await tornDownFrame.evaluate((element) => {
-    const frame = element as HTMLElement & { contentWindow: Window | null; tornDownRaceStyle?: HTMLStyleElement };
+    const frame = element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null; tornDownRaceStyle?: HTMLStyleElement };
     const style = frame.contentWindow!.document.querySelector("#teardown-style") as HTMLStyleElement;
     (window as Window & {
       teardownRace?: { frame: typeof frame; style: HTMLStyleElement };
@@ -435,7 +435,7 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
       teardownRace?: {
         frame: HTMLElement & {
           isConnected: boolean;
-          contentWindow: Window | null;
+          contentWindow: (Window & typeof globalThis) | null;
           raceFailures?: Failure[];
         };
         style: HTMLStyleElement;
@@ -456,7 +456,7 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
     failures: [],
   });
   const removedStyleText = await removedFrame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     return (child as Window & { removedRaceStyle?: HTMLStyleElement }).removedRaceStyle?.textContent;
   });
   expect(removedStyleText).toBe("");
@@ -467,7 +467,7 @@ test("keeps the latest dynamic link href, media, and disabled state after its fi
   const frame = await mountFrame(page, "link-race");
   await collectFailures(frame);
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const link = child.document.createElement("link");
     link.id = "link-race-style";
     link.rel = "stylesheet";
@@ -478,7 +478,7 @@ test("keeps the latest dynamic link href, media, and disabled state after its fi
   await fixture.waitForRequest("/styles/link-first.css");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const link = child.document.querySelector("#link-race-style") as HTMLLinkElement;
     link.href = "/styles/link-second.css";
     link.media = "print";
@@ -517,7 +517,7 @@ test("restores the authored link relation after pending work is disconnected and
   const frame = await mountFrame(page, "link-reconnect");
   await collectFailures(frame);
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const link = child.document.createElement("link");
     link.id = "link-reconnect-style";
     link.rel = "stylesheet";
@@ -527,14 +527,14 @@ test("restores the authored link relation after pending work is disconnected and
   await fixture.waitForRequest("/styles/link-reconnect.css");
 
   await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const link = child.document.querySelector("#link-reconnect-style") as HTMLLinkElement;
     (child as Window & { disconnectedRaceLink?: HTMLLinkElement }).disconnectedRaceLink = link;
     link.remove();
   });
   await page.waitForTimeout(0);
   const reconnected = await frame.evaluate((element) => {
-    const child = (element as HTMLElement & { contentWindow: Window | null }).contentWindow!;
+    const child = (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow!;
     const link = (child as Window & { disconnectedRaceLink?: HTMLLinkElement })
       .disconnectedRaceLink!;
     link.removeAttribute("href");

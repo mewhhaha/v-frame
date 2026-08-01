@@ -174,7 +174,7 @@ async function mountFrame(
     source: `${fixture.origin}/documents/network.html`,
   });
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -183,7 +183,7 @@ test("network constructors and requests follow the live first-valid document bas
   const frame = await mountFrame(page, "dynamic-base", "same-origin");
 
   const result = await frame.evaluate(async (element) => {
-    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis }).contentWindow;
+    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis & typeof globalThis }).contentWindow;
     const run = async (basePath: string) => {
       window.document.querySelector("#network-base")?.setAttribute("href", basePath);
 
@@ -263,7 +263,7 @@ test("foreign-realm POST Requests preserve metadata, consume bodies, and use chi
 
   const result = await page.evaluate(async ({ origin }) => {
     const frame = document.querySelector("v-frame#foreign-request") as HTMLElement & {
-      contentWindow: Window & typeof globalThis;
+      contentWindow: Window & typeof globalThis & typeof globalThis;
     };
     const childWindow = frame.contentWindow;
     const directRequest = new Request(`${origin}/foreign/direct`, {
@@ -353,7 +353,7 @@ test("include-mode XHR keeps an explicit withCredentials opt-out", async ({ page
   const frame = await mountFrame(page, "xhr-opt-out", "include");
 
   const result = await frame.evaluate(async (element, corsOrigin) => {
-    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis }).contentWindow;
+    const window = (element as HTMLElement & { contentWindow: Window & typeof globalThis & typeof globalThis }).contentWindow;
     const request = (path: string, optOut: boolean) => new Promise<{ response: unknown; withCredentials: boolean }>((resolveRequest) => {
       const xhr = new window.XMLHttpRequest();
       xhr.open("GET", `${corsOrigin}${path}`);

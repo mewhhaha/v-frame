@@ -37,7 +37,7 @@ async function mountFrame(
     frameCredentials: credentials,
   });
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -47,7 +47,7 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 

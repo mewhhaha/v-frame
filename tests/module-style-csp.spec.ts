@@ -199,7 +199,7 @@ async function installBundle(page: Page): Promise<void> {
 
 async function mountFrame(page: Page, pathname: string): Promise<Locator> {
   await page.evaluate(({ frameNonce, source }) => {
-    const frame = document.createElement("v-frame");
+    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
     frame.nonce = frameNonce;
     frame.src = source;
     document.querySelector("#host")?.append(frame);
@@ -213,7 +213,7 @@ async function childValue<T>(
 ): Promise<T> {
   return frame.evaluate((element, source) => {
     const evaluate = new Function("window", `return (${source})(window)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow);
   }, expression.toString()) as Promise<T>;
 }
 
@@ -221,7 +221,7 @@ test("runs an external module with a relative import and top-level await before 
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/external-module.html");
 
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   await expect(frame.locator("#module-result")).toHaveText("module settled");
   expect(await childValue(frame, (window) => ({
     events: (window as typeof window & { __externalModuleEvents?: string[] }).__externalModuleEvents,
@@ -276,9 +276,9 @@ test("loads documents and scripts through an explicit Trusted Types policy", asy
     source: `${fixture.origin}/documents/trusted-types.html`,
   });
 
-  await expect.poll(() => frame.evaluate((element) => (
-    element as { status: string }
-  ).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate(
+    (element: HTMLElement & { status: string }) => element.status,
+  )).toBe("ready");
   await expect(frame.locator("#trusted-html")).toHaveText("Trusted HTML policy applied");
   await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted HTML policy applied");
   await frame.locator("#trusted-handler").click();
@@ -323,9 +323,9 @@ test("uses a named identity Trusted Types policy without callback boilerplate", 
     source: `${fixture.origin}/documents/trusted-types.html`,
   });
 
-  await expect.poll(() => frame.evaluate((element) => (
-    element as { status: string }
-  ).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate(
+    (element: HTMLElement & { status: string }) => element.status,
+  )).toBe("ready");
   await expect(frame.locator("#trusted-html")).toHaveText("Trusted source");
   await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted source");
 });
@@ -385,7 +385,7 @@ for (const [name, pathname] of [
   test(`reports one nonfatal external module ${name} failure and becomes ready`, async ({ page }) => {
     await installBundle(page);
     const result = await page.evaluate(async ({ frameNonce, source }) => {
-      const frame = document.createElement("v-frame") as HTMLElement & { status: string };
+      const frame = document.createElement("v-frame") as HTMLElement & { src: string; status: string };
       const failures: Array<{ phase: string; fatal: boolean }> = [];
       frame.nonce = frameNonce;
       frame.addEventListener("v-frame-error", (event) => {
@@ -418,7 +418,7 @@ test("uses the frame nonce for initial, linked, imported, and changing dynamic s
 
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/nonce-styles.html");
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await expect(frame.locator("#initial-inline")).toHaveCSS("color", "rgb(11, 12, 13)");
   await expect(frame.locator("#source-inline")).toHaveCSS("color", "rgb(61, 62, 63)");
@@ -475,7 +475,7 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
 
   await installBundle(page);
   const frame = await mountFrame(page, "/documents/nonce-styles.html");
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
 
   await page.evaluate(() => {
     const foreignDocument = document.implementation.createHTMLDocument("");
@@ -539,7 +539,7 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
 
   const result = await page.evaluate(({ frameNonce, origin }) => {
     const frame = document.querySelector("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
       nonce: string;
     };
     const child = frame.contentWindow!;

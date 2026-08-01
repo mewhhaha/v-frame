@@ -94,7 +94,8 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
   await installBundle(page);
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
+      src: string;
       status: string;
     };
     const loaded = new Promise<void>((resolveLoaded) => {
@@ -188,7 +189,7 @@ test("applies, clears, and rejects shorthand values through the inline style dec
   await installBundle(page);
   const result = await page.evaluate(async (origin) => {
     const frame = document.createElement("v-frame") as HTMLElement & {
-      contentWindow: Window | null;
+      contentWindow: (Window & typeof globalThis) | null;
     };
     const loaded = new Promise<void>((resolveLoaded) => {
       frame.addEventListener("v-frame-load", () => resolveLoaded(), { once: true });

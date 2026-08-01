@@ -45,13 +45,13 @@ test("uses the public route for native Location while keeping soft history frame
   )).toBe("ready");
   await expect.poll(() => frame.evaluate((element) => (
     element as HTMLElement & {
-      contentWindow: Window & { __originHistoryAnimationFrameCount: number };
+      contentWindow: Window & typeof globalThis & { __originHistoryAnimationFrameCount: number };
     }
   ).contentWindow.__originHistoryAnimationFrameCount)).toBe(1);
 
   const initial = await frame.evaluate((element) => (
     element as HTMLElement & {
-      contentWindow: Window & { __initialLocationSnapshot: Record<string, string | null> };
+      contentWindow: Window & typeof globalThis & { __initialLocationSnapshot: Record<string, string | null> };
     }
   ).contentWindow.__initialLocationSnapshot);
   expect(initial).toEqual({
@@ -70,7 +70,7 @@ test("uses the public route for native Location while keeping soft history frame
 
   const states = await frame.evaluate(async (element) => {
     const controlledFrame = element as HTMLElement & {
-      contentWindow: Window;
+      contentWindow: Window & typeof globalThis;
       currentURL: string;
     };
     const child = controlledFrame.contentWindow;

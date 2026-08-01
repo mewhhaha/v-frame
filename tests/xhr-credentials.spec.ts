@@ -162,7 +162,7 @@ async function mountFrame(
     document.querySelector("#host")?.append(frame);
   }, { frameID: id, frameSource: source, frameCredentials: credentials });
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -173,7 +173,7 @@ async function childValue<T, Argument = undefined>(
 ): Promise<T> {
   return frame.evaluate((element, values) => {
     const evaluate = new Function("window", "argument", `return (${values.source})(window, argument)`);
-    return evaluate((element as HTMLElement & { contentWindow: Window | null }).contentWindow, values.argument);
+    return evaluate((element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }).contentWindow, values.argument);
   }, { source: expression.toString(), argument }) as Promise<T>;
 }
 
@@ -197,7 +197,7 @@ test("omits same-origin cookies while preserving XHR headers, JSON, and events",
     xhr.setRequestHeader("x-fixture-request", "set");
     xhr.responseType = "json";
     xhr.withCredentials = true;
-    return await new Promise((resolve) => {
+    return await new Promise<{ allHeaders: string; [field: string]: unknown }>((resolve) => {
       xhr.onloadend = () => {
         let responseTextError = "";
         try {
@@ -575,7 +575,7 @@ test("times out requests and follows native abort and reopen state transitions",
   });
 
   const disposed = await page.evaluate(async () => {
-    const frame = document.querySelector("#lifecycle") as HTMLElement & { contentWindow: Window | null };
+    const frame = document.querySelector("#lifecycle") as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
     const child = frame.contentWindow;
     if (child === null) {
       throw new Error("The lifecycle frame did not expose its child window");
@@ -635,7 +635,7 @@ test("disposal aborts reentrant XHR sends for credentialless and native transpor
     const frameID = `reentrant-${credentials}`;
     await mountFrame(page, frameID, `${fixture.origin}/documents/xhr.html`, credentials);
     await page.evaluate(async ({ id, waitForLoading }) => {
-      const frame = document.querySelector(`#${id}`) as HTMLElement & { contentWindow: Window | null };
+      const frame = document.querySelector(`#${id}`) as HTMLElement & { contentWindow: (Window & typeof globalThis) | null };
       const child = frame.contentWindow;
       if (child === null) {
         throw new Error("The reentrant XHR frame did not expose its child window");
@@ -691,7 +691,7 @@ test("teardown suppresses XHR callbacks for credentialless and native transports
       const frameID = `silent-${credentials}-${teardown}`;
       const frame = await mountFrame(page, frameID, `${fixture.origin}/documents/xhr.html`, credentials);
       await page.evaluate(({ id, teardownKind }) => {
-        const element = document.querySelector(`#${id}`) as HTMLElement & { contentWindow: Window | null } | null;
+        const element = document.querySelector(`#${id}`) as HTMLElement & { contentWindow: (Window & typeof globalThis) | null } | null;
         const child = element?.contentWindow;
         if (child === null || child === undefined) {
           throw new Error("The XHR teardown frame did not expose its child window");
@@ -737,7 +737,7 @@ test("teardown suppresses XHR callbacks for credentialless and native transports
         (window as Window & { xhrTeardownTriggered?: boolean }).xhrTeardownTriggered ?? false
       ))).toBe(true);
       if (teardown === "supersede") {
-        await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+        await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
       }
 
       await page.waitForTimeout(350);

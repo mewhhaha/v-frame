@@ -86,7 +86,7 @@ test("page :host and :host-context selectors cannot style the v-frame host", asy
   }, `${fixture.origin}/dist/index.js`);
 
   await page.evaluate((origin) => {
-    const frame = document.createElement("v-frame");
+    const frame = document.createElement("v-frame") as HTMLElement & { src: string };
     frame.src = `${origin}/documents/css-host-isolation.html`;
     document.querySelector("#host")?.append(frame);
   }, fixture.origin);

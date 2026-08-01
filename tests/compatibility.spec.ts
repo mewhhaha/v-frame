@@ -116,7 +116,7 @@ async function mountFrame(
     document.querySelector("#host")?.append(frame);
   }, { frameID: id, frameSource: source });
   const frame = page.locator(`v-frame#${id}`);
-  await expect.poll(() => frame.evaluate((element) => (element as { status: string }).status)).toBe("ready");
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { status: string }) => element.status)).toBe("ready");
   return frame;
 }
 
@@ -149,7 +149,7 @@ test("reconstructs a source that declares restrictive CSP and framing headers", 
   const frame = await mountFrame(page, "restrictive-headers", `${fixture.origin}/documents/restrictive-headers.html`);
 
   await expect(frame.locator("#script-result")).toHaveText("ran");
-  await expect.poll(() => frame.evaluate((element) => (element as { currentURL: string | null }).currentURL)).toBe(
+  await expect.poll(() => frame.evaluate((element: HTMLElement & { currentURL: string | null }) => element.currentURL)).toBe(
     `${fixture.origin}/documents/restrictive-headers.html`,
   );
 });
