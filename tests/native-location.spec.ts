@@ -1,61 +1,38 @@
-import { createReadStream, existsSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
-import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+  bundleRoute,
+  type HTTPFixture,
+  requestPathname,
+  startHTTPFixture,
+} from "./support/http-fixture";
+import { installBundle, mountFrame } from "./support/mount-frame";
 
-interface NativeLocationFixture {
-  origin: string;
-  requests: Array<{ destination: string; path: string }>;
-  close(): Promise<void>;
+interface ObservedRequest {
+  destination: string;
+  path: string;
 }
+
+let fixture: HTTPFixture<ObservedRequest>;
 
 function page(body: string): string {
   return `<!doctype html><html><body>${body}</body></html>`;
 }
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  type: string,
-  body: string,
-  headers: Record<string, string> = {},
-): void {
-  response.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store",
-    ...headers,
-  });
-  response.end(body);
+function observeRequest(request: IncomingMessage): ObservedRequest {
+  return {
+    destination: String(request.headers["sec-fetch-dest"] ?? ""),
+    path: requestPathname(request),
+  };
 }
 
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolveClosed, reject) => {
-    server.close((error) => (error === undefined ? resolveClosed() : reject(error)));
-  });
-}
-
-async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
-  const requests: NativeLocationFixture["requests"] = [];
-  const bundle = resolve(process.cwd(), "dist/index.js");
-  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    const url = new URL(request.url ?? "/", "http://fixture.test");
-    const destination = String(request.headers["sec-fetch-dest"] ?? "");
-    requests.push({ destination, path: url.pathname });
-
-    if (url.pathname === "/") {
-      return reply(response, 200, "text/html", page('<div id="host"></div>'));
-    }
-    if (url.pathname === "/adopted") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        page(`
+function startNativeLocationFixture(): Promise<HTTPFixture<ObservedRequest>> {
+  return startHTTPFixture({
+    record: observeRequest,
+    routes: {
+      "/": page('<div id="host"></div>'),
+      "/dist/index.js": bundleRoute,
+      "/adopted": page(`
         <v-frame id="adopted-native-frame" adopt src="/routes/entry.html">
           <template shadowrootmode="open">
             <v-html><v-head></v-head><v-body>
@@ -71,67 +48,20 @@ async function startNativeLocationFixture(): Promise<NativeLocationFixture> {
           bundle.defineVFrame();
         </script>
       `),
-      );
-    }
-    if (url.pathname === "/dist/index.js") {
-      if (!existsSync(bundle)) {
-        return reply(response, 404, "text/plain", "Build output not found");
-      }
-      response.writeHead(200, {
-        "content-type": "text/javascript",
-        "cache-control": "no-store",
-      });
-      createReadStream(bundle).pipe(response);
-      return;
-    }
-    if (url.pathname === "/routes/entry.html") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        page(`<main id="native-entry">Native entry</main>
+      "/routes/entry.html": page(`<main id="native-entry">Native entry</main>
           <button id="hard-navigation">Hard navigation</button>
           <script>
             document.querySelector('#hard-navigation').addEventListener('click', () => {
               location.assign('/routes/destination.html');
             });
           </script>`),
-      );
-    }
-    if (url.pathname === "/routes/destination.html") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        page('<main id="shell-destination">Top-level destination</main>'),
-      );
-    }
-    if (url.pathname === "/ordinary/entry.html") {
-      return reply(
-        response,
-        200,
-        "text/html",
-        page('<main id="ordinary-entry">Ordinary entry</main>'),
-      );
-    }
-    return reply(response, 404, "text/plain", `No fixture for ${url.pathname}`);
+      "/routes/destination.html": page(
+        '<main id="shell-destination">Top-level destination</main>',
+      ),
+      "/ordinary/entry.html": page('<main id="ordinary-entry">Ordinary entry</main>'),
+    },
   });
-  await new Promise<void>((resolveListening) => {
-    server.listen(0, "127.0.0.1", resolveListening);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("The native Location fixture did not expose a TCP address");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    requests,
-    close: () => closeServer(server),
-  };
 }
-
-let fixture: NativeLocationFixture;
 
 test.beforeAll(async () => {
   fixture = await startNativeLocationFixture();
@@ -141,35 +71,19 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
-async function mountFrame(
-  pageInstance: import("@playwright/test").Page,
+async function mountLocationFrame(
+  pageInstance: Page,
   source = "/routes/entry.html",
-) {
-  await pageInstance.goto(fixture.origin);
-  await pageInstance.evaluate(async (bundleURL) => {
-    const bundle = await import(bundleURL);
-    bundle.defineVFrame();
-  }, `${fixture.origin}/dist/index.js`);
-  await pageInstance.evaluate((frameSource) => {
-    const frame = document.createElement("v-frame");
-    frame.id = "location-frame";
-    frame.setAttribute("src", frameSource);
-    document.querySelector("#host")?.append(frame);
-  }, source);
-  const frame = pageInstance.locator("#location-frame");
-  await expect
-    .poll(() =>
-      frame.evaluate((element) => (element as HTMLElement & { status: string }).status),
-    )
-    .toBe("ready");
-  return frame;
+): Promise<Locator> {
+  await installBundle(pageInstance, fixture.origin);
+  return mountFrame(pageInstance, { src: source, id: "location-frame" });
 }
 
 test("uses the guest route as native Location without an iframe request", async ({
   page: pageInstance,
 }) => {
   const requestStart = fixture.requests.length;
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
 
   await expect(frame.locator("#native-entry")).toHaveText("Native entry");
   expect(
@@ -186,7 +100,7 @@ test("uses the guest route as native Location without an iframe request", async 
 });
 
 test("loads an ordinary same-origin route", async ({ page: pageInstance }) => {
-  const frame = await mountFrame(pageInstance, "/ordinary/entry.html");
+  const frame = await mountLocationFrame(pageInstance, "/ordinary/entry.html");
 
   await expect(frame.locator("#ordinary-entry")).toHaveText("Ordinary entry");
 });
@@ -194,7 +108,7 @@ test("loads an ordinary same-origin route", async ({ page: pageInstance }) => {
 test("preserves replace semantics for native Location navigation", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   await frame.evaluate(
     (element) =>
       new Promise<void>((resolve) => {
@@ -219,7 +133,7 @@ test("preserves replace semantics for native Location navigation", async ({
 test("loads direct Location navigation inside the guest", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   await frame.locator("#hard-navigation").click();
 
   await expect(frame.locator("#shell-destination")).toHaveText("Top-level destination");
@@ -237,7 +151,7 @@ test("lets a guest Navigation interceptor own same-document routing", async ({
   page: pageInstance,
 }) => {
   const requestStart = fixture.requests.length;
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle(
     (element) =>
       (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
@@ -286,7 +200,7 @@ test("lets a guest Navigation interceptor own same-document routing", async ({
 test("honors guest cancellation of native Location navigation", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle(
     (element) =>
       (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
@@ -336,7 +250,7 @@ test("honors guest cancellation of native Location navigation", async ({
 test("reloads the guest without adding a document history entry", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle(
     (element) =>
       (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
@@ -373,7 +287,7 @@ test("reloads the guest without adding a document history entry", async ({
 test("promotes direct Location navigation in explicit host mode", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   await frame.evaluate(
     (element) =>
       new Promise<void>((resolve) => {
@@ -392,7 +306,7 @@ test("promotes direct Location navigation in explicit host mode", async ({
 test("keeps the current realm when direct navigation is canceled", async ({
   page: pageInstance,
 }) => {
-  const frame = await mountFrame(pageInstance);
+  const frame = await mountLocationFrame(pageInstance);
   const originalWindow = await frame.evaluateHandle(
     (element) =>
       (element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null })
