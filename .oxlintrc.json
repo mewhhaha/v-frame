@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "rules": {
+    "eslint/no-extra-boolean-cast": "off",
+    "eslint/no-useless-escape": "off",
+    "typescript/no-this-alias": "off",
+    "unicorn/no-useless-spread": "off"
+  }
+}

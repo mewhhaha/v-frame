@@ -58,15 +58,17 @@ cost](./docs/limitations.md#guest-size-and-activation-cost).
 ## Install
 
 ```sh
-npm install v-frame
+pnpm add jsr:@mewhhaha/v-frame
 ```
+
+With npm, run `npx jsr add @mewhhaha/v-frame` instead.
 
 ## Quickstart
 
 Register the custom element once in the host application's browser entry:
 
 ```ts
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";
 ```
 
 Render an ordinary guest document and give the element a size, like any other
@@ -110,13 +112,13 @@ place without a second request — see [SSR](./docs/ssr.md).
 
 ## Documentation
 
-| Page | Contents |
-| --- | --- |
-| [Limitations](./docs/limitations.md) | Every API that throws inside a guest, why, and the workaround. |
-| [API reference](./docs/api.md) | Attributes, properties, methods, events, custom states, CSP and Trusted Types. |
-| [Navigation](./docs/navigation.md) | Guest and host navigation modes, interception, and the imperative routing API. |
-| [SSR](./docs/ssr.md) | Server-rendered adoption and the `v-frame/server` materializer. |
-| [Troubleshooting](./docs/troubleshooting.md) | Symptoms and their causes. |
+| Page                                         | Contents                                                                       |
+| -------------------------------------------- | ------------------------------------------------------------------------------ |
+| [Limitations](./docs/limitations.md)         | Every API that throws inside a guest, why, and the workaround.                 |
+| [API reference](./docs/api.md)               | Attributes, properties, methods, events, custom states, CSP and Trusted Types. |
+| [Navigation](./docs/navigation.md)           | Guest and host navigation modes, interception, and the imperative routing API. |
+| [SSR](./docs/ssr.md)                         | Server-rendered adoption and the `@mewhhaha/v-frame/server` materializer.      |
+| [Troubleshooting](./docs/troubleshooting.md) | Symptoms and their causes.                                                     |
 
 ## Examples
 

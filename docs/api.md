@@ -6,26 +6,30 @@ materializer, see [SSR](./ssr.md).
 
 ## Entries
 
-| Import | Contents |
-| --- | --- |
-| `v-frame/register` | Side-effecting. Defines `<v-frame>` in the custom element registry. |
-| `v-frame` | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types. |
-| `v-frame/server` | The SSR materializer core, its Cloudflare `HTMLRewriter` adapter, and the stylesheet rewriter. |
+| Import                       | Contents                                                                                       |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `@mewhhaha/v-frame/register` | Side-effecting. Defines `<v-frame>` in the custom element registry.                            |
+| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.             |
+| `@mewhhaha/v-frame/server`   | The SSR materializer core, its Cloudflare `HTMLRewriter` adapter, and the stylesheet rewriter. |
 
 ```ts
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";
 ```
 
 ```ts
-import { defineVFrame, VFrameElement, VFrameStatus } from "v-frame";
+import { defineVFrame, VFrameElement, VFrameStatus } from "@mewhhaha/v-frame";
 
 // Defining explicitly is the same registration, without the import side effect.
 defineVFrame();
 ```
 
-`VFrameElement` augments `HTMLElementTagNameMap` and `HTMLElementEventMap`, so
-`document.querySelector("v-frame")` and `addEventListener("v-frame-load", …)`
-are typed without a cast once the package is imported anywhere in the program.
+`VFrameElement` carries typed event overloads. Pass it to the DOM query when the
+host needs the concrete element API:
+
+```ts
+const frame = document.querySelector<VFrameElement>("v-frame");
+frame?.addEventListener("v-frame-load", (event) => console.log(event.detail.url));
+```
 
 ## Configuration
 
@@ -34,14 +38,14 @@ Observed attributes, each with a matching property. Changing `src`,
 restarts the guest with a fresh network load; changing `nonce` applies to the
 next load instead of forcing one.
 
-| Attribute | Property | Default | Purpose |
-| --- | --- | --- | --- |
-| `src` | `src` | `""` | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle. |
-| `adopt` | `adopt` | `false` | Activates the initial Declarative Shadow DOM instead of fetching `src`. Not observed — it is read on connection. |
-| `navigation` | `navigation` | `"guest"` | `"host"` when the shell owns the guest's route. |
-| `credentials` | `credentials` | `"same-origin"` | `"omit"`, `"same-origin"`, or `"include"`. See below. |
-| `nonce` | `nonce` | `""` | CSP nonce applied to executed scripts and generated styles. |
-| `trusted-types-policy` | `trustedTypesPolicy` | none | Name of an identity Trusted Types policy allowed by the host CSP, or a full policy definition assigned through the property. |
+| Attribute              | Property             | Default         | Purpose                                                                                                                      |
+| ---------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `src`                  | `src`                | `""`            | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle.                             |
+| `adopt`                | `adopt`              | `false`         | Activates the initial Declarative Shadow DOM instead of fetching `src`. Not observed — it is read on connection.             |
+| `navigation`           | `navigation`         | `"guest"`       | `"host"` when the shell owns the guest's route.                                                                              |
+| `credentials`          | `credentials`        | `"same-origin"` | `"omit"`, `"same-origin"`, or `"include"`. See below.                                                                        |
+| `nonce`                | `nonce`              | `""`            | CSP nonce applied to executed scripts and generated styles.                                                                  |
+| `trusted-types-policy` | `trustedTypesPolicy` | none            | Name of an identity Trusted Types policy allowed by the host CSP, or a full policy definition assigned through the property. |
 
 Assigning `credentials` a value other than the three above throws a `TypeError`,
 as does assigning an empty `trustedTypesPolicy` string.
@@ -66,13 +70,13 @@ The one place the setting reaches into guest requests is
 
 Readonly:
 
-| Property | Value |
-| --- | --- |
-| `status` | `"idle"`, `"loading"`, `"ready"`, or `"error"`. |
-| `currentURL` | Current guest URL, or `null` without an active guest. |
-| `contentWindow` | Guest `Window`, or `null` before creation and after teardown. |
-| `canGoBack` | Whether the guest session has an earlier entry. In host mode, the shell's. `false` when idle. |
-| `canGoForward` | Whether the guest session has a later entry. In host mode, the shell's. `false` when idle. |
+| Property        | Value                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| `status`        | `"idle"`, `"loading"`, `"ready"`, or `"error"`.                                               |
+| `currentURL`    | Current guest URL, or `null` without an active guest.                                         |
+| `contentWindow` | Guest `Window`, or `null` before creation and after teardown.                                 |
+| `canGoBack`     | Whether the guest session has an earlier entry. In host mode, the shell's. `false` when idle. |
+| `canGoForward`  | Whether the guest session has a later entry. In host mode, the shell's. `false` when idle.    |
 
 `VFrameStatus` is exported as a value as well, so a host can compare against
 `VFrameStatus.Ready` rather than a string literal.
@@ -91,11 +95,11 @@ v-frame:state(error) {
 
 ## Element methods
 
-| Method | Effect |
-| --- | --- |
-| `navigate(url, { replace })` | Same-document navigation to another same-origin route. |
+| Method                             | Effect                                                    |
+| ---------------------------------- | --------------------------------------------------------- |
+| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.    |
 | `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved. |
-| `reload()` | Reloads the current guest document over the network. |
+| `reload()`                         | Reloads the current guest document over the network.      |
 
 All four return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
@@ -135,13 +139,13 @@ nonfatal error paths are covered by the lifecycle tests in `tests/v-frame.spec.t
 All events bubble through the host DOM and are composed, so a host can listen on
 an ancestor rather than on each frame.
 
-| Event | Cancelable | Detail |
-| --- | --- | --- |
-| `v-frame-loadstart` | no | `{ url }` for the selected entry URL. |
-| `v-frame-load` | no | `{ url }` when the guest is ready. |
-| `v-frame-error` | no | `{ phase, url, error, fatal }`. |
-| `v-frame-navigate` | yes | `{ from, to, kind, state }` before the guest moves. |
-| `v-frame-navigated` | no | `{ from, to, kind }` after the guest URL changed. |
+| Event               | Cancelable | Detail                                              |
+| ------------------- | ---------- | --------------------------------------------------- |
+| `v-frame-loadstart` | no         | `{ url }` for the selected entry URL.               |
+| `v-frame-load`      | no         | `{ url }` when the guest is ready.                  |
+| `v-frame-error`     | no         | `{ phase, url, error, fatal }`.                     |
+| `v-frame-navigate`  | yes        | `{ from, to, kind, state }` before the guest moves. |
+| `v-frame-navigated` | no         | `{ from, to, kind }` after the guest URL changed.   |
 
 `kind` is one of `"link"`, `"form"`, `"window"`, `"push"`, `"replace"`,
 `"traverse"`, or `"fragment"`.
@@ -181,10 +185,7 @@ When the host enforces Trusted Types, allow a policy name in its CSP and put
 that name on the frame:
 
 ```html
-<v-frame
-  trusted-types-policy="orders-frame"
-  src="/applications/orders/"
-></v-frame>
+<v-frame trusted-types-policy="orders-frame" src="/applications/orders/"></v-frame>
 ```
 
 ```text
@@ -206,14 +207,14 @@ frame.trustedTypesPolicy = {
 
 ## Server entry
 
-`v-frame/server` is documented in [SSR](./ssr.md). Its exports:
+`@mewhhaha/v-frame/server` is documented in [SSR](./ssr.md). Its exports:
 
-| Export | Kind | Purpose |
-| --- | --- | --- |
-| `materializeVFrameDocument(response, documentURL, options?)` | Cloudflare adapter | Streams a guest `Response` through `HTMLRewriter` into adoptable markup. |
-| `rewriteShellElement(tagName)` | core | Maps `html`/`head`/`body` to `v-html`/`v-head`/`v-body`, and returns the display rules to prepend into `v-head`. |
-| `rewriteScriptElement(script)` | core | Returns the attribute edits that make a guest script parser-inert, or `null` if it already is. |
-| `materializeStylesheet(source, documentURL, options?)` | core | Rewrites one inline stylesheet for the guest's public URL and escapes it for a `<style>` element. |
-| `escapeStylesheetText(source)` | core | The `</style` escape on its own. |
-| `rewriteStylesheet(source, url, context)`, `createStylesheetContext(fetchText, onImportFailure?)` | CSS | The runtime-neutral stylesheet rewriter, for a host building its own adapter. |
-| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SHELL_DISPLAY_STYLE` | constants | The wire format between materializer and runtime. |
+| Export                                                                                            | Kind               | Purpose                                                                                                          |
+| ------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `materializeVFrameDocument(response, documentURL, options?)`                                      | Cloudflare adapter | Streams a guest `Response` through `HTMLRewriter` into adoptable markup.                                         |
+| `rewriteShellElement(tagName)`                                                                    | core               | Maps `html`/`head`/`body` to `v-html`/`v-head`/`v-body`, and returns the display rules to prepend into `v-head`. |
+| `rewriteScriptElement(script)`                                                                    | core               | Returns the attribute edits that make a guest script parser-inert, or `null` if it already is.                   |
+| `materializeStylesheet(source, documentURL, options?)`                                            | core               | Rewrites one inline stylesheet for the guest's public URL and escapes it for a `<style>` element.                |
+| `escapeStylesheetText(source)`                                                                    | core               | The `</style` escape on its own.                                                                                 |
+| `rewriteStylesheet(source, url, context)`, `createStylesheetContext(fetchText, onImportFailure?)` | CSS                | The runtime-neutral stylesheet rewriter, for a host building its own adapter.                                    |
+| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SHELL_DISPLAY_STYLE`    | constants          | The wire format between materializer and runtime.                                                                |

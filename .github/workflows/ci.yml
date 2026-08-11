@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    name: format, typecheck, build, test
+    name: format, lint, typecheck, build, test, publish dry run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,8 @@ jobs:
 
       - run: pnpm format:check
 
+      - run: pnpm lint
+
       - run: pnpm typecheck
 
       - run: pnpm build
@@ -33,6 +35,8 @@ jobs:
       - run: pnpm size
 
       - run: pnpm test:unit
+
+      - run: pnpm exec jsr publish --dry-run
 
       - run: pnpm exec playwright test --project=chromium --project=firefox
 

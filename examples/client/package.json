@@ -14,7 +14,7 @@
     "@comp0/react": "0.1.0-next.11",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "v-frame": "workspace:*"
+    "@mewhhaha/v-frame": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "19.2.17",

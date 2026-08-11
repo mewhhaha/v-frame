@@ -5,59 +5,303 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Relay workspace</title>
     <style>
-      :root { color-scheme: only dark; }
-      * { box-sizing: border-box; }
-      [hidden] { display: none !important; }
-      body { margin: 0; background: #000; color: #f5f5f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-      button, input { font: inherit; }
-      button:focus-visible, input:focus-visible { outline: 2px solid white; outline-offset: 2px; }
-      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; margin: -1px; padding: 0; border: 0; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-      .workspace-page { width: min(100%, 48rem); margin: 0 auto; padding: 3rem 1.5rem 4rem; }
-      .page-heading { display: flex; min-width: 0; align-items: flex-end; justify-content: space-between; gap: 1.5rem; }
-      h1, h2, h3, p { margin-top: 0; }
-      h1 { margin-bottom: 0; font-size: 1.75rem; font-weight: 500; letter-spacing: -0.035em; }
-      .page-heading p { margin: 0.35rem 0 0; color: #b4b4b4; font-size: 0.875rem; line-height: 1.5; }
-      .search-field { position: relative; display: block; flex: none; }
-      .search-field::before { position: absolute; top: 50%; left: 0.75rem; color: #8e8e8e; content: "⌕"; font-size: 1rem; transform: translateY(-50%); pointer-events: none; }
-      .search-field input { width: 15rem; height: 2.35rem; padding: 0.4rem 0.75rem 0.4rem 2rem; border: 1px solid #3f3f3f; border-radius: 999px; background: #212121; color: #f5f5f5; font-size: 0.8125rem; }
-      .search-field input::placeholder { color: #a0a0a0; }
-      .installed-plugins { margin-top: 2.4rem; }
-      .installed-plugins h2, .plugin-category > h2 { margin-bottom: 0.65rem; color: #ececec; font-size: 0.8125rem; font-weight: 500; }
-      .installed-row { display: flex; flex-wrap: wrap; gap: 0.55rem; }
-      .plugin-mark, .file-mark { display: grid; width: 2.35rem; height: 2.35rem; flex: none; place-items: center; border-radius: 0.65rem; background: #242424; color: #ececec; font-size: 0.6875rem; font-weight: 650; }
-      .plugin-category { margin-top: 2rem; }
-      .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 2rem; }
-      .plugin-row { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; padding: 0.75rem 0; }
-      .plugin-row h3 { overflow: hidden; margin-bottom: 0.18rem; color: #ececec; font-size: 0.8125rem; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-      .plugin-row p { overflow: hidden; margin-bottom: 0; color: #8e8e8e; font-size: 0.72rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-      .plugin-row button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border: 0; border-radius: 0.45rem; background: transparent; color: #b4b4b4; cursor: pointer; font-size: 1.15rem; }
-      .plugin-row button:hover { background: #212121; color: white; }
-      .plugin-row button[aria-pressed="true"] { color: #8e8e8e; font-size: 0.8125rem; }
-      .library-heading { align-items: center; }
-      .heading-actions { display: flex; align-items: center; gap: 0.65rem; }
-      .primary-button { min-height: 2.35rem; padding: 0.4rem 1rem; border: 0; border-radius: 999px; background: #f5f5f5; color: #111; cursor: pointer; font-size: 0.8125rem; }
-      .filter-tabs { display: flex; gap: 0.25rem; margin: 2.5rem 0 1rem; }
-      .filter-tabs button { min-height: 2.25rem; padding: 0.4rem 0.85rem; border: 0; border-radius: 999px; background: transparent; color: #b4b4b4; cursor: pointer; font-size: 0.8125rem; }
-      .filter-tabs button:hover, .filter-tabs button[aria-pressed="true"] { background: #303030; color: white; }
-      table { width: 100%; border-collapse: collapse; color: #ececec; font-size: 0.8125rem; text-align: left; }
-      th { padding: 0.7rem 0; border-bottom: 1px solid #242424; color: #8e8e8e; font-weight: 400; }
-      td { height: 4rem; border-bottom: 1px solid #1d1d1d; color: #b4b4b4; }
-      td:first-child { display: flex; align-items: center; gap: 0.75rem; color: #ececec; }
-      th:first-child, td:first-child { width: 56%; }
-      .file-mark { width: 2rem; height: 2rem; border: 1px solid #3a3a3a; background: #181818; border-radius: 0.5rem; }
+      :root {
+        color-scheme: only dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body {
+        margin: 0;
+        background: #000;
+        color: #f5f5f5;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      button,
+      input {
+        font: inherit;
+      }
+      button:focus-visible,
+      input:focus-visible {
+        outline: 2px solid white;
+        outline-offset: 2px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+      }
+      .workspace-page {
+        width: min(100%, 48rem);
+        margin: 0 auto;
+        padding: 3rem 1.5rem 4rem;
+      }
+      .page-heading {
+        display: flex;
+        min-width: 0;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 1.5rem;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+      h1 {
+        margin-bottom: 0;
+        font-size: 1.75rem;
+        font-weight: 500;
+        letter-spacing: -0.035em;
+      }
+      .page-heading p {
+        margin: 0.35rem 0 0;
+        color: #b4b4b4;
+        font-size: 0.875rem;
+        line-height: 1.5;
+      }
+      .search-field {
+        position: relative;
+        display: block;
+        flex: none;
+      }
+      .search-field::before {
+        position: absolute;
+        top: 50%;
+        left: 0.75rem;
+        color: #8e8e8e;
+        content: "⌕";
+        font-size: 1rem;
+        transform: translateY(-50%);
+        pointer-events: none;
+      }
+      .search-field input {
+        width: 15rem;
+        height: 2.35rem;
+        padding: 0.4rem 0.75rem 0.4rem 2rem;
+        border: 1px solid #3f3f3f;
+        border-radius: 999px;
+        background: #212121;
+        color: #f5f5f5;
+        font-size: 0.8125rem;
+      }
+      .search-field input::placeholder {
+        color: #a0a0a0;
+      }
+      .installed-plugins {
+        margin-top: 2.4rem;
+      }
+      .installed-plugins h2,
+      .plugin-category > h2 {
+        margin-bottom: 0.65rem;
+        color: #ececec;
+        font-size: 0.8125rem;
+        font-weight: 500;
+      }
+      .installed-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+      }
+      .plugin-mark,
+      .file-mark {
+        display: grid;
+        width: 2.35rem;
+        height: 2.35rem;
+        flex: none;
+        place-items: center;
+        border-radius: 0.65rem;
+        background: #242424;
+        color: #ececec;
+        font-size: 0.6875rem;
+        font-weight: 650;
+      }
+      .plugin-category {
+        margin-top: 2rem;
+      }
+      .plugin-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 2rem;
+      }
+      .plugin-row {
+        display: grid;
+        min-width: 0;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem 0;
+      }
+      .plugin-row h3 {
+        overflow: hidden;
+        margin-bottom: 0.18rem;
+        color: #ececec;
+        font-size: 0.8125rem;
+        font-weight: 500;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .plugin-row p {
+        overflow: hidden;
+        margin-bottom: 0;
+        color: #8e8e8e;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .plugin-row button {
+        display: grid;
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        place-items: center;
+        border: 0;
+        border-radius: 0.45rem;
+        background: transparent;
+        color: #b4b4b4;
+        cursor: pointer;
+        font-size: 1.15rem;
+      }
+      .plugin-row button:hover {
+        background: #212121;
+        color: white;
+      }
+      .plugin-row button[aria-pressed="true"] {
+        color: #8e8e8e;
+        font-size: 0.8125rem;
+      }
+      .library-heading {
+        align-items: center;
+      }
+      .heading-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+      }
+      .primary-button {
+        min-height: 2.35rem;
+        padding: 0.4rem 1rem;
+        border: 0;
+        border-radius: 999px;
+        background: #f5f5f5;
+        color: #111;
+        cursor: pointer;
+        font-size: 0.8125rem;
+      }
+      .filter-tabs {
+        display: flex;
+        gap: 0.25rem;
+        margin: 2.5rem 0 1rem;
+      }
+      .filter-tabs button {
+        min-height: 2.25rem;
+        padding: 0.4rem 0.85rem;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: #b4b4b4;
+        cursor: pointer;
+        font-size: 0.8125rem;
+      }
+      .filter-tabs button:hover,
+      .filter-tabs button[aria-pressed="true"] {
+        background: #303030;
+        color: white;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        color: #ececec;
+        font-size: 0.8125rem;
+        text-align: left;
+      }
+      th {
+        padding: 0.7rem 0;
+        border-bottom: 1px solid #242424;
+        color: #8e8e8e;
+        font-weight: 400;
+      }
+      td {
+        height: 4rem;
+        border-bottom: 1px solid #1d1d1d;
+        color: #b4b4b4;
+      }
+      td:first-child {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        color: #ececec;
+      }
+      th:first-child,
+      td:first-child {
+        width: 56%;
+      }
+      .file-mark {
+        width: 2rem;
+        height: 2rem;
+        border: 1px solid #3a3a3a;
+        background: #181818;
+        border-radius: 0.5rem;
+      }
       @media (max-width: 40rem) {
-        .workspace-page { padding: 1.5rem 1rem 3rem; }
-        .page-heading { align-items: stretch; flex-direction: column; }
-        h1 { font-size: 1.55rem; }
-        .search-field, .search-field input { width: 100%; }
-        .heading-actions { align-items: stretch; flex-direction: column; }
-        .search-field input { min-height: 3rem; font-size: 1rem; }
-        .primary-button { min-height: 3rem; font-size: 1rem; }
-        .plugin-grid { grid-template-columns: 1fr; }
-        .plugin-row h3, .plugin-row p, table { font-size: 1rem; }
-        .plugin-row button { width: 3rem; height: 3rem; }
-        th:nth-child(3), td:nth-child(3) { display: none; }
-        th:first-child, td:first-child { width: 68%; }
+        .workspace-page {
+          padding: 1.5rem 1rem 3rem;
+        }
+        .page-heading {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        h1 {
+          font-size: 1.55rem;
+        }
+        .search-field,
+        .search-field input {
+          width: 100%;
+        }
+        .heading-actions {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .search-field input {
+          min-height: 3rem;
+          font-size: 1rem;
+        }
+        .primary-button {
+          min-height: 3rem;
+          font-size: 1rem;
+        }
+        .plugin-grid {
+          grid-template-columns: 1fr;
+        }
+        .plugin-row h3,
+        .plugin-row p,
+        table {
+          font-size: 1rem;
+        }
+        .plugin-row button {
+          width: 3rem;
+          height: 3rem;
+        }
+        th:nth-child(3),
+        td:nth-child(3) {
+          display: none;
+        }
+        th:first-child,
+        td:first-child {
+          width: 68%;
+        }
       }
     </style>
   </head>
@@ -65,54 +309,254 @@
     <div id="overlay-lab"></div>
     <main id="plugins-page" class="workspace-page" hidden>
       <header class="page-heading">
-        <div><h1>Plugins</h1><p>Work across your favorite tools from one conversation.</p></div>
-        <label class="search-field"><span class="sr-only">Search plugins</span><input name="plugin-search" type="search" placeholder="Search plugins" /></label>
+        <div>
+          <h1>Plugins</h1>
+          <p>Work across your favorite tools from one conversation.</p>
+        </div>
+        <label class="search-field"
+          ><span class="sr-only">Search plugins</span
+          ><input name="plugin-search" type="search" placeholder="Search plugins"
+        /></label>
       </header>
-      <section id="installed-plugins" class="installed-plugins" aria-labelledby="installed-title">
+      <section
+        id="installed-plugins"
+        class="installed-plugins"
+        aria-labelledby="installed-title"
+      >
         <h2 id="installed-title">Installed</h2>
-        <div class="installed-row"><span class="plugin-mark" title="GitHub">GH</span><span class="plugin-mark" title="Drive">DR</span><span class="plugin-mark" title="Wikipedia">W</span></div>
+        <div class="installed-row">
+          <span class="plugin-mark" title="GitHub">GH</span
+          ><span class="plugin-mark" title="Drive">DR</span
+          ><span class="plugin-mark" title="Wikipedia">W</span>
+        </div>
       </section>
-      <section id="plugin-category-featured" class="plugin-category" aria-labelledby="plugin-title-featured">
+      <section
+        id="plugin-category-featured"
+        class="plugin-category"
+        aria-labelledby="plugin-title-featured"
+      >
         <h2 id="plugin-title-featured">Featured</h2>
         <div class="plugin-grid">
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">DA</span><div><h3>Data analysis</h3><p>Answer product and business questions</p></div><button type="button" data-plugin-toggle data-plugin-name="Data analysis" aria-pressed="false" aria-label="Enable Data analysis">+</button></article>
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">GH</span><div><h3>GitHub</h3><p>Triage pull requests and publish flows</p></div><button type="button" data-plugin-toggle data-plugin-name="GitHub" aria-pressed="true" aria-label="Disable GitHub">✓</button></article>
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">DR</span><div><h3>Drive</h3><p>Search files and supporting passages</p></div><button type="button" data-plugin-toggle data-plugin-name="Drive" aria-pressed="true" aria-label="Disable Drive">✓</button></article>
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">W</span><div><h3>Wikipedia</h3><p>Preview referenced articles in context</p></div><button type="button" data-plugin-toggle data-plugin-name="Wikipedia" aria-pressed="true" aria-label="Disable Wikipedia">✓</button></article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">DA</span>
+            <div>
+              <h3>Data analysis</h3>
+              <p>Answer product and business questions</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Data analysis"
+              aria-pressed="false"
+              aria-label="Enable Data analysis"
+            >
+              +
+            </button>
+          </article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">GH</span>
+            <div>
+              <h3>GitHub</h3>
+              <p>Triage pull requests and publish flows</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="GitHub"
+              aria-pressed="true"
+              aria-label="Disable GitHub"
+            >
+              ✓
+            </button>
+          </article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">DR</span>
+            <div>
+              <h3>Drive</h3>
+              <p>Search files and supporting passages</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Drive"
+              aria-pressed="true"
+              aria-label="Disable Drive"
+            >
+              ✓
+            </button>
+          </article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">W</span>
+            <div>
+              <h3>Wikipedia</h3>
+              <p>Preview referenced articles in context</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Wikipedia"
+              aria-pressed="true"
+              aria-label="Disable Wikipedia"
+            >
+              ✓
+            </button>
+          </article>
         </div>
       </section>
-      <section id="plugin-category-productivity" class="plugin-category" aria-labelledby="plugin-title-productivity">
+      <section
+        id="plugin-category-productivity"
+        class="plugin-category"
+        aria-labelledby="plugin-title-productivity"
+      >
         <h2 id="plugin-title-productivity">Productivity</h2>
         <div class="plugin-grid">
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">N</span><div><h3>Notion</h3><p>Turn research into connected notes</p></div><button type="button" data-plugin-toggle data-plugin-name="Notion" aria-pressed="false" aria-label="Enable Notion">+</button></article>
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">L</span><div><h3>Linear</h3><p>Plan projects and product work</p></div><button type="button" data-plugin-toggle data-plugin-name="Linear" aria-pressed="false" aria-label="Enable Linear">+</button></article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">N</span>
+            <div>
+              <h3>Notion</h3>
+              <p>Turn research into connected notes</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Notion"
+              aria-pressed="false"
+              aria-label="Enable Notion"
+            >
+              +
+            </button>
+          </article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">L</span>
+            <div>
+              <h3>Linear</h3>
+              <p>Plan projects and product work</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Linear"
+              aria-pressed="false"
+              aria-label="Enable Linear"
+            >
+              +
+            </button>
+          </article>
         </div>
       </section>
-      <section id="plugin-category-developer-tools" class="plugin-category" aria-labelledby="plugin-title-developer-tools">
+      <section
+        id="plugin-category-developer-tools"
+        class="plugin-category"
+        aria-labelledby="plugin-title-developer-tools"
+      >
         <h2 id="plugin-title-developer-tools">Developer tools</h2>
         <div class="plugin-grid">
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">SB</span><div><h3>Supabase</h3><p>Query application records safely</p></div><button type="button" data-plugin-toggle data-plugin-name="Supabase" aria-pressed="false" aria-label="Enable Supabase">+</button></article>
-          <article class="plugin-row"><span class="plugin-mark" aria-hidden="true">OD</span><div><h3>OpenAI Developers</h3><p>Search technical documentation</p></div><button type="button" data-plugin-toggle data-plugin-name="OpenAI Developers" aria-pressed="false" aria-label="Enable OpenAI Developers">+</button></article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">SB</span>
+            <div>
+              <h3>Supabase</h3>
+              <p>Query application records safely</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="Supabase"
+              aria-pressed="false"
+              aria-label="Enable Supabase"
+            >
+              +
+            </button>
+          </article>
+          <article class="plugin-row">
+            <span class="plugin-mark" aria-hidden="true">OD</span>
+            <div>
+              <h3>OpenAI Developers</h3>
+              <p>Search technical documentation</p>
+            </div>
+            <button
+              type="button"
+              data-plugin-toggle
+              data-plugin-name="OpenAI Developers"
+              aria-pressed="false"
+              aria-label="Enable OpenAI Developers"
+            >
+              +
+            </button>
+          </article>
         </div>
       </section>
     </main>
     <main id="library-page" class="workspace-page" hidden>
       <header class="page-heading library-heading">
         <h1>Library</h1>
-        <div class="heading-actions"><label class="search-field"><span class="sr-only">Search library</span><input name="library-search" type="search" placeholder="Search" /></label><button type="button" class="primary-button">New</button></div>
+        <div class="heading-actions">
+          <label class="search-field"
+            ><span class="sr-only">Search library</span
+            ><input name="library-search" type="search" placeholder="Search" /></label
+          ><button type="button" class="primary-button">New</button>
+        </div>
       </header>
-      <nav class="filter-tabs" aria-label="Library filters"><button type="button" aria-pressed="true">All</button><button type="button">Images</button><button type="button">Documents</button></nav>
+      <nav class="filter-tabs" aria-label="Library filters">
+        <button type="button" aria-pressed="true">All</button
+        ><button type="button">Images</button><button type="button">Documents</button>
+      </nav>
       <section id="library-entries" aria-labelledby="library-table-title">
         <h2 id="library-table-title" class="sr-only">Saved conversations and files</h2>
         <table>
-          <thead><tr><th>Name</th><th>Modified</th><th>Size</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Modified</th>
+              <th>Size</th>
+            </tr>
+          </thead>
           <tbody>
-            <tr><td><span class="file-mark" aria-hidden="true">T</span>Platform migration plan</td><td>Today</td><td>—</td></tr>
-            <tr><td><span class="file-mark" aria-hidden="true">T</span>Customer interview synthesis</td><td>Today</td><td>—</td></tr>
-            <tr><td><span class="file-mark" aria-hidden="true">T</span>Weekly stakeholder brief</td><td>Yesterday</td><td>—</td></tr>
-            <tr><td><span class="file-mark" aria-hidden="true">D</span>Architecture constraints.pdf</td><td>Jul 16</td><td>1.2 MB</td></tr>
-            <tr><td><span class="file-mark" aria-hidden="true">D</span>Research transcripts.docx</td><td>Jul 14</td><td>842 KB</td></tr>
-            <tr><td><span class="file-mark" aria-hidden="true">I</span>Deployment topology.png</td><td>Jul 11</td><td>640 KB</td></tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">T</span>Platform migration plan
+              </td>
+              <td>Today</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">T</span>Customer interview
+                synthesis
+              </td>
+              <td>Today</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">T</span>Weekly stakeholder
+                brief
+              </td>
+              <td>Yesterday</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">D</span>Architecture
+                constraints.pdf
+              </td>
+              <td>Jul 16</td>
+              <td>1.2 MB</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">D</span>Research
+                transcripts.docx
+              </td>
+              <td>Jul 14</td>
+              <td>842 KB</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="file-mark" aria-hidden="true">I</span>Deployment topology.png
+              </td>
+              <td>Jul 11</td>
+              <td>640 KB</td>
+            </tr>
           </tbody>
         </table>
       </section>

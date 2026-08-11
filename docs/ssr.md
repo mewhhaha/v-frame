@@ -8,11 +8,11 @@ a second document request.
 SSR has two participants and a clean boundary between them:
 
 1. The guest server returns its ordinary HTML document.
-2. The host server *materializes* that document and places it inside an adopting
+2. The host server _materializes_ that document and places it inside an adopting
    `<v-frame>`.
 
 The browser displays the Declarative Shadow DOM immediately. When
-`v-frame/register` loads, the element starts the guest's scripts and replaces the
+`@mewhhaha/v-frame/register` loads, the element starts the guest's scripts and replaces the
 preview with the activated tree in one synchronous handoff. It does not refetch
 the entry document.
 
@@ -61,12 +61,12 @@ trusted document:
 - Scripts become parser-inert while preserving their original type.
 - The materialized document receives its required display rules.
 
-`v-frame/server` ships this transformation. On Cloudflare Workers,
+`@mewhhaha/v-frame/server` ships this transformation. On Cloudflare Workers,
 `materializeVFrameDocument` streams it through `HTMLRewriter`; it takes a normal
 `Response` and the guest's public URL and returns a `Response`:
 
 ```ts
-import { materializeVFrameDocument } from "v-frame/server";
+import { materializeVFrameDocument } from "@mewhhaha/v-frame/server";
 
 const guestURL = new URL("/applications/orders/", request.url);
 const guestResponse = await ordersService.fetch(
@@ -74,15 +74,10 @@ const guestResponse = await ordersService.fetch(
 );
 
 if (!guestResponse.ok) {
-  throw new Error(
-    `orders SSR returned ${guestResponse.status} for ${guestURL.href}`,
-  );
+  throw new Error(`orders SSR returned ${guestResponse.status} for ${guestURL.href}`);
 }
 
-const materializedResponse = materializeVFrameDocument(
-  guestResponse,
-  guestURL.href,
-);
+const materializedResponse = materializeVFrameDocument(guestResponse, guestURL.href);
 ```
 
 A third argument configures the stylesheet stage: `fetchText` overrides how an
@@ -97,11 +92,11 @@ transformation APIs differ. The decisions it drives are runtime-neutral and are
 exported from the same entry, so a host on Node, Deno, or Bun points its own
 streaming HTML parser at them:
 
-| Export | Called with | Returns |
-| --- | --- | --- |
-| `rewriteShellElement(tagName)` | Every element's tag name | `{ tagName, prependHTML }`, or `null` for elements that are not `html`/`head`/`body`. `prependHTML` is the display-rule `<style>` that must go first inside `v-head`. |
-| `rewriteScriptElement(script)` | Every `<script>`, given `getAttribute`/`hasAttribute` | `{ removeAttributes, setAttributes }`, or `null` if the script is already materialized. |
-| `materializeStylesheet(source, documentURL, options?)` | The full text of every `<style>` | The rewritten, `</style`-escaped text to write back. |
+| Export                                                 | Called with                                           | Returns                                                                                                                                                               |
+| ------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rewriteShellElement(tagName)`                         | Every element's tag name                              | `{ tagName, prependHTML }`, or `null` for elements that are not `html`/`head`/`body`. `prependHTML` is the display-rule `<style>` that must go first inside `v-head`. |
+| `rewriteScriptElement(script)`                         | Every `<script>`, given `getAttribute`/`hasAttribute` | `{ removeAttributes, setAttributes }`, or `null` if the script is already materialized.                                                                               |
+| `materializeStylesheet(source, documentURL, options?)` | The full text of every `<style>`                      | The rewritten, `</style`-escaped text to write back.                                                                                                                  |
 
 `rewriteScriptElement` returning `null` for an already-materialized script
 matters: materializing twice would record `application/vnd.v-frame` as the
@@ -131,9 +126,16 @@ the browser has this shape:
     <v-html lang="en">
       <v-head>
         <style>
-          v-html, v-body { display: block; }
-          v-head { display: none; }
-          .orders-app { color: #18181b; }
+          v-html,
+          v-body {
+            display: block;
+          }
+          v-head {
+            display: none;
+          }
+          .orders-app {
+            color: #18181b;
+          }
         </style>
       </v-head>
       <v-body>
@@ -157,7 +159,7 @@ trusted guest service.
 The host page also loads the registration entry:
 
 ```ts
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";
 ```
 
 Declarative Shadow DOM renders before that module finishes loading, so the server
@@ -225,7 +227,7 @@ When something does not line up, see [Troubleshooting](./troubleshooting.md).
 [`examples/ssr`](../examples/ssr) is a working server-composed host with React
 Router, Qwik, Angular, and SolidStart guests — hydration, resumption, nested
 adopted frames, host-owned routing, and network reloads. It imports
-`v-frame/server` like any other consumer.
+`@mewhhaha/v-frame/server` like any other consumer.
 
 ```sh
 pnpm install

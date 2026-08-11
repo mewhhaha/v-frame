@@ -1,1 +1,1 @@
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";

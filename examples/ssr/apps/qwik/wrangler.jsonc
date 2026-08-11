@@ -5,11 +5,11 @@
   "compatibility_date": "2026-07-21",
   "assets": {
     "directory": "./dist/client",
-    "run_worker_first": ["/inventory", "/catalog", "/document"]
+    "run_worker_first": ["/inventory", "/catalog", "/document"],
   },
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
-  }
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 },
+  },
 }

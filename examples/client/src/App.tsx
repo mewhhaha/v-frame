@@ -1,7 +1,11 @@
 import { Button, Dialog, DialogContent, DialogTrigger } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
-import { VFrameStatus } from "v-frame";
-import type { VFrameElement, VFrameErrorEventDetail, VFrameStatusValue } from "v-frame";
+import { VFrameStatus } from "@mewhhaha/v-frame";
+import type {
+  VFrameElement,
+  VFrameErrorEventDetail,
+  VFrameStatusValue,
+} from "@mewhhaha/v-frame";
 import "./App.css";
 
 /**

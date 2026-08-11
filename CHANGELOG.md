@@ -7,9 +7,7 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 The package has never been published. Its version was corrected from `1.0.0` to
 `0.1.0`, because the behaviour changes in this entry still come before a stable
-release. Everything here works through
-[`docs/cleanup-plan.md`](./docs/cleanup-plan.md), the review this branch was cut
-from.
+release.
 
 ### Added
 
@@ -33,7 +31,7 @@ from.
   reports the move rather than the URL string, so a push of the route the guest
   is already on fires with `from === to`, while a replace of that route does
   not fire at all.
-- `v-frame/server`, the server-side materializer for the adopted (SSR) path. It
+- `@mewhhaha/v-frame/server`, the server-side materializer for the adopted (SSR) path. It
   exports a runtime-neutral core — shell tag renaming, the injected display
   rules, script neutralization, and stylesheet rewriting — that a host drives
   from its own streaming HTML parser, plus `materializeVFrameDocument`, a
@@ -48,9 +46,9 @@ from.
 - Typechecking for `tests/`, `bench/`, `examples/*/tests/` and the client
   example's React host through `tsconfig.test.json`. The host is the only example
   source no build typechecks — the `example-ssr` job's build does the framework
-  applications as a side effect — and it resolves `v-frame` by package name, so
-  the project maps that name to `src/` rather than to declarations `dist/` does
-  not have until after `typecheck` has run.
+  applications as a side effect — and it resolves `@mewhhaha/v-frame` by package
+  name, so the project maps that name to `src/` rather than to declarations
+  `dist/` does not have until after `typecheck` has run.
 - A gzip bundle-size budget (`pnpm size`) that fails the build above its
   threshold, currently 68,000 bytes. The measured size is not repeated here: the
   command prints it, and a figure copied into prose is stale by the next commit
@@ -67,7 +65,7 @@ from.
   asserts the content's position on the host's screen and that the only
   difference between the facade's coordinate space and that screen is the
   frame's own origin. The guest module (`tests/support/kobalte-overlay-lab.js`)
-  is bundled by esbuild when the spec starts, resolving Kobalte from the copy
+  is bundled by Rolldown when the spec starts, resolving Kobalte from the copy
   `examples/client` already pins, so the root suite keeps its single pinned
   version, needs no framework build step, and gains about 30 ms.
 - A benchmark for per-node marking (`pnpm bench`) and its findings note,
@@ -177,10 +175,15 @@ from.
   rows carrying one of everything a registry admits an element for. Forcing a
   collection no longer needs a CDP session: `page.requestGC()` is
   `HeapProfiler.collectGarbage` on chromium and the juggler `Heap.collectGarbage`
-  on firefox. Reading how many *bytes* survive is still chromium-only, which is
+  on firefox. Reading how many _bytes_ survive is still chromium-only, which is
   why `pnpm bench` keeps its CDP session.
-- Biome formats the repository, freezing the existing house style.
-- `examples/ssr` imports `v-frame/server` instead of reaching into `src/`, and
+- Oxfmt formats the repository and Oxlint checks it in CI. Rolldown builds the
+  published bundles, the bundle-size measurement, and the Kobalte test fixture.
+- JSR publishing metadata for `@mewhhaha/v-frame`, a dry-run publication check in
+  CI, and an OIDC release workflow. The package no longer augments the global DOM
+  maps, which JSR rejects; consumers type queries explicitly with `VFrameElement`,
+  whose add and remove event-listener overloads remain typed.
+- `examples/ssr` imports `@mewhhaha/v-frame/server` instead of reaching into `src/`, and
   routes host-driven navigation through the element's own API.
 - `src/document-facade.ts` (4,515 lines) is now `src/facade/` — `context`,
   `nodes`, `events`, `attributes`, `style`, `collections`, `selection`,

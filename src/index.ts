@@ -1,5 +1,4 @@
 import { VFrameElement } from "./v-frame-element.js";
-import type { VFrameEventMap } from "./types.js";
 
 export { defineVFrame } from "./define.js";
 export { VFrameElement };
@@ -11,18 +10,12 @@ export type {
   VFrameEventMap,
   VFrameLoadEventDetail,
   VFrameLoadStartEventDetail,
+  VFrameNavigatedEventDetail,
   VFrameNavigateEventDetail,
+  VFrameNavigateOptions,
   VFrameNavigation,
   VFrameNavigationKind,
   VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "v-frame": VFrameElement;
-  }
-
-  interface HTMLElementEventMap extends VFrameEventMap {}
-}

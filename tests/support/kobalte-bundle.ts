@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { build } from "esbuild";
+import { rolldown } from "rolldown";
 
 /**
  * Kobalte is already pinned by examples/client's Solid microfrontend, so the suite
@@ -8,7 +8,8 @@ import { build } from "esbuild";
  * Bundling the guest entry here — rather than depending on the example's own build, or
  * committing its output — keeps the root suite hermetic: no network, no framework
  * toolchain, and no build artifact that can go stale against the source next to it.
- * esbuild is already a dependency and the bundle takes about 30 ms.
+ * Rolldown is already a dependency and keeps this fixture on the same bundler as the
+ * published package.
  */
 const kobalteModules = resolve(
   process.cwd(),
@@ -23,19 +24,21 @@ export async function bundleKobalteLab(): Promise<string> {
       `Kobalte is missing from ${kobalteModules}. The overlay suite takes it from examples/client's Solid microfrontend, which a workspace-wide "pnpm install" provides.`,
     );
   }
-  const bundled = await build({
-    entryPoints: [labEntry],
-    bundle: true,
-    format: "esm",
+  const bundle = await rolldown({
+    input: labEntry,
     platform: "browser",
-    write: false,
     // The entry lives outside the workspace that owns Kobalte, so node resolution needs
     // to be pointed at it explicitly.
-    nodePaths: [kobalteModules],
+    resolve: { modules: [kobalteModules, "node_modules"] },
   });
-  const output = bundled.outputFiles[0];
-  if (output === undefined) {
-    throw new Error("esbuild produced no output for the Kobalte overlay lab");
+  try {
+    const generated = await bundle.generate({ format: "es" });
+    const output = generated.output.find((entry) => entry.type === "chunk");
+    if (output === undefined) {
+      throw new Error("Rolldown produced no output for the Kobalte overlay lab");
+    }
+    return output.code;
+  } finally {
+    await bundle.close();
   }
-  return output.text;
 }

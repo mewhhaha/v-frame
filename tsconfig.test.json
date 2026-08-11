@@ -16,8 +16,8 @@
     // typecheck runs, so resolve the name to the sources instead of to the
     // declarations that do not exist yet.
     "paths": {
-      "v-frame": ["./src/index.ts"],
-      "v-frame/register": ["./src/register.ts"]
+      "@mewhhaha/v-frame": ["./src/index.ts"],
+      "@mewhhaha/v-frame/register": ["./src/register.ts"]
     }
   },
   // Specs that import src/ pull the css-tree subpath declarations in with them,

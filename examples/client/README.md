@@ -29,9 +29,9 @@ is visible. The React host uses the headless dialog and button primitives from
 
 ## Ports
 
-| App | Port | Served from |
-| --- | --- | --- |
-| host | 43170 | `vite` dev server |
+| App       | Port  | Served from                     |
+| --------- | ----- | ------------------------------- |
+| host      | 43170 | `vite` dev server               |
 | solid-app | 43172 | `microfrontends/solid-app/dist` |
 
 The microfrontend stays independently served on port 43172 while the host exposes it

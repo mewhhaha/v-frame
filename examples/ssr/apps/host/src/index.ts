@@ -1,4 +1,4 @@
-import { materializeVFrameDocument } from "v-frame/server";
+import { materializeVFrameDocument } from "@mewhhaha/v-frame/server";
 
 const qwikRoutes = new Set(["/inventory", "/catalog"]);
 const widgetDocumentRoutes = new Map([

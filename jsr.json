@@ -1,0 +1,19 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@mewhhaha/v-frame",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./register": "./src/register.ts",
+    "./server": "./src/server/index.ts"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md",
+      "package.json",
+      "src/**/*.ts"
+    ]
+  }
+}

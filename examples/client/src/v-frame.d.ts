@@ -1,4 +1,8 @@
-import type { VFrameCredentials, VFrameElement, VFrameNavigation } from "v-frame";
+import type {
+  VFrameCredentials,
+  VFrameElement,
+  VFrameNavigation,
+} from "@mewhhaha/v-frame";
 
 // v-frame's own types augment HTMLElementTagNameMap (the DOM API), not React's
 // JSX types, so the custom element needs its own JSX.IntrinsicElements entry

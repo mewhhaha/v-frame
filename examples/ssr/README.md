@@ -100,7 +100,7 @@ bindings without making the guest deployments depend on host code.
 ## Compose a guest response
 
 For a host route, the Worker requests the guest's ordinary HTML through its
-service binding. `materializeVFrameDocument` from `v-frame/server` then:
+service binding. `materializeVFrameDocument` from `@mewhhaha/v-frame/server` then:
 
 - changes `html`, `head`, and `body` into materializable document elements;
 - rewrites inline CSS selectors and URLs for the public guest URL;
@@ -120,7 +120,7 @@ The host inserts that transformed stream into Declarative Shadow DOM:
 </v-frame>
 ```
 
-When `v-frame/register` loads, the element activates the preserved scripts in
+When `@mewhhaha/v-frame/register` loads, the element activates the preserved scripts in
 the guest realm. React Router hydrates, Qwik resumes, Angular hydrates with
 event replay, and SolidStart hydrates its signals through their normal client
 entries.

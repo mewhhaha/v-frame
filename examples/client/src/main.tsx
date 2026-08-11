@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";
 import { App } from "./App";
 
 const container = document.getElementById("root");

@@ -1,6 +1,6 @@
 /**
- * Measures finding C3 of docs/cleanup-plan.md: what the facade's per-node own-property
- * installation (`markVirtualNode`) costs on the hot DOM path.
+ * Measures what the facade's per-node own-property installation (`markVirtualNode`)
+ * costs on the hot DOM path.
  *
  * Every configuration is measured twice — once through a mounted v-frame, once as the
  * same markup parsed and inserted straight into the host document — so the numbers are

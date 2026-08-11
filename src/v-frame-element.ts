@@ -440,6 +440,24 @@ export class VFrameElement extends HTMLElementBase {
     super.addEventListener(type, listener, options);
   }
 
+  removeEventListener<K extends keyof VFrameEventMap>(
+    type: K,
+    listener: (this: VFrameElement, event: VFrameEventMap[K]) => unknown,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void {
+    super.removeEventListener(type, listener, options);
+  }
+
   #observeLoad(load: Promise<void>): void {
     void load.catch(() => undefined);
   }

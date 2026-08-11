@@ -6,7 +6,7 @@ Symptoms first. If an API is throwing at you deliberately, it is on the
 ## Nothing happens at all
 
 The element never leaves `status === "idle"`. Either `src` is empty, or
-`v-frame/register` was never imported so the tag is still an unknown element.
+`@mewhhaha/v-frame/register` was never imported so the tag is still an unknown element.
 Check `customElements.get("v-frame")` in the host page.
 
 If the element reaches `status === "error"` immediately, listen for
@@ -17,7 +17,7 @@ created, which on an older browser is the missing Navigation API.
 ## The guest renders but its scripts never run
 
 The host inserted an unmaterialized guest response into Declarative Shadow DOM.
-Run it through `v-frame/server` before composition — the runtime activates
+Run it through `@mewhhaha/v-frame/server` before composition — the runtime activates
 scripts that carry `data-v-frame-script` and a parser-time type of
 `application/vnd.v-frame`, and ignores everything else.
 

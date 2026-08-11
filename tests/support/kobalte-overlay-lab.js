@@ -1,6 +1,6 @@
 // The guest module for the Kobalte case in tests/overlays.spec.ts. Components are built
 // with Solid's own `createComponent` and lazy `children` getters — which is what Solid's
-// JSX compiler emits — so that esbuild alone can bundle this file. Compiling JSX would
+// JSX compiler emits — so that Rolldown alone can bundle this file. Compiling JSX would
 // need Solid's Babel plugin, and that would put a framework build step in front of the
 // root suite. Kobalte is the compiled package from npm either way, so the positioning
 // engine under test (@floating-ui/dom, through Kobalte's popper) is the real one.

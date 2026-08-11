@@ -1,7 +1,7 @@
 import { startTransition, useEffect } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
-import "v-frame/register";
+import "@mewhhaha/v-frame/register";
 
 import { ReleaseActivityWidget } from "./widget";
 

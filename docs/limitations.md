@@ -7,16 +7,16 @@ other than what the guest asked for.
 Everything on this page was read out of the current source and is covered by the
 test suite. Each entry says what throws, why it has to, and what to do instead.
 
-| API | Result |
-| --- | --- |
-| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close) | `NotSupportedError` |
-| [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets) | `NotSupportedError` |
-| [Direct child mutation of `document`](#direct-child-mutation-of-document) | `NotSupportedError` |
+| API                                                                                                 | Result                                 |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)            | `NotSupportedError`                    |
+| [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets)            | `NotSupportedError`                    |
+| [Direct child mutation of `document`](#direct-child-mutation-of-document)                           | `NotSupportedError`                    |
 | [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late |
-| [CSSOM `@import` rules](#cssom-import-rules) | `NotSupportedError` |
-| [Non-`GET` form submission](#non-get-form-submission) | `v-frame-error`, navigation dropped |
-| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank) | Navigation dropped |
-| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes) | Navigation dropped |
+| [CSSOM `@import` rules](#cssom-import-rules)                                                        | `NotSupportedError`                    |
+| [Non-`GET` form submission](#non-get-form-submission)                                               | `v-frame-error`, navigation dropped    |
+| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)      | Navigation dropped                     |
+| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                   | Navigation dropped                     |
 
 Beyond the list, three whole-runtime constraints apply: the browser must support
 the Navigation API, Declarative Shadow DOM, and custom elements; every guest URL
@@ -59,7 +59,7 @@ how a large amount of modern component code ships CSS — `new CSSStyleSheet()`
 plus `replaceSync()` is the default output of several component compilers and
 the standard pattern in hand-written web components.
 
-**Why.** `adoptedStyleSheets` is a property of a *document or shadow root*, and
+**Why.** `adoptedStyleSheets` is a property of a _document or shadow root_, and
 the guest has neither of the ones it appears to have. Sheets adopted onto the
 realm's `Document` would style the hidden execution realm, which renders
 nothing. Forwarding them to the host shadow root that actually renders the guest
@@ -71,7 +71,7 @@ would bypass the rewriting every other guest stylesheet goes through, so its
 and its relative `url()` references would resolve against the host document
 instead of the guest's URL.
 
-Constructed stylesheets do not work on shadow roots the *guest itself* creates
+Constructed stylesheets do not work on shadow roots the _guest itself_ creates
 either, and that failure comes from the browser rather than from `v-frame`:
 
 ```text
@@ -123,7 +123,7 @@ document.body.append(root);
 
 ## Node identity after an unintercepted write
 
-**Does not throw.** A node that one of these writes puts inside a *connected*
+**Does not throw.** A node that one of these writes puts inside a _connected_
 guest element is marked a microtask later rather than synchronously:
 
 - the text node the `textContent` setter creates,
@@ -153,7 +153,7 @@ re-walking any marked subtree that was re-parented. That walk is now skipped for
 a subtree that is already marked and still in the tree, which is what makes
 re-parenting about 3.8x cheaper — see [round two of the marking
 benchmark](./node-marking-benchmark.md#round-two--re-parenting) — so on a
-connected subtree the observer is the only repair left. A *detached* subtree is
+connected subtree the observer is the only repair left. A _detached_ subtree is
 still walked in full when it is inserted, so building a tree offline and then
 inserting it marks everything in it synchronously, before any observer runs.
 
@@ -163,7 +163,7 @@ inserting it marks everything in it synchronously, before any observer runs.
 and the legacy `addRule()` when the inserted text is an `@import` rule.
 
 **Why.** Guest CSS is rewritten before the browser ever parses it, and `@import`
-is resolved by *fetching and inlining* the imported sheet so the imported rules
+is resolved by _fetching and inlining_ the imported sheet so the imported rules
 get the same selector rewriting and URL rebasing. That fetch is asynchronous;
 `insertRule()` is synchronous and must return an index. There is no way to
 honour both, so the rule is refused instead of being inserted unrewritten.
@@ -271,11 +271,11 @@ the fetch and the parse. "Plain host DOM" is the same markup fetched,
 `DOMParser`-parsed and adopted into the host tree.
 
 | guest elements | `v-frame` | plain host DOM | overhead |
-| --- | --- | --- | --- |
-| 1,000 | 37 ms | 2.3 ms | 16x |
-| 5,000 | 102 ms | 5.5 ms | 19x |
-| 20,000 | 359 ms | 14.7 ms | 24x |
-| 50,000 | 702 ms | 36 ms | 20x |
+| -------------- | --------- | -------------- | -------- |
+| 1,000          | 37 ms     | 2.3 ms         | 16x      |
+| 5,000          | 102 ms    | 5.5 ms         | 19x      |
+| 20,000         | 359 ms    | 14.7 ms        | 24x      |
+| 50,000         | 702 ms    | 36 ms          | 20x      |
 
 Chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D, 2026-08-01. Each
 cell is the median of three runs and run-to-run spread is about ±10%, so read the
@@ -339,23 +339,23 @@ it: the same guests, the same harness, the same machine, `pnpm bench` measuring
 both engines in one run.
 
 | guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
-| --- | --- | --- | --- | --- |
-| 1,000 | 37 ms | 35 ms | 2.3 ms | 2 ms |
-| 5,000 | 83 ms | 92 ms | 4.7 ms | 7 ms |
-| 20,000 | 276 ms | 340 ms | 17 ms | 23 ms |
-| 50,000 | 694 ms | 846 ms | 33 ms | 52 ms |
+| -------------- | ------------------ | ----------------- | ----------------- | ---------------- |
+| 1,000          | 37 ms              | 35 ms             | 2.3 ms            | 2 ms             |
+| 5,000          | 83 ms              | 92 ms             | 4.7 ms            | 7 ms             |
+| 20,000         | 276 ms             | 340 ms            | 17 ms             | 23 ms            |
+| 50,000         | 694 ms             | 846 ms            | 33 ms             | 52 ms            |
 
 Firefox 151.0 and chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D,
 2026-08-01. All four columns come from one `pnpm bench` run, so they are
-comparable to each other; they are a *different* run from the chromium table
+comparable to each other; they are a _different_ run from the chromium table
 above, which is why individual cells differ from it by 20–30% — that is the
 run-to-run spread, and it is why the ratio rather than any cell is the figure to
 read.
 
 Across the runs taken that day the marginal activation cost was consistently
 higher on firefox than on chromium, but by an unstable margin — measurements
-ranged from about 1.03x to 1.24x. Read it as *firefox is somewhat dearer, never
-dramatically so*; the sample is too noisy to support a specific multiple.
+ranged from about 1.03x to 1.24x. Read it as _firefox is somewhat dearer, never
+dramatically so_; the sample is too noisy to support a specific multiple.
 
 Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
 chromium's 32–44** across the two runs — very close to double — and still flat in
@@ -373,17 +373,17 @@ collected heap size, which Playwright can only get through CDP's
 `Runtime.getHeapUsage`; `performance.measureUserAgentSpecificMemory` is
 chromium-only as well. What firefox retains for a large guest is therefore
 unknown, and the 7.5 MB above should not be read as a cross-engine number. That
-guest nodes are *released* rather than retained is covered on both engines by
+guest nodes are _released_ rather than retained is covered on both engines by
 [`tests/node-retention.spec.ts`](../tests/node-retention.spec.ts), which counts
 survivors rather than bytes.
 
-## What is *not* a limitation
+## What is _not_ a limitation
 
 These come up often enough to be worth stating explicitly, because earlier
 versions of this runtime did restrict some of them:
 
 - **`XMLHttpRequest` username and password.** `open(method, url, async, user,
-  password)` forwards all five arguments to the native implementation. Synchronous
+password)` forwards all five arguments to the native implementation. Synchronous
   XHR works too.
 - **`credentials`.** The `credentials` attribute applies to the entry document
   and stylesheet requests `v-frame` itself issues, and supplies a default for
@@ -395,7 +395,7 @@ versions of this runtime did restrict some of them:
 - **`<link rel="stylesheet">`.** Supported, including `media`, `disabled`, and
   `href` changes at runtime.
 - **Guest-created shadow roots.** `attachShadow()` works and the shadow tree is
-  tracked by the facade; only *constructed* stylesheets on it are unavailable.
+  tracked by the facade; only _constructed_ stylesheets on it are unavailable.
 - **Dialogs, popovers, and the top layer.** Supported, including coordinate
   translation back into frame-local space; this is the main thing `v-frame` buys
   over an `<iframe>`. See [`tests/overlays.spec.ts`](../tests/overlays.spec.ts).

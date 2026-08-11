@@ -1,5 +1,5 @@
-import { build } from "esbuild";
 import { gzipSync } from "node:zlib";
+import { rolldown } from "rolldown";
 
 // The budget exists so payload regressions surface in CI rather than in a
 // consumer's network tab. Ratchet it down whenever the bundle genuinely shrinks.
@@ -14,21 +14,25 @@ async function measureGzippedBundle() {
   // Building in memory keeps the budget runnable without a prior `pnpm build`,
   // and drops the sourcemap and legal comments that dist/index.js carries but
   // no consumer downloads on the critical path.
-  const result = await build({
-    entryPoints: ["src/index.ts"],
-    bundle: true,
-    format: "esm",
+  const bundle = await rolldown({
+    input: "src/index.ts",
     platform: "browser",
-    target: "es2022",
-    minify: true,
-    legalComments: "none",
-    write: false,
+    transform: { target: "es2022" },
   });
-  const [output] = result.outputFiles;
-  if (output === undefined) {
-    throw new Error("esbuild produced no output for src/index.ts");
+  try {
+    const generated = await bundle.generate({
+      format: "es",
+      minify: true,
+      comments: false,
+    });
+    const output = generated.output.find((entry) => entry.type === "chunk");
+    if (output === undefined) {
+      throw new Error("Rolldown produced no output for src/index.ts");
+    }
+    return gzipSync(output.code).byteLength;
+  } finally {
+    await bundle.close();
   }
-  return gzipSync(output.contents).byteLength;
 }
 
 const gzippedBytes = await measureGzippedBundle();

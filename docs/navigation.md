@@ -2,7 +2,7 @@
 
 A `v-frame` guest navigates like a top-level page: its links work, its `GET`
 forms submit, its History and Navigation API calls change its own URL, and
-`location.href` and `document.URL` report that URL back. What differs is *whose*
+`location.href` and `document.URL` report that URL back. What differs is _whose_
 session the guest is moving through, and that is the `navigation` attribute.
 
 ## Guest-owned routing (the default)
@@ -38,7 +38,7 @@ without touching the host page.
 </v-frame>
 ```
 
-In host mode, the guest's history *is* the shell's history. A guest navigation
+In host mode, the guest's history _is_ the shell's history. A guest navigation
 is promoted to a host page navigation, so the address bar follows the guest, the
 browser's own back button traverses it, and a deep link to the shell restores the
 guest's route.
@@ -143,10 +143,10 @@ leave the shell's own entries does nothing.
 Every one of these methods returns a `Promise<void>` and rejects rather than
 throwing synchronously.
 
-| Rejection | When |
-| --- | --- |
-| `AbortError` | A `v-frame-navigate` listener called `preventDefault()`. |
-| `TypeError` | The route is cross-origin, or its scheme is not `http:`/`https:`. |
+| Rejection           | When                                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `AbortError`        | A `v-frame-navigate` listener called `preventDefault()`.                                                 |
+| `TypeError`         | The route is cross-origin, or its scheme is not `http:`/`https:`.                                        |
 | `InvalidStateError` | There is no live guest to move — the element is idle, disconnected, or still loading its first document. |
 
 ```text
