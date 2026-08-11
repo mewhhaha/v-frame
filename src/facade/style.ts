@@ -8,7 +8,7 @@
 import generateCSS from "css-tree/generator";
 import parseCSS from "css-tree/parser";
 import walkCSS from "css-tree/walker";
-import type { DeclarationList } from "css-tree";
+import type { Declaration, DeclarationList } from "css-tree";
 import { rewriteStyleAttribute } from "../css.js";
 import type { FacadeContext } from "./context.js";
 
@@ -35,7 +35,7 @@ function authoredStylePropertyValues(source: string): Map<string, string> {
     });
     walkCSS(declarations, {
       visit: "Declaration",
-      enter(declaration) {
+      enter(declaration: Declaration) {
         const value = generateCSS(declaration.value);
         if (!/url\s*\(/i.test(value)) {
           return;

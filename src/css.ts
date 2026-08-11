@@ -1,7 +1,15 @@
 import generateCSS from "css-tree/generator";
 import parseCSS from "css-tree/parser";
 import walkCSS from "css-tree/walker";
-import type { Atrule, CssNode, List, ListItem, Selector, StyleSheet } from "css-tree";
+import type {
+  Atrule,
+  CssNode,
+  List,
+  ListItem,
+  Selector,
+  StyleSheet,
+  Url,
+} from "css-tree";
 
 const SHELL_ELEMENT_NAMES = new Map([
   ["html", "v-html"],
@@ -103,7 +111,7 @@ function rewriteShellSelectors(
 function absolutizeCssURLs(ast: CssNode, stylesheetURL: string): void {
   walkCSS(ast, {
     visit: "Url",
-    enter(node) {
+    enter(node: Url) {
       // An empty url() is an invalid resource that must never be fetched, so
       // rebasing it against the stylesheet would invent a request.
       if (node.value === "" || node.value.startsWith("#")) {
@@ -335,7 +343,7 @@ export function rewriteCSSOMInsertRule(source: string, baseURL: string): string 
   let containsImport = false;
   walkCSS(ast, {
     visit: "Atrule",
-    enter(node) {
+    enter(node: Atrule) {
       if (node.name.toLowerCase() === "import") {
         containsImport = true;
       }
