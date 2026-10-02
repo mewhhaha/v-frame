@@ -7,6 +7,7 @@
 // cloning and markup parsing all funnel back through it.
 
 import { EnumerableWeakMap } from "../enumerable-weak.js";
+import { scriptCategory } from "../script-type.js";
 import type { AttributeFacade } from "./attributes.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
@@ -93,7 +94,7 @@ export function installNodeFacade(
     getVirtualClientRects,
   } = context;
   const {
-    refreshInlineStyleSheet,
+    updateInlineStyle,
     removeStyleSelector,
     ensureStyleSelector,
     setLogicalStyleAttribute,
@@ -374,13 +375,36 @@ export function installNodeFacade(
     return element;
   };
 
-  const parseFragment = (markup: string): DocumentFragment => {
-    const template = nativeCreateElement.call(
-      document,
-      "template",
-    ) as HTMLTemplateElement;
-    nativeInnerHTML.set?.call(template, options.createHTML(markup));
-    const fragment = template.content;
+  // Parse in an inert document, but use the destination's context: a template
+  // alone loses table insertion modes, foreign namespaces and raw-text parsing.
+  const fragmentDocument = new window.DOMParser().parseFromString(
+    options.createHTML("<!doctype html><html><body></body></html>"),
+    "text/html",
+  );
+  const parseFragment = (
+    markup: string,
+    destination: Element | null,
+  ): DocumentFragment => {
+    const shellName =
+      destination === options.html
+        ? "html"
+        : destination === options.head
+          ? "head"
+          : destination === options.body
+            ? "body"
+            : null;
+    const parserContext =
+      destination === null || shellName !== null
+        ? fragmentDocument.createElement(shellName ?? "body")
+        : (nativeImportNode.call(fragmentDocument, destination, false) as Element);
+    nativeInnerHTML.set?.call(parserContext, options.createHTML(markup));
+    const fragment = fragmentDocument.createDocumentFragment();
+    const parsedRoot = isHTMLTemplateElement(parserContext)
+      ? parserContext.content
+      : parserContext;
+    while (parsedRoot.firstChild !== null) {
+      nativeAppendChild.call(fragment, parsedRoot.firstChild);
+    }
     const parsedElements = Array.from(fragment.querySelectorAll("*")).reverse();
     for (const parsedElement of parsedElements) {
       const customizedName = parsedElement.getAttribute("is");
@@ -427,28 +451,7 @@ export function installNodeFacade(
   };
 
   const scriptCanExecute = (script: HTMLScriptElement): boolean => {
-    const type = script.getAttribute("type")?.trim().toLowerCase() ?? "";
-    if (
-      type !== "" &&
-      type !== "module" &&
-      type !== "importmap" &&
-      type !== "text/javascript" &&
-      type !== "application/javascript" &&
-      type !== "application/x-ecmascript" &&
-      type !== "application/x-javascript" &&
-      type !== "text/ecmascript" &&
-      type !== "application/ecmascript" &&
-      type !== "text/javascript1.0" &&
-      type !== "text/javascript1.1" &&
-      type !== "text/javascript1.2" &&
-      type !== "text/javascript1.3" &&
-      type !== "text/javascript1.4" &&
-      type !== "text/javascript1.5" &&
-      type !== "text/jscript" &&
-      type !== "text/livescript" &&
-      type !== "text/x-ecmascript" &&
-      type !== "text/x-javascript"
-    ) {
+    if (scriptCategory(script) === "inert") {
       return false;
     }
     const source = script.getAttribute("src");
@@ -587,8 +590,8 @@ export function installNodeFacade(
   const finishVirtualClone = <T extends Node>(source: Node, clone: T): T => {
     copyVirtualMetadata(source, clone);
     markVirtualNode(clone);
-    refreshInlineStyleSheet();
     for (const element of collectElements(clone)) {
+      updateInlineStyle(element);
       const eventAttributes = eventAttributeValues.get(element);
       if (eventAttributes === undefined) {
         continue;
@@ -825,6 +828,7 @@ export function installNodeFacade(
         const baseElementChanged =
           subtreeHasBaseElement(child) || nodes.some(subtreeHasBaseElement);
         const result = nativeReplaceChild.call(this, node, child) as T;
+        options.onDisconnectedNodes([child]);
         if (this.isConnected) {
           finishInsertion(nodes, baseElementChanged);
           if (this instanceof window.HTMLScriptElement) {
@@ -842,6 +846,7 @@ export function installNodeFacade(
         }
         const baseElementChanged = this.isConnected && subtreeHasBaseElement(child);
         const result = nativeRemoveChild.call(this, child) as T;
+        options.onDisconnectedNodes([child]);
         styleElementChanged(this);
         if (baseElementChanged) {
           options.onBaseElementChange();
@@ -852,9 +857,13 @@ export function installNodeFacade(
     patch(elementPrototype, "remove", {
       writable: true,
       value(this: Element): void {
+        const virtual = virtualNodes.has(this);
         const baseElementChanged =
           isInVirtualDocumentTree(this) && subtreeHasBaseElement(this);
         nativeElementRemove.call(this);
+        if (virtual) {
+          options.onDisconnectedNodes([this]);
+        }
         if (baseElementChanged) {
           options.onBaseElementChange();
         }
@@ -922,7 +931,11 @@ export function installNodeFacade(
           const baseElementChanged =
             this.isConnected && Array.from(this.childNodes).some(subtreeHasBaseElement);
           while (this.firstChild !== null) {
-            nativeRemoveChild.call(this, this.firstChild);
+            const child = this.firstChild;
+            nativeRemoveChild.call(this, child);
+            if (virtualNodes.has(this)) {
+              options.onDisconnectedNodes([child]);
+            }
           }
           appendValues(this, values, false);
           if (values.length === 0) {
@@ -1005,8 +1018,25 @@ export function installNodeFacade(
     patch(elementPrototype, "insertAdjacentHTML", {
       writable: true,
       value(this: Element, position: InsertPosition, text: string) {
-        const fragment = parseFragment(text);
-        switch (position.toLowerCase() as InsertPosition) {
+        const insertionPosition = position.toLowerCase() as InsertPosition;
+        const outside =
+          insertionPosition === "beforebegin" || insertionPosition === "afterend";
+        if (
+          outside &&
+          (this.parentNode === null ||
+            this.parentNode.nodeType === window.Node.DOCUMENT_NODE)
+        ) {
+          throw new window.DOMException(
+            "The element has no insertion parent",
+            "NoModificationAllowedError",
+          );
+        }
+        const destination = outside ? this.parentElement : this;
+        const fragment = parseFragment(
+          text,
+          destination === options.html ? null : destination,
+        );
+        switch (insertionPosition) {
           case "beforebegin":
             this.parentNode?.insertBefore(fragment, this);
             return;
@@ -1075,7 +1105,7 @@ export function installNodeFacade(
           markVirtualNode(this.content);
           return;
         }
-        const fragment = parseFragment(String(markup));
+        const fragment = parseFragment(String(markup), this);
         this.replaceChildren(fragment);
       },
     });
@@ -1092,7 +1122,13 @@ export function installNodeFacade(
             return;
           }
           const parent = this.parentNode;
-          parent.insertBefore(parseFragment(String(markup)), this);
+          if (parent.nodeType === window.Node.DOCUMENT_NODE) {
+            throw new window.DOMException(
+              "Cannot replace the document element",
+              "NoModificationAllowedError",
+            );
+          }
+          parent.insertBefore(parseFragment(String(markup), this.parentElement), this);
           parent.removeChild(this);
         },
       });
@@ -1153,9 +1189,13 @@ export function installNodeFacade(
       patch(nodePrototype, "textContent", {
         get: nativeTextContent.get,
         set(this: Node, value: string | null) {
+          const removedNodes = virtualNodes.has(this) ? Array.from(this.childNodes) : [];
           const baseElementChanged =
             isInVirtualDocumentTree(this) && subtreeHasBaseElement(this);
           nativeTextContent.set?.call(this, value);
+          if (removedNodes.length > 0) {
+            options.onDisconnectedNodes(removedNodes);
+          }
           styleElementChanged(this);
           if (baseElementChanged) {
             options.onBaseElementChange();
@@ -1256,7 +1296,6 @@ export function installNodeFacade(
   }
 
   installScrollFacade(options.html);
-  installScrollFacade(options.body);
 
   return {
     markVirtualNode,

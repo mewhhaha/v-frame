@@ -87,9 +87,11 @@ adopted into.
 **Instead.** Ship guest CSS as `<style>` elements, or as `<link
 rel="stylesheet">`. Both go through the runtime's stylesheet pipeline, which
 rewrites shell selectors and rebases URLs, and both are live: mutating
-`style.textContent`, `link.href`, `link.media`, or `link.disabled` re-runs the
-pipeline, and `sheet.insertRule()` / `rule.selectorText` / `style.cssText`
-through the CSSOM are rewritten in place.
+`style.textContent` or `link.href` re-runs the rewrite, while `link.media` and
+`link.disabled` update the existing sheet in place. The link stays connected,
+exposes its rewritten `sheet`, and removing it removes its rendered CSS.
+`sheet.insertRule()` / `rule.selectorText` / `style.cssText` through the CSSOM
+are rewritten in place.
 
 ```ts
 const style = document.createElement("style");

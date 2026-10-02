@@ -26,8 +26,14 @@ export class CSSOMImportRuleError extends Error {
   }
 }
 
+export interface StylesheetSource {
+  text: string;
+  /** Final response URL, including redirects. */
+  url: string;
+}
+
 export interface StylesheetFetch {
-  (url: string): Promise<string>;
+  (url: string): Promise<string | StylesheetSource>;
 }
 
 export interface StylesheetImportFailure {
@@ -37,7 +43,7 @@ export interface StylesheetImportFailure {
 
 export interface StylesheetContext {
   fetchText: StylesheetFetch;
-  requests: Map<string, Promise<string>>;
+  requests: Map<string, Promise<StylesheetSource>>;
   onImportFailure?(failure: StylesheetImportFailure): void;
 }
 
@@ -209,16 +215,22 @@ function wrapImportedStylesheet(source: string, parts: ImportParts): string {
   return wrapped;
 }
 
-export function fetchStylesheetText(
+export function fetchStylesheet(
   url: string,
   context: StylesheetContext,
-): Promise<string> {
+): Promise<StylesheetSource> {
   const existing = context.requests.get(url);
   if (existing !== undefined) {
     return existing;
   }
 
-  const request = context.fetchText(url);
+  const request = context
+    .fetchText(url)
+    .then((source) =>
+      typeof source === "string"
+        ? { text: source, url }
+        : { text: source.text, url: new URL(source.url, url).href },
+    );
   context.requests.set(url, request);
   // A rejected fetch is evicted so a later insertion can retry the network
   // instead of replaying the cached failure for the realm's lifetime.
@@ -287,12 +299,17 @@ async function inlineImports(
     }
 
     try {
-      const source = await fetchStylesheetText(parts.url, context);
+      const source = await fetchStylesheet(parts.url, context);
+      if (ancestors.has(source.url)) {
+        entry.list.remove(entry.item);
+        continue;
+      }
       const importedAncestors = new Set(ancestors);
       importedAncestors.add(parts.url);
+      importedAncestors.add(source.url);
       const transformed = await transformStylesheet(
-        source,
-        parts.url,
+        source.text,
+        source.url,
         context,
         importedAncestors,
       );

@@ -82,7 +82,9 @@ const materializedResponse = materializeVFrameDocument(guestResponse, guestURL.h
 
 A third argument configures the stylesheet stage: `fetchText` overrides how an
 `@import` target is fetched (useful when the imported sheet lives behind an
-internal service binding), and `onImportFailure` observes imports that could not
+internal service binding). It can return CSS text, or `{ text, url }` to retain
+the final response URL after redirects so nested imports and assets resolve
+relative to that stylesheet. `onImportFailure` observes imports that could not
 be inlined, which are dropped from the output.
 
 ### On another runtime

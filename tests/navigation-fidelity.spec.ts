@@ -505,8 +505,11 @@ test("keeps a direct Location hash change inside the guest", async ({ page }) =>
     const events: string[] = [];
     child.addEventListener("popstate", () => events.push("popstate"));
     child.addEventListener("hashchange", () => events.push("hashchange"));
+    const activated = new Promise<void>((resolve) => {
+      child.addEventListener("hashchange", () => resolve(), { once: true });
+    });
     child.location.hash = "direct-hash";
-    await new Promise((resolve) => child.setTimeout(resolve, 0));
+    await activated;
     return {
       currentURL: controlledFrame.currentURL,
       events,
@@ -538,11 +541,18 @@ test("restores the virtual URL when the host cancels a direct hash change", asyn
     const childEvents: string[] = [];
     child.addEventListener("popstate", () => childEvents.push("popstate"));
     child.addEventListener("hashchange", () => childEvents.push("hashchange"));
-    element.addEventListener("v-frame-navigate", (event) => event.preventDefault(), {
-      once: true,
+    const canceled = new Promise<void>((resolve) => {
+      element.addEventListener(
+        "v-frame-navigate",
+        (event) => {
+          event.preventDefault();
+          resolve();
+        },
+        { once: true },
+      );
     });
     child.location.hash = "blocked-hash";
-    await new Promise((resolve) => child.setTimeout(resolve, 0));
+    await canceled;
     return {
       childEvents,
       currentURL: controlledFrame.currentURL,

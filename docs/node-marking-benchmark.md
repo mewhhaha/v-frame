@@ -164,8 +164,8 @@ weakly:
   back.
 - `options.authoredStyleAttributes` and `options.authoredURLAttributes`
   (`src/markup.ts`) — the authored values the facade answers with instead of the
-  rebased physical ones. Both are enumerated, the first to rebuild the inline
-  stylesheet and the second to rebase on a base-URL change, which is why neither was a
+  rebased physical ones. Both are enumerated on base-URL changes, the first to
+  update inline CSS rules and the second to rebase URL attributes, which is why neither was a
   plain `WeakMap` before.
 - `elementHandlerTargets` and `virtualListenerTargets` (`src/facade/events.ts`) — the
   targets `dispose()` takes native listeners back off. Also enumerated, and only for
@@ -218,12 +218,13 @@ proportion to the _peak_ number of live rows and to how many registries each row
 backing stores of the weak tables themselves growing to the high-water mark and not
 shrinking, but that was not confirmed.
 
-The churn is deliberately modest because every style-attribute write rebuilds the whole
+At the time of these measurements, every style-attribute write rebuilt the whole
 inline stylesheet from the elements the facade is still holding, so creating n inline-styled
 elements costs O(n²). Closing the registries shrinks the n that survives a collection but
 does not change the cost, and the same quadratic is why the churn in
-`tests/node-retention.spec.ts` styles only every tenth row. That is a separate problem and
-is untouched here.
+`tests/node-retention.spec.ts` styles only every tenth row. The runtime now updates
+one CSSOM rule per element instead. A full rebase is needed only when the document
+base URL changes, and rules for collected elements are retired by a finalizer.
 
 ## Round two — re-parenting
 

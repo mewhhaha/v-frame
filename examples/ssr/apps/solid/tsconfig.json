@@ -12,7 +12,7 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2022",
-    "types": ["vinxi/types/client"]
+    "types": ["vite/client"]
   },
-  "include": ["src", "app.config.ts"]
+  "include": ["src", "vite.config.ts"]
 }

@@ -6,6 +6,7 @@
 
 import type { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { VFrameWindow } from "../types.js";
+import type { LinkedStyle } from "../linked-styles.js";
 
 export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 export const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -24,6 +25,7 @@ export interface DocumentFacadeOptions {
   authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
+  linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   createHTML(source: string): string;
   createScript(source: string): string;
   updateTopLayerViewport(x: number, y: number): void;
@@ -37,6 +39,7 @@ export interface DocumentFacadeOptions {
   onStyleElementChange(style: HTMLStyleElement): void;
   onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
   onConnectedNodes(nodes: readonly Node[]): void;
+  onDisconnectedNodes(nodes: readonly Node[]): void;
 }
 
 export interface PatchRegistry {

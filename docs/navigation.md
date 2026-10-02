@@ -132,7 +132,9 @@ is — read `canGoBack` and `canGoForward` first if you need to know.
 
 They resolve once the traversal has been applied, so `currentURL`, `canGoBack`,
 and `canGoForward` already report the new entry when the promise settles, and
-`v-frame-navigated` has already fired. That holds in host mode too, where the
+`v-frame-navigated` has already fired. A cross-document traversal waits for the
+replacement guest to load; it rejects with the load error on failure, or an
+`AbortError` if disconnected or superseded before activation. That holds in host mode too, where the
 shell performs the traversal asynchronously and the frame waits for it. The
 session traversed there is the one the shell's `navigation.entries()` reports —
 the same list `canGoBack` and `canGoForward` answer from — so a step that would
@@ -143,11 +145,11 @@ leave the shell's own entries does nothing.
 Every one of these methods returns a `Promise<void>` and rejects rather than
 throwing synchronously.
 
-| Rejection           | When                                                                                                     |
-| ------------------- | -------------------------------------------------------------------------------------------------------- |
-| `AbortError`        | A `v-frame-navigate` listener called `preventDefault()`.                                                 |
-| `TypeError`         | The route is cross-origin, or its scheme is not `http:`/`https:`.                                        |
-| `InvalidStateError` | There is no live guest to move — the element is idle, disconnected, or still loading its first document. |
+| Rejection           | When                                                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `AbortError`        | A `v-frame-navigate` listener called `preventDefault()`, or a cross-document traversal was superseded or disconnected. |
+| `TypeError`         | The route is cross-origin, or its scheme is not `http:`/`https:`.                                                      |
+| `InvalidStateError` | There is no live guest to move — the element is idle, disconnected, or still loading its first document.               |
 
 ```text
 AbortError: v-frame navigation to https://host.example/documents/denied was canceled

@@ -6,11 +6,7 @@
 // listeners, and the shadow boundary stops guest events from leaking out.
 
 import { EnumerableWeakSet } from "../enumerable-weak.js";
-import {
-  type ListenerRecord,
-  ListenerRegistry,
-  listenerCapture,
-} from "../listener-registry.js";
+import { ListenerRegistry, listenerPassive } from "../listener-registry.js";
 import type { FacadeContext } from "./context.js";
 
 export const DOCUMENT_EVENT_HANDLER_NAMES = [
@@ -41,7 +37,12 @@ export const DOCUMENT_EVENT_HANDLER_NAMES = [
 
 export interface EventFacade {
   eventAttributeName(element: Element, attributeName: string): string | null;
-  eventForListener(event: Event, currentTarget: EventTarget, eventPhase?: number): Event;
+  eventForListener(
+    event: Event,
+    currentTarget: EventTarget,
+    eventPhase?: number,
+    passive?: boolean,
+  ): Event;
   setElementHandler(
     element: Element,
     eventName: string,
@@ -79,7 +80,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
 
   const elementHandlerValues = new WeakMap<Element, Map<string, EventListener | null>>();
   const elementHandlerWrappers = new WeakMap<Element, Map<string, EventListener>>();
-  const virtualListenerRecords = new WeakMap<EventTarget, ListenerRecord[]>();
+  const virtualListeners = new WeakMap<EventTarget, ListenerRegistry>();
   // dispose() has to take the native listeners back off every target that still
   // has one, which is the only reason the targets are enumerable at all. An
   // element the guest has dropped does not need its listeners removed, so these
@@ -98,6 +99,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   const boundaryPropagationStopped = new WeakSet<Event>();
   const hostDefaultsSuppressed = new WeakSet<Event>();
   const virtualDefaultsPrevented = new WeakSet<Event>();
+  const passiveListeners = new WeakSet<Event>();
 
   const eventAttributeName = (element: Element, attributeName: string): string | null => {
     const normalizedName = attributeName.toLowerCase();
@@ -197,8 +199,14 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     event: Event,
     currentTarget: EventTarget,
     eventPhase?: number,
+    passive = false,
   ): Event => {
     const source = listenerEventSource(event);
+    if (passive) {
+      passiveListeners.add(source);
+    } else {
+      passiveListeners.delete(source);
+    }
     logicalCurrentTargets.set(source, currentTarget);
     if (eventPhase === undefined) {
       logicalEventPhases.delete(source);
@@ -238,7 +246,11 @@ export function installEventFacade(context: FacadeContext): EventFacade {
               ? false
               : source.cancelBubble;
           case "returnValue":
-            return !virtualDefaultsPrevented.has(source);
+            return !(
+              virtualDefaultsPrevented.has(source) ||
+              target.defaultPrevented ||
+              (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
+            );
           case "isTrusted":
             // The mirrored event is synthetic; trust belongs to the source.
             return source.isTrusted;
@@ -246,6 +258,9 @@ export function installEventFacade(context: FacadeContext): EventFacade {
             return () => logicalComposedPath(source);
           case "preventDefault":
             return () => {
+              if (passiveListeners.has(source) && source.currentTarget !== null) {
+                return;
+              }
               // preventDefault is a spec no-op on non-cancelable events.
               if (source.cancelable) {
                 virtualDefaultsPrevented.add(source);
@@ -288,7 +303,11 @@ export function installEventFacade(context: FacadeContext): EventFacade {
           return true;
         }
         if (property === "returnValue") {
-          if (!value && source.cancelable) {
+          if (
+            !value &&
+            source.cancelable &&
+            !(passiveListeners.has(source) && source.currentTarget !== null)
+          ) {
             virtualDefaultsPrevented.add(source);
             source.preventDefault();
             target.preventDefault();
@@ -309,10 +328,13 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   const documentListenerWrapper = (
     listener: EventListenerOrEventListenerObject,
     capture: boolean,
+    listenerOptions: boolean | AddEventListenerOptions | undefined,
+    type: string,
   ): EventListener => {
+    const passive = listenerPassive(listenerOptions, type, true);
     return (event) => {
       const eventPhase = event.currentTarget === document ? undefined : capture ? 1 : 3;
-      const listenerEvent = eventForListener(event, document, eventPhase);
+      const listenerEvent = eventForListener(event, document, eventPhase, passive);
       if (typeof listener === "function") {
         listener.call(document, listenerEvent);
       } else {
@@ -323,6 +345,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
 
   const documentListeners = new ListenerRegistry({
     createWrapper: documentListenerWrapper,
+    onError: (error) => window.reportError(error),
     addToTargets: (type, wrapper, listenerOptions) => {
       nativeAddEventListener.call(document, type, wrapper, listenerOptions);
     },
@@ -442,6 +465,43 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   }
   const rootEventRelays = new Map<string, RootEventRelay>();
   const boundaryEventRelays = new Map<string, EventListener>();
+  const outsideEventRelays = new Map<string, EventListener>();
+  const outsideEventTypes = new Set([
+    "pointerdown",
+    "pointerup",
+    "click",
+    "focusin",
+    "focusout",
+  ]);
+
+  const ensureOutsideEventRelay = (type: string): void => {
+    if (!outsideEventTypes.has(type) || outsideEventRelays.has(type)) return;
+    const relay: EventListener = (source) => {
+      if (
+        !options.html.isConnected ||
+        source.composedPath().includes(options.html) ||
+        hostDocument.defaultView?.getComputedStyle(options.html).visibility === "hidden"
+      )
+        return;
+      // Dispatch a separate event: guest cancellation must never suppress a host
+      // interaction. Keep it inside this shadow root, including when other frames
+      // use independent copies of the runtime. The body is an outside target for
+      // guest dismiss layers, without exposing the host's actual target.
+      const init = new Proxy({} as PointerEventInit, {
+        get(_target, property) {
+          return property === "composed" ? false : Reflect.get(source, property, source);
+        },
+      });
+      const event = type.startsWith("pointer")
+        ? new window.PointerEvent(type, init)
+        : type.startsWith("focus")
+          ? new window.FocusEvent(type, { bubbles: true })
+          : new window.MouseEvent(type, init);
+      nativeDispatchEvent.call(options.body, event);
+    };
+    outsideEventRelays.set(type, relay);
+    hostDocument.addEventListener(type, relay, true);
+  };
 
   const ensureBoundaryEventRelay = (type: string): void => {
     if (boundaryEventRelays.has(type)) {
@@ -461,26 +521,16 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     !immediatePropagationStopped.has(listenerEventSource(event));
 
   const invokeRootListeners = (event: Event, capture: boolean): void => {
-    for (const record of [...(virtualListenerRecords.get(options.html) ?? [])]) {
-      // A listener removed by an earlier listener in this dispatch is skipped,
-      // matching the DOM inner-invoke algorithm.
-      if (virtualListenerRecords.get(options.html)?.includes(record) !== true) {
-        continue;
-      }
-      if (record.type !== event.type || record.capture !== capture) {
-        continue;
-      }
-      record.wrapper(event);
-      if (!listenerCanContinue(event)) {
-        return;
-      }
-    }
+    virtualListeners
+      .get(options.html)
+      ?.invoke(event, capture, () => listenerCanContinue(event));
   };
 
   const ensureRootEventRelay = (type: string): void => {
     if (rootEventRelays.has(type)) {
       return;
     }
+    ensureOutsideEventRelay(type);
     const capture: EventListener = (event) => {
       immediatePropagationStopped.delete(listenerEventSource(event));
       documentListeners.invoke(event, true, () => listenerCanContinue(event));
@@ -501,22 +551,43 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     nativeAddEventListener.call(options.html, type, bubble, false);
   };
 
-  const removeVirtualListenerRecord = (
-    target: EventTarget,
-    record: ListenerRecord,
-  ): void => {
-    const records = virtualListenerRecords.get(target);
-    const index = records?.indexOf(record) ?? -1;
-    if (index !== -1) {
-      records?.splice(index, 1);
+  const listenersFor = (target: EventTarget): ListenerRegistry => {
+    let registry = virtualListeners.get(target);
+    if (registry === undefined) {
+      registry = new ListenerRegistry({
+        createWrapper: (listener, _capture, listenerOptions, type) => {
+          const passive = listenerPassive(
+            listenerOptions,
+            type,
+            target === options.html || target === options.body,
+          );
+          return (event) => {
+            const listenerEvent = eventForListener(event, target, undefined, passive);
+            if (typeof listener === "function") {
+              listener.call(target, listenerEvent);
+            } else {
+              listener.handleEvent(listenerEvent);
+            }
+          };
+        },
+        addToTargets: (type, wrapper, listenerOptions) => {
+          if (target === options.html) {
+            ensureRootEventRelay(type);
+          } else {
+            nativeAddEventListener.call(target, type, wrapper, listenerOptions);
+          }
+        },
+        removeFromTargets: (type, wrapper, capture) => {
+          if (target !== options.html) {
+            nativeRemoveEventListener.call(target, type, wrapper, capture);
+          }
+        },
+        onError: (error) => window.reportError(error),
+      });
+      virtualListeners.set(target, registry);
+      virtualListenerTargets.add(target);
     }
-    nativeRemoveEventListener.call(target, record.type, record.wrapper, record.capture);
-    if (record.signal !== undefined && record.abort !== undefined) {
-      record.signal.removeEventListener("abort", record.abort);
-    }
-    if (records?.length === 0) {
-      virtualListenerTargets.delete(target);
-    }
+    return registry;
   };
 
   const installHandlerProperties = (): void => {
@@ -597,69 +668,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
           nativeAddEventListener.call(this, type, listener, listenerOptions);
           return;
         }
-        if (listener === null) {
-          return;
-        }
-        if (
-          typeof listenerOptions !== "boolean" &&
-          listenerOptions?.signal?.aborted === true
-        ) {
-          return;
-        }
-
-        const capture = listenerCapture(listenerOptions);
-        let records = virtualListenerRecords.get(this);
-        if (records === undefined) {
-          records = [];
-          virtualListenerRecords.set(this, records);
-        }
-        if (
-          records.some(
-            (record) =>
-              record.type === type &&
-              record.listener === listener &&
-              record.capture === capture,
-          )
-        ) {
-          return;
-        }
-
-        const record: ListenerRecord = {
-          type,
-          listener,
-          capture,
-          wrapper: () => undefined,
-        };
-        virtualListenerTargets.add(this);
-        if (this === options.html) {
-          ensureRootEventRelay(type);
-        }
-        record.wrapper = (event) => {
-          try {
-            const listenerEvent = eventForListener(event, this);
-            if (typeof listener === "function") {
-              listener.call(this, listenerEvent);
-            } else {
-              listener.handleEvent(listenerEvent);
-            }
-          } finally {
-            if (typeof listenerOptions !== "boolean" && listenerOptions?.once === true) {
-              removeVirtualListenerRecord(this, record);
-            }
-          }
-        };
-        records.push(record);
-        if (this !== options.html) {
-          nativeAddEventListener.call(this, type, record.wrapper, listenerOptions);
-        }
-        if (
-          typeof listenerOptions !== "boolean" &&
-          listenerOptions?.signal !== undefined
-        ) {
-          record.signal = listenerOptions.signal;
-          record.abort = () => removeVirtualListenerRecord(this, record);
-          listenerOptions.signal.addEventListener("abort", record.abort, { once: true });
-        }
+        listenersFor(this).add(type, listener, listenerOptions);
       },
     });
     patch(eventTargetPrototype, "removeEventListener", {
@@ -674,21 +683,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
           nativeRemoveEventListener.call(this, type, listener, listenerOptions);
           return;
         }
-        if (listener === null) {
-          return;
-        }
-        const capture = listenerCapture(listenerOptions);
-        const record = virtualListenerRecords
-          .get(this)
-          ?.find(
-            (candidate) =>
-              candidate.type === type &&
-              candidate.listener === listener &&
-              candidate.capture === capture,
-          );
-        if (record !== undefined) {
-          removeVirtualListenerRecord(this, record);
-        }
+        virtualListeners.get(this)?.remove(type, listener, listenerOptions);
       },
     });
     patch(eventTargetPrototype, "dispatchEvent", {
@@ -714,11 +709,14 @@ export function installEventFacade(context: FacadeContext): EventFacade {
       options.shadowRoot.removeEventListener(type, relay);
     }
     boundaryEventRelays.clear();
-    for (const target of virtualListenerTargets) {
-      for (const record of [...(virtualListenerRecords.get(target) ?? [])]) {
-        removeVirtualListenerRecord(target, record);
-      }
+    for (const [type, relay] of outsideEventRelays) {
+      hostDocument.removeEventListener(type, relay, true);
     }
+    outsideEventRelays.clear();
+    for (const target of virtualListenerTargets) {
+      virtualListeners.get(target)?.dispose();
+    }
+    virtualListenerTargets.clear();
     for (const element of elementHandlerTargets) {
       for (const eventName of [...(elementHandlerWrappers.get(element)?.keys() ?? [])]) {
         removeElementHandler(element, eventName);

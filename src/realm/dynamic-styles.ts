@@ -10,7 +10,7 @@
 
 import {
   CSSOMImportRuleError,
-  fetchStylesheetText,
+  fetchStylesheet,
   rewriteCSSOMAddRule,
   rewriteCSSOMInsertRule,
   rewriteCSSOMSelectorText,
@@ -22,6 +22,7 @@ import {
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 import type { RealmFailure } from "./connect.js";
+import type { LinkedStyle } from "../linked-styles.js";
 
 interface DynamicStyleSnapshot {
   source: string;
@@ -69,6 +70,7 @@ export interface DynamicStyleOptions {
   window: VFrameWindow;
   document: Document;
   stylesheetContext: StylesheetContext;
+  linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   signal: AbortSignal;
   getNonce(): string;
   getBaseURL(): string;
@@ -122,6 +124,10 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
   const generatedStyleWrites = new WeakSet<HTMLStyleElement>();
   const connectedStylesAwaitingObservation = new WeakSet<HTMLStyleElement>();
   const connectedLinksAwaitingObservation = new WeakSet<HTMLLinkElement>();
+  const linkedStyleOwners = new WeakMap<HTMLStyleElement, HTMLLinkElement>();
+
+  const stylesheetURL = (sheet: CSSStyleSheet): string =>
+    sheet.href ?? options.getBaseURL();
 
   const registeredStyleSheets = new WeakSet<CSSStyleSheet>();
   const registeredStyleRules = new WeakSet<CSSStyleRule>();
@@ -162,7 +168,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
                   set(value: string) {
                     cssText.set?.call(
                       declaration,
-                      rewriteStyleAttribute(String(value), options.getBaseURL()),
+                      rewriteStyleAttribute(String(value), stylesheetURL(sheet)),
                     );
                   },
                 });
@@ -203,6 +209,17 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     if (sheet === null) {
       return;
     }
+    const link = linkedStyleOwners.get(style);
+    if (link !== undefined) {
+      const url = options.linkedStyles.get(link)?.url ?? options.getBaseURL();
+      Object.defineProperties(sheet, {
+        ownerNode: { configurable: true, get: () => link },
+        href: {
+          configurable: true,
+          value: url,
+        },
+      });
+    }
     if (registeredStyleSheets.has(sheet)) {
       installCSSOMRules(sheet);
       return;
@@ -221,7 +238,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         value(rule: string, index?: number): number {
           let rewritten: string;
           try {
-            rewritten = rewriteCSSOMInsertRule(String(rule), options.getBaseURL());
+            rewritten = rewriteCSSOMInsertRule(String(rule), stylesheetURL(sheet));
           } catch (error) {
             if (error instanceof CSSOMImportRuleError) {
               throw new window.DOMException(
@@ -247,7 +264,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
           const rewritten = rewriteCSSOMAddRule(
             String(selector),
             String(declarations),
-            options.getBaseURL(),
+            stylesheetURL(sheet),
           );
           if (nativeAddRule !== undefined) {
             const result =
@@ -565,13 +582,15 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     } else {
       update.authoredRel = authoredRel;
     }
-    if (
-      !options.isConnectedToRealm(link) ||
-      !isStylesheet ||
-      !link.hasAttribute("href")
-    ) {
+    if (!isStylesheet || !link.hasAttribute("href")) {
+      const previous = options.linkedStyles.get(link);
+      previous?.style.remove();
+      options.linkedStyles.delete(link);
       update.revision += 1;
       update.snapshot = null;
+      return;
+    }
+    if (!options.isConnectedToRealm(link)) {
       return;
     }
 
@@ -594,16 +613,30 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     update.authoredRel = authoredRel;
     const revision = update.revision;
 
+    const previous = options.linkedStyles.get(link);
+    if (previous !== undefined && previous.href === snapshot.href) {
+      const style = previous.style;
+      linkedStyleOwners.set(style, link);
+      style.media = snapshot.media;
+      style.title = link.title;
+      previous.disabled = snapshot.disabled;
+      if (link.nextSibling !== style) {
+        link.after(style);
+      }
+      style.disabled = snapshot.disabled;
+      installCSSOMStyleSheet(style);
+      return;
+    }
+    previous?.style.remove();
+    options.linkedStyles.delete(link);
+
     void (async () => {
       const importFailures: StylesheetImportFailure[] = [];
       try {
-        const source = await fetchStylesheetText(
-          snapshot.href,
-          options.stylesheetContext,
-        );
+        const source = await fetchStylesheet(snapshot.href, options.stylesheetContext);
         const rewritten = await rewriteStylesheet(
-          source,
-          snapshot.href,
+          source.text,
+          source.url,
           createRevisionStylesheetContext(importFailures),
         );
         if (!linkRevisionIsCurrent(link, update, revision, snapshot)) {
@@ -611,11 +644,19 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         }
         const style = document.createElement("style");
         applyNonce(style);
-        style.dataset.vFrameSource = snapshot.href;
+        style.dataset.vFrameSource = source.url;
         style.media = snapshot.media;
+        style.title = link.title;
         style.textContent = rewritten;
         processedStyles.set(style, rewritten);
-        link.replaceWith(style);
+        linkedStyleOwners.set(style, link);
+        options.linkedStyles.set(link, {
+          style,
+          href: snapshot.href,
+          url: source.url,
+          disabled: snapshot.disabled,
+        });
+        link.after(style);
         // disabled only reaches a sheet once the style is connected; on a
         // detached element the assignment is a spec-mandated no-op.
         style.disabled = snapshot.disabled;
@@ -635,13 +676,13 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         }
         update.revision += 1;
         update.snapshot = null;
-        link.remove();
         link.dispatchEvent(new window.Event("error"));
         options.onError({ phase: "stylesheet", url: snapshot.href, error });
       }
     })();
   };
   const invalidateDynamicLink = (link: HTMLLinkElement): void => {
+    options.linkedStyles.get(link)?.style.remove();
     const update = dynamicLinkUpdates.get(link);
     if (update !== undefined) {
       update.revision += 1;

@@ -12,13 +12,14 @@ const GUTTER = 8;
 
 function OverlayLab() {
   return createComponent(Popover, {
-    placement: "bottom-start",
+    placement: root.dataset.placement ?? "bottom-start",
     gutter: GUTTER,
     // Flipping and sliding would let the middleware move the content away from the
     // anchor, which is the one thing this case has to be able to attribute to v-frame.
-    flip: false,
-    slide: false,
+    flip: root.dataset.collisions === "true",
+    slide: root.dataset.collisions === "true",
     overlap: false,
+    modal: root.dataset.modal === "true",
     get children() {
       return [
         createComponent(Popover.Trigger, {
@@ -31,7 +32,25 @@ function OverlayLab() {
             return createComponent(Popover.Content, {
               class: "overlay-content",
               "data-testid": "kobalte-content",
-              children: "Kobalte popover",
+              get children() {
+                const title = createComponent(Popover.Title, {
+                  as: "span",
+                  children: "Kobalte popover",
+                });
+                if (root.dataset.interactive !== "true") return title;
+                const label = document.createElement("label");
+                label.textContent = "Delivery name";
+                const input = document.createElement("input");
+                label.append(input);
+                return [
+                  title,
+                  label,
+                  createComponent(Popover.CloseButton, {
+                    "aria-label": "Close popover",
+                    children: "Close popover",
+                  }),
+                ];
+              },
             });
           },
         }),

@@ -175,16 +175,26 @@ export class VFrameElement extends HTMLElementBase {
 
   set trustedTypesPolicy(value: VFrameTrustedTypesPolicy | null) {
     if (value === null) {
+      const hadPolicy = this.#trustedTypesPolicy !== null;
+      const hadAttribute = this.hasAttribute("trusted-types-policy");
       this.#trustedTypesPolicy = null;
       this.removeAttribute("trusted-types-policy");
+      if (hadPolicy && !hadAttribute) {
+        this.#configurationChanged();
+      }
       return;
     }
     if (typeof value === "string") {
       if (value.trim() === "") {
         throw new TypeError("v-frame trustedTypesPolicy must not be an empty string");
       }
+      const hadPolicy = this.#trustedTypesPolicy !== null;
+      const oldAttribute = this.getAttribute("trusted-types-policy");
       this.#trustedTypesPolicy = null;
       this.setAttribute("trusted-types-policy", value);
+      if (hadPolicy && oldAttribute === value) {
+        this.#configurationChanged();
+      }
       return;
     }
     if (typeof value !== "object") {
@@ -204,8 +214,12 @@ export class VFrameElement extends HTMLElementBase {
         );
       }
     }
+    const changed = this.trustedTypesPolicy !== value;
     this.#trustedTypesPolicy = value;
     this.removeAttribute("trusted-types-policy");
+    if (changed) {
+      this.#configurationChanged();
+    }
   }
 
   get status(): VFrameStatusValue {
@@ -360,6 +374,14 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
     if (oldValue === newValue || !this.#connected) {
+      return;
+    }
+
+    this.#configurationChanged();
+  }
+
+  #configurationChanged(): void {
+    if (!this.#connected) {
       return;
     }
 
@@ -648,7 +670,10 @@ export class VFrameElement extends HTMLElementBase {
               `v-frame stylesheet ${url} returned ${stylesheetResponse.status} ${stylesheetResponse.statusText}`,
             );
           }
-          return stylesheetResponse.text();
+          return {
+            text: await stylesheetResponse.text(),
+            url: stylesheetResponse.url || url,
+          };
         },
         onURLChange: (url, kind) => {
           finalURL = url;
@@ -694,23 +719,38 @@ export class VFrameElement extends HTMLElementBase {
           return true;
         },
         onDocumentTraversal: (nextSession) => {
-          if (!ownsController()) {
-            return;
-          }
-          queueMicrotask(() => {
-            if (!ownsController()) {
-              return;
-            }
-            this.#observeLoad(
-              this.#startLoad({
+          return new Promise<void>((resolve, reject) => {
+            queueMicrotask(() => {
+              if (!ownsController()) {
+                reject(
+                  new DOMException("The v-frame traversal was superseded", "AbortError"),
+                );
+                return;
+              }
+              const traversalGeneration = this.#generation + 1;
+              void this.#startLoad({
                 source: nextSession.currentURL,
                 adoptedMarkup: null,
                 historySession: nextSession,
                 stageMarkup: this.#realm !== null,
                 boundNavigation: false,
                 navigationKind: "traverse",
-              }),
-            );
+              }).then(() => {
+                if (
+                  this.#realmGeneration !== traversalGeneration ||
+                  this.#generation !== traversalGeneration
+                ) {
+                  reject(
+                    new DOMException(
+                      "The v-frame traversal was superseded",
+                      "AbortError",
+                    ),
+                  );
+                } else {
+                  resolve();
+                }
+              }, reject);
+            });
           });
         },
         onShellNavigation: (detail) => {

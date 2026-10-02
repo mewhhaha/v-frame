@@ -674,33 +674,30 @@ test("host page reload leaves active adopted frames intact until teardown", asyn
     .poll(() => frame.evaluate((element) => (element as any).status))
     .toBe("ready");
 
-  const teardownReports: string[] = [];
-  page.on("console", (message) => {
-    if (message.text().startsWith("v-frame-teardown:")) {
-      teardownReports.push(message.text());
-    }
-  });
+  const reportStart = fixture.teardownReports.length;
   await page.evaluate(() => {
+    const report = (message: string) =>
+      navigator.sendBeacon(`/teardown-report?report=${encodeURIComponent(message)}`, "");
     window.addEventListener(
       "v-frame-error",
       (event) => {
         const detail = (event as CustomEvent<{ phase: string; fatal: boolean }>).detail;
-        console.log(
-          `v-frame-teardown: error phase=${detail.phase} fatal=${detail.fatal}`,
-        );
+        report(`v-frame-teardown: error phase=${detail.phase} fatal=${detail.fatal}`);
       },
       true,
     );
     window.addEventListener("pagehide", () => {
-      const copyIntact =
-        document.querySelector("v-frame")?.shadowRoot?.querySelector("#adopted-copy") !==
-        null;
-      console.log(`v-frame-teardown: pagehide copyIntact=${copyIntact}`);
+      const copyIntact = Boolean(
+        document.querySelector("v-frame")?.shadowRoot?.querySelector("#adopted-copy"),
+      );
+      report(`v-frame-teardown: pagehide copyIntact=${copyIntact}`);
     });
   });
   await page.reload({ waitUntil: "load" });
 
-  expect(teardownReports).toEqual(["v-frame-teardown: pagehide copyIntact=true"]);
+  await expect
+    .poll(() => fixture.teardownReports.slice(reportStart))
+    .toEqual(["v-frame-teardown: pagehide copyIntact=true"]);
 });
 
 test("emits lifecycle errors and ignores stale loads after disconnection", async ({

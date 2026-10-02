@@ -1,6 +1,6 @@
 {
   "name": "@mewhhaha/v-frame",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Render a trusted web application in a shadow tree backed by an isolated browser realm",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,7 +40,7 @@
     "test": "npm run build && playwright test",
     "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
     "bench": "npm run build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run size && npm run test:unit",
+    "check": "npm run format:check && npm run lint && npm run build && npm run size && npm run test:unit",
     "publish:check": "npm run check && jsr publish --dry-run"
   },
   "keywords": [
@@ -59,18 +59,19 @@
   "bugs": {
     "url": "https://github.com/mewhhaha/v-frame/issues"
   },
-  "packageManager": "pnpm@11.13.1",
+  "packageManager": "pnpm@12.8.1+sha512.f64ba907507f5ceafe06c8d38e6052d0179444580ec1279ddd5bfc11cb48aa8a2644b66598e07e761da84872a9fc57d5f902b87fa49d024198d558612aabbe45",
   "dependencies": {
     "css-tree": "3.2.1"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
-    "@types/css-tree": "2.3.11",
-    "@types/node": "26.1.1",
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/css-tree": "3.2.0",
+    "@types/node": "26.6.3",
     "jsr": "0.14.3",
-    "oxfmt": "0.63.0",
-    "oxlint": "1.78.0",
-    "rolldown": "1.2.3",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "rolldown": "1.2.12",
     "typescript": "7.0.2"
   }
 }

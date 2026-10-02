@@ -17,6 +17,9 @@ about composition.
 
 From the repository root:
 
+Use Node.js 24.15 or newer in the 24.x line, or Node.js 26, as required by the
+Angular toolchain. Older Node.js 24 releases cannot build this example.
+
 ```sh
 pnpm install
 pnpm --filter example-ssr dev
@@ -64,7 +67,7 @@ The guests use their framework-owned production build commands:
 pnpm --filter example-ssr-react-router build # react-router build
 pnpm --filter example-ssr-qwik build         # vite client and SSR builds
 pnpm --filter example-ssr-angular build      # ng build
-pnpm --filter example-ssr-solid build        # vinxi build
+pnpm --filter example-ssr-solid build        # vite build (SolidStart 2 + Nitro)
 ```
 
 React Router uses `@cloudflare/vite-plugin`, so its deployable Worker
@@ -72,6 +75,9 @@ configuration is generated at `apps/react-router/build/server/wrangler.json`.
 Angular writes browser and server output to `apps/angular/dist`. SolidStart
 writes its Cloudflare module and browser assets to `apps/solid/.output`. Qwik
 keeps its checked-in Worker configuration pointed at its Vite output.
+
+Angular 22 uses TypeScript 6.0, its supported compiler API. The Vite applications
+and the library use TypeScript 7.
 
 Build the whole composition with:
 
@@ -91,7 +97,7 @@ wrangler dev \
   -c apps/react-router/build/server/wrangler.json \
   -c apps/qwik/wrangler.jsonc \
   -c apps/angular/wrangler.jsonc \
-  -c apps/solid/wrangler.jsonc
+  -c apps/solid/wrangler.json
 ```
 
 The first configuration is public. The others satisfy the host's service
@@ -153,8 +159,11 @@ pnpm --filter example-ssr deploy
 
 `check` builds all applications, regenerates Worker binding types, type-checks,
 runs Chromium and Firefox integration tests, and performs a dry-run deploy for
-every Worker. The browser tests exercise server composition and interactive
-hydration in all four guest frameworks.
+every Worker. The browser tests exercise server composition, routing, interactive
+hydration, and WCAG accessibility in all four guest frameworks. Desktop and mobile
+first-paint checks hold back the host and guest scripts, sample layout at paint
+boundaries, and compare server-preview pixels with the activated content. They
+also verify useful rendering without JavaScript and nonblank navigation commits.
 
 `deploy` publishes the guest Workers before the public host so every service
 binding resolves when the host becomes active.

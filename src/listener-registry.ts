@@ -1,7 +1,7 @@
 // v-frame installs several registries in front of a native addEventListener:
 // the document facade, the window bridge and the native XHR patches. They all
 // need the same bookkeeping — a record store keyed by (type, listener,
-// capture), `once` removal after dispatch, `signal` unwinding and bulk
+// capture), `once` removal before invocation, `signal` unwinding and bulk
 // disposal — but they disagree on what a wrapper does and on how many targets
 // a record is mirrored onto. The bookkeeping lives here; the disagreements stay
 // at the call site as ListenerRegistryOptions.
@@ -19,6 +19,17 @@ export function listenerCapture(
   options: boolean | EventListenerOptions | undefined,
 ): boolean {
   return typeof options === "boolean" ? options : (options?.capture ?? false);
+}
+
+export function listenerPassive(
+  options: boolean | AddEventListenerOptions | undefined,
+  type: string,
+  defaultPassive = false,
+): boolean {
+  return (
+    (typeof options === "boolean" ? undefined : options?.passive) ??
+    (defaultPassive && ["touchstart", "touchmove", "wheel", "mousewheel"].includes(type))
+  );
 }
 
 function listenerIsOnce(options: boolean | AddEventListenerOptions | undefined): boolean {
@@ -39,6 +50,8 @@ export interface ListenerRegistryOptions {
   createWrapper(
     listener: EventListenerOrEventListenerObject,
     capture: boolean,
+    options: boolean | AddEventListenerOptions | undefined,
+    type: string,
   ): EventListener;
   // Registers a wrapper on every target a record is mirrored onto, and decides
   // which of the authored options reach the native implementation.
@@ -48,11 +61,13 @@ export interface ListenerRegistryOptions {
     options: boolean | AddEventListenerOptions | undefined,
   ): void;
   removeFromTargets(type: string, wrapper: EventListener, capture: boolean): void;
+  /** Reports errors from manually relayed dispatches; native dispatch reports its own. */
+  onError?(error: unknown): void;
 }
 
 export class ListenerRegistry {
   readonly #options: ListenerRegistryOptions;
-  readonly #records: ListenerRecord[] = [];
+  readonly #records = new Set<ListenerRecord>();
 
   constructor(options: ListenerRegistryOptions) {
     this.#options = options;
@@ -63,18 +78,21 @@ export class ListenerRegistry {
     listener: EventListenerOrEventListenerObject,
     capture: boolean,
   ): ListenerRecord | undefined {
-    return this.#records.find(
-      (record) =>
+    for (const record of this.#records) {
+      if (
         record.type === type &&
         record.listener === listener &&
-        record.capture === capture,
-    );
+        record.capture === capture
+      ) {
+        return record;
+      }
+    }
+    return undefined;
   }
 
   #forget(record: ListenerRecord): void {
-    const index = this.#records.indexOf(record);
-    if (index !== -1) {
-      this.#records.splice(index, 1);
+    if (!this.#records.delete(record)) {
+      return;
     }
     this.#options.removeFromTargets(record.type, record.wrapper, record.capture);
     if (record.signal !== undefined && record.abort !== undefined) {
@@ -106,19 +124,21 @@ export class ListenerRegistry {
       capture,
       wrapper: () => undefined,
     };
-    const invokeListener = this.#options.createWrapper(listener, capture);
+    const invokeListener = this.#options.createWrapper(listener, capture, options, type);
     const once = listenerIsOnce(options);
     record.wrapper = (event) => {
-      try {
-        invokeListener(event);
-      } finally {
-        if (once) {
-          this.#forget(record);
-        }
+      if (once) {
+        this.#forget(record);
       }
+      invokeListener(event);
     };
-    this.#records.push(record);
-    this.#options.addToTargets(type, record.wrapper, options);
+    this.#records.add(record);
+    try {
+      this.#options.addToTargets(type, record.wrapper, options);
+    } catch (error) {
+      this.#forget(record);
+      throw error;
+    }
     if (signal !== undefined) {
       record.signal = signal;
       record.abort = () => this.#forget(record);
@@ -150,11 +170,18 @@ export class ListenerRegistry {
     for (const record of [...this.#records]) {
       // A listener removed by an earlier listener in this dispatch is skipped,
       // matching the DOM inner-invoke algorithm.
-      if (!this.#records.includes(record)) {
+      if (!this.#records.has(record)) {
         continue;
       }
       if (record.type === event.type && record.capture === capture) {
-        record.wrapper(event);
+        try {
+          record.wrapper(event);
+        } catch (error) {
+          if (this.#options.onError === undefined) {
+            throw error;
+          }
+          this.#options.onError(error);
+        }
         if (!shouldContinue()) {
           return;
         }

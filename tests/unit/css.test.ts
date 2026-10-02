@@ -184,6 +184,46 @@ test("rewriteCSSOMAddRule rewrites the selector and the declarations apart", () 
 
 const MAIN = "https://host.test/app/main.css";
 
+test("redirected imports resolve nested imports and assets from their final response URLs", async () => {
+  const requests: string[] = [];
+  const context = createStylesheetContext(async (url) => {
+    requests.push(url);
+    if (url === "https://host.test/old/theme.css") {
+      return {
+        text: '@import "nested.css"; p { background: url(asset.png) }',
+        url: "https://host.test/new/theme.css",
+      };
+    }
+    assert.equal(url, "https://host.test/new/nested.css");
+    return {
+      text: "body { background: url(nested.png) }",
+      url: "https://host.test/final/nested.css",
+    };
+  });
+  const rewritten = await rewriteStylesheet('@import "/old/theme.css";', MAIN, context);
+  assert.equal(
+    rewritten,
+    "v-body{background:url(https://host.test/final/nested.png)}p{background:url(https://host.test/new/asset.png)}",
+  );
+  assert.deepEqual(requests, [
+    "https://host.test/old/theme.css",
+    "https://host.test/new/nested.css",
+  ]);
+});
+
+test("redirect aliases cannot evade import cycle detection", async () => {
+  let fetches = 0;
+  const context = createStylesheetContext(async () => {
+    fetches++;
+    return { text: '@import "/alias.css"; p { color: red }', url: MAIN };
+  });
+  assert.equal(
+    await rewriteStylesheet('@import "/alias.css"; body { color: blue }', MAIN, context),
+    "v-body{color:blue}",
+  );
+  assert.equal(fetches, 1);
+});
+
 const importedSheets: Record<string, string> = {
   "https://host.test/app/a.css": "body { background: url(img/a.png) }",
   "https://host.test/app/b.css": "@import url(a.css);\np { color: blue }",

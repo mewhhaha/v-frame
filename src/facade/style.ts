@@ -93,6 +93,7 @@ function updateAuthoredStyleProperty(
 
 export interface StyleFacade {
   refreshInlineStyleSheet(): void;
+  updateInlineStyle(element: Element): void;
   removeStyleSelector(element: Element): void;
   ensureStyleSelector(element: Element): string;
   setLogicalStyleAttribute(element: Element, value: string, normalize: boolean): void;
@@ -134,23 +135,40 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   const styleFacades = new WeakMap<Element, CSSStyleDeclaration>();
   const linkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
   const nativeLinkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
+  const linkDisabledValues = new WeakMap<HTMLLinkElement, boolean>();
+  const nativeLinkSheet = Object.getOwnPropertyDescriptor(
+    window.HTMLLinkElement.prototype,
+    "sheet",
+  );
+  const nativeLinkDisabled = Object.getOwnPropertyDescriptor(
+    window.HTMLLinkElement.prototype,
+    "disabled",
+  );
+  const nativeLinkMedia = Object.getOwnPropertyDescriptor(
+    window.HTMLLinkElement.prototype,
+    "media",
+  );
+  const nativeLinkTitle = Object.getOwnPropertyDescriptor(
+    window.HTMLElement.prototype,
+    "title",
+  );
   const styleDeclarationDocument = new window.DOMParser().parseFromString(
     options.createHTML("<!doctype html><html><body></body></html>"),
     "text/html",
   );
 
-  const usedStyleSelectorValues = new Set<string>();
   let nextStyleSelectorValue = 0;
+  const initialStyleSelectorValues = new Set<string>();
   for (const element of options.authoredStyleAttributes.keys()) {
     const selectorValue = nativeGetAttribute.call(
       element,
       options.inlineStyleSelectorAttribute,
     );
-    if (selectorValue === null || usedStyleSelectorValues.has(selectorValue)) {
+    if (selectorValue === null || initialStyleSelectorValues.has(selectorValue)) {
       continue;
     }
     styleSelectorValues.set(element, selectorValue);
-    usedStyleSelectorValues.add(selectorValue);
+    initialStyleSelectorValues.add(selectorValue);
     if (/^\d+$/.test(selectorValue)) {
       nextStyleSelectorValue = Math.max(
         nextStyleSelectorValue,
@@ -194,12 +212,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       return existing;
     }
 
-    let selectorValue: string;
-    do {
-      selectorValue = String(nextStyleSelectorValue);
-      nextStyleSelectorValue += 1;
-    } while (usedStyleSelectorValues.has(selectorValue));
-    usedStyleSelectorValues.add(selectorValue);
+    const selectorValue = String(nextStyleSelectorValue++);
     styleSelectorValues.set(element, selectorValue);
     nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, selectorValue);
     return selectorValue;
@@ -209,38 +222,70 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     { length: INLINE_STYLE_SELECTOR_ID_COUNT },
     (_value, index) => `#v-frame-inline-style-${index}`,
   ).join("")})`;
-  const refreshInlineStyleSheet = (): void => {
-    const rules: string[] = [];
-    for (const [element, cssText] of options.authoredStyleAttributes) {
-      if (cssText === "") {
-        removeStyleSelector(element);
-        continue;
-      }
-
-      let rewritten: string;
-      try {
-        rewritten = rewriteStyleAttribute(cssText, options.getBaseURL());
-      } catch {
-        removeStyleSelector(element);
-        continue;
-      }
-      if (rewritten === "") {
-        removeStyleSelector(element);
-        continue;
-      }
-
-      const selectorValue = window.CSS.escape(ensureStyleSelector(element));
-      rules.push(
-        `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}{${rewritten}}`,
-      );
+  const inlineStyleRules = new WeakMap<Element, CSSStyleRule>();
+  // CSS rules do not retain their matched elements. Retire a rule once its
+  // element is collected, so incremental updates do not turn DOM churn into
+  // an ever-growing sheet. No scheduling assumptions depend on this cleanup.
+  const collectedInlineStyles = new FinalizationRegistry<CSSStyleRule>((rule) => {
+    const sheet = options.inlineStyleSheet.sheet;
+    if (sheet === null || rule.parentStyleSheet !== sheet) {
+      return;
     }
+    for (let index = 0; index < sheet.cssRules.length; index += 1) {
+      if (sheet.cssRules[index] === rule) {
+        sheet.deleteRule(index);
+        return;
+      }
+    }
+  });
+  const applyInlineStyleNonce = (): void => {
     const nonce = options.getNonce();
     if (nonce === "") {
       nativeRemoveAttribute.call(options.inlineStyleSheet, "nonce");
     } else {
       nativeSetAttribute.call(options.inlineStyleSheet, "nonce", nonce);
     }
-    options.inlineStyleSheet.textContent = rules.join("\n");
+  };
+  const updateInlineStyle = (element: Element): void => {
+    let rewritten = "";
+    const cssText = options.authoredStyleAttributes.get(element) ?? "";
+    if (cssText !== "") {
+      try {
+        rewritten = rewriteStyleAttribute(cssText, options.getBaseURL());
+      } catch {
+        // Invalid declarations have no rendered rule, just as on a native style.
+      }
+    }
+    applyInlineStyleNonce();
+    const sheet = options.inlineStyleSheet.sheet;
+    let rule = inlineStyleRules.get(element);
+    if (rewritten === "") {
+      removeStyleSelector(element);
+      if (rule !== undefined) {
+        rule.style.cssText = "";
+      }
+      return;
+    }
+    const selectorValue = window.CSS.escape(ensureStyleSelector(element));
+    if (sheet === null) {
+      return; // A CSP-blocked sheet must stay blocked.
+    }
+    if (rule === undefined || rule.parentStyleSheet !== sheet) {
+      const index = sheet.insertRule(
+        `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}{}`,
+        sheet.cssRules.length,
+      );
+      rule = sheet.cssRules[index] as CSSStyleRule;
+      inlineStyleRules.set(element, rule);
+      collectedInlineStyles.unregister(element);
+      collectedInlineStyles.register(element, rule, element);
+    }
+    rule.style.cssText = rewritten;
+  };
+  const refreshInlineStyleSheet = (): void => {
+    for (const element of options.authoredStyleAttributes.keys()) {
+      updateInlineStyle(element);
+    }
   };
 
   const setLogicalStyleAttribute = (
@@ -264,7 +309,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     options.authoredStyleAttributes.set(element, logicalValue);
     nativeRemoveAttribute.call(element, "style");
     physicalStyleAttributeValues.set(element, null);
-    refreshInlineStyleSheet();
+    updateInlineStyle(element);
   };
 
   const removeLogicalStyleAttribute = (element: Element): void => {
@@ -277,7 +322,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     nativeRemoveAttribute.call(element, "style");
     physicalStyleAttributeValues.set(element, null);
     removeStyleSelector(element);
-    refreshInlineStyleSheet();
+    updateInlineStyle(element);
   };
 
   const probeStyleDeclaration = (): CSSStyleDeclaration | undefined => {
@@ -301,7 +346,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       cssomMutatedStyleElements.add(element);
       nativeRemoveAttribute.call(element, "style");
       physicalStyleAttributeValues.set(element, null);
-      refreshInlineStyleSheet();
+      updateInlineStyle(element);
     };
     const setProperty = (
       property: string,
@@ -618,11 +663,18 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     }
     physicalStyleAttributeValues.set(element, null);
     if (authoredStyle !== null) {
-      refreshInlineStyleSheet();
+      updateInlineStyle(element);
     }
   };
 
   const rememberAuthoredLinkRel = (link: HTMLLinkElement): void => {
+    if (!linkDisabledValues.has(link)) {
+      linkDisabledValues.set(
+        link,
+        options.linkedStyles.get(link)?.disabled ??
+          Boolean(nativeLinkDisabled?.get?.call(link)),
+      );
+    }
     const authoredRel = authoredLinkRelValues.has(link)
       ? (authoredLinkRelValues.get(link) ?? null)
       : nativeGetAttribute.call(link, "rel");
@@ -649,10 +701,66 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     cssomMutatedStyleElements.delete(element);
     nativeRemoveAttribute.call(element, "style");
     physicalStyleAttributeValues.set(element, null);
-    refreshInlineStyleSheet();
+    updateInlineStyle(element);
   }
 
   const installPatches = (): void => {
+    if (nativeLinkSheet?.get !== undefined) {
+      patch(window.HTMLLinkElement.prototype, "sheet", {
+        get(this: HTMLLinkElement): CSSStyleSheet | null {
+          return virtualNodes.has(this)
+            ? (options.linkedStyles.get(this)?.style.sheet ?? null)
+            : (nativeLinkSheet.get?.call(this) ?? null);
+        },
+      });
+    }
+    if (nativeLinkDisabled?.get !== undefined && nativeLinkDisabled.set !== undefined) {
+      patch(window.HTMLLinkElement.prototype, "disabled", {
+        get(this: HTMLLinkElement): boolean {
+          if (!virtualNodes.has(this)) {
+            return nativeLinkDisabled.get?.call(this);
+          }
+          const value = this.sheet?.disabled ?? linkDisabledValues.get(this) ?? false;
+          linkDisabledValues.set(this, value);
+          return value;
+        },
+        set(this: HTMLLinkElement, value: boolean) {
+          if (!virtualNodes.has(this)) {
+            nativeLinkDisabled.set?.call(this, value);
+            return;
+          }
+          linkDisabledValues.set(this, Boolean(value));
+          const linked = options.linkedStyles.get(this);
+          if (linked !== undefined) {
+            linked.disabled = Boolean(value);
+            linked.style.disabled = Boolean(value);
+          }
+          options.onLinkElementChange(this, authoredLinkRelValues.get(this) ?? null);
+        },
+      });
+    }
+    if (nativeLinkMedia?.get !== undefined && nativeLinkMedia.set !== undefined) {
+      patch(window.HTMLLinkElement.prototype, "media", {
+        get: nativeLinkMedia.get,
+        set(this: HTMLLinkElement, value: string) {
+          nativeLinkMedia.set?.call(this, value);
+          if (virtualNodes.has(this)) {
+            options.onLinkElementChange(this, authoredLinkRelValues.get(this) ?? null);
+          }
+        },
+      });
+    }
+    if (nativeLinkTitle?.get !== undefined && nativeLinkTitle.set !== undefined) {
+      patch(window.HTMLLinkElement.prototype, "title", {
+        get: nativeLinkTitle.get,
+        set(this: HTMLLinkElement, value: string) {
+          nativeLinkTitle.set?.call(this, value);
+          if (virtualNodes.has(this)) {
+            options.onLinkElementChange(this, authoredLinkRelValues.get(this) ?? null);
+          }
+        },
+      });
+    }
     const patchStyleProperty = (
       prototype: object,
       nativeStyle: PropertyDescriptor | undefined,
@@ -702,11 +810,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     }
   };
 
-  refreshInlineStyleSheet();
+  applyInlineStyleNonce();
+  options.inlineStyleSheet.textContent = "";
   options.shadowRoot.append(options.inlineStyleSheet);
+  refreshInlineStyleSheet();
 
   return {
     refreshInlineStyleSheet,
+    updateInlineStyle,
     removeStyleSelector,
     ensureStyleSelector,
     setLogicalStyleAttribute,

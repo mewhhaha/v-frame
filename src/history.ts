@@ -212,7 +212,7 @@ export interface HistoryControllerOptions {
 export interface VirtualHistoryOptions extends HistoryControllerOptions {
   session: VirtualHistorySession;
   getBaseURL(): string;
-  onDocumentTraversal(session: VirtualHistorySession): void;
+  onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
 }
 
 export interface BoundHistoryOptions extends HistoryControllerOptions {
@@ -953,7 +953,7 @@ export class VirtualHistory extends HistoryController {
     const traversalDelta = Math.trunc(delta);
     this.window.setTimeout(() => {
       if (!this.disposed) {
-        this.#traverse(traversalDelta);
+        void Promise.resolve(this.#traverse(traversalDelta)).catch(() => undefined);
       }
     }, 0);
   }
@@ -984,7 +984,10 @@ export class VirtualHistory extends HistoryController {
     return Number.isFinite(number) ? number | 0 : 0;
   }
 
-  #traverse(delta: number, cancelable = false): TraversalOutcome {
+  #traverse(
+    delta: number,
+    cancelable = false,
+  ): TraversalOutcome | Promise<TraversalOutcome> {
     const nextIndex = this.#session.currentIndex + Math.trunc(delta);
     if (
       nextIndex < 0 ||
@@ -1003,8 +1006,9 @@ export class VirtualHistory extends HistoryController {
     }
 
     if (nextEntry.documentID !== this.#session.currentDocumentID) {
-      this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex));
-      return { outcome: "applied" };
+      return this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex)).then(
+        () => ({ outcome: "applied" }),
+      );
     }
 
     const previousURL = this.currentURL;

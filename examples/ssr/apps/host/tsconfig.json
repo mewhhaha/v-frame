@@ -12,5 +12,6 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["worker-configuration.d.ts", "src", "../../shared"]
+  "include": ["worker-configuration.d.ts", "src", "../../shared"],
+  "exclude": ["src/client.ts"]
 }

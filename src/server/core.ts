@@ -112,14 +112,14 @@ export interface MaterializeStylesheetOptions {
   onImportFailure?(failure: StylesheetImportFailure): void;
 }
 
-async function fetchStylesheetSource(url: string): Promise<string> {
+async function fetchStylesheetSource(url: string) {
   const response = await fetch(url);
   if (!response.ok) {
     throw new TypeError(
       `v-frame SSR stylesheet ${url} returned ${response.status} ${response.statusText}`,
     );
   }
-  return response.text();
+  return { text: await response.text(), url: response.url || url };
 }
 
 /**

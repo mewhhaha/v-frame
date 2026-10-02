@@ -24,10 +24,8 @@ import { installBundle, mountFrame } from "./support/mount-frame";
 const ROWS_PER_CYCLE = 500;
 const CYCLES = 4;
 /**
- * Every nth row carries a style attribute. Writing one rebuilds the whole inline
- * stylesheet from the elements the facade is still holding, so styling all 2,000
- * would make this test quadratic and time out; 200 is far more than enough for a
- * strong registry to hold on to them.
+ * Every nth row carries a style attribute, exercising inline-rule cleanup as
+ * well as the other weak registries.
  */
 const STYLED_EVERY = 10;
 

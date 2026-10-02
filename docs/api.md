@@ -31,6 +31,21 @@ const frame = document.querySelector<VFrameElement>("v-frame");
 frame?.addEventListener("v-frame-load", (event) => console.log(event.detail.url));
 ```
 
+## Guest geometry and outside interactions
+
+Guest rectangles and hit-test coordinates are frame-local. Window viewport sizes
+and media queries follow the host page; there is no separate layout viewport.
+`document.scrollingElement` is the virtual HTML element and mirrors frame
+scrolling. The virtual body keeps its own native scroll and client metrics.
+
+Document listeners receive outside pointer, click, and focus interactions as
+synthetic events targeted at the virtual body. This lets guest dismiss layers
+close when the user interacts with the host or another frame without exposing
+foreign nodes as guest targets. Canceling or stopping these notifications does
+not cancel or stop the host's original event. Notifications do not cross the
+physical shadow boundary. Guest-origin events retain their ordinary logical
+path and remain confined to their frame.
+
 ## Configuration
 
 Observed attributes, each with a matching property. Changing `src`,

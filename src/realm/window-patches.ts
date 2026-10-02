@@ -2,7 +2,11 @@
 // window of the host page — viewport metrics, scrolling, the event bridge —
 // plus the two constructed stylesheets v-frame owns on the host shadow root.
 
-import { ListenerRegistry, listenerCapture } from "../listener-registry.js";
+import {
+  ListenerRegistry,
+  listenerCapture,
+  listenerPassive,
+} from "../listener-registry.js";
 import type { VFrameWindow } from "../types.js";
 
 const INTERNAL_CSS = `
@@ -153,7 +157,12 @@ ${liveMarkupSelector} {
 export function installWindowEventBridge(
   window: VFrameWindow,
   virtualEventTarget: ShadowRoot,
-  eventForListener: (event: Event, currentTarget: EventTarget) => Event,
+  eventForListener: (
+    event: Event,
+    currentTarget: EventTarget,
+    eventPhase?: number,
+    passive?: boolean,
+  ) => Event,
 ): () => void {
   const nativeAddEventListener = window.addEventListener.bind(window);
   const nativeRemoveEventListener = window.removeEventListener.bind(window);
@@ -167,9 +176,13 @@ export function installWindowEventBridge(
 
   const bridgedWindowListener = (
     listener: EventListenerOrEventListenerObject,
+    _capture: boolean,
+    options: boolean | AddEventListenerOptions | undefined,
+    type: string,
   ): EventListener => {
+    const passive = listenerPassive(options, type, true);
     return (event) => {
-      const listenerEvent = eventForListener(event, window);
+      const listenerEvent = eventForListener(event, window, undefined, passive);
       if (typeof listener === "function") {
         listener.call(window, listenerEvent);
       } else {
@@ -185,10 +198,10 @@ export function installWindowEventBridge(
   const windowListeners = new ListenerRegistry({
     createWrapper: bridgedWindowListener,
     addToTargets: (type, wrapper, options) => {
-      const listenerOptions =
-        typeof options === "boolean"
-          ? options
-          : { capture: listenerCapture(options), passive: options?.passive ?? false };
+      const listenerOptions = {
+        capture: listenerCapture(options),
+        passive: listenerPassive(options, type, true),
+      };
       nativeAddEventListener(type, wrapper, listenerOptions);
       virtualEventTarget.addEventListener(type, wrapper, listenerOptions);
     },

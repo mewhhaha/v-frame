@@ -56,6 +56,11 @@ interface LiveIndexedCollection<T extends object> {
   readonly [index: number]: T;
 }
 
+interface IndexedValues<T> extends Iterable<T> {
+  readonly length: number;
+  readonly [index: number]: T;
+}
+
 function propertyIndex(property: PropertyKey): number | null {
   if (typeof property !== "string" || !/^(0|[1-9]\d*)$/.test(property)) {
     return null;
@@ -66,13 +71,13 @@ function propertyIndex(property: PropertyKey): number | null {
 
 function liveIndexedCollection<T extends object>(
   prototype: object,
-  currentValues: () => T[],
+  currentValues: () => IndexedValues<T>,
   currentNamedValue?: (name: string) => T | null,
 ): LiveIndexedCollection<T> {
   const target = Object.create(prototype) as object;
   const itemAt = (index: number): T | null => currentValues()[index] ?? null;
   const namedItem = (name: string): T | null => currentNamedValue?.(String(name)) ?? null;
-  const iterator = (): ArrayIterator<T> => currentValues()[Symbol.iterator]();
+  const iterator = (): Iterator<T> => currentValues()[Symbol.iterator]();
 
   const proxy = new Proxy(target, {
     get(proxyTarget, property, receiver) {
@@ -102,16 +107,17 @@ function liveIndexedCollection<T extends object>(
               callback: (value: T, index: number, list: unknown) => void,
               thisArg?: unknown,
             ) => {
-              currentValues().forEach((value, valueIndex) =>
-                callback.call(thisArg, value, valueIndex, proxy),
-              );
+              const values = currentValues();
+              for (let index = 0; index < values.length; index += 1) {
+                callback.call(thisArg, values[index]!, index, proxy);
+              }
             };
           case "entries":
-            return () => currentValues().entries();
+            return () => Array.from(currentValues()).entries();
           case "keys":
-            return () => currentValues().keys();
+            return () => Array.from(currentValues()).keys();
           case "values":
-            return () => currentValues().values();
+            return iterator;
         }
         return Reflect.get(proxyTarget, property, receiver);
       }
@@ -135,7 +141,9 @@ function liveIndexedCollection<T extends object>(
     },
     ownKeys(proxyTarget) {
       return [
-        ...currentValues().map((_value, index) => String(index)),
+        ...Array.from({ length: currentValues().length }, (_value, index) =>
+          String(index),
+        ),
         ...Reflect.ownKeys(proxyTarget),
       ];
     },
@@ -174,6 +182,7 @@ export interface CollectionFacade {
   anchorCollection: HTMLCollectionOf<HTMLAnchorElement>;
   embedCollection: HTMLCollectionOf<HTMLEmbedElement>;
   installPatches(): void;
+  dispose(): void;
 }
 
 export function installCollectionFacade(context: FacadeContext): CollectionFacade {
@@ -191,6 +200,35 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     isInVirtualDocumentTree,
     patch,
   } = context;
+
+  // Filtered/shell collections cannot use a single native live collection.
+  // Cache their snapshots until a mutation, draining queued records on every
+  // read so changes are visible synchronously, before observer delivery.
+  const cachedCollections = new Set<() => void>();
+  const invalidateCollections = (): void => {
+    for (const invalidate of cachedCollections) invalidate();
+  };
+  const collectionObserver = new window.MutationObserver(invalidateCollections);
+  collectionObserver.observe(options.html, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+  });
+  const cachedValues = <T>(read: () => IndexedValues<T>): (() => IndexedValues<T>) => {
+    let values: IndexedValues<T> | undefined;
+    cachedCollections.add(() => {
+      values = undefined;
+    });
+    return () => {
+      if (collectionObserver.takeRecords().length > 0) {
+        invalidateCollections();
+      }
+      if (values === undefined) {
+        values = read();
+      }
+      return values;
+    };
+  };
 
   const sortElementsInDocumentOrder = (elements: Element[]): Element[] =>
     elements.sort((left, right) => {
@@ -218,6 +256,22 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     return sortElementsInDocumentOrder(matches);
   };
 
+  const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
+    const match = nativeQuerySelector.call(root, selectors);
+    const translated = translateSelector(selectors);
+    if (translated === selectors) {
+      return match;
+    }
+    const shellMatch = nativeQuerySelector.call(root, translated);
+    if (match === null || shellMatch === null || match === shellMatch) {
+      return match ?? shellMatch;
+    }
+    return match.compareDocumentPosition(shellMatch) &
+      window.Node.DOCUMENT_POSITION_FOLLOWING
+      ? match
+      : shellMatch;
+  };
+
   const querySelector = (selectors: string): Element | null => {
     const translated = translateSelector(selectors);
     if (
@@ -226,7 +280,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     ) {
       return options.html;
     }
-    return querySelectorAllWithShell(options.html, selectors)[0] ?? null;
+    return querySelectorWithShell(options.html, selectors);
   };
   const querySelectorAll = (selectors: string): NodeListOf<Element> => {
     const translated = translateSelector(selectors);
@@ -240,20 +294,50 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     return staticNodeList(matches);
   };
   const createLiveHTMLCollection = <T extends Element>(
-    currentElements: () => T[],
-  ): HTMLCollectionOf<T> =>
-    liveIndexedCollection(window.HTMLCollection.prototype, currentElements, (name) => {
+    currentElements: () => IndexedValues<T>,
+  ): HTMLCollectionOf<T> => {
+    const values = cachedValues(currentElements);
+    return liveIndexedCollection(window.HTMLCollection.prototype, values, (name) => {
       if (name === "") {
         return null;
       }
-      return (
-        currentElements().find(
-          (element) =>
-            nativeGetAttribute.call(element, "id") === name ||
-            nativeGetAttribute.call(element, "name") === name,
-        ) ?? null
-      );
+      for (const element of values()) {
+        if (
+          nativeGetAttribute.call(element, "id") === name ||
+          nativeGetAttribute.call(element, "name") === name
+        ) {
+          return element;
+        }
+      }
+      return null;
     }) as unknown as HTMLCollectionOf<T>;
+  };
+
+  const withRoot = (
+    values: HTMLCollectionOf<Element>,
+    includeRoot: () => boolean,
+  ): IndexedValues<Element> =>
+    new Proxy(values, {
+      get(target, property) {
+        const offset = includeRoot() ? 1 : 0;
+        if (property === "length") {
+          return target.length + offset;
+        }
+        const index = propertyIndex(property);
+        if (index !== null) {
+          return offset === 1 && index === 0 ? options.html : target[index - offset];
+        }
+        if (property === Symbol.iterator) {
+          return function* () {
+            if (includeRoot()) {
+              yield options.html;
+            }
+            yield* target;
+          };
+        }
+        return Reflect.get(target, property, target);
+      },
+    });
   const tagCollections = new Map<string, HTMLCollectionOf<Element>>();
   const getElementsByTagName = (qualifiedName: string): HTMLCollectionOf<Element> => {
     const requestedName = String(qualifiedName);
@@ -266,6 +350,17 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     // foreign elements (SVG, MathML) case-sensitively; only the shell
     // translation below wants the lowercase form.
     const collectionName = requestedName.toLowerCase();
+    const nativeCollection = nativeGetElementsByTagName.call(options.html, requestedName);
+    if (collectionName === "*") {
+      const values = withRoot(nativeCollection, () => true);
+      const collection = createLiveHTMLCollection(() => values);
+      tagCollections.set(requestedName, collection);
+      return collection;
+    }
+    if (!["html", "head", "body", options.html.localName].includes(collectionName)) {
+      tagCollections.set(requestedName, nativeCollection);
+      return nativeCollection;
+    }
     const collection = createLiveHTMLCollection(() => {
       const translated = collectionName === "*" ? "*" : translateSelector(collectionName);
       const matches = Array.from(
@@ -305,6 +400,26 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     const existing = namespaceTagCollections.get(collectionKey);
     if (existing !== undefined) {
       return existing;
+    }
+
+    const nativeCollection = nativeGetElementsByTagNameNS.call(
+      options.html,
+      namespace,
+      requestedName,
+    );
+    const includesShell = namespace === "*" || namespace === HTML_NAMESPACE;
+    if (
+      requestedName === "*" ||
+      !includesShell ||
+      !["html", "head", "body"].includes(requestedName)
+    ) {
+      const values = withRoot(
+        nativeCollection,
+        () => includesShell && requestedName === "*",
+      );
+      const collection = createLiveHTMLCollection(() => values);
+      namespaceTagCollections.set(collectionKey, collection);
+      return collection;
     }
 
     const collection = createLiveHTMLCollection(() => {
@@ -352,19 +467,16 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       return existing;
     }
 
-    const collection = createLiveHTMLCollection(() => {
-      const matches = Array.from(options.html.getElementsByClassName(classNames));
-      const requiredClasses = classNames
-        .split(/[\t\n\f\r ]+/)
-        .filter((className) => className !== "");
-      if (
+    const requiredClasses = classNames
+      .split(/[\t\n\f\r ]+/)
+      .filter((className) => className !== "");
+    const values = withRoot(
+      options.html.getElementsByClassName(classNames),
+      () =>
         requiredClasses.length > 0 &&
-        requiredClasses.every((className) => options.html.classList.contains(className))
-      ) {
-        matches.unshift(options.html);
-      }
-      return matches;
-    });
+        requiredClasses.every((className) => options.html.classList.contains(className)),
+    );
+    const collection = createLiveHTMLCollection(() => values);
     classCollections.set(classNames, collection);
     return collection;
   };
@@ -375,20 +487,18 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         .map((style) => (style as HTMLStyleElement).sheet)
         .filter((sheet): sheet is CSSStyleSheet => sheet !== null),
   ) as unknown as StyleSheetList;
-  const formCollection = createLiveHTMLCollection(
-    () =>
-      Array.from(nativeQuerySelectorAll.call(options.html, "form")) as HTMLFormElement[],
-  );
-  const imageCollection = createLiveHTMLCollection(
-    () =>
-      Array.from(nativeQuerySelectorAll.call(options.html, "img")) as HTMLImageElement[],
-  );
-  const scriptCollection = createLiveHTMLCollection(
-    () =>
-      Array.from(
-        nativeQuerySelectorAll.call(options.html, "script"),
-      ) as HTMLScriptElement[],
-  );
+  const formCollection = nativeGetElementsByTagName.call(
+    options.html,
+    "form",
+  ) as HTMLCollectionOf<HTMLFormElement>;
+  const imageCollection = nativeGetElementsByTagName.call(
+    options.html,
+    "img",
+  ) as HTMLCollectionOf<HTMLImageElement>;
+  const scriptCollection = nativeGetElementsByTagName.call(
+    options.html,
+    "script",
+  ) as HTMLCollectionOf<HTMLScriptElement>;
   const linkCollection = createLiveHTMLCollection(
     () =>
       Array.from(
@@ -401,12 +511,10 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         nativeQuerySelectorAll.call(options.html, "a[name]"),
       ) as HTMLAnchorElement[],
   );
-  const embedCollection = createLiveHTMLCollection(
-    () =>
-      Array.from(
-        nativeQuerySelectorAll.call(options.html, "embed"),
-      ) as HTMLEmbedElement[],
-  );
+  const embedCollection = nativeGetElementsByTagName.call(
+    options.html,
+    "embed",
+  ) as HTMLCollectionOf<HTMLEmbedElement>;
   const namedNodeLists = new Map<string, NodeListOf<HTMLElement>>();
   const getElementsByName = (name: string): NodeListOf<HTMLElement> => {
     const requestedName = String(name);
@@ -417,8 +525,12 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     const selector = `[name="${window.CSS.escape(requestedName)}"]`;
     const list = liveIndexedCollection(
       window.NodeList.prototype,
-      () =>
-        Array.from(nativeQuerySelectorAll.call(options.html, selector)) as HTMLElement[],
+      cachedValues(
+        () =>
+          Array.from(
+            nativeQuerySelectorAll.call(options.html, selector),
+          ) as HTMLElement[],
+      ),
     ) as unknown as NodeListOf<HTMLElement>;
     namedNodeLists.set(requestedName, list);
     return list;
@@ -461,7 +573,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       writable: true,
       value(this: Element, selectors: string): Element | null {
         return isInVirtualDocumentTree(this)
-          ? (querySelectorAllWithShell(this, selectors)[0] ?? null)
+          ? querySelectorWithShell(this, selectors)
           : nativeQuerySelector.call(this, selectors);
       },
     });
@@ -490,5 +602,10 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     anchorCollection,
     embedCollection,
     installPatches,
+    dispose() {
+      collectionObserver.disconnect();
+      invalidateCollections();
+      cachedCollections.clear();
+    },
   };
 }

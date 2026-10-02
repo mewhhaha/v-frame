@@ -23,6 +23,7 @@ export interface DynamicScriptOrder {
 }
 
 export interface FixtureServer extends HTTPFixture {
+  teardownReports: string[];
   dynamicScriptOrder: DynamicScriptOrder;
   /**
    * Answers `/assets/async-order.js`. The async script is parked so the test says when it
@@ -317,6 +318,7 @@ const asyncOrderScript: RouteResponse = {
 };
 
 export async function startFixtureServer(): Promise<FixtureServer> {
+  const teardownReports: string[] = [];
   const dynamicFirst = parkRoute(dynamicFirstScript);
   const dynamicSecond = gateRoute(dynamicSecondScript);
   const asyncOrder = parkRoute(asyncOrderScript);
@@ -324,6 +326,14 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     routes: {
       ...documentRoutes,
       ...assetRoutes,
+      "/teardown-report": (request) => {
+        const report = new URL(
+          request.url ?? "/",
+          "http://fixture.test",
+        ).searchParams.get("report");
+        if (report !== null) teardownReports.push(report);
+        return { status: 204 };
+      },
       "/assets/async-order.js": asyncOrder.route,
       "/assets/dynamic-first.js": dynamicFirst.route,
       "/assets/dynamic-second.js": dynamicSecond.route,
@@ -337,6 +347,7 @@ export async function startFixtureServer(): Promise<FixtureServer> {
 
   return {
     ...server,
+    teardownReports,
     dynamicScriptOrder: {
       get secondServed() {
         return dynamicSecond.served;

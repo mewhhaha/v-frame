@@ -114,6 +114,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     setReadyState,
     dispatchDocumentEvent,
     dispose() {
+      collections.dispose();
       selectionFacade.dispose();
       context.dispose();
       events.dispose();

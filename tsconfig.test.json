@@ -29,6 +29,8 @@
     "examples/*/tests/**/*.ts",
     "examples/client/src/**/*.ts",
     "examples/client/src/**/*.tsx",
+    "examples/ssr/apps/host/src/client.ts",
+    "examples/ssr/apps/host/src/host-config.ts",
     "examples/client/vite.config.ts"
   ]
 }

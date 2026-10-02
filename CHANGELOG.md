@@ -3,11 +3,46 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.1.1 - 2026-10-02
 
-The package has never been published. Its version was corrected from `1.0.0` to
-`0.1.0`, because the behaviour changes in this entry still come before a stable
-release.
+### Added
+
+- Accessibility and interaction coverage for labels, keyboard navigation, focus,
+  forms, native popovers and dialogs, outside dismissal, and teardown.
+- Real Kobalte/Floating UI placement coverage for all twelve placements,
+  collision handling, scrolling, resizing, borders, and CSS scaling.
+- Desktop and mobile SSR paint-continuity tests for React Router, Qwik, Angular,
+  and SolidStart, including delayed scripts, pixel comparisons, rendering without
+  JavaScript, and nonblank navigation commits.
+
+### Fixed
+
+- Document-navigation promises now settle with the requested load; superseded
+  navigations reject instead of silently reporting success.
+- Trusted Types policy assignment, contextual fragment parsing, JavaScript MIME
+  classification, and event-listener once, passive, and error behavior.
+- Redirected stylesheet URL resolution and live linked-stylesheet properties.
+- Scrolled popover positioning and outside-interaction notifications that let
+  guest layers dismiss without exposing foreign nodes or canceling host events.
+- Angular's critical SSR styles and host startup ordering preserve the server
+  preview while JavaScript is delayed.
+
+### Changed
+
+- Inline style updates are incremental, live collection reads reuse native
+  collections or cached snapshots, and completed network resources leave
+  teardown tracking.
+- The SSR host uses typed client configuration and a separately built client
+  entry; current Angular and SolidStart toolchains build and deploy as Workers.
+
+### Removed
+
+- Obsolete SolidStart/Vinxi configuration and Angular's separate global
+  stylesheet; critical global styles are inline for the SSR preview.
+
+## 0.1.0
+
+The initial pre-stable version was corrected from `1.0.0` to `0.1.0`.
 
 ### Added
 

@@ -1,7 +1,6 @@
 import type { NativeDocumentHandles, DocumentFacade } from "./facade/index.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
-
-type ScriptCategory = "classic" | "module" | "importmap" | "inert";
+import { scriptCategory } from "./script-type.js";
 
 export interface ScriptFailure {
   url: string;
@@ -56,38 +55,6 @@ export interface ScriptRunnerOptions {
   getNativeCurrentScript(): HTMLScriptElement | null;
   onError(failure: ScriptFailure): void;
   onRuntimeError(failure: ScriptFailure): void;
-}
-
-function scriptCategory(script: HTMLScriptElement): ScriptCategory {
-  const type = script.getAttribute("type")?.trim().toLowerCase() ?? "";
-  if (type === "module") {
-    return "module";
-  }
-  if (type === "importmap") {
-    return "importmap";
-  }
-  if (
-    type === "" ||
-    type === "text/javascript" ||
-    type === "application/javascript" ||
-    type === "application/x-ecmascript" ||
-    type === "application/x-javascript" ||
-    type === "text/ecmascript" ||
-    type === "application/ecmascript" ||
-    type === "text/javascript1.0" ||
-    type === "text/javascript1.1" ||
-    type === "text/javascript1.2" ||
-    type === "text/javascript1.3" ||
-    type === "text/javascript1.4" ||
-    type === "text/javascript1.5" ||
-    type === "text/jscript" ||
-    type === "text/livescript" ||
-    type === "text/x-ecmascript" ||
-    type === "text/x-javascript"
-  ) {
-    return script.hasAttribute("nomodule") || script.noModule ? "inert" : "classic";
-  }
-  return "inert";
 }
 
 function hasExternalSource(script: HTMLScriptElement): boolean {

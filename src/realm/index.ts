@@ -16,7 +16,12 @@ import {
   VirtualHistory,
   VirtualHistorySession,
 } from "../history.js";
-import { prepareAdoptedMarkup, prepareMarkup, type PreparedMarkup } from "../markup.js";
+import {
+  prepareAdoptedMarkup,
+  prepareMarkup,
+  type PreparedMarkup,
+  type PrepareMarkupOptions,
+} from "../markup.js";
 import { installNetworkPatches } from "../network.js";
 import { ScriptRunner } from "../scripts.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
@@ -60,7 +65,7 @@ export interface CreateRealmOptions {
   credentials: VFrameCredentials;
   signal: AbortSignal;
   getNonce(): string;
-  fetchStylesheet(url: string): Promise<string>;
+  fetchStylesheet: PrepareMarkupOptions["fetchStylesheet"];
   onURLChange(url: string, kind: VFrameNavigationKind | null): void;
   onNavigate(
     detail: VFrameNavigateEventDetail,
@@ -70,7 +75,7 @@ export interface CreateRealmOptions {
     detail: VFrameNavigateEventDetail,
     mode: DocumentHistoryMode,
   ): boolean;
-  onDocumentTraversal(session: VirtualHistorySession): void;
+  onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
   onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
   onNativeLocationNavigation(
     detail: VFrameNavigateEventDetail,
@@ -182,8 +187,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
       return "_self";
     };
+    let previousBaseURL = markup.baseURL;
     const updateDocumentBaseURL = (): void => {
-      privateBase.href = getDocumentBaseURL();
+      const baseURL = getDocumentBaseURL();
+      if (baseURL === previousBaseURL) {
+        return;
+      }
+      previousBaseURL = baseURL;
+      privateBase.href = baseURL;
       facade?.rebaseURLs();
     };
 
@@ -231,6 +242,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       window,
       document,
       stylesheetContext: markup.stylesheetContext,
+      linkedStyles: markup.linkedStyles,
       signal: options.signal,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
@@ -261,6 +273,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       authoredStyleAttributes: markup.authoredStyleAttributes,
       inlineStyleSelectorAttribute: markup.inlineStyleSelectorAttribute,
       inlineStyleSheet: markup.inlineStyleSheet,
+      linkedStyles: markup.linkedStyles,
       createHTML: options.trustedTypes.createHTML,
       createScript: options.trustedTypes.createScript,
       updateTopLayerViewport: internalStyles.updateTopLayerViewport,
@@ -286,6 +299,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       onLinkElementChange(link, authoredRel) {
         styles.scheduleDynamicLink(link, true, authoredRel);
       },
+      onDisconnectedNodes(nodes) {
+        for (const link of styles.dynamicLinksFrom(nodes)) {
+          if (!isConnectedToRealm(link)) {
+            styles.invalidateDynamicLink(link);
+          }
+        }
+      },
       onConnectedNodes(nodes) {
         styles.installCSSOMStyleSheets(nodes);
         styles.observeConnectedNodes(nodes);
@@ -302,7 +322,16 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.applyNonce(style);
         style.textContent = source;
       }
+      for (const link of styles.dynamicLinksFrom([liveMarkup])) {
+        const linked = markup.linkedStyles.get(link);
+        if (linked !== undefined) {
+          linked.style.disabled = linked.disabled;
+        }
+      }
       styles.installCSSOMStyleSheets([liveMarkup]);
+      for (const link of styles.dynamicLinksFrom([liveMarkup])) {
+        styles.scheduleDynamicLink(link);
+      }
     }
     if (options.signal.aborted) {
       throw abortError();

@@ -6,19 +6,19 @@
   "scripts": {
     "build": "pnpm --workspace-root run build && pnpm run build:apps",
     "build:apps": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run build",
-    "dev": "pnpm run build && wrangler dev --port 43500 --inspector-port 43600 -c apps/host/wrangler.jsonc -c apps/react-router/build/server/wrangler.json -c apps/qwik/wrangler.jsonc -c apps/angular/wrangler.jsonc -c apps/solid/wrangler.jsonc",
+    "dev": "pnpm run build && wrangler dev --port 43500 --inspector-port 43600 -c apps/host/wrangler.jsonc -c apps/react-router/build/server/wrangler.json -c apps/qwik/wrangler.jsonc -c apps/angular/wrangler.jsonc -c apps/solid/wrangler.json",
     "types": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run types",
     "typecheck": "pnpm --filter example-ssr-host --filter example-ssr-react-router --filter example-ssr-qwik --filter example-ssr-angular --filter example-ssr-solid --workspace-concurrency=5 run typecheck",
-    "test:workers": "pnpm run build && concurrently -k -n host,react-router,qwik,angular,solid \"wrangler dev --port 44500 --inspector-port 44600 -c apps/host/wrangler.jsonc\" \"wrangler dev --port 44501 --inspector-port 44601 -c apps/react-router/build/server/wrangler.json\" \"wrangler dev --port 44502 --inspector-port 44602 -c apps/qwik/wrangler.jsonc\" \"wrangler dev --port 44503 --inspector-port 44603 -c apps/angular/wrangler.jsonc\" \"wrangler dev --port 44504 --inspector-port 44604 -c apps/solid/wrangler.jsonc\"",
+    "test:workers": "pnpm run build && concurrently -k -n host,react-router,qwik,angular,solid \"wrangler dev --port 44500 --inspector-port 44600 -c apps/host/wrangler.jsonc\" \"wrangler dev --port 44501 --inspector-port 44601 -c apps/react-router/build/server/wrangler.json\" \"wrangler dev --port 44502 --inspector-port 44602 -c apps/qwik/wrangler.jsonc\" \"wrangler dev --port 44503 --inspector-port 44603 -c apps/angular/wrangler.jsonc\" \"wrangler dev --port 44504 --inspector-port 44604 -c apps/solid/wrangler.json\"",
     "test:routing": "playwright test -c playwright.config.ts",
     "check": "pnpm run build && pnpm run types && pnpm run typecheck && pnpm run test:routing && pnpm run check:deploy",
-    "check:deploy": "wrangler deploy --dry-run -c apps/react-router/build/server/wrangler.json && wrangler deploy --dry-run -c apps/qwik/wrangler.jsonc && wrangler deploy --dry-run -c apps/angular/wrangler.jsonc && wrangler deploy --dry-run -c apps/solid/wrangler.jsonc && wrangler deploy --dry-run -c apps/host/wrangler.jsonc",
+    "check:deploy": "wrangler deploy --dry-run -c apps/react-router/build/server/wrangler.json && wrangler deploy --dry-run -c apps/qwik/wrangler.jsonc && wrangler deploy --dry-run -c apps/angular/wrangler.jsonc && wrangler deploy --dry-run -c apps/solid/wrangler.json && wrangler deploy --dry-run -c apps/host/wrangler.jsonc",
     "deploy": "pnpm run build && pnpm run deploy:apps && wrangler deploy -c apps/host/wrangler.jsonc",
-    "deploy:apps": "wrangler deploy -c apps/qwik/wrangler.jsonc && wrangler deploy -c apps/angular/wrangler.jsonc && wrangler deploy -c apps/solid/wrangler.jsonc && wrangler deploy -c apps/react-router/build/server/wrangler.json"
+    "deploy:apps": "wrangler deploy -c apps/qwik/wrangler.jsonc && wrangler deploy -c apps/angular/wrangler.jsonc && wrangler deploy -c apps/solid/wrangler.json && wrangler deploy -c apps/react-router/build/server/wrangler.json"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
-    "concurrently": "10.0.3",
-    "wrangler": "4.113.0"
+    "@playwright/test": "1.63.0",
+    "concurrently": "10.0.5",
+    "wrangler": "4.145.0"
   }
 }

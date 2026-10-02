@@ -24,4 +24,5 @@ export type {
   StylesheetContext,
   StylesheetFetch,
   StylesheetImportFailure,
+  StylesheetSource,
 } from "../css.js";

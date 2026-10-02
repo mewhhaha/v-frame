@@ -1,4 +1,5 @@
 import { ListenerRegistry } from "./listener-registry.js";
+import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
 export interface NetworkPatchOptions {
@@ -106,7 +107,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const nativeXHRUploads = new WeakMap<XMLHttpRequestUpload, XMLHttpRequest>();
   const silencedNativeXHRS = new WeakSet<XMLHttpRequest>();
   const nativeEventRegistries = new WeakMap<EventTarget, ListenerRegistry>();
-  const activeConnections = new Map<object, () => void>();
+  const activeConnections = new EnumerableWeakMap<object, () => void>();
   const originals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
   const remember = (target: object, key: PropertyKey) => {
@@ -434,6 +435,35 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       construct(target, argumentsList, newTarget) {
         const connection = Reflect.construct(target, transform(argumentsList), newTarget);
         activeConnections.set(connection, () => disposeConnection(connection));
+        const completionTarget = key === "SharedWorker" ? connection.port : connection;
+        const completionMethod = key === "Worker" ? "terminate" : "close";
+        const complete = completionTarget[completionMethod] as (
+          ...args: unknown[]
+        ) => unknown;
+        Object.defineProperty(completionTarget, completionMethod, {
+          configurable: true,
+          writable: true,
+          value(this: object, ...args: unknown[]) {
+            const result = Reflect.apply(complete, this, args);
+            if (this === completionTarget) {
+              activeConnections.delete(connection);
+            }
+            return result;
+          },
+        });
+        if (key === "WebSocket") {
+          connection.addEventListener(
+            "close",
+            () => activeConnections.delete(connection),
+            { once: true },
+          );
+        } else if (key === "EventSource") {
+          connection.addEventListener("error", () => {
+            if (connection.readyState === window.EventSource.CLOSED) {
+              activeConnections.delete(connection);
+            }
+          });
+        }
         return connection;
       },
     });
@@ -550,7 +580,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
   };
   const disposeConnections = () => {
-    for (const disposeConnection of activeConnections.values()) {
+    for (const [, disposeConnection] of activeConnections) {
       disposeConnection();
     }
     activeConnections.clear();

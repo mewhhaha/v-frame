@@ -1,12 +1,14 @@
 import {
   createStylesheetContext,
-  fetchStylesheetText,
+  fetchStylesheet,
   rewriteStyleAttribute,
   rewriteStylesheet,
   type StylesheetContext,
+  type StylesheetFetch,
 } from "./css.js";
 import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameWindow } from "./types.js";
+import type { LinkedStyle } from "./linked-styles.js";
 
 const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -65,7 +67,7 @@ export interface PrepareMarkupOptions {
   createScriptURL(source: string): string;
   pageURL: string;
   nonce: string;
-  fetchStylesheet(url: string): Promise<string>;
+  fetchStylesheet: StylesheetFetch;
   onError(error: MarkupError): void;
 }
 
@@ -80,6 +82,7 @@ export interface PreparedMarkup {
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
   stylesheetContext: StylesheetContext;
+  linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
 }
 
 interface NeutralizedStyleMarkup {
@@ -683,22 +686,23 @@ async function prepareLinkedStyle(
   nonce: string,
   context: StylesheetContext,
   document: Document,
+  linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>,
   onError: PrepareMarkupOptions["onError"],
 ): Promise<void> {
   const href = link.href;
 
   try {
-    const source = await fetchStylesheetText(href, context);
-    const rewritten = await rewriteStylesheet(source, href, context);
-    const style = createGeneratedStyle(document, rewritten, nonce, href);
+    const source = await fetchStylesheet(href, context);
+    const rewritten = await rewriteStylesheet(source.text, source.url, context);
+    const style = createGeneratedStyle(document, rewritten, nonce, source.url);
     style.media = link.media;
     style.disabled = link.disabled;
     if (link.hasAttribute("title")) {
       style.title = link.title;
     }
-    link.replaceWith(style);
+    linkedStyles.set(link, { style, href, url: source.url, disabled: link.disabled });
+    link.after(style);
   } catch (error) {
-    link.remove();
     onError({ phase: "stylesheet", url: href, error });
   }
 }
@@ -789,6 +793,7 @@ export async function prepareMarkup(
     ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
   );
   const stylesheetJobs: Promise<void>[] = [];
+  const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
 
   for (const style of html.querySelectorAll("style")) {
     stylesheetJobs.push(
@@ -811,6 +816,7 @@ export async function prepareMarkup(
         options.nonce,
         stylesheetContext,
         options.document,
+        linkedStyles,
         options.onError,
       ),
     );
@@ -830,6 +836,7 @@ export async function prepareMarkup(
     inlineStyleSelectorAttribute,
     inlineStyleSheet,
     stylesheetContext,
+    linkedStyles,
   };
 }
 
@@ -927,6 +934,7 @@ export async function prepareAdoptedMarkup(
     options.fetchStylesheet,
     ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
   );
+  const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
   await Promise.all(
     Array.from(
       html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'),
@@ -936,6 +944,7 @@ export async function prepareAdoptedMarkup(
         options.nonce,
         stylesheetContext,
         options.document,
+        linkedStyles,
         options.onError,
       ),
     ),
@@ -953,5 +962,6 @@ export async function prepareAdoptedMarkup(
     inlineStyleSelectorAttribute,
     inlineStyleSheet,
     stylesheetContext,
+    linkedStyles,
   };
 }

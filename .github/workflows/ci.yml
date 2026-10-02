@@ -48,9 +48,9 @@ jobs:
           retention-days: 7
 
   example-ssr:
-    name: example-ssr routing
-    # The only coverage the imperative navigation API has against real
-    # frameworks, but it builds five applications and boots five wrangler
+    name: example-ssr routing, first paint and accessibility
+    # Exercises real framework routing, hydration and first-paint continuity,
+    # but builds five applications and boots five wrangler
     # workers, so it waits for the fast job rather than racing it.
     needs: check
     runs-on: ubuntu-latest
@@ -68,8 +68,8 @@ jobs:
 
       - run: pnpm exec playwright install --with-deps chromium firefox
 
-      # test:routing builds v-frame and the five applications through its own
-      # webServer command, then drives them across chromium and firefox.
+      # test:routing runs all SSR browser tests, including paint and WCAG checks,
+      # after building the five applications through its webServer command.
       - run: pnpm --filter example-ssr run test:routing
 
       - if: failure()

@@ -590,9 +590,12 @@ test("facades inline style attributes and CSSOM through the nonce stylesheet", a
       virtualDocument.head.prepend(base);
       const afterBase = child.getComputedStyle(cssomTarget).backgroundImage;
       const baseURI = virtualDocument.baseURI;
-      const afterBaseStyleText =
-        frame.shadowRoot?.querySelector("style[data-v-frame-inline-styles]")
-          ?.textContent ?? "";
+      const afterBaseStyleText = Array.from(
+        frame.shadowRoot?.querySelector<HTMLStyleElement>(
+          "style[data-v-frame-inline-styles]",
+        )?.sheet?.cssRules ?? [],
+        (rule) => rule.cssText,
+      ).join("\n");
       cssomTarget.style.backgroundImage = 'url("property.png")';
       const assignedBackgroundValue = cssomTarget.style.backgroundImage;
       const afterPropertyAssignment = child.getComputedStyle(cssomTarget).backgroundImage;
