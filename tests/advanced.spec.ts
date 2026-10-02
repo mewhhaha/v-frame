@@ -453,16 +453,6 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
     const retained: { history: History | null } = { history: null };
     let navigationCount = 0;
     const failures: Array<{ phase: string; fatal: boolean }> = [];
-    const realmObserver = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const addedNode of record.addedNodes) {
-          if (addedNode instanceof HTMLIFrameElement) {
-            retained.history = addedNode.contentWindow?.history ?? null;
-          }
-        }
-      }
-    });
-    realmObserver.observe(frame.shadowRoot!, { childList: true });
     frame.addEventListener("v-frame-navigate", () => {
       navigationCount += 1;
     });
@@ -479,8 +469,14 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
     const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
-      writable: true,
-      value: undefined,
+      get() {
+        // Capture the history after its facade has been installed. WebKit
+        // replaces the initial srcdoc global during document.open(); observing
+        // iframe insertion alone retains an unrelated, inactive native History.
+        retained.history =
+          frame.shadowRoot!.querySelector("iframe")?.contentWindow?.history ?? null;
+        return undefined;
+      },
     });
 
     let reloadRejection: string | null = null;
@@ -499,7 +495,6 @@ test("disposes retained virtual history when realm bootstrap fails", async ({ pa
       } else {
         Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
       }
-      realmObserver.disconnect();
     }
 
     if (retained.history === null) {

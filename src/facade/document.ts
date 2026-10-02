@@ -18,6 +18,51 @@ import type { SelectionFacadeInstallation } from "./selection.js";
 export interface DocumentProperties {
   setReadyState(state: DocumentReadyState): void;
   dispatchDocumentEvent(type: string, eventOptions?: EventInit): boolean;
+  dispose(): void;
+}
+
+function releasableDescriptor(descriptor: PropertyDescriptor) {
+  let getter = descriptor.get;
+  let setter = descriptor.set;
+  let value =
+    typeof descriptor.value === "function"
+      ? (descriptor.value as (...args: unknown[]) => unknown)
+      : undefined;
+  const method = value
+    ? function (this: unknown, ...args: unknown[]) {
+        return value?.apply(this, args);
+      }
+    : undefined;
+  if (method && value)
+    Object.defineProperties(method, {
+      name: { value: value.name },
+      length: { value: value.length },
+    });
+  return {
+    descriptor: {
+      ...descriptor,
+      ...(getter
+        ? {
+            get(this: unknown) {
+              return getter?.call(this);
+            },
+          }
+        : {}),
+      ...(setter
+        ? {
+            set(this: unknown, value: unknown) {
+              setter?.call(this, value);
+            },
+          }
+        : {}),
+      ...(method ? { value: method } : {}),
+    },
+    release() {
+      getter = undefined;
+      setter = undefined;
+      value = undefined;
+    },
+  };
 }
 
 export function installDocumentProperties(
@@ -71,8 +116,18 @@ export function installDocumentProperties(
 
   const documentChildNodes = staticNodeList([virtualDoctype, options.html]);
   const documentChildren = staticCollection([options.html]);
+  const releases: Array<() => void> = [];
+  const patchDocument = (name: string, descriptor: PropertyDescriptor) => {
+    if (descriptor.get || descriptor.set || typeof descriptor.value === "function") {
+      // Engines can cache a Document's customized shape after restoration.
+      // Cached functions must not retain the disposed guest tree.
+      const releasable = releasableDescriptor(descriptor);
+      releases.push(releasable.release);
+      context.patch(document, name, releasable.descriptor);
+    } else context.patch(document, name, descriptor);
+  };
 
-  Object.defineProperties(document, {
+  const documentProperties: PropertyDescriptorMap = {
     doctype: { configurable: true, get: () => virtualDoctype },
     documentElement: { configurable: true, get: () => options.html },
     head: { configurable: true, get: () => options.head },
@@ -434,7 +489,10 @@ export function installDocumentProperties(
     close: { configurable: true, writable: true, value: unsupportedDocumentWriting },
     write: { configurable: true, writable: true, value: unsupportedDocumentWriting },
     writeln: { configurable: true, writable: true, value: unsupportedDocumentWriting },
-  });
+  };
+  for (const [name, descriptor] of Object.entries(documentProperties)) {
+    patchDocument(name, descriptor);
+  }
 
   function unsupportedDocumentWriting(): never {
     throw new window.DOMException(
@@ -462,7 +520,7 @@ export function installDocumentProperties(
     { listener: EventListener; wrapper: EventListener }
   >();
   for (const eventName of DOCUMENT_EVENT_HANDLER_NAMES) {
-    Object.defineProperty(document, `on${eventName}`, {
+    patchDocument(`on${eventName}`, {
       configurable: true,
       get: () => handlerValues.get(eventName)?.listener ?? null,
       set(value: EventListener | null) {
@@ -507,5 +565,9 @@ export function installDocumentProperties(
   return {
     setReadyState,
     dispatchDocumentEvent,
+    dispose() {
+      for (const release of releases.splice(0)) release();
+      handlerValues.clear();
+    },
   };
 }

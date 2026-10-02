@@ -649,7 +649,7 @@ export class ScriptRunner {
           const url = this.#getCurrentURL();
           candidate.fail(new Error(`Script ${url} failed to execute`));
         },
-        { once: true },
+        { once: true, signal: this.#signal },
       );
     }
     let inlineModuleSettlement: InlineModuleSettlement | null = null;
@@ -717,8 +717,14 @@ export class ScriptRunner {
         });
         this.#inlineModuleSettlements.add(inlineModuleSettlement);
       }
-      companion.addEventListener("load", finishLoaded, { once: true });
-      companion.addEventListener("error", () => finishFailed(), { once: true });
+      companion.addEventListener("load", finishLoaded, {
+        once: true,
+        signal: this.#signal,
+      });
+      companion.addEventListener("error", () => finishFailed(), {
+        once: true,
+        signal: this.#signal,
+      });
       const abort = () => {
         if (inlineModuleSettlement !== null) {
           inlineModuleSettlement.status = "aborted";

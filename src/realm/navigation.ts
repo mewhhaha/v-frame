@@ -73,6 +73,8 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
   const document = options.document;
   let navigationInstalled = false;
   const nativeFormSubmit = window.HTMLFormElement.prototype.submit;
+  const nativeOpenDescriptor = Object.getOwnPropertyDescriptor(window, "open");
+  let restoreIntercept: () => void = () => undefined;
   const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
     const action =
       submitter !== null &&
@@ -371,6 +373,12 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         guestInterceptions.add(this);
       },
     });
+    restoreIntercept = () => {
+      if (interceptDescriptor) {
+        Object.defineProperty(navigateEventPrototype, "intercept", interceptDescriptor);
+      } else
+        delete (navigateEventPrototype as unknown as Record<string, unknown>).intercept;
+    };
     navigationWindow.navigation.addEventListener(
       "navigate",
       (event) => {
@@ -465,6 +473,10 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     install: installNavigation,
     dispose() {
       window.HTMLFormElement.prototype.submit = nativeFormSubmit;
+      restoreIntercept();
+      if (nativeOpenDescriptor)
+        Object.defineProperty(window, "open", nativeOpenDescriptor);
+      else delete (window as unknown as Record<string, unknown>).open;
     },
   };
 }

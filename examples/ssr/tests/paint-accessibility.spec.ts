@@ -137,6 +137,7 @@ for (const viewport of [
   for (const scenario of pages) {
     test(`${scenario.id} preserves first paint through delayed activation on ${viewport.name}`, async ({
       page,
+      browserName,
     }, testInfo) => {
       await page.setViewportSize(viewport);
       const errors: string[] = [];
@@ -164,9 +165,27 @@ for (const viewport of [
         releaseGuest = resolve;
       });
       await page.route("**/assets/v-frame.js", async (route) => {
+        if (browserName === "webkit") {
+          // WebKit's snapshot protocol waits for document loading to finish.
+          // Delay the real module's startup instead of leaving an async host
+          // script fetch pending; the class remains undefined in the preview.
+          await route.fulfill({
+            contentType: "text/javascript",
+            body: "globalThis.activateHost = () => import('/assets/v-frame-activation.js')",
+          });
+          return;
+        }
         await hostGate;
         await route.continue();
       });
+      if (browserName === "webkit") {
+        await page.route("**/assets/v-frame-activation.js", async (route) => {
+          const response = await route.fetch({
+            url: new URL("/assets/v-frame.js", route.request().url()).href,
+          });
+          await route.fulfill({ response });
+        });
+      }
       await page.route(
         (url) => url.pathname.startsWith("/widgets/") && url.pathname.endsWith(".js"),
         async (route) => {
@@ -197,6 +216,12 @@ for (const viewport of [
         await startPaintProbe(page, selectors);
         await paints(page);
         releaseHost();
+        if (browserName === "webkit")
+          await page.evaluate(() => {
+            void (
+              window as Window & typeof globalThis & { activateHost(): Promise<void> }
+            ).activateHost();
+          });
         await expect
           .poll(() =>
             frame.evaluate(

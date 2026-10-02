@@ -8,7 +8,7 @@ materializer, see [SSR](./ssr.md).
 
 | Import                       | Contents                                                                                       |
 | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| `@mewhhaha/v-frame/register` | Side-effecting. Defines `<v-frame>` in the custom element registry.                            |
+| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.               |
 | `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.             |
 | `@mewhhaha/v-frame/server`   | The SSR materializer core, its Cloudflare `HTMLRewriter` adapter, and the stylesheet rewriter. |
 
@@ -95,6 +95,11 @@ Readonly:
 
 `VFrameStatus` is exported as a value as well, so a host can compare against
 `VFrameStatus.Ready` rather than a string literal.
+
+Teardown restores the document and node facades, including on retained documents.
+Retained history methods stay inert; an old window does not keep the replaced
+guest active. Drop references to old nodes and realms when they are no longer
+needed so the browser can collect them.
 
 Each status is also a custom-element state:
 

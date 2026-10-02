@@ -23,6 +23,7 @@ import {
   type PrepareMarkupOptions,
 } from "../markup.js";
 import { installNetworkPatches } from "../network.js";
+import type { AdoptionState } from "./adoption-state.js";
 import { ScriptRunner } from "../scripts.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
 import { createDynamicStyles } from "./dynamic-styles.js";
@@ -57,7 +58,12 @@ export interface CreateRealmOptions {
   trustedTypes: RealmTrustedTypes;
   markup:
     | { kind: "document"; source: string }
-    | { kind: "adopted"; source: string; previewNodes: readonly Node[] };
+    | {
+        kind: "adopted";
+        source: string;
+        previewNodes: Node[];
+        state: AdoptionState;
+      };
   pageURL: string;
   historySession: VirtualHistorySession;
   boundNavigation: boolean;
@@ -95,6 +101,8 @@ export interface VFrameRealm {
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
   const internalStyles = installInternalStyles(options.shadowRoot);
   const bootstrapDisposers: Array<() => void> = [];
+  const adoptionState = options.markup.kind === "adopted" ? options.markup.state : null;
+  if (adoptionState) bootstrapDisposers.push(() => adoptionState.dispose());
   let restoreStagingStyles: () => void = () => undefined;
   let iframe: HTMLIFrameElement | null = options.iframe;
   let markup: PreparedMarkup | null = null;
@@ -221,11 +229,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     history.install();
     bootstrapDisposers.push(() => history.dispose());
 
+    const networkSource = options.host.getAttribute("src");
     const networkDispose = installNetworkPatches({
       window,
       signal: options.signal,
       credentials: options.credentials,
       getBaseURL: getDocumentBaseURL,
+      isActive: () =>
+        options.host.isConnected && options.host.getAttribute("src") === networkSource,
     });
     bootstrapDisposers.push(networkDispose);
     const viewport = installViewportPatches(
@@ -333,10 +344,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.scheduleDynamicLink(link);
       }
     }
+    initialStyleSources.clear();
     if (options.signal.aborted) {
       throw abortError();
     }
 
+    adoptionState?.connect(liveMarkup, window);
     scriptRunner = new ScriptRunner({
       window,
       native: facade.native,
@@ -521,6 +534,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       onNativeLocationNavigation: options.onNativeLocationNavigation,
       onError: options.onError,
     });
+    bootstrapDisposers.push(() => navigation.dispose());
 
     const runtimeErrorURL = (filename: string): string => {
       if (filename === "") {
@@ -604,7 +618,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       }
       adoptedMarkupRevealed = true;
       for (const node of options.markup.kind === "adopted"
-        ? options.markup.previewNodes
+        ? options.markup.previewNodes.splice(0)
         : []) {
         node.parentNode?.removeChild(node);
       }
@@ -617,6 +631,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       async executeInitialScripts() {
         navigation.install();
         await scriptRunner?.executeInitial();
+        await adoptionState?.settle(options.signal);
       },
       reveal() {
         if (disposed || options.signal.aborted) {
@@ -626,7 +641,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // synchronous swap never repaints. Masking it with a scoped View
         // Transition would itself flicker: Chromium pixel-snaps transition
         // snapshots, visibly shifting fractionally positioned frames.
-        revealAdoptedMarkup();
+        if (adoptionState) adoptionState.reveal(revealAdoptedMarkup);
+        else revealAdoptedMarkup();
       },
       dispose() {
         if (disposed) {
@@ -648,6 +664,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         markup?.inlineStyleSheet.remove();
         restoreStagingStyles();
         internalStyles.dispose();
+        markup = null;
+        facade = null;
+        scriptRunner = null;
       },
     };
     options.signal.addEventListener("abort", runtime.dispose, { once: true });

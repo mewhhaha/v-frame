@@ -16,6 +16,15 @@ The browser displays the Declarative Shadow DOM immediately. When
 preview with the activated tree in one synchronous handoff. It does not refetch
 the entry document.
 
+Edits to preview form controls are preserved before guest scripts start and
+again at handoff, including changes made while those scripts are delayed.
+Edited controls receive synthetic input/change notifications so client-side
+form state can catch up. Focus, control text selection, and scroll positions
+are restored without scrolling the host page. A handoff waits for an observed
+IME composition to finish rather than replacing its focused control mid-edit.
+These notifications preserve the latest edit; they do not replay arbitrary
+button clicks, submissions, or trusted user activation.
+
 ## 1. Return a normal guest document
 
 The guest does not need a `v-frame` response format. Render the same document it
@@ -56,13 +65,17 @@ Before inserting the guest response into the host page, the host transforms the
 trusted document:
 
 - `html`, `head`, and `body` become `v-html`, `v-head`, and `v-body`.
-- Inline stylesheet selectors, imports, and URLs are rewritten for the guest's
-  public URL.
+- Inline and linked stylesheet selectors, imports, and URLs are rewritten for
+  the guest's public URL. Linked sheets are fetched on the server and rendered
+  beside their inert original links, preserving stylesheet order and media.
+- Markup URLs, `srcset` candidates, and inline-style URLs are rebased for the
+  preview. Authored attribute values remain available to guest code at activation.
 - Scripts become parser-inert while preserving their original type.
-- The materialized document receives its required display rules.
+- The materialized document receives the same frame containment and shell display
+  rules used at activation, preventing margin-collapse shifts at handoff.
 
 `@mewhhaha/v-frame/server` ships this transformation. On Cloudflare Workers,
-`materializeVFrameDocument` streams it through `HTMLRewriter`; it takes a normal
+`materializeVFrameDocument` parses it through `HTMLRewriter`; it takes a normal
 `Response` and the guest's public URL and returns a `Response`:
 
 ```ts
@@ -77,15 +90,31 @@ if (!guestResponse.ok) {
   throw new Error(`orders SSR returned ${guestResponse.status} for ${guestURL.href}`);
 }
 
-const materializedResponse = materializeVFrameDocument(guestResponse, guestURL.href);
+const fonts = new Set<string>();
+const materializedResponse = materializeVFrameDocument(guestResponse, guestURL.href, {
+  onFontFace: (css) => {
+    fonts.add(css);
+  },
+});
+// Consume the response before reading fonts: materialization is asynchronous.
+const guestMarkup = await materializedResponse.text();
+const fontStyle = fonts.size ? `<style>${[...fonts].join("\n")}</style>` : "";
+// Put fontStyle in the host head, then guestMarkup inside the frame's DSD template.
 ```
 
-A third argument configures the stylesheet stage: `fetchText` overrides how an
-`@import` target is fetched (useful when the imported sheet lives behind an
+A third argument configures the stylesheet stage: `fetchText` overrides how a
+linked stylesheet or `@import` target is fetched (useful when the sheet lives behind an
 internal service binding). It can return CSS text, or `{ text, url }` to retain
 the final response URL after redirects so nested imports and assets resolve
-relative to that stylesheet. `onImportFailure` observes imports that could not
-be inlined, which are dropped from the output.
+relative to that stylesheet. `onImportFailure` observes sheets that could not
+be inlined, which are dropped from the preview and retried at activation.
+`onFontFace(css)` receives rewritten, HTML-safe font declarations. Put the collected
+CSS in a host `<style>` before the frame: browsers do not consistently register
+`@font-face` rules inside shadow trees. Use application-specific font-family names
+to avoid conflicts between guests. This host step is required for webfont fidelity
+before JavaScript; it is not necessary for system fonts.
+The adapter buffers the guest document to resolve its first valid head `base[href]`
+before transforming any assets; a late base therefore cannot change URLs at handoff.
 
 ### On another runtime
 
@@ -94,11 +123,12 @@ transformation APIs differ. The decisions it drives are runtime-neutral and are
 exported from the same entry, so a host on Node, Deno, or Bun points its own
 streaming HTML parser at them:
 
-| Export                                                 | Called with                                           | Returns                                                                                                                                                               |
-| ------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rewriteShellElement(tagName)`                         | Every element's tag name                              | `{ tagName, prependHTML }`, or `null` for elements that are not `html`/`head`/`body`. `prependHTML` is the display-rule `<style>` that must go first inside `v-head`. |
-| `rewriteScriptElement(script)`                         | Every `<script>`, given `getAttribute`/`hasAttribute` | `{ removeAttributes, setAttributes }`, or `null` if the script is already materialized.                                                                               |
-| `materializeStylesheet(source, documentURL, options?)` | The full text of every `<style>`                      | The rewritten, `</style`-escaped text to write back.                                                                                                                  |
+| Export                                                 | Called with                                                | Returns                                                                                                                                                               |
+| ------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rewriteShellElement(tagName)`                         | Every element's tag name                                   | `{ tagName, prependHTML }`, or `null` for elements that are not `html`/`head`/`body`. `prependHTML` is the display-rule `<style>` that must go first inside `v-head`. |
+| `rewriteScriptElement(script)`                         | Every `<script>`, given `getAttribute`/`hasAttribute`      | `{ removeAttributes, setAttributes }`, or `null` if the script is already materialized.                                                                               |
+| `rewriteAssetAttributes(element, baseURL)`             | Every element, with its namespace, tag name and attributes | URL/style/srcset assignments plus provenance preserving the authored values. Apply assignments through the HTML parser's attribute API.                               |
+| `materializeStylesheet(source, documentURL, options?)` | The full text of every `<style>`                           | The rewritten, `</style`-escaped text to write back.                                                                                                                  |
 
 `rewriteScriptElement` returning `null` for an already-materialized script
 matters: materializing twice would record `application/vnd.v-frame` as the
@@ -111,11 +141,13 @@ browser runtime uses.
 
 Do not transform HTML with regular expressions.
 
-For first-paint fidelity, the adapter expects critical CSS to be inline and
-markup asset URLs to be root-relative or absolute. Linked stylesheets and
-relative markup URLs work after activation, but the adapter does not rebase
-markup attributes, so they need additional host-side rebasing to be correct in
-the inert server preview.
+The runtime reuses server-materialized linked CSS rather than refetching it at
+activation. Images and fonts still obey normal browser loading and `font-display`
+rules: reserve image dimensions and choose an appropriate font fallback or preload
+when late network assets must not shift the layout. An asset that has not arrived
+cannot be guaranteed visible in the first paint. Activation preserves the painted
+preview while its corresponding images and fonts settle, with a maximum resource
+wait of ten seconds. Failed or stalled assets do not indefinitely block the guest.
 
 ## 3. Compose the host response
 
@@ -128,12 +160,18 @@ the browser has this shape:
     <v-html lang="en">
       <v-head>
         <style>
+          :host {
+            contain: layout;
+            display: block;
+            position: relative;
+            overflow: auto;
+          }
           v-html,
           v-body {
             display: block;
           }
           v-head {
-            display: none;
+            display: none !important;
           }
           .orders-app {
             color: #18181b;
@@ -158,11 +196,21 @@ The host owns this wrapper; the guest does not produce it. Treat the transformed
 document as executable application content and only compose responses from a
 trusted guest service.
 
+If the host uses a nonce-based `style-src` policy, apply its nonce to every
+materialized `<style>` before sending the response, including the injected shell
+rules and any host font style. Set the same nonce on `<v-frame>` for styles and
+scripts generated at activation; it does not retroactively authorize the SSR
+preview's styles.
+
 The host page also loads the registration entry:
 
 ```ts
 import "@mewhhaha/v-frame/register";
 ```
+
+The registration entry is also safe to import during server rendering: without
+a browser custom-element registry it performs no registration. The server
+materializer remains available separately from `@mewhhaha/v-frame/server`.
 
 Declarative Shadow DOM renders before that module finishes loading, so the server
 preview remains useful even when the browser bundle is deferred.

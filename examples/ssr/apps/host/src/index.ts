@@ -256,12 +256,18 @@ function widgetContent(
   definition: WidgetDefinition,
 ): HTMLRewriterElementContentHandlers {
   return {
-    element(element) {
+    async element(element) {
+      const fonts = new Set<string>();
+      const markup = await materializeVFrameDocument(response, definition.documentURL, {
+        onFontFace(css) {
+          fonts.add(css);
+        },
+      }).text();
       element.before(
-        `<v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
+        `<style data-v-frame-fonts>${Array.from(fonts).join("\n")}</style><v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
         { html: true },
       );
-      element.replace(materializeVFrameDocument(response, definition.documentURL), {
+      element.replace(markup, {
         html: true,
       });
       element.after("</template></v-frame>", { html: true });

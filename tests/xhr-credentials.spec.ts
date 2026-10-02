@@ -43,6 +43,10 @@ function startXHRFixture(): Promise<HTTPFixture<ObservedRequest>> {
         }),
       }),
       "/api/slow": { type: "text/plain", body: "slow response", delay: 250 },
+      "/api/network-failure": (_request, response) => {
+        response.destroy();
+        return undefined;
+      },
       "/api/slow-stream": (_request, response) => {
         response.writeHead(200, {
           "content-type": "text/plain",
@@ -284,6 +288,35 @@ test("disposal aborts reentrant XHR sends", async ({ page }) => {
   expect([0, 4]).toContain(result.readyState);
 });
 
+test("explicit abort inside an XHR callback still dispatches synchronously", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountXHRFrame(page, "nested-abort", "same-origin");
+  const events = await childValue(
+    frame,
+    (window) =>
+      new Promise<string[]>((resolve) => {
+        const xhr = new window.XMLHttpRequest();
+        const events: string[] = [];
+        xhr.onabort = function () {
+          events.push(this === xhr ? "abort" : "wrong receiver");
+        };
+        xhr.onloadend = () => events.push("loadend");
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState !== xhr.HEADERS_RECEIVED) return;
+          events.push("before");
+          xhr.abort();
+          events.push("after");
+          resolve(events);
+        };
+        xhr.open("GET", "/api/teardown-stream");
+        xhr.send();
+      }),
+  );
+  expect(events).toEqual(["before", "abort", "loadend", "after"]);
+});
+
 test("teardown suppresses XHR callbacks", async ({ page }) => {
   await installBundle(page, fixture.origin);
 
@@ -381,6 +414,75 @@ test("teardown suppresses XHR callbacks", async ({ page }) => {
       await frame.evaluate((element) => element.remove());
     }
   }
+});
+
+test("host and ancestor removal silence an active XHR before native unload callbacks", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  for (const ancestor of [false, true]) {
+    const frame = await mountXHRFrame(page, "host-removed", "same-origin");
+    await frame.evaluate((element) => {
+      const guest = (
+        element as HTMLElement & { contentWindow: Window & typeof globalThis }
+      ).contentWindow;
+      const host = window as Window &
+        typeof globalThis & { started: boolean; lateEvents: string[] };
+      host.started = false;
+      host.lateEvents = [];
+      const xhr = new guest.XMLHttpRequest();
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState >= 2) host.started = true;
+        if (xhr.readyState === 4) host.lateEvents.push("done");
+      };
+      xhr.onloadend = () => host.lateEvents.push("property loadend");
+      xhr.addEventListener("loadend", () => host.lateEvents.push("listener loadend"));
+      xhr.open("GET", "/api/teardown-stream");
+      xhr.send();
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as Window & typeof globalThis & { started: boolean }).started,
+        ),
+      )
+      .toBe(true);
+    await frame.evaluate((element, removeAncestor) => {
+      if (removeAncestor) element.parentElement!.remove();
+      else element.remove();
+    }, ancestor);
+    await page.waitForTimeout(50);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as Window & typeof globalThis & { lateEvents: string[] }).lateEvents,
+      ),
+    ).toEqual([]);
+  }
+});
+
+test("an active realm still receives failed XHR events in order", async ({ page }) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountXHRFrame(page, "network-failure", "same-origin");
+  const events = await childValue(
+    frame,
+    (window) =>
+      new Promise<string[]>((resolve) => {
+        const xhr = new window.XMLHttpRequest();
+        const events: string[] = [];
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) events.push("done");
+        };
+        xhr.onerror = () => events.push("error");
+        xhr.addEventListener("loadend", () => {
+          events.push("loadend");
+          resolve(events);
+        });
+        xhr.open("GET", "/api/network-failure");
+        xhr.send();
+      }),
+  );
+  expect(events).toEqual(["done", "error", "loadend"]);
 });
 
 test("resolves invalid network URLs to rejections and native SyntaxError throws", async ({

@@ -39,6 +39,8 @@
     "size": "node scripts/bundle-size.mjs",
     "test": "npm run build && playwright test",
     "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
+    "test:package": "node scripts/package-smoke.mjs",
+    "release:check": "node scripts/release-check.ts",
     "bench": "npm run build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts",
     "check": "npm run format:check && npm run lint && npm run build && npm run size && npm run test:unit",
     "publish:check": "npm run check && jsr publish --dry-run"

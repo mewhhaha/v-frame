@@ -1,4 +1,15 @@
-import { createStylesheetContext, rewriteStylesheet } from "../css.js";
+import {
+  createStylesheetContext,
+  extractFontFaces,
+  rewriteStyleAttribute,
+  rewriteStylesheet,
+} from "../css.js";
+import {
+  absolutizeSrcset,
+  isURLAttribute,
+  isSrcsetAttribute,
+  SSR_ATTRIBUTES,
+} from "../asset-urls.js";
 import type { StylesheetFetch, StylesheetImportFailure } from "../css.js";
 
 /**
@@ -22,7 +33,7 @@ export const SCRIPT_TYPE_ATTRIBUTE = "data-v-frame-type";
  * document has to carry their display rules itself.
  */
 export const SHELL_DISPLAY_STYLE =
-  "<style>v-html,v-body{display:block}v-head{display:none}</style>";
+  "<style>:host{contain:layout;display:block;position:relative;overflow:auto}v-html,v-body{display:block}v-head{display:none!important}</style>";
 
 const SHELL_ELEMENT_NAMES = new Map([
   ["html", "v-html"],
@@ -66,6 +77,57 @@ export interface AttributeAssignment {
   value: string;
 }
 
+export interface AssetElementAttributes extends ScriptElementAttributes {
+  readonly tagName: string;
+  readonly namespaceURI: string;
+  readonly attributes: Iterable<[string, string]>;
+}
+
+/** Rebase preview resources while retaining authored values for hydration. */
+export function rewriteAssetAttributes(
+  element: AssetElementAttributes,
+  baseURL: string,
+): AttributeAssignment[] {
+  const node = {
+    localName: element.tagName,
+    namespaceURI: element.namespaceURI,
+  };
+  const assignments: AttributeAssignment[] = [];
+  const authored: Record<string, string> = {};
+  for (const [name, value] of element.attributes) {
+    let rewritten = value;
+    if (name === "style") {
+      rewritten = rewriteStyleAttribute(value, baseURL);
+    } else if (isSrcsetAttribute(node, name)) {
+      rewritten = absolutizeSrcset(value, baseURL);
+    } else if (
+      isURLAttribute(
+        node,
+        name.replace(/^xlink:/, ""),
+        name.startsWith("xlink:") ? "http://www.w3.org/1999/xlink" : null,
+      )
+    ) {
+      if (value.trim() && !value.trim().toLowerCase().startsWith("javascript:")) {
+        rewritten = URL.parse(value, baseURL)?.href ?? value;
+      }
+    }
+    if (rewritten !== value) {
+      authored[name] = value;
+      assignments.push({ name, value: rewritten });
+    }
+  }
+  if (assignments.length) {
+    // Materializing nested, already-materialized markup must not discard its
+    // original attributes. Existing provenance belongs to that inner guest.
+    const existing = element.getAttribute(SSR_ATTRIBUTES);
+    assignments.push({
+      name: SSR_ATTRIBUTES,
+      value: existing ?? JSON.stringify(authored),
+    });
+  }
+  return assignments;
+}
+
 export interface ScriptElementRewrite {
   /** Attributes to remove, before the assignments below are applied. */
   removeAttributes: readonly string[];
@@ -106,13 +168,15 @@ export function rewriteScriptElement(
 }
 
 export interface MaterializeStylesheetOptions {
-  /** Fetches an `@import` target. Defaults to the platform `fetch`. */
+  /** Fetches a linked stylesheet or `@import`. Defaults to platform `fetch`. */
   fetchText?: StylesheetFetch;
   /** Called when an `@import` cannot be inlined; the rule is dropped. */
   onImportFailure?(failure: StylesheetImportFailure): void;
+  /** HTML-safe font declarations to put in a host style before the SSR frame. */
+  onFontFace?(css: string): void;
 }
 
-async function fetchStylesheetSource(url: string) {
+export async function fetchStylesheetSource(url: string) {
   const response = await fetch(url);
   if (!response.ok) {
     throw new TypeError(
@@ -145,5 +209,8 @@ export async function materializeStylesheet(
     options.fetchText ?? fetchStylesheetSource,
     options.onImportFailure,
   );
-  return escapeStylesheetText(await rewriteStylesheet(source, documentURL, context));
+  const rewritten = await rewriteStylesheet(source, documentURL, context);
+  const fonts = options.onFontFace ? extractFontFaces(rewritten, documentURL) : "";
+  if (fonts) options.onFontFace?.(escapeStylesheetText(fonts));
+  return escapeStylesheetText(rewritten);
 }

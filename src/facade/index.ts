@@ -72,7 +72,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   collections.installPatches();
 
   const selectionFacade = installSelectionFacade(context, nodes);
-  const { setReadyState, dispatchDocumentEvent } = installDocumentProperties(
+  const documentProperties = installDocumentProperties(
     context,
     events,
     nodes,
@@ -111,8 +111,8 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     eventForListener: events.eventForListener,
     suppressEventDefault: events.suppressEventDefault,
     wasEventDefaultPrevented: events.wasEventDefaultPrevented,
-    setReadyState,
-    dispatchDocumentEvent,
+    setReadyState: documentProperties.setReadyState,
+    dispatchDocumentEvent: documentProperties.dispatchDocumentEvent,
     dispose() {
       collections.dispose();
       selectionFacade.dispose();
@@ -120,6 +120,12 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       events.dispose();
       context.restorePatches();
       nodes.dispose();
+      documentProperties.dispose();
+      // Cached native accessor shapes may outlive the realm. Sever their
+      // remaining options references to the disposed virtual document.
+      options.html = document.documentElement ?? privateHead;
+      options.head = document.head ?? privateHead;
+      options.body = document.body ?? privateHead;
     },
   };
 }

@@ -348,7 +348,7 @@ export function installNodeFacade(
             options.host.scrollLeft = value;
           };
         }
-        Object.defineProperty(element, name, descriptor);
+        defineNodeFacade(element, { [name]: descriptor });
       } catch {
         continue;
       }

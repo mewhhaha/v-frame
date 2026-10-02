@@ -233,8 +233,8 @@ export interface BoundHistoryOptions extends HistoryControllerOptions {
 export abstract class HistoryController implements NavigationControls {
   protected readonly window: VFrameWindow;
   protected readonly childHistory: History;
-  protected readonly onNavigate: HistoryControllerOptions["onNavigate"];
-  protected readonly onURLChange: HistoryControllerOptions["onURLChange"];
+  protected onNavigate: HistoryControllerOptions["onNavigate"];
+  protected onURLChange: HistoryControllerOptions["onURLChange"];
   protected disposed = false;
   readonly #nativeReplaceState: History["replaceState"];
 
@@ -259,6 +259,8 @@ export abstract class HistoryController implements NavigationControls {
 
   dispose(): void {
     this.disposed = true;
+    this.onNavigate = () => false;
+    this.onURLChange = () => undefined;
   }
 
   /** Where the guest believes it is, according to the authoritative session. */
@@ -661,8 +663,8 @@ export class BoundHistory extends HistoryController {
 
 export class VirtualHistory extends HistoryController {
   readonly #nativeLengthGetter: (() => number) | null;
-  readonly #onDocumentTraversal: VirtualHistoryOptions["onDocumentTraversal"];
-  readonly #getBaseURL: VirtualHistoryOptions["getBaseURL"];
+  #onDocumentTraversal: VirtualHistoryOptions["onDocumentTraversal"];
+  #getBaseURL: VirtualHistoryOptions["getBaseURL"];
   readonly #session: VirtualHistorySession;
   // Stored entry state stays pristine; each activation exposes its own clone,
   // so mutations of history.state do not survive back/forward traversal.
@@ -687,6 +689,12 @@ export class VirtualHistory extends HistoryController {
 
   override get currentURL(): string {
     return this.#session.currentURL;
+  }
+
+  override dispose(): void {
+    super.dispose();
+    this.#onDocumentTraversal = async () => undefined;
+    this.#getBaseURL = () => this.currentURL;
   }
 
   get state(): unknown {

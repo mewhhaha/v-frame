@@ -3,6 +3,7 @@ export {
   escapeStylesheetText,
   INERT_SCRIPT_TYPE,
   materializeStylesheet,
+  rewriteAssetAttributes,
   rewriteScriptElement,
   rewriteShellElement,
   SCRIPT_MARKER_ATTRIBUTE,
@@ -11,6 +12,7 @@ export {
 } from "./core.js";
 export type {
   AttributeAssignment,
+  AssetElementAttributes,
   MaterializeStylesheetOptions,
   ScriptElementAttributes,
   ScriptElementRewrite,

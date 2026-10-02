@@ -7,6 +7,8 @@ export interface NetworkPatchOptions {
   signal: AbortSignal;
   credentials: VFrameCredentials;
   getBaseURL(): string;
+  /** Also catches custom-element teardown reactions deferred by the engine. */
+  isActive?(): boolean;
 }
 
 function resolveNetworkURL(
@@ -88,6 +90,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const NativeXMLHttpRequest = window.XMLHttpRequest;
   const nativeXHROpen = NativeXMLHttpRequest.prototype.open;
   const nativeXHRSend = NativeXMLHttpRequest.prototype.send;
+  const nativeXHRAbort = NativeXMLHttpRequest.prototype.abort;
   const nativeXHRAddEventListener = NativeXMLHttpRequest.prototype.addEventListener;
   const nativeXHRRemoveEventListener = NativeXMLHttpRequest.prototype.removeEventListener;
   const NativeXMLHttpRequestUpload = window.XMLHttpRequestUpload;
@@ -109,18 +112,125 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   const nativeEventRegistries = new WeakMap<EventTarget, ListenerRegistry>();
   const activeConnections = new EnumerableWeakMap<object, () => void>();
   const originals = new Map<PropertyKey, PropertyDescriptor | undefined>();
+  const explicitAborts = new WeakSet<XMLHttpRequest>();
+  let disposed = false;
 
   const remember = (target: object, key: PropertyKey) => {
     originals.set(key, Object.getOwnPropertyDescriptor(target, key));
   };
 
   const nativeEventTargetIsSilenced = (target: EventTarget): boolean => {
+    if (disposed || options.signal.aborted || options.isActive?.() === false) return true;
     if (target instanceof NativeXMLHttpRequest) {
       return silencedNativeXHRS.has(target);
     }
     const request = nativeXHRUploads.get(target as XMLHttpRequestUpload);
     return request !== undefined && silencedNativeXHRS.has(request);
   };
+
+  const invokeNativeListener = (
+    target: EventTarget,
+    listener: EventListenerOrEventListenerObject,
+    event: Event,
+  ): void => {
+    if (nativeEventTargetIsSilenced(target)) return;
+    const request =
+      target instanceof NativeXMLHttpRequest
+        ? target
+        : nativeXHRUploads.get(target as XMLHttpRequestUpload);
+    const invoke = () => {
+      if (nativeEventTargetIsSilenced(target)) return;
+      if (typeof listener === "function") listener.call(target, event);
+      else listener.handleEvent(event);
+    };
+    // WebKit emits terminal XHR events during iframe removal, before the host
+    // disconnects. Recheck failing async requests after native DOM reactions;
+    // explicit abort() and synchronous XHR retain synchronous event delivery.
+    if (
+      request &&
+      request.readyState === 4 &&
+      request.status === 0 &&
+      nativeXHRAsync.get(request) !== false &&
+      !explicitAborts.has(request)
+    ) {
+      queueMicrotask(() => {
+        try {
+          invoke();
+        } catch (error) {
+          window.dispatchEvent(
+            new window.ErrorEvent("error", {
+              error,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      });
+    } else invoke();
+  };
+
+  const handlerDescriptors: Array<{
+    prototype: object;
+    name: string;
+    descriptor: PropertyDescriptor | undefined;
+  }> = [];
+  const handlers = new WeakMap<
+    EventTarget,
+    Map<string, { listener: EventListener; wrapper: EventListener }>
+  >();
+  for (const prototype of [
+    NativeXMLHttpRequest.prototype,
+    NativeXMLHttpRequestUpload.prototype,
+  ]) {
+    for (const name of [
+      "onabort",
+      "onerror",
+      "onload",
+      "onloadend",
+      "onloadstart",
+      "onprogress",
+      "onreadystatechange",
+      "ontimeout",
+    ]) {
+      let owner: object | null = prototype;
+      let native: PropertyDescriptor | undefined;
+      while (owner && !native) {
+        native = Object.getOwnPropertyDescriptor(owner, name);
+        owner = Object.getPrototypeOf(owner) as object | null;
+      }
+      if (!native?.get || !native.set) continue;
+      const descriptor = native;
+      handlerDescriptors.push({
+        prototype,
+        name,
+        descriptor: Object.getOwnPropertyDescriptor(prototype, name),
+      });
+      Object.defineProperty(prototype, name, {
+        configurable: true,
+        enumerable: descriptor.enumerable ?? false,
+        get(this: EventTarget) {
+          return handlers.get(this)?.get(name)?.listener ?? descriptor.get!.call(this);
+        },
+        set(this: EventTarget, value: EventListener | null) {
+          let values = handlers.get(this);
+          if (!values) {
+            values = new Map();
+            handlers.set(this, values);
+          }
+          if (typeof value !== "function") {
+            values.delete(name);
+            descriptor.set!.call(this, value);
+            return;
+          }
+          const target = this;
+          const wrapper: EventListener = (event) => {
+            invokeNativeListener(target, value, event);
+          };
+          values.set(name, { listener: value, wrapper });
+          descriptor.set!.call(this, wrapper);
+        },
+      });
+    }
+  }
 
   // Every listener goes through a wrapper so that teardown can mute a request
   // the guest still holds a reference to, without unregistering its listeners.
@@ -136,14 +246,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
     const registry = new ListenerRegistry({
       createWrapper: (listener) => (event) => {
-        if (nativeEventTargetIsSilenced(target)) {
-          return;
-        }
-        if (typeof listener === "function") {
-          listener.call(target, event);
-          return;
-        }
-        listener.handleEvent(event);
+        invokeNativeListener(target, listener, event);
       },
       addToTargets: (type, wrapper, options) => {
         nativeAddEventListener.call(target, type, wrapper, options);
@@ -418,6 +521,15 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
   };
 
+  NativeXMLHttpRequest.prototype.abort = function abort(): void {
+    explicitAborts.add(this);
+    try {
+      nativeXHRAbort.call(this);
+    } finally {
+      explicitAborts.delete(this);
+    }
+  };
+
   const wrapConstructor = (
     key: "WebSocket" | "EventSource" | "Worker" | "SharedWorker",
     transform: (argumentsList: unknown[]) => unknown[],
@@ -586,6 +698,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     activeConnections.clear();
   };
   const disposeNetwork = () => {
+    disposed = true;
     disposeRequests();
     disposeConnections();
   };
@@ -594,8 +707,13 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   return () => {
     options.signal.removeEventListener("abort", disposeNetwork);
     disposeNetwork();
+    for (const { prototype, name, descriptor } of handlerDescriptors) {
+      if (descriptor) Object.defineProperty(prototype, name, descriptor);
+      else delete (prototype as Record<string, unknown>)[name];
+    }
     NativeXMLHttpRequest.prototype.open = nativeXHROpen;
     NativeXMLHttpRequest.prototype.send = nativeXHRSend;
+    NativeXMLHttpRequest.prototype.abort = nativeXHRAbort;
     NativeXMLHttpRequest.prototype.addEventListener = nativeXHRAddEventListener;
     NativeXMLHttpRequest.prototype.removeEventListener = nativeXHRRemoveEventListener;
     NativeXMLHttpRequestUpload.prototype.addEventListener =

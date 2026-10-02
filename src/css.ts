@@ -346,6 +346,31 @@ export async function rewriteStylesheet(
   return transformStylesheet(source, stylesheetURL, context, new Set([stylesheetURL]));
 }
 
+/** Font definitions must be placed in the host stylesheet for shadow-tree interoperability. */
+export function extractFontFaces(source: string, stylesheetURL: string): string {
+  const sheet = parseStylesheet(source, stylesheetURL);
+  let faces = 0;
+  walkCSS(sheet, {
+    enter(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
+      if (node.type === "Rule" && item && list) {
+        list.remove(item);
+        return walkCSS.skip;
+      }
+      if (node.type !== "Atrule") return;
+      const name = node.name.toLowerCase();
+      if (name === "font-face") {
+        faces++;
+        return walkCSS.skip;
+      }
+      if (!["media", "supports", "layer"].includes(name) && item && list) {
+        list.remove(item);
+        return walkCSS.skip;
+      }
+    },
+  });
+  return faces ? generateCSS(sheet) : "";
+}
+
 export function rewriteStyleAttribute(source: string, baseURL: string): string {
   const ast = parseCSS(source, {
     context: "declarationList",

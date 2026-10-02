@@ -32,5 +32,6 @@
     "examples/ssr/apps/host/src/client.ts",
     "examples/ssr/apps/host/src/host-config.ts",
     "examples/client/vite.config.ts"
-  ]
+  ],
+  "exclude": ["tests/package-consumer"]
 }

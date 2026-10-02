@@ -3,6 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -10,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - uses: pnpm/action-setup@v4
 
@@ -20,9 +30,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Only the two projects playwright.config.ts declares are installed; the
-      # suite never drives webkit.
-      - run: pnpm exec playwright install --with-deps chromium firefox
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
 
       - run: pnpm format:check
 
@@ -34,17 +42,23 @@ jobs:
 
       - run: pnpm size
 
+      - run: pnpm release:check
+
       - run: pnpm test:unit
 
       - run: pnpm exec jsr publish --dry-run
 
-      - run: pnpm exec playwright test --project=chromium --project=firefox
+      - run: pnpm test:package
+
+      - run: pnpm exec playwright test
 
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report
+          path: |
+            playwright-report
+            test-results
           retention-days: 7
 
   example-ssr:
@@ -56,6 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - uses: pnpm/action-setup@v4
 
@@ -66,7 +82,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm exec playwright install --with-deps chromium firefox
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
 
       # test:routing runs all SSR browser tests, including paint and WCAG checks,
       # after building the five applications through its webServer command.
@@ -76,5 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: example-ssr-playwright-report
-          path: examples/ssr/playwright-report
+          path: |
+            examples/ssr/playwright-report
+            examples/ssr/test-results
           retention-days: 7

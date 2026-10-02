@@ -39,35 +39,20 @@ function selectionStateFromRange(range: Range): SelectionState {
   };
 }
 
-function selectionStateFromNative(selection: Selection): SelectionState | null {
-  if (
-    selection.rangeCount === 0 ||
-    selection.anchorNode === null ||
-    selection.focusNode === null
-  ) {
-    return null;
-  }
-
-  return {
-    range: selection.getRangeAt(0),
-    anchorNode: selection.anchorNode,
-    anchorOffset: selection.anchorOffset,
-    focusNode: selection.focusNode,
-    focusOffset: selection.focusOffset,
-  };
-}
-
 export function createSelectionFacade(options: SelectionFacadeOptions): SelectionFacade {
+  const { window, hostDocument, onSelectionChange } = options;
+  let virtualRoot: HTMLElement | null = options.root;
   let privateSelection: SelectionState | null = null;
   let expectedNativeSelectionChange: SelectionSnapshot | null = null;
   let previousNativeSelectionSnapshot: SelectionSnapshot | null = null;
 
   const containsVirtualNode = (node: Node): boolean =>
-    node === options.root || options.root.contains(node);
+    virtualRoot !== null && (node === virtualRoot || virtualRoot.contains(node));
   const containsVirtualRange = (range: Range): boolean =>
     containsVirtualNode(range.startContainer) && containsVirtualNode(range.endContainer);
-  const nativeSelection = (): Selection | null => options.hostDocument.getSelection();
+  const nativeSelection = (): Selection | null => hostDocument.getSelection();
   const virtualNativeRanges = (): Range[] => {
+    if (!virtualRoot) return [];
     const selection = nativeSelection();
     if (selection === null || selection.rangeCount === 0) {
       return [];
@@ -76,7 +61,54 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     const ranges = Array.from({ length: selection.rangeCount }, (_, index) =>
       selection.getRangeAt(index),
     );
-    return ranges.every(containsVirtualRange) ? ranges : [];
+    if (ranges.every(containsVirtualRange)) return ranges;
+    // WebKit retargets getRangeAt() to the shadow host. Composed ranges expose
+    // the actual endpoints when their owning shadow root is explicitly allowed.
+    const root = hostDocument.defaultView!.Node.prototype.getRootNode.call(
+      virtualRoot,
+    ) as ShadowRoot;
+    const composed = selection.getComposedRanges?.({ shadowRoots: [root] }) ?? [];
+    return composed.flatMap((range) => {
+      if (
+        !containsVirtualNode(range.startContainer) ||
+        !containsVirtualNode(range.endContainer)
+      )
+        return [];
+      const live = hostDocument.createRange();
+      live.setStart(range.startContainer, range.startOffset);
+      live.setEnd(range.endContainer, range.endOffset);
+      return [live];
+    });
+  };
+  const nativeState = (selection: Selection, range: Range): SelectionState => {
+    const backward = selection.direction === "backward";
+    return {
+      range,
+      anchorNode:
+        selection.anchorNode && containsVirtualNode(selection.anchorNode)
+          ? selection.anchorNode
+          : backward
+            ? range.endContainer
+            : range.startContainer,
+      anchorOffset:
+        selection.anchorNode && containsVirtualNode(selection.anchorNode)
+          ? selection.anchorOffset
+          : backward
+            ? range.endOffset
+            : range.startOffset,
+      focusNode:
+        selection.focusNode && containsVirtualNode(selection.focusNode)
+          ? selection.focusNode
+          : backward
+            ? range.startContainer
+            : range.endContainer,
+      focusOffset:
+        selection.focusNode && containsVirtualNode(selection.focusNode)
+          ? selection.focusOffset
+          : backward
+            ? range.startOffset
+            : range.endOffset,
+    };
   };
   const currentSelection = (): SelectionState | null => {
     if (privateSelection !== null) {
@@ -88,7 +120,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     if (selection === null || ranges.length === 0) {
       return null;
     }
-    return selectionStateFromNative(selection);
+    return nativeState(selection, ranges[0]!);
   };
   const selectionSnapshot = (state: SelectionState | null): SelectionSnapshot | null => {
     if (state === null) {
@@ -125,7 +157,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     const ranges = virtualNativeRanges();
     return selection === null || ranges.length === 0
       ? null
-      : selectionSnapshot(selectionStateFromNative(selection));
+      : selectionSnapshot(nativeState(selection, ranges[0]!));
   };
   const notifySelectionChange = (
     previous: SelectionSnapshot | null,
@@ -138,7 +170,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       expectedNativeSelectionChange = nativeSelectionSnapshot();
       previousNativeSelectionSnapshot = expectedNativeSelectionChange;
     }
-    options.onSelectionChange();
+    onSelectionChange();
   };
   const nativeSelectionCanChange = (): boolean => {
     if (privateSelection !== null) {
@@ -181,7 +213,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     }
   };
   const collapsedRange = (node: Node, offset: number): Range => {
-    const range = options.hostDocument.createRange();
+    const range = hostDocument.createRange();
     range.setStart(node, offset);
     range.collapse(true);
     return range;
@@ -194,7 +226,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
   ): Range => {
     const anchor = collapsedRange(anchorNode, anchorOffset);
     const focusIsBeforeAnchor = anchor.comparePoint(focusNode, focusOffset) === -1;
-    const range = options.hostDocument.createRange();
+    const range = hostDocument.createRange();
     if (focusIsBeforeAnchor) {
       range.setStart(focusNode, focusOffset);
       range.setEnd(anchorNode, anchorOffset);
@@ -215,7 +247,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       : "forward";
   };
   const invalidSelectionState = (): never => {
-    throw new options.window.DOMException(
+    throw new window.DOMException(
       "There is no range in the selection",
       "InvalidStateError",
     );
@@ -225,7 +257,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
   const rangeAt = (index: number): Range => {
     const range = currentRanges()[index];
     if (range === undefined) {
-      throw new options.window.DOMException(
+      throw new window.DOMException(
         "The selection has no range at that index",
         "IndexSizeError",
       );
@@ -247,10 +279,10 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       return;
     }
     previousNativeSelectionSnapshot = snapshot;
-    options.onSelectionChange();
+    onSelectionChange();
   };
-  options.hostDocument.addEventListener("selectionchange", hostSelectionChanged);
-  const facade = Object.create(options.window.Selection.prototype) as Selection;
+  hostDocument.addEventListener("selectionchange", hostSelectionChanged);
+  const facade = Object.create(window.Selection.prototype) as Selection;
 
   Object.defineProperties(facade, {
     anchorNode: {
@@ -372,7 +404,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           return range.intersectsNode(node);
         }
 
-        const nodeRange = options.hostDocument.createRange();
+        const nodeRange = hostDocument.createRange();
         nodeRange.selectNode(node);
         return (
           range.compareBoundaryPoints(Range.START_TO_START, nodeRange) <= 0 &&
@@ -424,12 +456,12 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     },
     getComposedRanges: {
       value(): StaticRange[] {
-        if (typeof options.window.StaticRange !== "function") {
+        if (typeof window.StaticRange !== "function") {
           return [];
         }
         return currentRanges().map(
           (range) =>
-            new options.window.StaticRange({
+            new window.StaticRange({
               startContainer: range.startContainer,
               startOffset: range.startOffset,
               endContainer: range.endContainer,
@@ -463,20 +495,14 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         const previous = selectionSnapshot(currentSelection());
         if (privateSelection !== null) {
           if (privateSelection.range !== range) {
-            throw new options.window.DOMException(
-              "The range is not selected",
-              "NotFoundError",
-            );
+            throw new window.DOMException("The range is not selected", "NotFoundError");
           }
           privateSelection = null;
           notifySelectionChange(previous);
           return;
         }
         if (virtualNativeRanges().length === 0) {
-          throw new options.window.DOMException(
-            "The range is not selected",
-            "NotFoundError",
-          );
+          throw new window.DOMException("The range is not selected", "NotFoundError");
         }
 
         nativeSelection()?.removeRange(range);
@@ -489,7 +515,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           return;
         }
 
-        const range = options.hostDocument.createRange();
+        const range = hostDocument.createRange();
         range.selectNodeContents(node);
         const previous = selectionSnapshot(currentSelection());
         const nativeSelectionMayHaveChanged = setRange(selectionStateFromRange(range));
@@ -536,8 +562,11 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
   return {
     selection: facade,
     dispose() {
-      options.hostDocument.removeEventListener("selectionchange", hostSelectionChanged);
+      hostDocument.removeEventListener("selectionchange", hostSelectionChanged);
       expectedNativeSelectionChange = null;
+      previousNativeSelectionSnapshot = null;
+      privateSelection = null;
+      virtualRoot = null;
     },
   };
 }

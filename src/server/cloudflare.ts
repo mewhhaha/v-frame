@@ -2,8 +2,12 @@ import {
   materializeStylesheet,
   rewriteScriptElement,
   rewriteShellElement,
+  rewriteAssetAttributes,
+  fetchStylesheetSource,
 } from "./core.js";
 import type { MaterializeStylesheetOptions } from "./core.js";
+import { SSR_LINK_REL, SSR_LINK_STYLE } from "../asset-urls.js";
+import type { StylesheetSource } from "../css.js";
 
 /**
  * Cloudflare Workers adapter over the materializer core. The Workers types are
@@ -17,11 +21,14 @@ interface RewriterContentOptions {
 
 interface RewriterElement {
   tagName: string;
+  readonly namespaceURI: string;
+  readonly attributes: Iterable<[string, string]>;
   getAttribute(name: string): string | null;
   hasAttribute(name: string): boolean;
   removeAttribute(name: string): void;
   setAttribute(name: string, value: string): void;
   prepend(content: string, options?: RewriterContentOptions): void;
+  after(content: string, options?: RewriterContentOptions): void;
 }
 
 interface RewriterText {
@@ -112,11 +119,106 @@ export function materializeVFrameDocument(
   documentURL: string,
   options: MaterializeStylesheetOptions = {},
 ): Response {
-  return new HTMLRewriter()
-    .on("html", shellHandlers)
-    .on("head", shellHandlers)
-    .on("body", shellHandlers)
-    .on("style", new StylesheetText(documentURL, options))
-    .on("script", scriptHandlers)
-    .transform(response);
+  if (!response.body) return response;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        let baseURL = documentURL;
+        let hasBase = false;
+        // A base applies to the entire document, even to resources preceding
+        // it. The first parse is deliberately side-effect free.
+        const source = await new HTMLRewriter()
+          .on("head base[href]", {
+            element(element) {
+              if (hasBase) return;
+              const url = URL.parse(element.getAttribute("href")!, documentURL);
+              if (url) {
+                baseURL = url.href;
+                hasBase = true;
+              }
+            },
+          })
+          .transform(response)
+          .text();
+        const requests = new Map<string, Promise<string | StylesheetSource>>();
+        const settings: MaterializeStylesheetOptions = {
+          ...options,
+          fetchText(url) {
+            let result = requests.get(url);
+            if (!result) {
+              result = (options.fetchText ?? fetchStylesheetSource)(url);
+              requests.set(url, result);
+            }
+            return result;
+          },
+        };
+        const transformed = new HTMLRewriter()
+          .on("*", {
+            element(element) {
+              for (const assignment of rewriteAssetAttributes(
+                element,
+                element.tagName === "base" ? documentURL : baseURL,
+              )) {
+                element.setAttribute(assignment.name, assignment.value);
+              }
+            },
+          })
+          .on("html", shellHandlers)
+          .on("head", shellHandlers)
+          .on("body", shellHandlers)
+          .on("style", new StylesheetText(baseURL, settings))
+          .on("script", scriptHandlers)
+          .on("link[href]", {
+            async element(element) {
+              const rel = element.getAttribute("rel") ?? "";
+              if (!rel.split(/\s+/).some((token) => token.toLowerCase() === "stylesheet"))
+                return;
+              const href = element.getAttribute("href")!;
+              element.setAttribute(SSR_LINK_REL, rel);
+              element.setAttribute("rel", "v-frame-stylesheet");
+              try {
+                const result = await settings.fetchText!(href);
+                const sheet =
+                  typeof result === "string" ? { text: result, url: href } : result;
+                const css = await materializeStylesheet(sheet.text, sheet.url, settings);
+                const escape = (value: string) =>
+                  value
+                    .replaceAll("&", "&amp;")
+                    .replaceAll('"', "&quot;")
+                    .replaceAll("<", "&lt;");
+                const attrs = [
+                  `data-v-frame-source="${escape(sheet.url)}"`,
+                  `${SSR_LINK_STYLE}=""`,
+                  `media="${escape(element.hasAttribute("disabled") ? "not all" : (element.getAttribute("media") ?? ""))}"`,
+                ];
+                for (const name of ["nonce", "title"]) {
+                  const value = element.getAttribute(name);
+                  if (value !== null) attrs.push(`${name}="${escape(value)}"`);
+                }
+                element.after(`<style ${attrs.join(" ")}>${css}</style>`, { html: true });
+              } catch (error) {
+                options.onImportFailure?.({ url: href, error });
+              }
+            },
+          })
+          .transform(new Response(source));
+        const reader = transformed.body!.getReader();
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          controller.enqueue(chunk.value);
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }

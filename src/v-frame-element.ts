@@ -7,6 +7,7 @@ import {
 } from "./realm/index.js";
 import { type DocumentHistoryMode, VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
+import { AdoptionState } from "./realm/adoption-state.js";
 import { VFrameStatus } from "./types.js";
 import type {
   VFrameCredentials,
@@ -53,7 +54,8 @@ function canceledNavigationError(url: string): DOMException {
 
 interface AdoptedMarkup {
   source: string;
-  previewNodes: readonly Node[];
+  previewNodes: Node[];
+  state: AdoptionState;
 }
 
 interface FrameLoad {
@@ -507,6 +509,12 @@ export class VFrameElement extends HTMLElementBase {
       }
     }
     const controller = new AbortController();
+    const adoptedState = load.adoptedMarkup?.state;
+    if (adoptedState) {
+      controller.signal.addEventListener("abort", () => adoptedState.dispose(), {
+        once: true,
+      });
+    }
     this.#loadController = controller;
     return this.#load(generation, controller, load, {
       realm: load.stageMarkup ? previousRealm : null,
@@ -652,6 +660,7 @@ export class VFrameElement extends HTMLElementBase {
                 kind: "adopted",
                 source,
                 previewNodes: load.adoptedMarkup.previewNodes,
+                state: load.adoptedMarkup.state,
               },
         pageURL: finalURL,
         historySession,
@@ -819,6 +828,11 @@ export class VFrameElement extends HTMLElementBase {
       this.#assertCurrentGeneration(generation, controller.signal);
       previous.realm?.dispose();
       previous.realmController?.abort();
+      // The live realm's callbacks share this load's closure. Drop rollback
+      // references once it commits so replacements cannot retain their parents.
+      previous.realm = null;
+      previous.realmController = null;
+      previous.historySession = null;
       this.#realm = realm;
       this.#loadingRealm = null;
       this.#realmController = controller;
@@ -939,7 +953,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#internals.states.add(status);
   }
 
-  #consumeAdoptedMarkup(): { source: string; previewNodes: readonly Node[] } | null {
+  #consumeAdoptedMarkup(): AdoptedMarkup | null {
     if (!this.adopt || !this.#adoptionAvailable || this.#adoptionConsumed) {
       return null;
     }
@@ -959,6 +973,7 @@ export class VFrameElement extends HTMLElementBase {
     return {
       source: this.#root.getHTML({ serializableShadowRoots: true }),
       previewNodes: Array.from(this.#root.childNodes),
+      state: new AdoptionState(html as HTMLElement, this.#root),
     };
   }
 

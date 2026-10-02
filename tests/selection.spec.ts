@@ -225,7 +225,14 @@ test("notifies when a native selection leaves a frame while isolating host and s
     const range = document.createRange();
     range.selectNodeContents(copy);
     hostSelection.removeAllRanges();
-    hostSelection.addRange(range);
+    // Native WebKit addRange silently ignores shadow-tree ranges. Selecting
+    // the same endpoints through setBaseAndExtent works in all three engines.
+    hostSelection.setBaseAndExtent(
+      range.startContainer,
+      range.startOffset,
+      range.endContainer,
+      range.endOffset,
+    );
     await new Promise((resolve) => window.setTimeout(resolve, 10));
 
     hostSelection.removeAllRanges();

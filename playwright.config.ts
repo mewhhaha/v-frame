@@ -13,7 +13,40 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    {
+      name: "chromium",
+      testIgnore: "**/mobile.spec.ts",
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "firefox",
+      testIgnore: "**/mobile.spec.ts",
+      use: { ...devices["Desktop Firefox"] },
+    },
+    {
+      name: "webkit",
+      testIgnore: "**/mobile.spec.ts",
+      use: {
+        ...devices["Desktop Safari"],
+        launchOptions: process.env.VFRAME_WEBKIT_EXECUTABLE_PATH
+          ? { executablePath: process.env.VFRAME_WEBKIT_EXECUTABLE_PATH }
+          : {},
+      },
+    },
+    {
+      name: "mobile-chromium",
+      testMatch: ["**/mobile.spec.ts", "**/ssr-state.spec.ts", "**/ssr-assets.spec.ts"],
+      use: { ...devices["Pixel 7"] },
+    },
+    {
+      name: "mobile-webkit",
+      testMatch: ["**/mobile.spec.ts", "**/ssr-state.spec.ts", "**/ssr-assets.spec.ts"],
+      use: {
+        ...devices["iPhone 13"],
+        launchOptions: process.env.VFRAME_WEBKIT_EXECUTABLE_PATH
+          ? { executablePath: process.env.VFRAME_WEBKIT_EXECUTABLE_PATH }
+          : {},
+      },
+    },
   ],
 });

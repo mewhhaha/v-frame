@@ -50,7 +50,9 @@ cost](./docs/limitations.md#guest-size-and-activation-cost).
 ## Requirements
 
 - A current browser with custom elements, Declarative Shadow DOM, and the
-  Navigation API. Chromium and Firefox are tested. Safari 26.2+ is best effort.
+  Navigation API. Chromium, Firefox and Playwright WebKit are tested, including
+  touch-device emulation. Real Safari/iOS and screen-reader validation are a
+  [manual release gate](./docs/releasing.md), not implied by WebKit passing.
 - Guest URLs exposed to the browser must be same-origin `http:` or `https:`
   URLs. Proxy independently deployed applications through the host origin.
 - The host must trust the guest JavaScript it executes.

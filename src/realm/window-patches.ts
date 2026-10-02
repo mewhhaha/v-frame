@@ -342,6 +342,40 @@ export function installViewportPatches(
     value: getSelection,
   });
 
+  // WebKit suspends rAF in a zero-sized execution iframe. Rendering belongs
+  // to the host, but timestamps must still use the guest's performance origin.
+  const animationFrames = new Set<number>();
+  const timeOffset = hostWindow.performance.timeOrigin - window.performance.timeOrigin;
+  patch("requestAnimationFrame", {
+    writable: true,
+    value(callback: FrameRequestCallback) {
+      if (typeof callback !== "function")
+        throw new window.TypeError("Callback must be a function");
+      const id = hostWindow.requestAnimationFrame((time) => {
+        animationFrames.delete(id);
+        if (listenerLifetime.signal.aborted) return;
+        try {
+          callback.call(window, time + timeOffset);
+        } catch (error) {
+          window.dispatchEvent(
+            new window.ErrorEvent("error", {
+              error,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      });
+      animationFrames.add(id);
+      return id;
+    },
+  });
+  patch("cancelAnimationFrame", {
+    writable: true,
+    value(id: number) {
+      if (animationFrames.delete(Number(id))) hostWindow.cancelAnimationFrame(Number(id));
+    },
+  });
+
   const resizeListener = () => {
     window.dispatchEvent(new window.Event("resize"));
   };
@@ -360,6 +394,8 @@ export function installViewportPatches(
   return {
     dispose() {
       listenerLifetime.abort();
+      for (const id of animationFrames) hostWindow.cancelAnimationFrame(id);
+      animationFrames.clear();
       for (const [name, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (window as unknown as Record<PropertyKey, unknown>)[name];
