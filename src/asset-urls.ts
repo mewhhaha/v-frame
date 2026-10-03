@@ -1,5 +1,5 @@
-const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+export const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 export const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
 
 const URL_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
@@ -35,6 +35,17 @@ export const SSR_LINK_STYLE = "data-v-frame-linked";
 export interface AssetElement {
   localName: string;
   namespaceURI: string | null;
+}
+
+/** SVG fragment resources belong to the rendered tree, not the guest URL. */
+export function resolveAssetURL(
+  element: AssetElement,
+  value: string,
+  baseURL: string,
+): string {
+  if (element.namespaceURI === SVG_NAMESPACE && value.trimStart().startsWith("#"))
+    return value;
+  return URL.parse(value, baseURL)?.href ?? value;
 }
 
 function isASCIIWhitespace(character: string | undefined): boolean {

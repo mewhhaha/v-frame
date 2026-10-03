@@ -1,4 +1,4 @@
-import { ListenerRegistry } from "./listener-registry.js";
+import { ListenerRegistry, captureAbortSignalMethods } from "./listener-registry.js";
 import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
@@ -81,6 +81,7 @@ function sharedWorkerOptions(
 
 export function installNetworkPatches(options: NetworkPatchOptions): () => void {
   const window = options.window;
+  const abortSignal = captureAbortSignalMethods(window);
   const nativeFetch = window.fetch.bind(window);
   const NativeRequest = window.Request;
   const nativeRequestURLGetter = Object.getOwnPropertyDescriptor(
@@ -245,6 +246,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
 
     const registry = new ListenerRegistry({
+      abortSignal,
       createWrapper: (listener) => (event) => {
         invokeNativeListener(target, listener, event);
       },
@@ -337,38 +339,54 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
   };
 
-  // The injected init is never empty, which would reset a Request input's
-  // referrer metadata to its defaults and re-attach an explicitly severed
-  // signal, so both are forwarded explicitly unless the caller overrides them.
-  const forwardedRequestInit = (
-    input: RequestInfo | URL,
-    init: RequestInit | undefined,
+  const forwardedRequestArguments = (
+    input: Request | string,
+    init: RequestInit | null | undefined,
     requestInput: boolean,
-  ): RequestInit => {
-    const forwarded: RequestInit = {
-      ...init,
-      credentials:
-        init?.credentials ??
-        (requestInput && isRequest(input) ? input.credentials : options.credentials),
-      signal: combinedSignal(
-        window,
-        options.signal,
-        init !== undefined && "signal" in init
-          ? (init.signal ?? undefined)
-          : requestInput && isRequest(input)
-            ? input.signal
-            : undefined,
-      ),
-    };
-    if (requestInput && isRequest(input)) {
-      if (init === undefined || !("referrer" in init)) {
-        forwarded.referrer = input.referrer;
-      }
-      if (init === undefined || !("referrerPolicy" in init)) {
-        forwarded.referrerPolicy = input.referrerPolicy;
-      }
-    }
-    return forwarded;
+  ): [Request | string, RequestInit] => {
+    // Normalize a Request's caller-supplied options before injecting ours:
+    // native conversion decides whether an empty dictionary inherits referrer
+    // metadata, or a nonempty one resets it, and whether signal:null severs it.
+    const normalizeInput = requestInput && init != null;
+    const request = requestInput
+      ? normalizeInput
+        ? new NativeRequest(input, init)
+        : (input as Request)
+      : undefined;
+    const suppliedInit = normalizeInput ? undefined : init;
+    // Let native dictionary conversion read inherited/non-enumerable fields in
+    // its usual order, with getters bound to the original options object. A
+    // spread would drop those fields and evaluate unrelated enumerable getters.
+    // An empty target also avoids Proxy invariants on frozen init properties.
+    const forwarded = new window.Proxy(
+      window.Object.create(suppliedInit ?? null) as RequestInit,
+      {
+        get(_target, key) {
+          const value: unknown =
+            suppliedInit == null ? undefined : Reflect.get(suppliedInit, key);
+          if (key === "credentials") {
+            return value === undefined
+              ? (request?.credentials ?? options.credentials)
+              : value;
+          }
+          if (key === "signal") {
+            return combinedSignal(
+              window,
+              options.signal,
+              (value === undefined ? request?.signal : value) as
+                | AbortSignal
+                | null
+                | undefined,
+            );
+          }
+          if ((key === "referrer" || key === "referrerPolicy") && value === undefined) {
+            return request?.[key];
+          }
+          return value;
+        },
+      },
+    );
+    return [request ?? input, forwarded];
   };
 
   class VFrameRequest extends NativeRequest {
@@ -385,7 +403,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       const resolvedInput = requestInput
         ? input
         : resolveNetworkURL(window, input, options.getBaseURL());
-      super(resolvedInput, forwardedRequestInit(input, init, requestInput));
+      super(...forwardedRequestArguments(resolvedInput, init, requestInput));
     }
   }
 
@@ -409,17 +427,17 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
 
       const [input, init] = argumentsList;
       const requestInput = isRequest(input);
-      let resolvedInput: Request | string;
       try {
-        resolvedInput = requestInput
+        const resolvedInput = requestInput
           ? input
           : resolveNetworkURL(window, input, options.getBaseURL());
+        return nativeFetch(
+          ...forwardedRequestArguments(resolvedInput, init, requestInput),
+        );
       } catch (error) {
         // Native fetch never throws synchronously.
-        return Promise.reject(error);
+        return window.Promise.reject(error);
       }
-
-      return nativeFetch(resolvedInput, forwardedRequestInit(input, init, requestInput));
     },
   });
 

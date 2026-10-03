@@ -29,20 +29,20 @@ interface SelectionSnapshot {
   focusOffset: number;
 }
 
-function selectionStateFromRange(range: Range): SelectionState {
+function selectionStateFromRange(range: Range, backward = false): SelectionState {
   return {
     range,
-    anchorNode: range.startContainer,
-    anchorOffset: range.startOffset,
-    focusNode: range.endContainer,
-    focusOffset: range.endOffset,
+    anchorNode: backward ? range.endContainer : range.startContainer,
+    anchorOffset: backward ? range.endOffset : range.startOffset,
+    focusNode: backward ? range.startContainer : range.endContainer,
+    focusOffset: backward ? range.startOffset : range.endOffset,
   };
 }
 
 export function createSelectionFacade(options: SelectionFacadeOptions): SelectionFacade {
   const { window, hostDocument, onSelectionChange } = options;
   let virtualRoot: HTMLElement | null = options.root;
-  let privateSelection: SelectionState | null = null;
+  let privateSelection: { range: Range; backward: boolean } | null = null;
   let expectedNativeSelectionChange: SelectionSnapshot | null = null;
   let previousNativeSelectionSnapshot: SelectionSnapshot | null = null;
 
@@ -112,7 +112,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
   };
   const currentSelection = (): SelectionState | null => {
     if (privateSelection !== null) {
-      return privateSelection;
+      return selectionStateFromRange(privateSelection.range, privateSelection.backward);
     }
 
     const selection = nativeSelection();
@@ -182,15 +182,23 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
       (selection.rangeCount === 0 || virtualNativeRanges().length > 0)
     );
   };
+  const retainPrivateRange = (state: SelectionState): void => {
+    // The Range stays live through text edits, node removal and direct range
+    // mutations. Only its orientation is independent of those boundaries.
+    privateSelection = {
+      range: state.range,
+      backward: directionFor(state) === "backward",
+    };
+  };
   const setRange = (state: SelectionState): boolean => {
     if (!nativeSelectionCanChange()) {
-      privateSelection = state;
+      retainPrivateRange(state);
       return false;
     }
 
     const selection = nativeSelection();
     if (selection === null) {
-      privateSelection = state;
+      retainPrivateRange(state);
       return false;
     }
 
@@ -204,11 +212,11 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         state.focusOffset,
       );
       if (virtualNativeRanges().length === 0) {
-        privateSelection = state;
+        retainPrivateRange(state);
       }
       return true;
     } catch {
-      privateSelection = state;
+      retainPrivateRange(state);
       return true;
     }
   };
@@ -340,14 +348,14 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         const previous = selectionSnapshot(currentSelection());
 
         if (!nativeSelectionCanChange()) {
-          privateSelection = selectionStateFromRange(range);
+          retainPrivateRange(selectionStateFromRange(range));
           notifySelectionChange(previous);
           return;
         }
 
         const selection = nativeSelection();
         if (selection === null) {
-          privateSelection = selectionStateFromRange(range);
+          retainPrivateRange(selectionStateFromRange(range));
           notifySelectionChange(previous);
           return;
         }
@@ -357,11 +365,11 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           selection.addRange(range);
           nativeSelectionMayHaveChanged = true;
           if (virtualNativeRanges().length === 0) {
-            privateSelection = selectionStateFromRange(range);
+            retainPrivateRange(selectionStateFromRange(range));
           }
         } catch {
           nativeSelectionMayHaveChanged = true;
-          privateSelection = selectionStateFromRange(range);
+          retainPrivateRange(selectionStateFromRange(range));
         }
         notifySelectionChange(previous, nativeSelectionMayHaveChanged);
       },
@@ -422,7 +430,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         const previous = selectionSnapshot(state);
         state.range.deleteContents();
         if (privateSelection !== null) {
-          privateSelection = selectionStateFromRange(state.range);
+          retainPrivateRange(selectionStateFromRange(state.range));
         }
         notifySelectionChange(previous);
       },

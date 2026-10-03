@@ -41,6 +41,10 @@ test.beforeAll(async () => {
         type: "image/svg+xml",
         body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><path fill="#177f7f" d="M0 0h120v40H0z"/></svg>',
       },
+      "/apps/public/images/lazy.svg": {
+        type: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><path fill="#177f7f" d="M0 0h120v40H0z"/></svg>',
+      },
       "/apps/public/css/missing.css": {
         type: "text/css",
         status: 503,
@@ -135,6 +139,13 @@ test("cold relative images, SVG, linked CSS, imports, redirects and webfonts pai
     .toBe(true);
   await expect(frame.locator("h1")).toHaveCSS("color", "rgb(21, 84, 63)");
   await expect(frame.locator("#decoration")).toHaveCSS("border-top-width", "4px");
+  for (const id of ["local-icon", "local-xlink"]) {
+    await expect
+      .poll(() =>
+        frame.locator(`#${id}`).evaluate((use: SVGUseElement) => use.getBBox().width),
+      )
+      .toBe(24);
+  }
   const before = await screenshot(page, frame);
   const stylesheetRequests = assets.requests
     .slice(start)
@@ -142,6 +153,11 @@ test("cold relative images, SVG, linked CSS, imports, redirects and webfonts pai
   await activate();
   await ready(frame);
   const after = await screenshot(page, frame);
+  for (const id of ["local-icon", "local-xlink"]) {
+    expect(
+      await frame.locator(`#${id}`).evaluate((use: SVGUseElement) => use.getBBox().width),
+    ).toBe(24);
+  }
   await test.info().attach("before", { body: before, contentType: "image/png" });
   await test.info().attach("after", { body: after, contentType: "image/png" });
   expect(after.equals(before), "SSR asset paint changed at activation").toBe(true);
@@ -166,6 +182,194 @@ test("cold relative images, SVG, linked CSS, imports, redirects and webfonts pai
     assets.requests.slice(start).every((path) => path.startsWith("/apps/public/")),
   ).toBe(true);
   expect((await auditAccessibility(page)).violations).toEqual([]);
+});
+
+test("an initial fragment target paints identically before and after SSR activation", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?target");
+  await frame.evaluate(async () => {
+    await document.fonts.load("24px AssetFont", "Relative assets");
+  });
+  await expect(frame.locator("h1.copy")).toHaveCSS(
+    "background-color",
+    "rgb(240, 200, 100)",
+  );
+  await expect
+    .poll(() =>
+      frame
+        .locator("#photo")
+        .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
+    )
+    .toBe(true);
+  const before = await screenshot(page, frame);
+  await activate();
+  await ready(frame);
+  await expect(frame.locator("h1.copy")).toHaveCSS(
+    "background-color",
+    "rgb(240, 200, 100)",
+  );
+  const after = await screenshot(page, frame);
+  expect(after.equals(before), "Fragment target paint changed at activation").toBe(true);
+  expect(
+    await frame.evaluate(
+      (element: VFrameElement) =>
+        element.contentWindow!.document.querySelector(":target")?.id,
+    ),
+  ).toBe("copy");
+});
+
+test("a deep SSR fragment preserves preview scrolling and pixels throughout activation", async ({
+  page,
+}) => {
+  let guestScript: Route | undefined;
+  await page.route("**/apps/public/main.js", (route) => {
+    guestScript = route;
+  });
+  const { frame, activate } = await pending(page, "/?target=deep");
+  await frame.evaluate(async () => {
+    await document.fonts.load("24px AssetFont", "Relative assets");
+  });
+  await expect
+    .poll(() =>
+      frame
+        .locator("#photo")
+        .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
+    )
+    .toBe(true);
+  await expect(frame.locator("#deep")).toHaveCSS(
+    "background-color",
+    "rgb(240, 200, 100)",
+  );
+  await frame.evaluate((element) => {
+    element.scrollTo({ top: 50, behavior: "instant" });
+    const observed = element as VFrameElement & { scrollSamples: number[] };
+    observed.scrollSamples = [];
+    function record() {
+      observed.scrollSamples.push(element.scrollTop);
+      if (observed.status !== "ready") requestAnimationFrame(record);
+    }
+    requestAnimationFrame(record);
+  });
+  const before = await screenshot(page, frame);
+  await activate();
+  await expect.poll(() => !!guestScript).toBe(true);
+  const staged = await screenshot(page, frame);
+  await test.info().attach("staged-deep", { body: staged, contentType: "image/png" });
+  expect(staged.equals(before), "Deep fragment preview jumped during staging").toBe(true);
+  await guestScript!.continue();
+  await ready(frame);
+  const after = await screenshot(page, frame);
+  await test.info().attach("before-deep", { body: before, contentType: "image/png" });
+  await test.info().attach("after-deep", { body: after, contentType: "image/png" });
+  expect(
+    await frame.evaluate((element: VFrameElement & { scrollSamples: number[] }) => ({
+      scroll: element.scrollTop,
+      samples: [...new Set(element.scrollSamples)],
+      target: element.contentWindow!.document.querySelector(":ta\\72 get")?.id,
+    })),
+  ).toEqual({ scroll: 50, samples: [50], target: "deep" });
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+  expect(after.equals(before), "Deep fragment preview jumped at activation").toBe(true);
+});
+
+test("foreign-namespace head/base elements do not rebase Worker-materialized SSR assets", async ({
+  page,
+}) => {
+  const { frame, response, activate } = await pending(page, "/?foreign-base");
+  expect(response!.headers()["x-stylesheet-failures"]).toBe("0");
+  await expect(frame.locator("h1")).toHaveCSS("color", "rgb(21, 84, 63)");
+  await expect(frame.locator("#photo")).toHaveAttribute(
+    "src",
+    `${origin}/apps/public/images/tile.svg`,
+  );
+  await expect
+    .poll(() =>
+      frame
+        .locator("#photo")
+        .evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0),
+    )
+    .toBe(true);
+  await activate();
+  await ready(frame);
+  expect(
+    await frame.evaluate(
+      (element) => (element as VFrameElement).contentWindow!.document.baseURI,
+    ),
+  ).toBe(`${origin}/apps/public/page.html`);
+  await expect(frame.locator("h1")).toHaveCSS("color", "rgb(21, 84, 63)");
+  await frame.locator("#interactive").click();
+  await expect(frame.locator("#result")).toHaveText("Clicked");
+});
+
+test("an unloaded off-screen lazy image does not delay SSR activation or lose lazy loading", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "Chromium defers this off-screen lazy resource");
+  const held: Route[] = [];
+  const resource = "**/apps/public/images/lazy.svg";
+  await page.route(resource, (route) => {
+    held.push(route);
+  });
+  const { frame, activate } = await pending(page, "/?lazy=offscreen");
+  await activate();
+  await expect
+    .poll(() => frame.evaluate((element) => (element as VFrameElement).status), {
+      timeout: 4_000,
+    })
+    .toBe("ready");
+  expect(held).toHaveLength(0);
+  await expect(frame.locator("#lazy")).toHaveAttribute("loading", "lazy");
+  await frame.locator("#interactive").click();
+  await expect(frame.locator("#result")).toHaveText("Clicked");
+  await frame.locator("#lazy").scrollIntoViewIfNeeded();
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  await page.unroute(resource);
+  await Promise.all(held.map((route) => route.continue()));
+  await expect
+    .poll(() =>
+      frame
+        .locator("#lazy")
+        .evaluate(
+          (image: HTMLImageElement) => image.complete && image.naturalWidth === 120,
+        ),
+    )
+    .toBe(true);
+});
+
+test("a visible lazy image keeps its painted preview and loading attribute at SSR handoff", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?lazy=visible");
+  await frame.locator("#lazy").scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      frame
+        .locator("#lazy")
+        .evaluate(
+          (image: HTMLImageElement) => image.complete && image.naturalWidth === 120,
+        ),
+    )
+    .toBe(true);
+  await frame.evaluate(async () => {
+    await document.fonts.load("24px AssetFont", "Relative assets");
+  });
+  const before = await screenshot(page, frame);
+  await activate();
+  await ready(frame);
+  await expect(frame.locator("#lazy")).toHaveAttribute("loading", "lazy");
+  expect(
+    await frame
+      .locator("#lazy")
+      .evaluate(
+        (image: HTMLImageElement) => image.complete && image.naturalWidth === 120,
+      ),
+  ).toBe(true);
+  expect(
+    (await screenshot(page, frame)).equals(before),
+    "Lazy image changed at handoff",
+  ).toBe(true);
 });
 
 test("delayed font and image responses keep the preview visible until resource readiness", async ({

@@ -1,5 +1,11 @@
 export { materializeVFrameDocument } from "./cloudflare.js";
 export {
+  fragmentIdentifiers,
+  fragmentTargetRank,
+  FRAGMENT_TARGET_ATTRIBUTE,
+} from "../fragment.js";
+export type { FragmentElement } from "../fragment.js";
+export {
   escapeStylesheetText,
   INERT_SCRIPT_TYPE,
   materializeStylesheet,

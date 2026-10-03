@@ -20,8 +20,16 @@ Edits to preview form controls are preserved before guest scripts start and
 again at handoff, including changes made while those scripts are delayed.
 Edited controls receive synthetic input/change notifications so client-side
 form state can catch up. Focus, control text selection, and scroll positions
-are restored without scrolling the host page. A handoff waits for an observed
-IME composition to finish rather than replacing its focused control mid-edit.
+are restored without scrolling the host page. Control restoration follows the
+original connected control, or an unambiguous matching ID/name if the framework
+replaces it; it never assigns a removed control's state to a shifted neighbour.
+Buttons and other focusable elements follow the same original-element identity;
+replacing an unkeyed element never transfers focus to an unrelated sibling.
+Selected options follow their original elements, or an unambiguous matching
+ID/value after replacement. Reordered options keep their selections, while
+removed or ambiguous choices are not assigned to neighbouring options.
+A handoff waits for an observed IME composition to finish rather than replacing
+its focused control mid-edit.
 These notifications preserve the latest edit; they do not replay arbitrary
 button clicks, submissions, or trusted user activation.
 
@@ -70,9 +78,20 @@ trusted document:
   beside their inert original links, preserving stylesheet order and media.
 - Markup URLs, `srcset` candidates, and inline-style URLs are rebased for the
   preview. Authored attribute values remain available to guest code at activation.
+  Fragment-only SVG resource references such as `<use href="#icon">` stay local
+  to the rendered shadow tree, including after attribute changes and navigation.
 - Scripts become parser-inert while preserving their original type.
+- The initial fragment target is marked so `:target` styling is present in the
+  preview and remains unchanged at activation. The guest's public document URL
+  must include the intended fragment; HTTP requests do not carry browser fragments.
 - The materialized document receives the same frame containment and shell display
   rules used at activation, preventing margin-collapse shifts at handoff.
+
+Fragment target styling does not position the SSR viewport. The host owns the
+preview's initial scroll position; activation preserves it, including any
+scrolling before registration. Automatically scrolling to a deep fragment at
+handoff would visibly jump an already-painted preview. Subsequent guest
+fragment navigations scroll normally.
 
 `@mewhhaha/v-frame/server` ships this transformation. On Cloudflare Workers,
 `materializeVFrameDocument` parses it through `HTMLRewriter`; it takes a normal
@@ -139,6 +158,14 @@ For a host that only needs the CSS half, `rewriteStylesheet` and
 `createStylesheetContext` are exported too — they are the same pure functions the
 browser runtime uses.
 
+Custom materializers also use `fragmentIdentifiers(documentURL)` and
+`fragmentTargetRank(element, identifiers)` to select the first lowest-ranked
+target outside template contents, then set `FRAGMENT_TARGET_ATTRIBUTE` to an
+empty string on that element. Other elements must not carry that reserved
+runtime marker. The element reader provides `localName`, `namespaceURI`, and
+`getAttribute`; the rank is `Infinity` for a non-target. This keeps rewritten
+`:target` rules correct before JavaScript runs.
+
 Do not transform HTML with regular expressions.
 
 The runtime reuses server-materialized linked CSS rather than refetching it at
@@ -146,8 +173,10 @@ activation. Images and fonts still obey normal browser loading and `font-display
 rules: reserve image dimensions and choose an appropriate font fallback or preload
 when late network assets must not shift the layout. An asset that has not arrived
 cannot be guaranteed visible in the first paint. Activation preserves the painted
-preview while its corresponding images and fonts settle, with a maximum resource
-wait of ten seconds. Failed or stalled assets do not indefinitely block the guest.
+preview while eager, already-loading, or visible images and fonts settle, with a
+maximum resource wait of ten seconds. Unloaded off-screen lazy images do not block
+activation and keep their lazy-loading behavior after handoff. Failed or stalled
+assets do not indefinitely block the guest.
 
 ## 3. Compose the host response
 

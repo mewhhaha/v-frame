@@ -178,6 +178,10 @@ element rather than importing from an existing sheet.
 
 ## Non-`GET` form submission
 
+This restriction applies to navigation submissions, not `method="dialog"` forms.
+Dialog forms keep their native behavior and close the dialog without navigating,
+including through `form.submit()`.
+
 **Does not throw in the guest.** The submission is dropped and the host receives
 a non-fatal `v-frame-error` whose `phase` is `"navigation"` and whose `error` is
 a `NotSupportedError` `DOMException`. The guest stays on its current document

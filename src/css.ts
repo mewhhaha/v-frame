@@ -1,6 +1,8 @@
 import generateCSS from "css-tree/generator";
+import { FRAGMENT_TARGET_ATTRIBUTE } from "./fragment.js";
 import parseCSS from "css-tree/parser";
 import walkCSS from "css-tree/walker";
+import { ident } from "css-tree/utils";
 import type {
   Atrule,
   CssNode,
@@ -79,11 +81,14 @@ function parseStylesheet(source: string, stylesheetURL: string): StyleSheet {
 function rewriteShellSelectors(
   ast: CssNode,
   suppressShadowOnlyPseudoClasses = false,
+  shellNames = true,
 ): void {
   walkCSS(ast, {
     enter(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
-      if (node.type === "TypeSelector") {
-        const replacement = SHELL_ELEMENT_NAMES.get(node.name.toLowerCase());
+      if (node.type === "TypeSelector" && shellNames) {
+        const replacement = SHELL_ELEMENT_NAMES.get(
+          ident.decode(node.name).toLowerCase(),
+        );
         if (replacement !== undefined) {
           node.name = replacement;
         }
@@ -91,7 +96,7 @@ function rewriteShellSelectors(
       }
 
       if (node.type === "PseudoClassSelector") {
-        const pseudoClassName = node.name.toLowerCase();
+        const pseudoClassName = ident.decode(node.name).toLowerCase();
         if (
           suppressShadowOnlyPseudoClasses &&
           SHADOW_ONLY_PSEUDO_CLASSES.has(pseudoClassName)
@@ -103,7 +108,12 @@ function rewriteShellSelectors(
           return;
         }
 
-        if (pseudoClassName === "root") {
+        if (pseudoClassName === "target" && node.children === null) {
+          const replacement = parseCSS(`[${FRAGMENT_TARGET_ATTRIBUTE}]`, {
+            context: "selector",
+          }) as Selector;
+          list.replace(item, replacement.children.copy());
+        } else if (shellNames && pseudoClassName === "root") {
           const replacement = parseCSS(":where(v-html):nth-child(n)", {
             context: "selector",
           }) as Selector;
@@ -416,8 +426,62 @@ export function rewriteCSSOMSelectorText(source: string): string {
   return generateCSS(ast);
 }
 
+/** Restrict only the subject of each selector, without changing specificity. */
+export function scopeCSSOMSelectorText(source: string, scope: string): string {
+  const selectors = parseCSS(source, { context: "selectorList" });
+  const guard = parseCSS(`:where(${scope},${scope} *)`, {
+    context: "selector",
+  }) as Selector;
+  if (selectors.type !== "SelectorList") return source;
+  for (const selector of selectors.children) {
+    if (selector.type !== "Selector") continue;
+    let pseudoElement: ListItem<CssNode> | undefined;
+    selector.children.forEach((node, item) => {
+      if (node.type === "Combinator") pseudoElement = undefined;
+      else if (node.type === "PseudoElementSelector" && pseudoElement === undefined)
+        pseudoElement = item;
+    });
+    if (pseudoElement === undefined) selector.children.appendList(guard.children.copy());
+    else selector.children.insertList(guard.children.copy(), pseudoElement);
+  }
+  return generateCSS(selectors);
+}
+
+/** Hide the temporary subject guard while preserving native CSSOM serialization. */
+export function unScopeCSSOMRuleText(source: string, scope: string): string {
+  const ast = parseCSS(source, { context: "stylesheet", positions: true });
+  const guard = generateCSS(
+    parseCSS(`:where(${scope},${scope} *)`, { context: "selector" }),
+  );
+  const ranges: Array<{ start: number; end: number }> = [];
+  walkCSS(ast, {
+    enter(node: CssNode) {
+      if (
+        node.type === "PseudoClassSelector" &&
+        node.name === "where" &&
+        node.loc &&
+        generateCSS(node) === guard
+      ) {
+        ranges.push({ start: node.loc.start.offset, end: node.loc.end.offset });
+        return walkCSS.skip;
+      }
+    },
+  });
+  for (const range of ranges.sort((a, b) => b.start - a.start))
+    source = source.slice(0, range.start) + source.slice(range.end);
+  return source;
+}
+
 export function translateShellSelector(selector: string): string {
   const ast = parseCSS(selector, { context: "selectorList" });
   rewriteShellSelectors(ast);
+  return generateCSS(ast);
+}
+
+/** Rewrite target state on the unaliased branch of a DOM selector lookup too. */
+export function translateTargetSelector(selector: string): string {
+  if (!selector.includes(":")) return selector;
+  const ast = parseCSS(selector, { context: "selectorList" });
+  rewriteShellSelectors(ast, false, false);
   return generateCSS(ast);
 }

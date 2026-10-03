@@ -16,6 +16,8 @@ import {
   rewriteCSSOMSelectorText,
   rewriteStyleAttribute,
   rewriteStylesheet,
+  scopeCSSOMSelectorText,
+  unScopeCSSOMRuleText,
   type StylesheetContext,
   type StylesheetImportFailure,
 } from "../css.js";
@@ -23,6 +25,7 @@ import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 import type { RealmFailure } from "./connect.js";
 import type { LinkedStyle } from "../linked-styles.js";
+import { EnumerableWeakMap } from "../enumerable-weak.js";
 
 interface DynamicStyleSnapshot {
   source: string;
@@ -74,6 +77,7 @@ export interface DynamicStyleOptions {
   signal: AbortSignal;
   getNonce(): string;
   getBaseURL(): string;
+  getScopeSelector(sheet: CSSStyleSheet): string | null;
   /** The realm's own inline stylesheet, which the pipeline must never rewrite. */
   getInlineStyleSheet(): HTMLStyleElement | null;
   getFacade(): DocumentFacade | null;
@@ -87,6 +91,8 @@ export interface DynamicStyles {
   virtualStylesFrom(nodes: readonly Node[]): HTMLStyleElement[];
   dynamicLinksFrom(nodes: readonly Node[]): HTMLLinkElement[];
   installCSSOMStyleSheets(nodes: readonly Node[]): void;
+  installCSSOMStyleSheet(style: HTMLStyleElement): void;
+  reveal(): void;
   observeConnectedNodes(nodes: readonly Node[]): void;
   scheduleDynamicStyle(
     style: HTMLStyleElement,
@@ -130,25 +136,68 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     sheet.href ?? options.getBaseURL();
 
   const registeredStyleSheets = new WeakSet<CSSStyleSheet>();
-  const registeredStyleRules = new WeakSet<CSSStyleRule>();
+  const registeredRules = new WeakSet<CSSRule>();
   const registeredStyleDeclarations = new WeakSet<CSSStyleDeclaration>();
+  const scopedSelectors = new EnumerableWeakMap<
+    CSSStyleRule,
+    { selector: string; restore(): void }
+  >();
   const installCSSOMRules = (sheet: CSSStyleSheet): void => {
     const installRule = (rule: CSSRule): void => {
+      const newlyRegistered = !registeredRules.has(rule);
+      if (newlyRegistered) {
+        registeredRules.add(rule);
+        const ruleText = inheritedPropertyDescriptor(rule, "cssText");
+        if (ruleText?.get !== undefined) {
+          try {
+            Object.defineProperty(rule, "cssText", {
+              configurable: true,
+              get() {
+                const source = String(ruleText.get!.call(rule));
+                const scope = options.getScopeSelector(sheet);
+                return scope === null ? source : unScopeCSSOMRuleText(source, scope);
+              },
+              ...(ruleText.set === undefined ? {} : { set: ruleText.set.bind(rule) }),
+            });
+          } catch {
+            // Browser CSSOM objects may reject own property definitions.
+          }
+        }
+      }
       if (rule.type === window.CSSRule.STYLE_RULE) {
         const styleRule = rule as CSSStyleRule;
-        if (!registeredStyleRules.has(styleRule)) {
-          registeredStyleRules.add(styleRule);
+        if (newlyRegistered) {
           const selectorText = inheritedPropertyDescriptor(styleRule, "selectorText");
           if (selectorText?.get !== undefined && selectorText.set !== undefined) {
+            const scoped = {
+              selector: String(selectorText.get.call(styleRule)),
+              restore: () => selectorText.set!.call(styleRule, scoped.selector),
+            };
+            const scope = options.getScopeSelector(sheet);
+            if (scope !== null) {
+              selectorText.set.call(
+                styleRule,
+                scopeCSSOMSelectorText(scoped.selector, scope),
+              );
+              scopedSelectors.set(styleRule, scoped);
+            }
             try {
               Object.defineProperty(styleRule, "selectorText", {
                 configurable: true,
-                get: () => selectorText.get?.call(styleRule),
+                get: () =>
+                  scopedSelectors.get(styleRule)?.selector ??
+                  selectorText.get?.call(styleRule),
                 set(value: string) {
+                  const rewritten = rewriteCSSOMSelectorText(String(value));
+                  const scope = options.getScopeSelector(sheet);
                   selectorText.set?.call(
                     styleRule,
-                    rewriteCSSOMSelectorText(String(value)),
+                    scope === null ? rewritten : scopeCSSOMSelectorText(rewritten, scope),
                   );
+                  if (scope !== null) {
+                    scoped.selector = rewritten;
+                    scopedSelectors.set(styleRule, scoped);
+                  }
                 },
               });
             } catch {
@@ -715,6 +764,13 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     virtualStylesFrom,
     dynamicLinksFrom,
     installCSSOMStyleSheets,
+    installCSSOMStyleSheet,
+    reveal() {
+      for (const [rule, scoped] of scopedSelectors) {
+        scoped.restore();
+        scopedSelectors.delete(rule);
+      }
+    },
     observeConnectedNodes,
     scheduleDynamicStyle,
     scheduleDynamicStyleContent,

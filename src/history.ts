@@ -1,4 +1,4 @@
-import { resolveHistoryURL } from "./url.js";
+import { isSameDocumentFragment, resolveHistoryURL } from "./url.js";
 import type {
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
@@ -9,6 +9,9 @@ interface HistoryEntry {
   url: string;
   state: unknown;
   documentID: number;
+  scrollX?: number;
+  scrollY?: number;
+  scrollRestoration?: ScrollRestoration;
 }
 
 export type DocumentHistoryMode = "push" | "replace";
@@ -83,19 +86,28 @@ export class VirtualHistorySession {
   readonly #entries: HistoryEntry[];
   #index: number;
   #nextDocumentID: number;
-  scrollRestoration: ScrollRestoration;
 
   constructor(
     initialURL: string,
     entries?: HistoryEntry[],
     index?: number,
     nextDocumentID?: number,
-    scrollRestoration?: ScrollRestoration,
   ) {
     this.#entries = entries ?? [{ url: initialURL, state: null, documentID: 0 }];
     this.#index = index ?? 0;
     this.#nextDocumentID = nextDocumentID ?? 1;
-    this.scrollRestoration = scrollRestoration ?? "auto";
+  }
+
+  get scrollRestoration(): ScrollRestoration {
+    return this.currentEntry.scrollRestoration ?? "auto";
+  }
+
+  set scrollRestoration(value: ScrollRestoration) {
+    this.#entries[this.#index] = { ...this.currentEntry, scrollRestoration: value };
+  }
+
+  captureScroll(x: number, y: number): void {
+    this.#entries[this.#index] = { ...this.currentEntry, scrollX: x, scrollY: y };
   }
 
   get length(): number {
@@ -132,7 +144,6 @@ export class VirtualHistorySession {
       this.#entries.map((entry) => ({ ...entry })),
       this.#index,
       this.#nextDocumentID,
-      this.scrollRestoration,
     );
   }
 
@@ -172,6 +183,7 @@ export class VirtualHistorySession {
   pushState(url: string, state: unknown): void {
     this.#entries.splice(this.#index + 1);
     this.#entries.push({
+      ...this.currentEntry,
       url,
       state,
       documentID: this.currentDocumentID,
@@ -181,6 +193,7 @@ export class VirtualHistorySession {
 
   replaceState(url: string, state: unknown): void {
     this.#entries[this.#index] = {
+      ...this.currentEntry,
       url,
       state,
       documentID: this.currentDocumentID,
@@ -207,9 +220,14 @@ export interface HistoryControllerOptions {
     options?: NavigateDispatchOptions,
   ): boolean;
   onURLChange(url: string, kind: VFrameNavigationKind | null): void;
+  /** Applies navigation target state before popstate/hashchange, not on pushState. */
+  onActivate?(url: string): void;
+  /** Applies fragment scrolling after popstate and before hashchange. */
+  onFragmentScroll?(url: string): void;
 }
 
 export interface VirtualHistoryOptions extends HistoryControllerOptions {
+  host: HTMLElement;
   session: VirtualHistorySession;
   getBaseURL(): string;
   onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
@@ -235,6 +253,8 @@ export abstract class HistoryController implements NavigationControls {
   protected readonly childHistory: History;
   protected onNavigate: HistoryControllerOptions["onNavigate"];
   protected onURLChange: HistoryControllerOptions["onURLChange"];
+  protected onActivate: (url: string) => void;
+  protected onFragmentScroll: (url: string) => void;
   protected disposed = false;
   readonly #nativeReplaceState: History["replaceState"];
 
@@ -246,6 +266,8 @@ export abstract class HistoryController implements NavigationControls {
     );
     this.onNavigate = options.onNavigate;
     this.onURLChange = options.onURLChange;
+    this.onActivate = options.onActivate ?? (() => undefined);
+    this.onFragmentScroll = options.onFragmentScroll ?? (() => undefined);
   }
 
   abstract get canGoBack(): boolean;
@@ -261,6 +283,8 @@ export abstract class HistoryController implements NavigationControls {
     this.disposed = true;
     this.onNavigate = () => false;
     this.onURLChange = () => undefined;
+    this.onActivate = () => undefined;
+    this.onFragmentScroll = () => undefined;
   }
 
   /** Where the guest believes it is, according to the authoritative session. */
@@ -293,10 +317,16 @@ export abstract class HistoryController implements NavigationControls {
     return resolveHistoryURL(url, baseURL, currentURL, this.window);
   }
 
-  protected dispatchActivationEvents(previousURL: string, state: unknown): void {
+  protected dispatchActivationEvents(
+    previousURL: string,
+    state: unknown,
+    applyScroll?: () => void,
+  ): void {
     // Same-document navigations fire popstate before hashchange, per the HTML
     // spec's "update document for history step application".
+    this.onActivate(this.currentURL);
     this.window.dispatchEvent(new this.window.PopStateEvent("popstate", { state }));
+    applyScroll?.();
 
     // Read after popstate, because a listener may navigate again from inside
     // it and the hashchange has to report where the guest actually ended up.
@@ -471,7 +501,10 @@ export class BoundHistory extends HistoryController {
       return "unavailable";
     }
     this.#changeHostEntry(mode, null, to);
-    this.#dispatchActivationEvents(from);
+    this.#dispatchActivationEvents(
+      from,
+      isSameDocumentFragment(from, to) ? to : undefined,
+    );
     return "applied";
   }
 
@@ -524,7 +557,7 @@ export class BoundHistory extends HistoryController {
       return false;
     }
     this.#changeHostEntry("push", state, to, "fragment");
-    this.#dispatchActivationEvents(from);
+    this.#dispatchActivationEvents(from, to);
     return true;
   }
 
@@ -648,7 +681,12 @@ export class BoundHistory extends HistoryController {
     this.#mirrorHostEntry();
     this.onURLChange(this.#currentURL, kind);
     if (dispatchEvents) {
-      this.#dispatchActivationEvents(previousURL);
+      this.#dispatchActivationEvents(
+        previousURL,
+        kind !== "traverse" && isSameDocumentFragment(previousURL, this.#currentURL)
+          ? this.#currentURL
+          : undefined,
+      );
     }
   }
 
@@ -656,12 +694,17 @@ export class BoundHistory extends HistoryController {
     this.mirrorEntry(this.#hostWindow.location.href, this.#hostWindow.history.state);
   }
 
-  #dispatchActivationEvents(previousURL: string): void {
-    this.dispatchActivationEvents(previousURL, this.#hostWindow.history.state);
+  #dispatchActivationEvents(previousURL: string, scrollURL?: string): void {
+    this.dispatchActivationEvents(previousURL, this.#hostWindow.history.state, () => {
+      if (!this.disposed && scrollURL === this.currentURL) {
+        this.onFragmentScroll(scrollURL);
+      }
+    });
   }
 }
 
 export class VirtualHistory extends HistoryController {
+  #host: HTMLElement | null;
   readonly #nativeLengthGetter: (() => number) | null;
   #onDocumentTraversal: VirtualHistoryOptions["onDocumentTraversal"];
   #getBaseURL: VirtualHistoryOptions["getBaseURL"];
@@ -673,6 +716,7 @@ export class VirtualHistory extends HistoryController {
 
   constructor(options: VirtualHistoryOptions) {
     super(options);
+    this.#host = options.host;
     const nativeLengthGetter = Object.getOwnPropertyDescriptor(
       options.window.History.prototype,
       "length",
@@ -693,12 +737,35 @@ export class VirtualHistory extends HistoryController {
 
   override dispose(): void {
     super.dispose();
+    this.#host = null;
     this.#onDocumentTraversal = async () => undefined;
     this.#getBaseURL = () => this.currentURL;
   }
 
   get state(): unknown {
     return this.#activeState;
+  }
+
+  restoreScroll(
+    index = this.#session.currentIndex,
+    entry = this.#session.currentEntry,
+  ): void {
+    if (
+      !this.disposed &&
+      this.#session.currentIndex === index &&
+      this.#session.scrollRestoration === "auto"
+    ) {
+      this.#host?.scrollTo({
+        left: entry.scrollX ?? 0,
+        top: entry.scrollY ?? 0,
+        behavior: "instant",
+      });
+    }
+  }
+
+  #captureScroll(): void {
+    if (this.#host)
+      this.#session.captureScroll(this.#host.scrollLeft, this.#host.scrollTop);
   }
 
   override get canGoBack(): boolean {
@@ -831,6 +898,7 @@ export class VirtualHistory extends HistoryController {
 
     const previousURL = this.currentURL;
     this.mirrorEntry(nextURL, null);
+    this.#captureScroll();
     if (mode === "replace") {
       this.#session.replaceState(nextURL, null);
     } else {
@@ -862,6 +930,7 @@ export class VirtualHistory extends HistoryController {
     }
 
     this.mirrorEntry(nextURL, nextState);
+    this.#captureScroll();
     this.#session.pushState(nextURL, nextState);
     this.#activeState = this.cloneState(nextState);
     this.#commit("push", "silent");
@@ -880,6 +949,7 @@ export class VirtualHistory extends HistoryController {
     }
 
     this.mirrorEntry(nextURL, nextState);
+    this.#captureScroll();
     this.#session.replaceState(nextURL, nextState);
     this.#activeState = this.cloneState(nextState);
     this.#commit("replace", "silent");
@@ -892,6 +962,7 @@ export class VirtualHistory extends HistoryController {
     }
 
     const nextURL = this.resolveURL(url, this.#getBaseURL());
+    this.#captureScroll();
     if (mode === "push") {
       this.#session.pushState(nextURL, null);
     } else {
@@ -915,6 +986,7 @@ export class VirtualHistory extends HistoryController {
 
     const previousURL = this.currentURL;
     this.mirrorEntry(nextURL, nextState);
+    this.#captureScroll();
     this.#session.navigateFragment(nextURL, nextState);
     this.#activeState = this.cloneState(nextState);
     this.#commit("fragment", "activate", previousURL);
@@ -937,6 +1009,7 @@ export class VirtualHistory extends HistoryController {
 
     const previousURL = this.currentURL;
     this.mirrorEntry(nextURL, nextState);
+    this.#captureScroll();
     if (replacesCurrentEntry) {
       this.#session.replaceState(nextURL, nextState);
     } else {
@@ -1013,6 +1086,8 @@ export class VirtualHistory extends HistoryController {
       return { outcome: "canceled", destination: nextEntry.url };
     }
 
+    this.#captureScroll();
+
     if (nextEntry.documentID !== this.#session.currentDocumentID) {
       return this.#onDocumentTraversal(this.#session.forkTraversal(nextIndex)).then(
         () => ({ outcome: "applied" }),
@@ -1054,13 +1129,31 @@ export class VirtualHistory extends HistoryController {
     activation: "silent" | "activate",
     previousURL = this.currentURL,
   ): void {
+    const index = this.#session.currentIndex;
+    const entry = this.#session.currentEntry;
     this.onURLChange(this.currentURL, kind);
 
     if (activation === "silent") {
       return;
     }
 
-    this.dispatchActivationEvents(previousURL, this.state);
+    this.dispatchActivationEvents(
+      previousURL,
+      this.state,
+      kind === "traverse"
+        ? () => this.restoreScroll(index, entry)
+        : kind === "fragment" || isSameDocumentFragment(previousURL, this.currentURL)
+          ? () => {
+              if (
+                !this.disposed &&
+                this.#session.currentIndex === index &&
+                this.#session.currentEntry === entry
+              ) {
+                this.onFragmentScroll(this.currentURL);
+              }
+            }
+          : undefined,
+    );
   }
 
   #readNativeHistoryLength(): number {

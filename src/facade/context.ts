@@ -8,8 +8,7 @@ import type { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { VFrameWindow } from "../types.js";
 import type { LinkedStyle } from "../linked-styles.js";
 
-export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-export const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+export { HTML_NAMESPACE, SVG_NAMESPACE } from "../asset-urls.js";
 
 export interface DocumentFacadeOptions {
   host: HTMLElement;
@@ -107,6 +106,10 @@ function ignoreConnectedScript(_script: HTMLScriptElement): void {
 // real marker: the Element patches that route here are installed after it.
 function ignoreVirtualAttribute(_attribute: Attr): void {
   return undefined;
+}
+
+function mutateInternally(mutation: () => void): void {
+  mutation();
 }
 
 export function createFacadeContext(options: DocumentFacadeOptions) {
@@ -386,6 +389,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeAddEventListener,
     nativeRemoveEventListener,
     nativeDispatchEvent,
+    mutateInternally,
     nativeGetAttribute,
     nativeGetAttributeNS,
     nativeGetAttributeNode,

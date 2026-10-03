@@ -8,6 +8,11 @@ interface Value {
   files?: FileList | null;
 }
 
+interface ControlPair {
+  source: Control;
+  initial: Value;
+}
+
 function controls(root: Element): Control[] {
   const result: Control[] = [];
   const visit = (scope: Element | ShadowRoot) => {
@@ -56,7 +61,8 @@ export class AdoptionState {
   readonly #compositionWaiters = new Set<() => void>();
   #live: HTMLElement | null = null;
   #window: (Window & typeof globalThis) | null = null;
-  #pairs: Array<{ source: Control; target: Control; initial: Value; path: Path }> = [];
+  #pairs: ControlPair[] = [];
+  #targets = new WeakMap<Element, Element>();
 
   constructor(preview: HTMLElement, root: ShadowRoot) {
     this.#preview = preview;
@@ -138,27 +144,90 @@ export class AdoptionState {
     return node;
   }
 
+  #target(
+    source: Element,
+    pair = this.#pairs.find((pair) => pair.source === source),
+  ): Element | null {
+    if (!this.#live) return null;
+    const original = this.#targets.get(source);
+    if (original?.isConnected) return original;
+    const candidates = pair
+      ? controls(this.#live)
+      : Array.from(this.#live.querySelectorAll("[id]"));
+    const compatible = (candidate: Element) =>
+      candidate.localName === source.localName &&
+      candidate.namespaceURI === source.namespaceURI &&
+      (!pair || (candidate as Control).type === pair.source.type);
+    if (source.id) {
+      const matches = candidates.filter(
+        (candidate) => candidate.id === source.id && compatible(candidate),
+      );
+      if (matches.length) return matches.length === 1 ? matches[0]! : null;
+    }
+    if (pair) {
+      if (!pair.source.name) return null;
+      const matches = candidates.filter(
+        (candidate) =>
+          (candidate as Control).name === pair.source.name &&
+          compatible(candidate) &&
+          (pair.source.type !== "radio" ||
+            (candidate as Control).value === pair.source.value),
+      );
+      return matches.length === 1 ? matches[0]! : null;
+    }
+    return null;
+  }
+
   connect(live: HTMLElement, window: Window & typeof globalThis): void {
     if (!this.#preview) return;
     this.#live = live;
     this.#window = window;
-    const targets = controls(live);
-    this.#pairs = controls(this.#preview).flatMap((source, index) => {
-      const target = targets[index];
-      const path = this.#path(source);
-      return target && path && target.localName === source.localName
-        ? [{ source, target, initial: read(target), path }]
-        : [];
-    });
+    const visit = (source: Element | ShadowRoot, target: Element | ShadowRoot) => {
+      const targets = target.children;
+      Array.from(source.children).forEach((element, index) => {
+        const next = targets[index];
+        if (
+          !next ||
+          next.localName !== element.localName ||
+          next.namespaceURI !== element.namespaceURI
+        )
+          return;
+        this.#targets.set(element, next);
+        if (element.matches("input,textarea,select")) {
+          this.#pairs.push({
+            source: element as Control,
+            initial: read(next as Control),
+          });
+        }
+        visit(element, next);
+        if (element.shadowRoot && next.shadowRoot)
+          visit(element.shadowRoot, next.shadowRoot);
+      });
+    };
+    this.#targets.set(this.#preview, live);
+    visit(this.#preview, live);
     this.sync();
   }
 
   #write(target: Control, source: Control, value: Value, replay: boolean): void {
     const window = this.#window!;
     if (target.localName === "select") {
-      Array.from((target as HTMLSelectElement).options).forEach((option, index) => {
-        option.selected = value.selected?.[index] ?? false;
-      });
+      const select = target as HTMLSelectElement;
+      const options = new Set(select.options);
+      select.selectedIndex = -1;
+      for (const option of (source as HTMLSelectElement).selectedOptions) {
+        let next = this.#targets.get(option) as HTMLOptionElement | undefined;
+        if (!next || !options.has(next)) {
+          const candidates = Array.from(options);
+          let matches = candidates.filter(
+            (candidate) => option.id && candidate.id === option.id,
+          );
+          if (!matches.length)
+            matches = candidates.filter((candidate) => candidate.value === option.value);
+          next = matches.length === 1 ? matches[0] : undefined;
+        }
+        if (next) next.selected = true;
+      }
     } else if (
       target.localName === "input" &&
       (target as HTMLInputElement).type === "file"
@@ -207,13 +276,11 @@ export class AdoptionState {
   sync(replay = false): void {
     if (!this.#live) return;
     for (const pair of this.#pairs) {
+      if (this.#lifetime.signal.aborted) break;
       const value = read(pair.source);
       if (!this.#edited.has(pair.source) && equal(value, pair.initial)) continue;
-      const target = pair.target.isConnected
-        ? pair.target
-        : (this.#resolve(pair.path) as Control | null);
-      if (target?.localName === pair.source.localName)
-        this.#write(target, pair.source, value, replay);
+      const target = this.#target(pair.source, pair) as Control | null;
+      if (target) this.#write(target, pair.source, value, replay);
     }
   }
 
@@ -221,25 +288,78 @@ export class AdoptionState {
     // A cloned, hidden image may not have decoded yet even when its preview is
     // already painted. Never expose that intermediate tree. Resource failures
     // settle normally; a stalled connection has a bounded activation wait.
+    const view = this.#root.ownerDocument.defaultView!;
+    const bounds = view.Element.prototype.getBoundingClientRect;
+    const parent = Object.getOwnPropertyDescriptor(
+      view.Node.prototype,
+      "parentNode",
+    )!.get!;
+    const frame = bounds.call(this.#root.host);
+    const visible = (image: HTMLImageElement) => {
+      let left = Math.max(0, frame.left);
+      let right = Math.min(view.innerWidth, frame.right);
+      let top = Math.max(0, frame.top);
+      let bottom = Math.min(view.innerHeight, frame.bottom);
+      let node: Node | null = parent.call(image) as Node | null;
+      while (node && node !== this.#root) {
+        if (node.nodeType === 1) {
+          const box = bounds.call(node as Element);
+          const style = view.getComputedStyle(node as Element);
+          if (style.overflowX !== "visible") {
+            left = Math.max(left, box.left);
+            right = Math.min(right, box.right);
+          }
+          if (style.overflowY !== "visible") {
+            top = Math.max(top, box.top);
+            bottom = Math.min(bottom, box.bottom);
+          }
+        }
+        node =
+          (parent.call(node) as Node | null) ??
+          ("host" in node ? (node as ShadowRoot).host : null);
+      }
+      const box = bounds.call(image);
+      return box.right > left && box.left < right && box.bottom > top && box.top < bottom;
+    };
+    const images = Array.from(this.#live?.querySelectorAll("img") ?? []).filter(
+      (image) =>
+        image.loading !== "lazy" || image.complete || image.currentSrc || visible(image),
+    );
+    const lazy = images
+      .filter((image) => image.loading === "lazy" && !image.complete)
+      .map((image) => {
+        const loading = image.getAttribute("loading")!;
+        // A staged tree is hidden. Prime only needed lazy images so its decoded
+        // pixels are ready at reveal; restore the authored loading attribute.
+        image.loading = "eager";
+        return { image, loading };
+      });
     const assets = [
-      ...Array.from(this.#live?.querySelectorAll("img") ?? [], (image) => image.decode()),
+      ...images.map((image) => image.decode()),
       this.#root.ownerDocument.fonts.ready,
     ];
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(done, 10_000);
-      const aborted = () => {
-        clearTimeout(timer);
-        reject(new DOMException("The v-frame load was superseded", "AbortError"));
-      };
-      function done() {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", aborted);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(done, 10_000);
+        const aborted = () => {
+          clearTimeout(timer);
+          reject(new DOMException("The v-frame load was superseded", "AbortError"));
+        };
+        function done() {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", aborted);
+          resolve();
+        }
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+        void Promise.allSettled(assets).then(done);
+      });
+    } finally {
+      for (const { image, loading } of lazy) {
+        if (image.getAttribute("loading") === "eager")
+          image.setAttribute("loading", loading);
       }
-      signal.addEventListener("abort", aborted, { once: true });
-      if (signal.aborted) aborted();
-      void Promise.allSettled(assets).then(done);
-    });
+    }
     if (signal.aborted)
       throw new DOMException("The v-frame load was superseded", "AbortError");
     if (!this.#composing.size) return;
@@ -283,14 +403,18 @@ export class AdoptionState {
         top: element.scrollTop,
       }));
     this.sync(true);
+    if (this.#lifetime.signal.aborted) return;
     reveal();
-    const next = activePath ? (this.#resolve(activePath) as HTMLElement | null) : null;
+    const next =
+      active && activePath ? (this.#target(active) as HTMLElement | null) : null;
     if (next && activePath) {
       next.focus({ preventScroll: true });
       if (
         selection?.start !== null &&
         selection?.start !== undefined &&
-        selection.end !== null
+        selection.end !== null &&
+        "selectionStart" in next &&
+        (next as HTMLInputElement).selectionStart !== null
       ) {
         (next as HTMLInputElement).setSelectionRange(
           selection.start,
@@ -315,6 +439,7 @@ export class AdoptionState {
   dispose(): void {
     this.#lifetime.abort();
     this.#pairs = [];
+    this.#targets = new WeakMap();
     this.#edited.clear();
     this.#composing.clear();
     this.#live = null;

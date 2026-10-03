@@ -125,6 +125,235 @@ function mountNetworkFrame(
   });
 }
 
+test("preserves inherited RequestInit getters and ignores non-dictionary properties", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "request-init", "same-origin");
+  const result = await frame.evaluate(async (element) => {
+    const child = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const url = new URL("/initial-base/options", location.href).href;
+    const run = async (realm: Window & typeof globalThis, input: string) => {
+      const reads: string[] = [];
+      const payloads = new WeakMap<object, string>();
+      const bodyFor = (receiver: object) => {
+        const value = payloads.get(receiver);
+        if (value === undefined) throw new Error("Incorrect options getter receiver");
+        return value;
+      };
+      class RequestOptions {
+        constructor() {
+          payloads.set(this, "inherited payload");
+        }
+        get body() {
+          reads.push("body");
+          return bodyFor(this);
+        }
+        get method() {
+          reads.push("method");
+          return "POST";
+        }
+        get headers() {
+          reads.push("headers");
+          return { "x-network-request": bodyFor(this) };
+        }
+        get credentials() {
+          reads.push("credentials");
+          return "omit" as const;
+        }
+      }
+      const init = new RequestOptions();
+      Object.defineProperty(init, "unrelated", {
+        enumerable: true,
+        get() {
+          throw new Error("Native dictionary conversion must ignore this getter");
+        },
+      });
+      const request = new realm.Request(input, init);
+      const snapshot = {
+        url: request.url,
+        method: request.method,
+        credentials: request.credentials,
+        header: request.headers.get("x-network-request"),
+        body: await request.text(),
+      };
+      const response = await realm.fetch(input, init);
+      return { snapshot, sent: await response.json(), reads };
+    };
+    return {
+      native: await run(window, url),
+      guest: await run(child, "options"),
+    };
+  });
+
+  expect(result.guest).toEqual(result.native);
+  expect(result.guest.snapshot).toEqual({
+    url: fixture.origin + "/initial-base/options",
+    method: "POST",
+    credentials: "omit",
+    header: "inherited payload",
+    body: "inherited payload",
+  });
+  expect(result.guest.sent).toMatchObject({
+    method: "POST",
+    body: "inherited payload",
+    requestHeader: "inherited payload",
+  });
+  for (const property of ["body", "method", "headers", "credentials"])
+    expect(result.guest.reads.filter((read) => read === property)).toHaveLength(2);
+});
+
+test("accepts frozen non-enumerable RequestInit fields without Proxy invariant failures", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "frozen-init", "same-origin");
+  const result = await frame.evaluate(async (element) => {
+    const child = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const url = new URL("/initial-base/frozen", location.href).href;
+    const run = async (realm: Window & typeof globalThis) => {
+      const init = Object.freeze(
+        Object.defineProperties(
+          {},
+          {
+            method: { value: "POST" },
+            body: { value: "non-enumerable payload" },
+            credentials: { value: "omit" },
+            signal: { value: new realm.AbortController().signal },
+          },
+        ),
+      );
+      const request = new realm.Request(url, init);
+      return {
+        request: { method: request.method, body: await request.text() },
+        sent: await (await realm.fetch(url, init)).json(),
+      };
+    };
+    return { native: await run(window), guest: await run(child) };
+  });
+  expect(result.guest).toEqual(result.native);
+  expect(result.guest.sent).toMatchObject({
+    method: "POST",
+    body: "non-enumerable payload",
+  });
+});
+
+test("accepts null RequestInit and preserves inherited versus explicitly severed signals", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "nullable-init", "same-origin");
+  const result = await frame.evaluate(async (element) => {
+    const child = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const url = new URL("/initial-base/nullable", location.href).href;
+    const run = async (realm: Window & typeof globalThis, input: string) => {
+      const empty = Reflect.construct(realm.Request, [input, null]) as Request;
+      const response = await Reflect.apply(realm.fetch, realm, [input, null]);
+      const controller = new realm.AbortController();
+      const source = new realm.Request(input, {
+        signal: controller.signal,
+        credentials: "omit",
+        referrer: new URL("/source", location.href).href,
+        referrerPolicy: "origin",
+      });
+      const requests = [null, { signal: undefined }, { signal: null }].map(
+        (init) => Reflect.construct(realm.Request, [source, init]) as Request,
+      );
+      controller.abort("caller abort");
+      return {
+        empty: { method: empty.method, url: empty.url },
+        fetch: { status: response.status, url: response.url },
+        requests: requests.map((request) => ({
+          credentials: request.credentials,
+          referrer: request.referrer,
+          referrerPolicy: request.referrerPolicy,
+          aborted: request.signal.aborted,
+          reason: request.signal.reason,
+        })),
+      };
+    };
+    return { native: await run(window, url), guest: await run(child, "nullable") };
+  });
+
+  expect(result.guest).toEqual(result.native);
+  expect(result.guest.requests.map((request) => request.aborted)).toEqual([
+    true,
+    true,
+    false,
+  ]);
+});
+
+test("rejects fetch option-processing failures asynchronously in the guest realm", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountNetworkFrame(page, "fetch-options-errors", "same-origin");
+  const requestsBefore = fixture.requests.length;
+  const result = await frame.evaluate(async (element) => {
+    const child = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const url = new URL("/initial-base/invalid", location.href).href;
+    const run = async (realm: Window & typeof globalThis) => {
+      const sentinel = new realm.Error("option getter failed");
+      const throwing = (property: string) =>
+        Object.defineProperty({}, property, {
+          get() {
+            throw sentinel;
+          },
+        });
+      const errors = [];
+      for (const init of [
+        throwing("body"),
+        throwing("signal"),
+        42,
+        { credentials: null },
+      ]) {
+        let pending: Promise<Response>;
+        try {
+          pending = Reflect.apply(realm.fetch, realm, [url, init]);
+        } catch {
+          errors.push({ completion: "synchronous-throw" });
+          continue;
+        }
+        const isRealmPromise = pending instanceof realm.Promise;
+        try {
+          await pending;
+          errors.push({ completion: "fulfilled" });
+        } catch (error) {
+          errors.push({
+            completion: "promise-rejection",
+            isRealmPromise,
+            name: (error as Error).name,
+            isSentinel: error === sentinel,
+            isRealmTypeError: error instanceof realm.TypeError,
+          });
+        }
+      }
+      let constructorPreservesError = false;
+      try {
+        new realm.Request(url, throwing("signal"));
+      } catch (error) {
+        constructorPreservesError = error === sentinel;
+      }
+      return { errors, constructorPreservesError };
+    };
+    return { native: await run(window), guest: await run(child) };
+  });
+
+  expect(result.guest).toEqual(result.native);
+  expect(result.guest.constructorPreservesError).toBe(true);
+  expect(result.guest.errors.map((error) => error.completion)).toEqual([
+    "promise-rejection",
+    "promise-rejection",
+    "promise-rejection",
+    "promise-rejection",
+  ]);
+  expect(fixture.requests.slice(requestsBefore)).toEqual([]);
+});
+
 test("network constructors and requests follow the live first-valid document base", async ({
   page,
 }) => {

@@ -10,10 +10,32 @@ import {
   rewriteStylesheet,
   type StylesheetImportFailure,
   translateShellSelector,
+  unScopeCSSOMRuleText,
 } from "../../src/css.js";
 
 const BASE = "https://host.test/app/page.css";
 const ROOT_SELECTOR = ":where(v-html):nth-child(n)";
+
+test("temporary CSS scope removal preserves serialization and declaration strings", () => {
+  const scope = ":host > v-html:nth-of-type(2)";
+  const guard = `:where(${scope},${scope} *)`;
+  assert.equal(
+    unScopeCSSOMRuleText(
+      `p${guard}::before { content: ${JSON.stringify(guard)}; }`,
+      scope,
+    ),
+    `p::before { content: ${JSON.stringify(guard)}; }`,
+  );
+});
+
+test("temporary CSS scopes are removed from nested selectors without changing nested declarations", () => {
+  const scope = ":host > v-html:nth-of-type(2)";
+  const guard = `:where(${scope},${scope} *)`;
+  assert.equal(
+    unScopeCSSOMRuleText(`p${guard} { color: red; & b${guard} { color: blue; } }`, scope),
+    "p { color: red; & b { color: blue; } }",
+  );
+});
 
 interface SelectorCase {
   selector: string;
@@ -47,10 +69,18 @@ const selectorCases: SelectorCase[] = [
   { selector: "#body", translated: "#body" },
   { selector: 'a[href$="body"]', translated: 'a[href$="body"]' },
   { selector: "*", translated: "*" },
-  // A namespace-qualified name is not the shell element, and an escaped name is
-  // not recognised — the second one is a known gap, pinned here deliberately.
+  // Namespace-qualified names are not shell elements, but escaped spellings are.
   { selector: "svg|body", translated: "svg|body" },
-  { selector: "\\62 ody", translated: "\\62 ody" },
+  { selector: "\\62 ody", translated: "v-body" },
+  { selector: ":r\\6f ot", translated: ROOT_SELECTOR },
+  { selector: ":ta\\72 get", translated: "[data-v-frame-target]" },
+  { selector: ":not(:ta\\72 get)", translated: ":not([data-v-frame-target])" },
+  { selector: ":h\\6f st", translated: ":h\\6f st", cssom: ":not(*)" },
+  {
+    selector: ":host\\2d context(.dark)",
+    translated: ":host\\2d context(.dark)",
+    cssom: ":not(*)",
+  },
 ];
 
 for (const selectorCase of selectorCases) {

@@ -231,6 +231,13 @@ const documentRoutes: Record<string, Route> = {
         </script>`,
     '<base href="/base-root/">',
   ),
+  "/documents/local-svg.html": html(
+    '<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="120" height="40"><defs><rect id="shape" width="24" height="24"/><rect id="other-shape" width="16" height="16"/></defs><use id="local-svg" href="#shape"/><use id="local-xlink" xlink:href="#shape" x="30"/></svg>',
+    '<base id="guest-base" href="/initial-base/">',
+  ),
+  "/documents/foreign-base.html": html(
+    '<svg><base href="/foreign-base/" target="_parent"></base></svg><a id="relative" href="asset.html">Relative asset</a><a id="next" href="/documents/second.html">Next</a>',
+  ),
   "/documents/dynamic-base-urls.html": `<!doctype html><html><head>
         <base id="invalid-base" href="http://[">
         <base id="initial-base" href="/initial-base/">

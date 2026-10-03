@@ -379,10 +379,10 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
 
-    this.#configurationChanged();
+    this.#configurationChanged(name === "src");
   }
 
-  #configurationChanged(): void {
+  #configurationChanged(stageMarkup = false): void {
     if (!this.#connected) {
       return;
     }
@@ -398,7 +398,7 @@ export class VFrameElement extends HTMLElementBase {
         source,
         adoptedMarkup: null,
         historySession: null,
-        stageMarkup: false,
+        stageMarkup: stageMarkup && this.#realm !== null,
         boundNavigation: this.navigation === "host",
         navigationKind: null,
       }),
@@ -666,6 +666,7 @@ export class VFrameElement extends HTMLElementBase {
         historySession,
         boundNavigation: load.boundNavigation,
         stageMarkup: load.stageMarkup,
+        restoreScroll: load.navigationKind === "traverse",
         credentials: this.credentials,
         signal: controller.signal,
         getNonce: () => this.nonce,
@@ -709,6 +710,7 @@ export class VFrameElement extends HTMLElementBase {
           if (!ownsController() || !this.#dispatchNavigate(detail) || !ownsController()) {
             return false;
           }
+          historySession.captureScroll(this.scrollLeft, this.scrollTop);
           const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
           queueMicrotask(() => {
             if (!ownsController()) {
@@ -787,6 +789,7 @@ export class VFrameElement extends HTMLElementBase {
             }
             return;
           }
+          historySession.captureScroll(this.scrollLeft, this.scrollTop);
           const nextSession =
             mode === "reload"
               ? historySession.clone()
@@ -836,12 +839,13 @@ export class VFrameElement extends HTMLElementBase {
       this.#realm = realm;
       this.#loadingRealm = null;
       this.#realmController = controller;
-      this.#loadController = null;
       this.#historySession = historySession;
       this.#realmGeneration = generation;
       staged = false;
       this.#setCurrentURL(finalURL, load.navigationKind);
       realm.reveal();
+      this.#assertCurrentGeneration(generation, controller.signal);
+      this.#loadController = null;
       this.#setStatus(VFrameStatus.Ready);
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
         url: this.#currentURL ?? finalURL,

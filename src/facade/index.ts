@@ -36,7 +36,9 @@ export interface DocumentFacade {
   ): void;
   synchronizeStyleAttribute(element: Element): void;
   eventForListener(event: Event, currentTarget: EventTarget): Event;
+  finishEventListener(event: Event): void;
   suppressEventDefault(event: Event): void;
+  suppressNativeLinkDefault(event: Event, anchor: Element): void;
   wasEventDefaultPrevented(event: Event): boolean;
   setReadyState(state: DocumentReadyState): void;
   dispatchDocumentEvent(type: string, options?: EventInit): boolean;
@@ -109,7 +111,9 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
     synchronizeURLAttribute: attributes.synchronizeURLAttribute,
     synchronizeStyleAttribute: style.synchronizeStyleAttribute,
     eventForListener: events.eventForListener,
+    finishEventListener: events.finishEventListener,
     suppressEventDefault: events.suppressEventDefault,
+    suppressNativeLinkDefault: events.suppressNativeLinkDefault,
     wasEventDefaultPrevented: events.wasEventDefaultPrevented,
     setReadyState: documentProperties.setReadyState,
     dispatchDocumentEvent: documentProperties.dispatchDocumentEvent,

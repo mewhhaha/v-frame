@@ -8,6 +8,8 @@
 // disposers unwind in the reverse of that order.
 
 import { installDocumentFacade, type DocumentFacade } from "../facade/index.js";
+import { HTML_NAMESPACE } from "../asset-urls.js";
+import { findFragmentTarget, FRAGMENT_TARGET_ATTRIBUTE } from "../fragment.js";
 import {
   BoundHistory,
   type DocumentHistoryMode,
@@ -24,6 +26,7 @@ import {
 } from "../markup.js";
 import { installNetworkPatches } from "../network.js";
 import type { AdoptionState } from "./adoption-state.js";
+import { scrollToFragment } from "./fragment-scroll.js";
 import { ScriptRunner } from "../scripts.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
 import { createDynamicStyles } from "./dynamic-styles.js";
@@ -68,6 +71,7 @@ export interface CreateRealmOptions {
   historySession: VirtualHistorySession;
   boundNavigation: boolean;
   stageMarkup: boolean;
+  restoreScroll: boolean;
   credentials: VFrameCredentials;
   signal: AbortSignal;
   getNonce(): string;
@@ -159,11 +163,52 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     let disposed = false;
     let scriptRunner: ScriptRunner | null = null;
     let facade: DocumentFacade | null = null;
+    let fragmentTarget: Element | null = null;
+    let markupRevealed = !options.stageMarkup && options.markup.kind !== "adopted";
+    const nativeSetAttribute = window.Element.prototype.setAttribute;
+    const nativeRemoveAttribute = window.Element.prototype.removeAttribute;
+    const nativeQuerySelectorAll = window.Element.prototype.querySelectorAll;
+    const clearClonedTargets = (nodes: readonly Node[]): void => {
+      for (const node of nodes) {
+        const elements = node.nodeType === 1 ? [node as Element] : [];
+        if ("querySelectorAll" in node) {
+          elements.push(
+            ...Array.from(
+              (node as ParentNode).querySelectorAll(`[${FRAGMENT_TARGET_ATTRIBUTE}]`),
+            ),
+          );
+        }
+        for (const element of elements) {
+          if (element !== fragmentTarget)
+            nativeRemoveAttribute.call(element, FRAGMENT_TARGET_ATTRIBUTE);
+        }
+      }
+    };
+    const updateFragmentTarget = (url: string): void => {
+      if (!markup || disposed) return;
+      if (fragmentTarget)
+        nativeRemoveAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE);
+      fragmentTarget =
+        new URL(url).hash === ""
+          ? null
+          : findFragmentTarget(
+              [markup.html, ...Array.from(nativeQuerySelectorAll.call(markup.html, "*"))],
+              url,
+            );
+      if (fragmentTarget)
+        nativeSetAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE, "");
+    };
     const isConnectedToRealm = (node: Node): boolean =>
       markup?.html.contains(node) ?? false;
+    const scrollFragment = (url: string): void => {
+      if (!disposed && markupRevealed) {
+        scrollToFragment(options.host, fragmentTarget, url);
+      }
+    };
 
     const getDocumentBaseURL = (): string => {
       for (const base of markup?.html.querySelectorAll("base[href]") ?? []) {
+        if (base.namespaceURI !== HTML_NAMESPACE) continue;
         const authoredHref =
           markup?.authoredURLAttributes.get(base)?.get("href") ??
           base.getAttribute("href") ??
@@ -177,6 +222,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     };
     const getDocumentBaseTarget = (): string => {
       for (const base of markup?.html.querySelectorAll("base[target]") ?? []) {
+        if (base.namespaceURI !== HTML_NAMESPACE) continue;
         const target = base.getAttribute("target") ?? "";
         const normalizedTarget = target.toLowerCase();
         const isKeyword =
@@ -217,26 +263,33 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           hostWindow: options.host.ownerDocument.defaultView!,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
+          onActivate: updateFragmentTarget,
+          onFragmentScroll: scrollFragment,
         })
       : new VirtualHistory({
           window,
+          host: options.host,
           session: options.historySession,
           getBaseURL: getDocumentBaseURL,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
+          onActivate: updateFragmentTarget,
+          onFragmentScroll: scrollFragment,
           onDocumentTraversal: options.onDocumentTraversal,
         });
     history.install();
+    clearClonedTargets([markup.html]);
+    updateFragmentTarget(currentURL);
     bootstrapDisposers.push(() => history.dispose());
 
-    const networkSource = options.host.getAttribute("src");
     const networkDispose = installNetworkPatches({
       window,
       signal: options.signal,
       credentials: options.credentials,
       getBaseURL: getDocumentBaseURL,
-      isActive: () =>
-        options.host.isConnected && options.host.getAttribute("src") === networkSource,
+      // A src replacement leaves this guest live until handoff. Its signal and
+      // network disposer, not the changed attribute, determine its lifetime.
+      isActive: () => options.host.isConnected,
     });
     bootstrapDisposers.push(networkDispose);
     const viewport = installViewportPatches(
@@ -257,6 +310,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       signal: options.signal,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
+      // Nested shadow sheets are already isolated. The staged document stays
+      // last even as the old tree is removed, so its layout never collapses
+      // between disposal and reveal (including manual scroll restoration).
+      getScopeSelector: (sheet) =>
+        markupRevealed ||
+        (sheet.ownerNode !== markup?.inlineStyleSheet &&
+          !markup?.html.contains(sheet.ownerNode))
+          ? null
+          : ":host > v-html:last-of-type",
       getInlineStyleSheet: () => markup?.inlineStyleSheet ?? null,
       getFacade: () => facade,
       isConnectedToRealm,
@@ -318,11 +380,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
       },
       onConnectedNodes(nodes) {
+        clearClonedTargets(nodes);
         styles.installCSSOMStyleSheets(nodes);
         styles.observeConnectedNodes(nodes);
       },
     });
     bootstrapDisposers.push(() => facade?.dispose());
+    if (!markupRevealed) styles.installCSSOMStyleSheet(markup.inlineStyleSheet);
     const liveMarkup = markup.html;
     if (options.markup.kind === "adopted" || options.stageMarkup) {
       restoreStagingStyles = installStagingStyles(options.shadowRoot);
@@ -342,6 +406,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       styles.installCSSOMStyleSheets([liveMarkup]);
       for (const link of styles.dynamicLinksFrom([liveMarkup])) {
         styles.scheduleDynamicLink(link);
+      }
+      if (!options.stageMarkup && !options.restoreScroll && new URL(currentURL).hash) {
+        scrollFragment(currentURL);
       }
     }
     initialStyleSources.clear();
@@ -378,6 +445,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       window,
       options.shadowRoot,
       facade.eventForListener,
+      facade.finishEventListener,
     );
     bootstrapDisposers.push(windowEventDispose);
 
@@ -393,8 +461,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       // Only HTML-namespace base elements affect the document base URL;
       // querySelector's unprefixed type selector also matches foreign ones.
       const isHTMLBase = (element: Element): boolean =>
-        element.localName === "base" &&
-        element.namespaceURI === "http://www.w3.org/1999/xhtml";
+        element.localName === "base" && element.namespaceURI === HTML_NAMESPACE;
       const subtreeHasBaseElement = (node: Node): boolean =>
         (node instanceof window.Element && isHTMLBase(node)) ||
         ("querySelectorAll" in node &&
@@ -513,7 +580,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const navigation = installRealmNavigation({
       window,
-      document,
       host: options.host,
       shadowRoot: options.shadowRoot,
       boundNavigation: options.boundNavigation,
@@ -526,6 +592,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       getBaseURL: getDocumentBaseURL,
       getBaseTarget: getDocumentBaseTarget,
       getFacade: () => facade,
+      guestRoot: liveMarkup,
       isDisposed: () => disposed,
       onURLChange: historyURLChanged,
       onNavigate: options.onNavigate,
@@ -611,12 +678,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     window.addEventListener("hashchange", trustedHashChangeListener, {
       signal: childListenerLifetime.signal,
     });
-    let adoptedMarkupRevealed = options.markup.kind !== "adopted";
-    const revealAdoptedMarkup = (): void => {
-      if (adoptedMarkupRevealed || disposed || options.signal.aborted) {
+    const revealStagedMarkup = (): void => {
+      if (markupRevealed || disposed || options.signal.aborted) {
         return;
       }
-      adoptedMarkupRevealed = true;
+      markupRevealed = true;
+      styles.reveal();
       for (const node of options.markup.kind === "adopted"
         ? options.markup.previewNodes.splice(0)
         : []) {
@@ -641,8 +708,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // synchronous swap never repaints. Masking it with a scoped View
         // Transition would itself flicker: Chromium pixel-snaps transition
         // snapshots, visibly shifting fractionally positioned frames.
-        if (adoptionState) adoptionState.reveal(revealAdoptedMarkup);
-        else revealAdoptedMarkup();
+        if (adoptionState) adoptionState.reveal(revealStagedMarkup);
+        else revealStagedMarkup();
+        if (options.restoreScroll && history instanceof VirtualHistory) {
+          history.restoreScroll();
+        } else if (options.stageMarkup && !adoptionState && new URL(currentURL).hash) {
+          scrollFragment(currentURL);
+        }
       },
       dispose() {
         if (disposed) {
@@ -658,6 +730,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         viewport.dispose();
         windowEventDispose();
         networkDispose();
+        if (fragmentTarget)
+          nativeRemoveAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE);
+        fragmentTarget = null;
         iframe?.remove();
         facade?.dispose();
         markup?.html.remove();

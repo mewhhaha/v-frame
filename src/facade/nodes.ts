@@ -6,7 +6,8 @@
 // remembered, and has its scripts and inline handlers defused. Insertion,
 // cloning and markup parsing all funnel back through it.
 
-import { EnumerableWeakMap } from "../enumerable-weak.js";
+import { EnumerableWeakMap, EnumerableWeakSet } from "../enumerable-weak.js";
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../fragment.js";
 import { scriptCategory } from "../script-type.js";
 import type { AttributeFacade } from "./attributes.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
@@ -532,6 +533,8 @@ export function installNodeFacade(
 
   const copyVirtualMetadata = (source: Node, clone: Node): void => {
     if (isElementNode(source) && isElementNode(clone)) {
+      // Target state belongs to the selected element, not to its attributes.
+      nativeRemoveAttribute.call(clone, FRAGMENT_TARGET_ATTRIBUTE);
       const authoredAttributes = options.authoredURLAttributes.get(source);
       if (authoredAttributes !== undefined) {
         options.authoredURLAttributes.set(clone, new Map(authoredAttributes));
@@ -1240,7 +1243,61 @@ export function installNodeFacade(
       });
     }
 
+    const observers = new EnumerableWeakSet<VFrameMutationObserver>();
+    const queueMicrotask = window.queueMicrotask.bind(window);
     class VFrameMutationObserver extends NativeMutationObserver {
+      readonly #callback: MutationCallback;
+      #pending: MutationRecord[] = [];
+      #queued = false;
+
+      constructor(callback: MutationCallback) {
+        super(
+          typeof callback === "function" ? (records) => this.#deliver(records) : callback,
+        );
+        this.#callback = callback;
+        observers.add(this);
+      }
+
+      #deliver(records: MutationRecord[]): void {
+        const delivered = [...this.#pending, ...records];
+        this.#pending = [];
+        this.#queued = false;
+        if (delivered.length !== 0) this.#callback.call(this, delivered, this);
+      }
+
+      // Temporary native-activation guards must not look like guest mutations.
+      // Retain earlier records, discard only the synchronous internal writes,
+      // and deliver preserved records at the original microtask boundary.
+      static mutateInternally(mutation: () => void): void {
+        for (const observer of observers) {
+          observer.#pending.push(...super.prototype.takeRecords.call(observer));
+        }
+        try {
+          mutation();
+        } finally {
+          for (const observer of observers) {
+            super.prototype.takeRecords.call(observer);
+            if (observer.#pending.length !== 0 && !observer.#queued) {
+              observer.#queued = true;
+              queueMicrotask(() =>
+                observer.#deliver(super.prototype.takeRecords.call(observer)),
+              );
+            }
+          }
+        }
+      }
+
+      takeRecords(): MutationRecord[] {
+        const records = [...this.#pending, ...super.takeRecords()];
+        this.#pending = [];
+        return records;
+      }
+
+      disconnect(): void {
+        this.#pending = [];
+        super.disconnect();
+      }
+
       observe(target: Node, observerOptions?: MutationObserverInit): void {
         const observedTarget =
           target === document && observerOptions?.subtree === true
@@ -1249,6 +1306,7 @@ export function installNodeFacade(
         super.observe(observedTarget, observerOptions);
       }
     }
+    context.mutateInternally = VFrameMutationObserver.mutateInternally;
     patch(window, "MutationObserver", {
       writable: true,
       value: VFrameMutationObserver,

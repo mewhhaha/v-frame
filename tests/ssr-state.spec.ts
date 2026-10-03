@@ -21,6 +21,8 @@ const form = `<form><label>Name<input id="name" value="server"></label>
 
 const reactForm = `<div id="react-root"><form><label>Name<input id="name" value="server"></label><label>Note<textarea id="note">server-note</textarea></label><label>Enabled<input id="enabled" type="checkbox" checked></label><output id="model">server|server-note|true</output><button type="button" id="rerender">Render 0</button></form></div>`;
 
+const selectForm = `<input id="name" value="server"><select id="choice"><option value="one">One</option><option value="two">Two</option><option value="three">Three</option></select><select id="choices" multiple><option value="one">One</option><option value="two">Two</option><option value="three">Three</option></select>`;
+
 function host(body: string, module = "/guest.js") {
   return `<!doctype html><html lang="en"><head><title>SSR state</title></head><body style="height:1800px">
     <button id="outside">Outside</button><v-frame id="frame" adopt src="/guest" aria-label="Guest" style="display:block;width:500px;height:280px;overflow:auto">
@@ -48,6 +50,69 @@ test.beforeAll(async () => {
     routes: {
       "/": host(form),
       "/react": host(reactForm, "/react.js"),
+      "/handoff": host('<input id="name" name="name" value="server">', "/handoff.js"),
+      "/options": host(selectForm, "/options.js"),
+      "/options.js": {
+        type: "text/javascript",
+        body: `
+      const mode=new URL(top.location.href).searchParams.get('mode');
+      for(let select of document.querySelectorAll('select')) {
+        if(mode==='replace-select') {const replacement=select.cloneNode(true);select.replaceWith(replacement);select=replacement;}
+        if(mode==='replace' || mode==='ambiguous' || mode==='keyed') {
+          const second=select.options[1].cloneNode(true);
+          const third=select.options[2].cloneNode(true);
+          select.replaceChildren(document.createElement('option'),third,second);
+          if(mode==='ambiguous') select.prepend(second.cloneNode(true));
+        } else if(mode==='reorder') select.prepend(select.options[2]);
+        else if(mode==='remove') select.options[1].remove();
+        else {
+          const option=document.createElement('option');option.value=mode==='duplicate'?'two':'zero';option.textContent='Inserted';select.prepend(option);
+        }
+      }
+      globalThis.models={};
+      document.addEventListener('change',event=>models[event.target.id]=Array.from(event.target.selectedOptions,option=>option.textContent));
+    `,
+      },
+      "/focus": host(
+        '<input id="name" value="server"><button data-action="original">Original</button><a href="#local" data-action="link">Link</a><div contenteditable data-action="editable">Editable</div>',
+        "/focus.js",
+      ),
+      "/focus.js": {
+        type: "text/javascript",
+        body: `
+      const mode=new URL(top.location.href).searchParams.get('mode');
+      for(const original of document.querySelectorAll('[data-action]')) {
+        const extra=original.cloneNode(true);extra.removeAttribute('id');extra.dataset.action='inserted-'+original.dataset.action;extra.textContent='Inserted';original.before(extra);
+        if(mode==='remove') original.remove();
+        if(mode==='replace' || mode==='keyed') original.replaceWith(original.cloneNode(true));
+      }
+    `,
+      },
+      "/namespace": host(
+        '<input id="name" value="server"><svg><base href="/foreign/" target="_blank"></base></svg><a id="asset" href="asset.html">Asset</a>',
+        "/namespace.js",
+      ),
+      "/namespace.js": { type: "text/javascript", body: "globalThis.started=true" },
+      "/handoff.js": {
+        type: "text/javascript",
+        body: `
+      const field=document.querySelector('#name');
+      const mode=new URL(top.location.href).searchParams.get('mode');
+      if(mode==='replace' || mode==='rename') {
+        const replacement=field.cloneNode(); replacement.value='client-default';
+        if(mode==='rename') replacement.id='renamed';
+        field.replaceWith(replacement);
+      } else if(mode==='remove' || mode==='ambiguous') field.remove();
+      if(mode==='ambiguous') for(const value of ['first','second']) {
+        const candidate=document.createElement('input');candidate.name='name';candidate.value=value;
+        document.body.append(candidate);
+      }
+      if(mode==='disconnect') field.oninput=()=>top.document.querySelector('#frame').remove();
+      if(mode==='failure') document.querySelector('#name').setSelectionRange=()=>{throw new Error('Selection restoration failed')};
+      const extra=document.createElement('input');extra.type='number';extra.id='extra';
+      document.body.prepend(extra);
+    `,
+      },
       "/dist/index.js": bundleRoute,
       "/dist/register.js": registerBundleRoute,
       "/guest": "<!doctype html><html><body>Network fallback</body></html>",
@@ -191,6 +256,342 @@ test("does not steal focus from another host control or overwrite pristine guest
         ).notifications,
     ),
   ).toEqual(["input:name", "change:name"]);
+});
+
+for (const mode of ["insert", "reorder", "replace", "replace-select", "duplicate"]) {
+  test(`preserves selected option identities after ${mode} during SSR startup`, async ({
+    page,
+  }) => {
+    const { frame, preview, register, activate } = await pending(
+      page,
+      `/options?mode=${mode}`,
+      "/options.js",
+    );
+    await preview.locator("#choice").selectOption("two");
+    await preview.locator("#choices").selectOption(["two", "three"]);
+    await register();
+    await activate();
+    const selected = await frame.evaluate((element) => {
+      const guest = (element as VFrameElement).contentWindow! as Window & {
+        models: unknown;
+      };
+      return {
+        single: Array.from(
+          guest.document.querySelector<HTMLSelectElement>("#choice")!.selectedOptions,
+          (option) => option.textContent,
+        ),
+        multiple: Array.from(
+          guest.document.querySelector<HTMLSelectElement>("#choices")!.selectedOptions,
+          (option) => option.textContent,
+        ),
+        models: guest.models,
+      };
+    });
+    const multiple =
+      mode === "reorder" || mode === "replace" ? ["Three", "Two"] : ["Two", "Three"];
+    expect(selected).toEqual({
+      single: ["Two"],
+      multiple,
+      models: { choice: ["Two"], choices: multiple },
+    });
+  });
+}
+
+for (const mode of ["remove", "ambiguous"]) {
+  test(`does not shift a ${mode} selected option to another choice at SSR handoff`, async ({
+    page,
+  }) => {
+    const { frame, preview, register, activate } = await pending(
+      page,
+      `/options?mode=${mode}`,
+      "/options.js",
+    );
+    await preview.locator("#choice").selectOption("two");
+    await preview.locator("#choices").selectOption(["two", "three"]);
+    await register();
+    await activate();
+    await expect(frame.locator("#choice")).toHaveValue("");
+    expect(
+      await frame
+        .locator("#choice")
+        .evaluate((select: HTMLSelectElement) => select.selectedIndex),
+    ).toBe(-1);
+    expect(
+      await frame
+        .locator("#choices")
+        .evaluate((select: HTMLSelectElement) =>
+          Array.from(select.selectedOptions, (option) => option.value),
+        ),
+    ).toEqual(["three"]);
+  });
+}
+
+test("preserves keyed selections when replacement options have duplicate values", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/options?mode=keyed",
+    "/options.js",
+  );
+  await preview.locator("select").evaluateAll((selects: HTMLSelectElement[]) => {
+    for (const select of selects)
+      Array.from(select.options).forEach((option, index) => {
+        option.id = `${select.id}-${index}`;
+        option.value = "same";
+      });
+  });
+  await preview.locator("#choice").selectOption({ label: "Two" });
+  await preview.locator("#choices").selectOption({ label: "Two" });
+  await register();
+  await activate();
+  expect(
+    await frame
+      .locator("#choice")
+      .evaluate((select: HTMLSelectElement) =>
+        Array.from(select.selectedOptions, (option) => option.id),
+      ),
+  ).toEqual(["choice-1"]);
+  expect(
+    await frame
+      .locator("#choices")
+      .evaluate((select: HTMLSelectElement) =>
+        Array.from(select.selectedOptions, (option) => option.id),
+      ),
+  ).toEqual(["choices-1"]);
+});
+
+for (const [action, description] of [
+  ["original", "button"],
+  ["link", "link"],
+  ["editable", "editable element"],
+]) {
+  test(`preserves late focus on the original ${description} after a matching sibling is inserted`, async ({
+    page,
+  }) => {
+    const { frame, preview, register, activate } = await pending(
+      page,
+      "/focus",
+      "/focus.js",
+    );
+    await register();
+    await preview.locator(`[data-action="${action}"]`).focus();
+    await activate();
+    await expect(frame.locator(`[data-action="${action}"]`)).toBeFocused();
+    await expect(frame.locator(`[data-action="inserted-${action}"]`)).not.toBeFocused();
+  });
+}
+
+for (const mode of ["remove", "replace"]) {
+  test(`does not transfer an unkeyed button's focus after ${mode} during SSR startup`, async ({
+    page,
+  }) => {
+    const { frame, preview, register, activate } = await pending(
+      page,
+      `/focus?mode=${mode}`,
+      "/focus.js",
+    );
+    await preview.locator('[data-action="original"]').focus();
+    await register();
+    await activate();
+    await expect(frame.locator('[data-action="inserted-original"]')).not.toBeFocused();
+    if (mode === "replace")
+      await expect(frame.locator('[data-action="original"]')).not.toBeFocused();
+  });
+}
+
+test("preserves a keyed button's focus when it is replaced during SSR startup", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/focus?mode=keyed",
+    "/focus.js",
+  );
+  await preview.locator('[data-action="original"]').evaluate((element) => {
+    element.id = "keyed-action";
+  });
+  await preview.locator("#keyed-action").focus();
+  await register();
+  await activate();
+  await expect(frame.locator("#keyed-action")).toBeFocused();
+});
+
+test("ignores foreign-namespace base elements when adopting SSR markup", async ({
+  page,
+}) => {
+  const { frame, register, activate } = await pending(
+    page,
+    "/namespace",
+    "/namespace.js",
+  );
+  await register();
+  await activate();
+  expect(
+    await frame.evaluate((element) => {
+      const guest = (element as VFrameElement).contentWindow!;
+      const anchor = guest.document.querySelector<HTMLAnchorElement>("#asset")!;
+      return {
+        baseURI: guest.document.baseURI,
+        href: anchor.href,
+        physical: Element.prototype.getAttribute.call(anchor, "href"),
+      };
+    }),
+  ).toEqual({
+    baseURI: `${fixture.origin}/guest`,
+    href: `${fixture.origin}/asset.html`,
+    physical: `${fixture.origin}/asset.html`,
+  });
+});
+
+for (const [mode, description] of [
+  ["shift", "shifted control"],
+  ["replace", "replaced control"],
+  ["rename", "name-matched replacement control"],
+]) {
+  test(`preserves edits and focus after a ${description} during SSR startup`, async ({
+    page,
+  }) => {
+    const { frame, preview, register, activate } = await pending(
+      page,
+      `/handoff?mode=${mode}`,
+      "/handoff.js",
+    );
+    await preview.locator("#name").fill("user edit");
+    await preview.locator("#name").evaluate((input: HTMLInputElement) => {
+      input.setSelectionRange(1, 4, "backward");
+    });
+    await register();
+    await activate();
+    const restored = frame.locator('[name="name"]');
+    await expect(restored).toBeFocused();
+    await expect(restored).toHaveValue("user edit");
+    await expect(frame.locator("#extra")).toHaveValue("");
+    expect(
+      await restored.evaluate((input: HTMLInputElement) => [
+        input.selectionStart,
+        input.selectionEnd,
+        input.selectionDirection,
+      ]),
+    ).toEqual([1, 4, "backward"]);
+    await expect(frame.locator("v-html")).toHaveCount(1);
+  });
+}
+
+test("does not transfer a removed SSR control's focus or value to its neighbour", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/handoff?mode=remove",
+    "/handoff.js",
+  );
+  await preview.locator("#name").fill("user edit");
+  await register();
+  await activate();
+  await expect(frame.locator("#name")).toHaveCount(0);
+  await expect(frame.locator("#extra")).not.toBeFocused();
+  await expect(frame.locator("#extra")).toHaveValue("");
+});
+
+test("ambiguous replacement controls keep their values instead of inheriting SSR edits", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/handoff?mode=ambiguous",
+    "/handoff.js",
+  );
+  await preview.locator("#name").fill("user edit");
+  await register();
+  await activate();
+  const fields = frame.locator('[name="name"]');
+  await expect(fields).toHaveCount(2);
+  await expect(fields.nth(0)).toHaveValue("first");
+  await expect(fields.nth(1)).toHaveValue("second");
+  await expect(fields.nth(0)).not.toBeFocused();
+  await expect(fields.nth(1)).not.toBeFocused();
+});
+
+test("disconnecting during handoff notifications does not revive the frame or emit load", async ({
+  page,
+}) => {
+  const { frame, preview, register, release } = await pending(
+    page,
+    "/handoff?mode=disconnect",
+    "/handoff.js",
+  );
+  await preview.locator("#name").fill("user edit");
+  const handle = await frame.elementHandle();
+  if (!handle) throw new Error("Missing frame");
+  await handle.evaluate((element) => {
+    (element as VFrameElement & { loads: number }).loads = 0;
+    element.addEventListener("v-frame-load", () => {
+      (element as VFrameElement & { loads: number }).loads++;
+    });
+  });
+  await register();
+  await release();
+  await expect(page.locator("v-frame")).toHaveCount(0);
+  expect(
+    await handle.evaluate((element) => ({
+      status: (element as VFrameElement).status,
+      loads: (element as VFrameElement & { loads: number }).loads,
+    })),
+  ).toEqual({ status: "idle", loads: 0 });
+  await handle.dispose();
+});
+
+test("a failed SSR handoff reports its error and releases the failed realm", async ({
+  page,
+}) => {
+  const { frame, preview, register, release } = await pending(
+    page,
+    "/handoff?mode=failure",
+    "/handoff.js",
+  );
+  await preview.locator("#name").fill("user edit");
+  await frame.evaluate((element) => {
+    (
+      window as Window &
+        typeof globalThis & {
+          handoffErrors: Array<{ phase: string; fatal: boolean; message: string }>;
+        }
+    ).handoffErrors = [];
+    element.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent).detail;
+      (
+        window as Window &
+          typeof globalThis & {
+            handoffErrors: Array<{ phase: string; fatal: boolean; message: string }>;
+          }
+      ).handoffErrors.push({
+        phase: detail.phase,
+        fatal: detail.fatal,
+        message: detail.error.message,
+      });
+    });
+  });
+  await register();
+  await release();
+  await expect
+    .poll(() => frame.evaluate((element) => (element as VFrameElement).status))
+    .toBe("error");
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as Window &
+            typeof globalThis & {
+              handoffErrors: Array<{ phase: string; fatal: boolean; message: string }>;
+            }
+        ).handoffErrors,
+    ),
+  ).toEqual([
+    { phase: "bootstrap", fatal: true, message: "Selection restoration failed" },
+  ]);
+  await expect(frame.locator("iframe")).toHaveCount(0);
+  await expect(frame.locator("v-html")).toHaveCount(0);
 });
 
 test("waits for composition end and commits the final IME value", async ({ page }) => {

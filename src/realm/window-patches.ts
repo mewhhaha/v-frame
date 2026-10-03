@@ -4,6 +4,7 @@
 
 import {
   ListenerRegistry,
+  captureAbortSignalMethods,
   listenerCapture,
   listenerPassive,
 } from "../listener-registry.js";
@@ -132,6 +133,7 @@ export function installStagingStyles(shadowRoot: ShadowRoot): () => void {
   sheet.replaceSync(`
 :host(${STAGING_SELECTOR_SPECIFICITY}) {
   display: grid !important;
+  overflow-anchor: none !important;
 }
 :host > v-html${STAGING_SELECTOR_SPECIFICITY} {
   grid-area: 1 / 1 !important;
@@ -146,11 +148,21 @@ ${liveMarkupSelector} {
   opacity: 0 !important;
 }
 `);
+  const host = shadowRoot.host;
+  const left = host.scrollLeft;
+  const top = host.scrollTop;
   shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
+  // Changing the scroll container to grid can adjust its existing offset in
+  // WebKit. Preserve the offset synchronously; overflow-anchor above prevents
+  // a later anchor adjustment from moving the already-painted preview.
+  host.scrollTo({ left, top, behavior: "instant" });
   return () => {
+    const left = host.scrollLeft;
+    const top = host.scrollTop;
     shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
       (candidate) => candidate !== sheet,
     );
+    host.scrollTo({ left, top, behavior: "instant" });
   };
 }
 
@@ -163,6 +175,7 @@ export function installWindowEventBridge(
     eventPhase?: number,
     passive?: boolean,
   ) => Event,
+  finishEventListener: (event: Event) => void,
 ): () => void {
   const nativeAddEventListener = window.addEventListener.bind(window);
   const nativeRemoveEventListener = window.removeEventListener.bind(window);
@@ -183,10 +196,11 @@ export function installWindowEventBridge(
     const passive = listenerPassive(options, type, true);
     return (event) => {
       const listenerEvent = eventForListener(event, window, undefined, passive);
-      if (typeof listener === "function") {
-        listener.call(window, listenerEvent);
-      } else {
-        listener.handleEvent(listenerEvent);
+      try {
+        if (typeof listener === "function") listener.call(window, listenerEvent);
+        else listener.handleEvent(listenerEvent);
+      } finally {
+        finishEventListener(event);
       }
     };
   };
@@ -196,6 +210,7 @@ export function installWindowEventBridge(
   // deliberately withheld from both targets: the record has to be unwound from
   // the pair together, which is the registry's job, not the native one's.
   const windowListeners = new ListenerRegistry({
+    abortSignal: captureAbortSignalMethods(window),
     createWrapper: bridgedWindowListener,
     addToTargets: (type, wrapper, options) => {
       const listenerOptions = {

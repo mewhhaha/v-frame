@@ -20,6 +20,98 @@ async function mountURLFrame(page: Page): Promise<Locator> {
   });
 }
 
+test("ignores foreign-namespace bases during initial preparation and live URL changes", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/foreign-base.html`,
+    id: "foreign-base-frame",
+  });
+  const states = await frame.evaluate((element) => {
+    const guest = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const document = guest.document;
+    const anchor = document.querySelector<HTMLAnchorElement>("#relative")!;
+    const snapshot = () => ({
+      baseURI: document.baseURI,
+      href: anchor.href,
+      physical: Element.prototype.getAttribute.call(anchor, "href"),
+    });
+    const initial = snapshot();
+    const foreign = [
+      "http://www.w3.org/2000/svg",
+      "http://www.w3.org/1998/Math/MathML",
+      "urn:foreign",
+    ].map((namespace) => {
+      const base = document.createElementNS(namespace, "base");
+      base.setAttribute("href", "/foreign-runtime/");
+      base.setAttribute("target", "_parent");
+      document.head.prepend(base);
+      return base;
+    });
+    const inserted = snapshot();
+    const base = document.createElement("base");
+    base.href = "/html-base/";
+    base.target = "_self";
+    document.head.append(base);
+    const html = snapshot();
+    for (const candidate of foreign) candidate.setAttribute("href", "/foreign-changed/");
+    const changed = snapshot();
+    guest.history.pushState({}, "", "nested/state.html");
+    const history = { url: document.URL, ...snapshot() };
+    base.remove();
+    const removed = snapshot();
+    return { initial, inserted, html, changed, history, removed };
+  });
+  const initial = {
+    baseURI: `${fixture.origin}/documents/foreign-base.html`,
+    href: `${fixture.origin}/documents/asset.html`,
+    physical: `${fixture.origin}/documents/asset.html`,
+  };
+  const html = {
+    baseURI: `${fixture.origin}/html-base/`,
+    href: `${fixture.origin}/html-base/asset.html`,
+    physical: `${fixture.origin}/html-base/asset.html`,
+  };
+  expect(states).toEqual({
+    initial,
+    inserted: initial,
+    html,
+    changed: html,
+    history: { url: `${fixture.origin}/html-base/nested/state.html`, ...html },
+    removed: {
+      baseURI: `${fixture.origin}/html-base/nested/state.html`,
+      href: `${fixture.origin}/html-base/nested/asset.html`,
+      physical: `${fixture.origin}/html-base/nested/asset.html`,
+    },
+  });
+});
+
+test("foreign-namespace base targets do not drop ordinary guest link navigation", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/foreign-base.html`,
+    id: "foreign-target-frame",
+  });
+  await frame.evaluate((element) => {
+    const guest = (element as HTMLElement & { contentWindow: Window }).contentWindow;
+    const foreign = guest.document.createElementNS("urn:foreign", "base");
+    foreign.setAttribute("target", "_parent");
+    guest.document.head.prepend(foreign);
+  });
+  await frame.locator("#next").click();
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        (element) => (element as HTMLElement & { currentURL: string }).currentURL,
+      ),
+    )
+    .toBe(`${fixture.origin}/documents/second.html`);
+});
+
 test("updates the first valid connected base and HTML URL properties synchronously", async ({
   page,
 }) => {
@@ -600,4 +692,68 @@ test("rebases SVG href and xlink resources without replacing SVGAnimatedString",
       },
     },
   });
+});
+
+test("keeps local SVG fragments rendered through href changes, cloning and base/history changes", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  // A host base must not turn a same-shadow-tree SVG reference into a fetch.
+  await page.evaluate(() => {
+    const base = document.createElement("base");
+    base.href = "/host-base/";
+    document.head.append(base);
+  });
+  const frame = await mountFrame(page, {
+    id: "local-svg-frame",
+    src: `${fixture.origin}/documents/local-svg.html`,
+  });
+  for (const id of ["local-svg", "local-xlink"]) {
+    await expect
+      .poll(() =>
+        frame.locator(`#${id}`).evaluate((use: SVGUseElement) => use.getBBox().width),
+      )
+      .toBe(24);
+  }
+  await frame.evaluate((element) => {
+    const child = (
+      element as HTMLElement & {
+        contentWindow: Window & typeof globalThis;
+      }
+    ).contentWindow;
+    const svg = child.document.querySelector("svg")!;
+    const local = child.document.querySelector<SVGUseElement>("#local-svg")!;
+    const xlink = child.document.querySelector<SVGUseElement>("#local-xlink")!;
+    local.href.baseVal = "#other-shape";
+    xlink.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#other-shape");
+    const clone = local.cloneNode() as SVGUseElement;
+    clone.id = "local-clone";
+    svg.append(clone);
+    child.document.querySelector("#guest-base")!.setAttribute("href", "/changed-base/");
+    child.history.pushState({}, "", "/changed-location");
+  });
+  for (const id of ["local-svg", "local-xlink", "local-clone"]) {
+    await expect
+      .poll(() =>
+        frame.locator(`#${id}`).evaluate((use: SVGUseElement) => use.getBBox().width),
+      )
+      .toBe(16);
+    expect(
+      await frame.locator(`#${id}`).evaluate((use: SVGUseElement) => ({
+        animated: use.href.baseVal,
+        authored: use.getAttribute("href") ?? use.getAttribute("xlink:href"),
+        physical:
+          Element.prototype.getAttribute.call(use, "href") ??
+          Element.prototype.getAttributeNS.call(
+            use,
+            "http://www.w3.org/1999/xlink",
+            "href",
+          ),
+      })),
+    ).toEqual({
+      animated: "#other-shape",
+      authored: "#other-shape",
+      physical: "#other-shape",
+    });
+  }
 });

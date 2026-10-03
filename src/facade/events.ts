@@ -6,7 +6,11 @@
 // listeners, and the shadow boundary stops guest events from leaking out.
 
 import { EnumerableWeakSet } from "../enumerable-weak.js";
-import { ListenerRegistry, listenerPassive } from "../listener-registry.js";
+import {
+  ListenerRegistry,
+  captureAbortSignalMethods,
+  listenerPassive,
+} from "../listener-registry.js";
 import type { FacadeContext } from "./context.js";
 
 export const DOCUMENT_EVENT_HANDLER_NAMES = [
@@ -43,6 +47,7 @@ export interface EventFacade {
     eventPhase?: number,
     passive?: boolean,
   ): Event;
+  finishEventListener(event: Event): void;
   setElementHandler(
     element: Element,
     eventName: string,
@@ -52,6 +57,7 @@ export interface EventFacade {
   ensureRootEventRelay(type: string): void;
   documentListeners: ListenerRegistry;
   suppressEventDefault(event: Event): void;
+  suppressNativeLinkDefault(event: Event, anchor: Element): void;
   wasEventDefaultPrevented(event: Event): boolean;
   installHandlerProperties(): void;
   installRelays(): void;
@@ -77,6 +83,23 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     patch,
   } = context;
   let eventHandlerSequence = 0;
+  const abortSignal = captureAbortSignalMethods(window);
+  const eventPrototype = window.Event.prototype;
+  const nativeDefaultPrevented = Object.getOwnPropertyDescriptor(
+    eventPrototype,
+    "defaultPrevented",
+  )!.get!;
+  const nativePreventDefault = eventPrototype.preventDefault;
+  const nativeReturnValue = Object.getOwnPropertyDescriptor(
+    eventPrototype,
+    "returnValue",
+  )!;
+  const nativeRemoveAttributeNode = window.Element.prototype.removeAttributeNode;
+  const nativeSetAttributeNodeNS = window.Element.prototype.setAttributeNodeNS;
+  const nativeGetAttributeNodeNS = window.Element.prototype.getAttributeNodeNS;
+  const queueMicrotask = hostDocument.defaultView!.queueMicrotask.bind(
+    hostDocument.defaultView,
+  );
 
   const elementHandlerValues = new WeakMap<Element, Map<string, EventListener | null>>();
   const elementHandlerWrappers = new WeakMap<Element, Map<string, EventListener>>();
@@ -100,6 +123,9 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   const hostDefaultsSuppressed = new WeakSet<Event>();
   const virtualDefaultsPrevented = new WeakSet<Event>();
   const passiveListeners = new WeakSet<Event>();
+  const dispatchFinalizers = new WeakMap<Event, () => void>();
+  const stoppedEventDefaults = new WeakMap<Event, () => void>();
+  const resumedEventDefaults = new WeakMap<Event, () => void>();
 
   const eventAttributeName = (element: Element, attributeName: string): string | null => {
     const normalizedName = attributeName.toLowerCase();
@@ -202,6 +228,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     passive = false,
   ): Event => {
     const source = listenerEventSource(event);
+    resumedEventDefaults.get(source)?.();
     if (passive) {
       passiveListeners.add(source);
     } else {
@@ -235,22 +262,14 @@ export function installEventFacade(context: FacadeContext): EventFacade {
           case "view":
             return window;
           case "defaultPrevented":
-            return (
-              virtualDefaultsPrevented.has(source) ||
-              target.defaultPrevented ||
-              (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
-            );
+            return wasEventDefaultPrevented(source);
           case "cancelBubble":
             return boundaryPropagationStopped.has(source) &&
               !virtualPropagationStopped.has(source)
               ? false
               : source.cancelBubble;
           case "returnValue":
-            return !(
-              virtualDefaultsPrevented.has(source) ||
-              target.defaultPrevented ||
-              (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
-            );
+            return !wasEventDefaultPrevented(source);
           case "isTrusted":
             // The mirrored event is synthetic; trust belongs to the source.
             return source.isTrusted;
@@ -322,6 +341,15 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     return listenerEvent;
   };
 
+  const finishEventListener = (event: Event): void => {
+    const source = listenerEventSource(event);
+    if (
+      source.cancelBubble ||
+      (source.currentTarget === options.shadowRoot && source.eventPhase === 3)
+    )
+      stoppedEventDefaults.get(source)?.();
+  };
+
   // Document listeners run from the root relay rather than from the document
   // itself, so an event that reaches the wrapper with a foreign currentTarget
   // has to be told which phase the document would have seen it in.
@@ -335,15 +363,17 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     return (event) => {
       const eventPhase = event.currentTarget === document ? undefined : capture ? 1 : 3;
       const listenerEvent = eventForListener(event, document, eventPhase, passive);
-      if (typeof listener === "function") {
-        listener.call(document, listenerEvent);
-      } else {
-        listener.handleEvent(listenerEvent);
+      try {
+        if (typeof listener === "function") listener.call(document, listenerEvent);
+        else listener.handleEvent(listenerEvent);
+      } finally {
+        finishEventListener(event);
       }
     };
   };
 
   const documentListeners = new ListenerRegistry({
+    abortSignal,
     createWrapper: documentListenerWrapper,
     onError: (error) => window.reportError(error),
     addToTargets: (type, wrapper, listenerOptions) => {
@@ -394,6 +424,8 @@ export function installEventFacade(context: FacadeContext): EventFacade {
         }
       } catch (error) {
         options.onEventHandlerError(error);
+      } finally {
+        finishEventListener(event);
       }
     };
     let wrappers = elementHandlerWrappers.get(element);
@@ -555,6 +587,7 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     let registry = virtualListeners.get(target);
     if (registry === undefined) {
       registry = new ListenerRegistry({
+        abortSignal,
         createWrapper: (listener, _capture, listenerOptions, type) => {
           const passive = listenerPassive(
             listenerOptions,
@@ -563,10 +596,11 @@ export function installEventFacade(context: FacadeContext): EventFacade {
           );
           return (event) => {
             const listenerEvent = eventForListener(event, target, undefined, passive);
-            if (typeof listener === "function") {
-              listener.call(target, listenerEvent);
-            } else {
-              listener.handleEvent(listenerEvent);
+            try {
+              if (typeof listener === "function") listener.call(target, listenerEvent);
+              else listener.handleEvent(listenerEvent);
+            } finally {
+              finishEventListener(event);
             }
           };
         },
@@ -656,6 +690,29 @@ export function installEventFacade(context: FacadeContext): EventFacade {
   };
 
   const installPatches = (): void => {
+    patch(eventPrototype, "defaultPrevented", {
+      get(this: Event) {
+        return wasEventDefaultPrevented(this);
+      },
+    });
+    patch(eventPrototype, "preventDefault", {
+      writable: true,
+      value(this: Event) {
+        if (passiveListeners.has(this) && this.currentTarget !== null) return;
+        if (this.cancelable) virtualDefaultsPrevented.add(this);
+        nativePreventDefault.call(this);
+      },
+    });
+    patch(eventPrototype, "returnValue", {
+      get(this: Event) {
+        return !wasEventDefaultPrevented(this);
+      },
+      set(this: Event, value: boolean) {
+        if (passiveListeners.has(this) && this.currentTarget !== null) return;
+        if (!value && this.cancelable) virtualDefaultsPrevented.add(this);
+        nativeReturnValue.set!.call(this, value);
+      },
+    });
     patch(eventTargetPrototype, "addEventListener", {
       writable: true,
       value(
@@ -689,11 +746,16 @@ export function installEventFacade(context: FacadeContext): EventFacade {
     patch(eventTargetPrototype, "dispatchEvent", {
       writable: true,
       value(this: EventTarget, event: Event): boolean {
-        if (virtualNodes.has(this as Node)) {
+        const virtual = virtualNodes.has(this as Node);
+        if (virtual) {
           ensureBoundaryEventRelay(event.type);
           logicalEventTargets.delete(listenerEventSource(event));
         }
-        return nativeDispatchEvent.call(this, event);
+        const result = nativeDispatchEvent.call(this, event);
+        // The browser's activation has finished, but the virtual default action
+        // is still queued. Restore any temporarily inert link before returning.
+        dispatchFinalizers.get(listenerEventSource(event))?.();
+        return virtual ? !wasEventDefaultPrevented(event) : result;
       },
     });
   };
@@ -726,26 +788,111 @@ export function installEventFacade(context: FacadeContext): EventFacade {
 
   const suppressEventDefault = (event: Event): void => {
     const source = listenerEventSource(event);
+    if (wasEventDefaultPrevented(source)) {
+      virtualDefaultsPrevented.add(source);
+    }
     hostDefaultsSuppressed.add(source);
-    source.preventDefault();
+    nativePreventDefault.call(source);
   };
 
   const wasEventDefaultPrevented = (event: Event): boolean => {
     const source = listenerEventSource(event);
-    return (
-      virtualDefaultsPrevented.has(source) ||
-      (source.defaultPrevented && !hostDefaultsSuppressed.has(source))
-    );
+    if (!nativeDefaultPrevented.call(source)) {
+      // Legacy event initializers reset the native canceled flag. Do not let
+      // bookkeeping from an earlier dispatch outlive that reset.
+      virtualDefaultsPrevented.delete(source);
+      hostDefaultsSuppressed.delete(source);
+      return false;
+    }
+    return virtualDefaultsPrevented.has(source) || !hostDefaultsSuppressed.has(source);
+  };
+
+  const suppressNativeLinkDefault = (event: Event, anchor: Element): void => {
+    const source = listenerEventSource(event);
+    if (source.cancelable || dispatchFinalizers.has(source)) return;
+    // A non-cancelable click cannot suppress native activation. Make its link
+    // inert only after guest listeners finish, then restore the same Attr nodes
+    // once native dispatch returns. This also covers new tabs and downloads,
+    // whose activation never reaches the host Navigation API guard.
+    const path = source.composedPath();
+    const removed: Attr[] = [];
+    let attributeOrder: Attr[] = [];
+    let finished = false;
+    const restore = () => {
+      if (removed.length === 0) return;
+      const first = attributeOrder.findIndex((attribute) => removed.includes(attribute));
+      context.mutateInternally(() => {
+        for (const attribute of attributeOrder.slice(first)) {
+          const attached = nativeGetAttributeNodeNS.call(
+            anchor,
+            attribute.namespaceURI,
+            attribute.localName,
+          );
+          if (attached === attribute) nativeRemoveAttributeNode.call(anchor, attribute);
+          else if (attached !== null || !removed.includes(attribute)) continue;
+          nativeSetAttributeNodeNS.call(anchor, attribute);
+        }
+      });
+      removed.length = 0;
+    };
+    const block = () => {
+      if (removed.length !== 0 || finished) return;
+      attributeOrder = Array.from(
+        context.nativeAttributes!.get!.call(anchor) as NamedNodeMap,
+      );
+      context.mutateInternally(() => {
+        for (const namespace of [null, "http://www.w3.org/1999/xlink"]) {
+          const attribute = nativeGetAttributeNodeNS.call(anchor, namespace, "href");
+          if (attribute !== null) {
+            removed.push(attribute);
+            nativeRemoveAttributeNode.call(anchor, attribute);
+          }
+        }
+      });
+    };
+    const tail: EventListener = (current) => {
+      if (current !== source) return;
+      if (
+        current.cancelBubble ||
+        (!current.bubbles && current.eventPhase === 2) ||
+        (current.currentTarget === options.shadowRoot && current.eventPhase === 3)
+      )
+        block();
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      for (const target of path) {
+        nativeRemoveEventListener.call(target, source.type, tail, true);
+        nativeRemoveEventListener.call(target, source.type, tail, false);
+      }
+      stoppedEventDefaults.delete(source);
+      resumedEventDefaults.delete(source);
+      dispatchFinalizers.delete(source);
+      restore();
+    };
+    stoppedEventDefaults.set(source, block);
+    resumedEventDefaults.set(source, restore);
+    dispatchFinalizers.set(source, finish);
+    for (const target of path) {
+      nativeAddEventListener.call(target, source.type, tail, true);
+      nativeAddEventListener.call(target, source.type, tail, false);
+    }
+    // A caller using a captured host dispatchEvent bypasses the facade's return
+    // hook; synthetic dispatch still finishes before its microtask checkpoint.
+    queueMicrotask(finish);
   };
 
   return {
     eventAttributeName,
     eventForListener,
+    finishEventListener,
     setElementHandler,
     compileEventAttribute,
     ensureRootEventRelay,
     documentListeners,
     suppressEventDefault,
+    suppressNativeLinkDefault,
     wasEventDefaultPrevented,
     installHandlerProperties,
     installRelays,

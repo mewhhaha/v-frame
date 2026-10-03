@@ -6,8 +6,13 @@ import {
   fetchStylesheetSource,
 } from "./core.js";
 import type { MaterializeStylesheetOptions } from "./core.js";
-import { SSR_LINK_REL, SSR_LINK_STYLE } from "../asset-urls.js";
+import { HTML_NAMESPACE, SSR_LINK_REL, SSR_LINK_STYLE } from "../asset-urls.js";
 import type { StylesheetSource } from "../css.js";
+import {
+  fragmentIdentifiers,
+  fragmentTargetRank,
+  FRAGMENT_TARGET_ATTRIBUTE,
+} from "../fragment.js";
 
 /**
  * Cloudflare Workers adapter over the materializer core. The Workers types are
@@ -29,6 +34,7 @@ interface RewriterElement {
   setAttribute(name: string, value: string): void;
   prepend(content: string, options?: RewriterContentOptions): void;
   after(content: string, options?: RewriterContentOptions): void;
+  onEndTag(handler: () => void): void;
 }
 
 interface RewriterText {
@@ -127,12 +133,43 @@ export function materializeVFrameDocument(
       try {
         let baseURL = documentURL;
         let hasBase = false;
+        const identifiers = fragmentIdentifiers(documentURL);
+        let elementIndex = 0;
+        let templateDepth = 0;
+        let targetIndex = -1;
+        let targetRank = Infinity;
+        const enterTemplate = (element: RewriterElement) => {
+          if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "template") {
+            templateDepth++;
+            element.onEndTag(() => templateDepth--);
+          }
+        };
         // A base applies to the entire document, even to resources preceding
         // it. The first parse is deliberately side-effect free.
         const source = await new HTMLRewriter()
-          .on("head base[href]", {
+          .on("*", {
             element(element) {
-              if (hasBase) return;
+              const index = elementIndex++;
+              if (templateDepth === 0) {
+                const rank = fragmentTargetRank(
+                  {
+                    localName: element.tagName,
+                    namespaceURI: element.namespaceURI,
+                    getAttribute: (name) => element.getAttribute(name),
+                  },
+                  identifiers,
+                );
+                if (rank < targetRank) {
+                  targetIndex = index;
+                  targetRank = rank;
+                }
+              }
+              enterTemplate(element);
+            },
+          })
+          .on("html > head base[href]", {
+            element(element) {
+              if (hasBase || element.namespaceURI !== HTML_NAMESPACE) return;
               const url = URL.parse(element.getAttribute("href")!, documentURL);
               if (url) {
                 baseURL = url.href;
@@ -143,6 +180,8 @@ export function materializeVFrameDocument(
           .transform(response)
           .text();
         const requests = new Map<string, Promise<string | StylesheetSource>>();
+        elementIndex = 0;
+        templateDepth = 0;
         const settings: MaterializeStylesheetOptions = {
           ...options,
           fetchText(url) {
@@ -157,9 +196,18 @@ export function materializeVFrameDocument(
         const transformed = new HTMLRewriter()
           .on("*", {
             element(element) {
+              const index = elementIndex++;
+              if (templateDepth === 0) {
+                element.removeAttribute(FRAGMENT_TARGET_ATTRIBUTE);
+                if (index === targetIndex)
+                  element.setAttribute(FRAGMENT_TARGET_ATTRIBUTE, "");
+              }
+              enterTemplate(element);
               for (const assignment of rewriteAssetAttributes(
                 element,
-                element.tagName === "base" ? documentURL : baseURL,
+                element.namespaceURI === HTML_NAMESPACE && element.tagName === "base"
+                  ? documentURL
+                  : baseURL,
               )) {
                 element.setAttribute(assignment.name, assignment.value);
               }

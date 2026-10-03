@@ -8,6 +8,7 @@ import {
   absolutizeSrcset,
   isURLAttribute,
   isSrcsetAttribute,
+  resolveAssetURL,
   SSR_ATTRIBUTES,
 } from "../asset-urls.js";
 import type { StylesheetFetch, StylesheetImportFailure } from "../css.js";
@@ -108,7 +109,7 @@ export function rewriteAssetAttributes(
       )
     ) {
       if (value.trim() && !value.trim().toLowerCase().startsWith("javascript:")) {
-        rewritten = URL.parse(value, baseURL)?.href ?? value;
+        rewritten = resolveAssetURL(node, value, baseURL);
       }
     }
     if (rewritten !== value) {

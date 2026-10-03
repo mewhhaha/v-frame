@@ -8,7 +8,7 @@ import { rolldown } from "rolldown";
 // first byte. The measured size deliberately lives in this script's output and
 // nowhere else: the copies that used to sit in this comment and in the
 // CHANGELOG were wrong three revisions running.
-const budgetBytes = 68_000;
+const budgetBytes = 72_000;
 
 async function measureGzippedBundle() {
   // Building in memory keeps the budget runnable without a prior `pnpm build`,

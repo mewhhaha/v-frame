@@ -9,11 +9,13 @@ import {
   absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
+  resolveAssetURL,
   XLINK_NAMESPACE,
-} from "../markup.js";
+} from "../asset-urls.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
 import type { StyleFacade } from "./style.js";
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../fragment.js";
 
 const URL_PROPERTY_NAMES = [
   "href",
@@ -385,7 +387,7 @@ export function installAttributeFacade(
         value.trim() !== "" &&
         !value.trim().toLowerCase().startsWith("javascript:")
       ) {
-        value = window.URL.parse(value, baseURL)?.href ?? value;
+        value = resolveAssetURL(element, value, baseURL);
       }
       if (
         isHTMLScriptElement(element) &&
@@ -408,7 +410,10 @@ export function installAttributeFacade(
         ? attributeName.toLowerCase()
         : attributeName;
     if (virtualNodes.has(element)) {
-      if (normalizedAttributeName === options.inlineStyleSelectorAttribute) {
+      if (
+        normalizedAttributeName === options.inlineStyleSelectorAttribute ||
+        normalizedAttributeName === FRAGMENT_TARGET_ATTRIBUTE
+      ) {
         return { managed: true, value: null };
       }
       if (normalizedAttributeName === "style") {
@@ -589,7 +594,7 @@ export function installAttributeFacade(
       physicalValue.trim() !== "" &&
       !physicalValue.trim().toLowerCase().startsWith("javascript:")
     ) {
-      physicalValue = window.URL.parse(physicalValue, baseURL)?.href ?? physicalValue;
+      physicalValue = resolveAssetURL(element, physicalValue, baseURL);
     }
 
     if (

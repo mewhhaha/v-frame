@@ -6,6 +6,20 @@
 // a record is mirrored onto. The bookkeeping lives here; the disagreements stay
 // at the call site as ListenerRegistryOptions.
 
+export function captureAbortSignalMethods(
+  window: Pick<typeof globalThis, "AbortSignal">,
+) {
+  const prototype = window.AbortSignal.prototype;
+  return {
+    aborted: Object.getOwnPropertyDescriptor(prototype, "aborted")!.get! as (
+      this: AbortSignal,
+    ) => boolean,
+    addEventListener: prototype.addEventListener,
+    removeEventListener: prototype.removeEventListener,
+    any: window.AbortSignal.any.bind(window.AbortSignal),
+  };
+}
+
 export interface ListenerRecord {
   type: string;
   listener: EventListenerOrEventListenerObject;
@@ -18,7 +32,15 @@ export interface ListenerRecord {
 export function listenerCapture(
   options: boolean | EventListenerOptions | undefined,
 ): boolean {
-  return typeof options === "boolean" ? options : (options?.capture ?? false);
+  return Boolean(isListenerDictionary(options) ? options.capture : options);
+}
+
+function isListenerDictionary(
+  options: boolean | EventListenerOptions | undefined,
+): options is AddEventListenerOptions {
+  return (
+    options !== null && (typeof options === "object" || typeof options === "function")
+  );
 }
 
 export function listenerPassive(
@@ -32,17 +54,24 @@ export function listenerPassive(
   );
 }
 
-function listenerIsOnce(options: boolean | AddEventListenerOptions | undefined): boolean {
-  return typeof options !== "boolean" && options?.once === true;
-}
-
-function listenerSignal(
+function normalizeListenerOptions(
   options: boolean | AddEventListenerOptions | undefined,
-): AbortSignal | undefined {
-  return typeof options === "boolean" ? undefined : options?.signal;
+): AddEventListenerOptions & { capture: boolean } {
+  const normalized: AddEventListenerOptions & { capture: boolean } = {
+    capture: listenerCapture(options),
+  };
+  if (isListenerDictionary(options)) {
+    normalized.once = Boolean(options.once);
+    const passive = options.passive;
+    if (passive !== undefined) normalized.passive = Boolean(passive);
+    const signal = options.signal;
+    if (signal !== undefined) normalized.signal = signal;
+  }
+  return normalized;
 }
 
 export interface ListenerRegistryOptions {
+  abortSignal: ReturnType<typeof captureAbortSignalMethods>;
   // Builds the callback the underlying target actually receives. This is where
   // each call site's own behaviour lives: the facade's synthetic eventPhase,
   // the window bridge's realm-bound listener event, the XHR patches' teardown
@@ -84,6 +113,13 @@ export class ListenerRegistry {
         record.listener === listener &&
         record.capture === capture
       ) {
+        if (
+          record.signal !== undefined &&
+          this.#options.abortSignal.aborted.call(record.signal)
+        ) {
+          this.#forget(record);
+          continue;
+        }
         return record;
       }
     }
@@ -94,9 +130,16 @@ export class ListenerRegistry {
     if (!this.#records.delete(record)) {
       return;
     }
-    this.#options.removeFromTargets(record.type, record.wrapper, record.capture);
-    if (record.signal !== undefined && record.abort !== undefined) {
-      record.signal.removeEventListener("abort", record.abort);
+    try {
+      this.#options.removeFromTargets(record.type, record.wrapper, record.capture);
+    } finally {
+      if (record.signal !== undefined && record.abort !== undefined) {
+        this.#options.abortSignal.removeEventListener.call(
+          record.signal,
+          "abort",
+          record.abort,
+        );
+      }
     }
   }
 
@@ -105,15 +148,19 @@ export class ListenerRegistry {
     listener: EventListenerOrEventListenerObject | null,
     options?: boolean | AddEventListenerOptions,
   ): void {
-    if (listener === null) {
-      return;
-    }
-    const signal = listenerSignal(options);
-    if (signal?.aborted === true) {
+    type = `${type}`;
+    const normalized = normalizeListenerOptions(options);
+    const signal = normalized.signal;
+    // The intrinsic getter both brands the signal (including cross-realm
+    // signals) and reads its native state. Validate even for null or duplicate
+    // callbacks, without consulting guest-overridden signal properties.
+    const aborted =
+      signal !== undefined && this.#options.abortSignal.aborted.call(signal);
+    if (listener == null || aborted) {
       return;
     }
 
-    const capture = listenerCapture(options);
+    const capture = normalized.capture;
     if (this.#find(type, listener, capture) !== undefined) {
       return;
     }
@@ -124,9 +171,21 @@ export class ListenerRegistry {
       capture,
       wrapper: () => undefined,
     };
-    const invokeListener = this.#options.createWrapper(listener, capture, options, type);
-    const once = listenerIsOnce(options);
+    const invokeListener = this.#options.createWrapper(
+      listener,
+      capture,
+      normalized,
+      type,
+    );
+    const once = normalized.once;
     record.wrapper = (event) => {
+      if (
+        record.signal !== undefined &&
+        this.#options.abortSignal.aborted.call(record.signal)
+      ) {
+        this.#forget(record);
+        return;
+      }
       if (once) {
         this.#forget(record);
       }
@@ -134,15 +193,27 @@ export class ListenerRegistry {
     };
     this.#records.add(record);
     try {
-      this.#options.addToTargets(type, record.wrapper, options);
+      this.#options.addToTargets(type, record.wrapper, normalized);
+      if (signal !== undefined) {
+        // Observe native cancellation on a private dependent signal, not the
+        // authored signal's dispatchable, stoppable public abort event.
+        record.signal = this.#options.abortSignal.any([signal]);
+        record.abort = () => this.#forget(record);
+        this.#options.abortSignal.addEventListener.call(
+          record.signal,
+          "abort",
+          record.abort,
+          {
+            once: true,
+          },
+        );
+        if (this.#options.abortSignal.aborted.call(record.signal)) {
+          this.#forget(record);
+        }
+      }
     } catch (error) {
       this.#forget(record);
       throw error;
-    }
-    if (signal !== undefined) {
-      record.signal = signal;
-      record.abort = () => this.#forget(record);
-      signal.addEventListener("abort", record.abort, { once: true });
     }
   }
 
@@ -153,11 +224,13 @@ export class ListenerRegistry {
     listener: EventListenerOrEventListenerObject | null,
     options?: boolean | EventListenerOptions,
   ): boolean {
-    if (listener === null) {
+    type = `${type}`;
+    const capture = listenerCapture(options);
+    if (listener == null) {
       return false;
     }
 
-    const record = this.#find(type, listener, listenerCapture(options));
+    const record = this.#find(type, listener, capture);
     if (record === undefined) {
       return false;
     }

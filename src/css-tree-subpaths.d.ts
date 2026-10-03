@@ -22,3 +22,7 @@ declare module "css-tree/walker" {
   const walker: typeof walk;
   export default walker;
 }
+
+declare module "css-tree/utils" {
+  export { ident } from "css-tree";
+}

@@ -25,9 +25,16 @@ export type NativeLocationNavigationMode = "push" | "replace" | "reload";
 
 type NavigateInterceptOptions = Parameters<NavigateEvent["intercept"]>[0];
 
+// Retired markup can still be the source of a queued browser default action.
+// Weak membership survives realm replacement without retaining removed trees.
+const guestMarkupRoots = new WeakSet<Node>();
+
+function normalizeFormLineEndings(value: string): string {
+  return value.replace(/\r\n|\r|\n/g, "\r\n");
+}
+
 export interface RealmNavigationOptions {
   window: VFrameWindow;
-  document: Document;
   host: HTMLElement;
   shadowRoot: ShadowRoot;
   boundNavigation: boolean;
@@ -41,6 +48,7 @@ export interface RealmNavigationOptions {
   getBaseURL(): string;
   getBaseTarget(): string;
   getFacade(): DocumentFacade | null;
+  guestRoot: Element;
   isDisposed(): boolean;
   onURLChange(url: string, kind: VFrameNavigationKind | null): void;
   onNavigate(
@@ -70,10 +78,18 @@ export interface RealmNavigation {
 
 export function installRealmNavigation(options: RealmNavigationOptions): RealmNavigation {
   const window = options.window;
-  const document = options.document;
+  guestMarkupRoots.add(options.guestRoot);
   let navigationInstalled = false;
   const nativeFormSubmit = window.HTMLFormElement.prototype.submit;
   const nativeOpenDescriptor = Object.getOwnPropertyDescriptor(window, "open");
+  const mouseButton = Object.getOwnPropertyDescriptor(
+    window.MouseEvent.prototype,
+    "button",
+  )!.get!;
+  const submitterGetter = Object.getOwnPropertyDescriptor(
+    window.SubmitEvent.prototype,
+    "submitter",
+  )!.get!;
   let restoreIntercept: () => void = () => undefined;
   const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
     const action =
@@ -103,7 +119,10 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       const parameters = new window.URLSearchParams();
       const entries = new window.FormData(form, submitter as HTMLButtonElement | null);
       for (const [name, value] of entries) {
-        parameters.append(name, typeof value === "string" ? value : value.name);
+        parameters.append(
+          normalizeFormLineEndings(name),
+          normalizeFormLineEndings(typeof value === "string" ? value : value.name),
+        );
       }
       targetURL.search = parameters.toString();
     }
@@ -171,26 +190,6 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
             candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
       );
 
-  const scrollToFragment = (targetURL: URL): void => {
-    const encodedIdentifier = targetURL.hash.slice(1);
-    let identifier = encodedIdentifier;
-    try {
-      identifier = decodeURIComponent(encodedIdentifier);
-    } catch {
-      // Malformed escapes remain literal, matching URL fragment storage.
-    }
-    if (identifier === "") {
-      options.host.scrollTo(0, 0);
-      return;
-    }
-    const target =
-      document.getElementById(identifier) ??
-      Array.from(document.anchors).find(
-        (anchor) => anchor.getAttribute("name") === identifier,
-      );
-    target?.scrollIntoView();
-  };
-
   const navigateFromLink = (
     event: MouseEvent,
     anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement,
@@ -207,6 +206,25 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       : options.getBaseTarget();
     const opensNewContext =
       event.type === "auxclick" || event.ctrlKey || event.metaKey || event.shiftKey;
+    // Resolve download intent after guest listeners finish, just like the
+    // other default actions. A guest may have changed href or download.
+    if (
+      !opensNewContext &&
+      !(anchor instanceof window.SVGAElement) &&
+      anchor.hasAttribute("download") &&
+      (targetURL.protocol === "http:" || targetURL.protocol === "https:") &&
+      targetURL.origin === window.location.origin
+    ) {
+      const download = options.host.ownerDocument.createElement("a");
+      download.href = targetURL.href;
+      download.download = anchor.getAttribute("download") ?? "";
+      for (const name of ["referrerpolicy", "rel"]) {
+        const value = anchor.getAttribute(name);
+        if (value !== null) download.setAttribute(name, value);
+      }
+      download.click();
+      return;
+    }
     if (opensNewContext || target === "_blank") {
       if (
         options.onNavigate({
@@ -249,33 +267,32 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       }
       return;
     }
-    if (!options.history.navigateFragment(targetURL.href)) {
-      return;
-    }
-    if (fragment) {
-      scrollToFragment(targetURL);
-    }
+    options.history.navigateFragment(targetURL.href);
   };
 
   const scheduledNavigationEvents = new WeakSet<Event>();
   const suppressLinkDefault = (event: Event) => {
-    const hostWindow = options.host.ownerDocument.defaultView;
-    if (!(event instanceof hostWindow!.MouseEvent)) {
+    const anchor = anchorFromEvent(event);
+    if (anchor === undefined) return;
+    let button: number;
+    try {
+      // Native getters brand-check across realms; instanceof only recognizes
+      // events constructed by one window, not guest or third-window events.
+      button = mouseButton.call(event) as number;
+    } catch {
+      options.getFacade()?.suppressEventDefault(event);
+      options.getFacade()?.suppressNativeLinkDefault(event, anchor);
       return;
     }
     if (
-      (event.type === "click" && event.button !== 0) ||
-      (event.type === "auxclick" && event.button !== 1)
+      (event.type === "click" && button !== 0) ||
+      (event.type === "auxclick" && button !== 1)
     ) {
       return;
     }
 
-    const anchor = anchorFromEvent(event);
-    if (anchor === undefined) {
-      return;
-    }
-
     options.getFacade()?.suppressEventDefault(event);
+    options.getFacade()?.suppressNativeLinkDefault(event, anchor);
     if (scheduledNavigationEvents.has(event)) {
       return;
     }
@@ -287,17 +304,20 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       ) {
         return;
       }
-      navigateFromLink(event, anchor);
+      navigateFromLink(event as MouseEvent, anchor);
     }, 0);
   };
   const suppressSubmitDefault = (event: Event) => {
-    const hostWindow = options.host.ownerDocument.defaultView;
-    if (!(event instanceof hostWindow!.SubmitEvent)) {
+    const form = event.target;
+    if (!(form instanceof window.HTMLFormElement)) {
       return;
     }
-
-    const form = event.target as HTMLFormElement;
-    const submitter = event.submitter as HTMLElement | null;
+    let submitter: HTMLElement | null;
+    try {
+      submitter = submitterGetter.call(event) as HTMLElement | null;
+    } catch {
+      submitter = null;
+    }
     const method = (
       submitter?.getAttribute("formmethod") ??
       form.getAttribute("method") ??
@@ -310,6 +330,9 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     }
 
     options.getFacade()?.suppressEventDefault(event);
+    // dispatchEvent is a notification, not a form submission. Firefox otherwise
+    // performs a native submit here; requestSubmit/button activation are trusted.
+    if (!event.isTrusted) return;
     if (scheduledNavigationEvents.has(event)) {
       return;
     }
@@ -330,6 +353,31 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       return;
     }
     navigationInstalled = true;
+    const hostWindow = options.host.ownerDocument.defaultView! as NavigationWindow;
+    const nativeParent = Object.getOwnPropertyDescriptor(
+      hostWindow.Node.prototype,
+      "parentNode",
+    )!.get!;
+    hostWindow.navigation.addEventListener(
+      "navigate",
+      (event) => {
+        // preventDefault cannot cancel a non-cancelable synthetic click/submit.
+        // Stop its native host navigation here; the queued virtual action, if
+        // any, still runs. Preview links and intentional shell navigations are
+        // not live guest elements and must retain their normal behavior.
+        for (
+          let node: Node | null = event.sourceElement;
+          node !== null;
+          node = nativeParent.call(node) as Node | null
+        ) {
+          if (guestMarkupRoots.has(node)) {
+            event.preventDefault();
+            break;
+          }
+        }
+      },
+      { capture: true, signal: options.hostListenerSignal },
+    );
     const navigationListenerOptions = {
       capture: true,
       signal: options.hostListenerSignal,
@@ -350,6 +398,10 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       navigationListenerOptions,
     );
     window.HTMLFormElement.prototype.submit = function submit(): void {
+      if (this.method === "dialog") {
+        nativeFormSubmit.call(this);
+        return;
+      }
       formSubmission(this, null);
     };
 
@@ -461,9 +513,6 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       }
       if (!options.history.navigateFragment(targetURL.href)) {
         return null;
-      }
-      if (fragment) {
-        scrollToFragment(targetURL);
       }
       return window;
     },

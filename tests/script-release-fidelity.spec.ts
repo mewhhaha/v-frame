@@ -262,7 +262,13 @@ test("dispatches one logical handler event and reports an empty source as a scri
           logicalCurrentTarget: event.currentTarget === dynamicEmptySource,
         });
       });
+      const dynamicFailed = new Promise<void>((resolveFailed) => {
+        dynamicEmptySource.addEventListener("error", () => resolveFailed(), {
+          once: true,
+        });
+      });
       childWindow.document.head.append(dynamicEmptySource);
+      await dynamicFailed;
       return {
         checks: childWindow.__scriptEventChecks,
         dynamicEmptySourceExecuted: childWindow.__dynamicEmptySourceExecuted === true,

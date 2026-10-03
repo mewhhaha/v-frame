@@ -5,12 +5,20 @@
 // order. The live collections are proxies so they keep answering from the
 // current tree instead of from a snapshot.
 
-import { translateShellSelector } from "../css.js";
+import { translateShellSelector, translateTargetSelector } from "../css.js";
 import { type FacadeContext, HTML_NAMESPACE } from "./context.js";
 
 function translateSelector(selector: string): string {
   try {
     return translateShellSelector(selector);
+  } catch {
+    return selector;
+  }
+}
+
+function targetSelector(selector: string): string {
+  try {
+    return translateTargetSelector(selector);
   } catch {
     return selector;
   }
@@ -198,6 +206,8 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     nativeGetElementsByTagName,
     nativeGetElementsByTagNameNS,
     isInVirtualDocumentTree,
+    virtualNodes,
+    documentFragmentPrototype,
     patch,
   } = context;
 
@@ -241,6 +251,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     });
 
   const querySelectorAllWithShell = (root: Element, selectors: string): Element[] => {
+    selectors = targetSelector(selectors);
     const translated = translateSelector(selectors);
     const matches = Array.from(nativeQuerySelectorAll.call(root, selectors));
     if (translated === selectors) {
@@ -257,6 +268,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   };
 
   const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
+    selectors = targetSelector(selectors);
     const match = nativeQuerySelector.call(root, selectors);
     const translated = translateSelector(selectors);
     if (translated === selectors) {
@@ -273,6 +285,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   };
 
   const querySelector = (selectors: string): Element | null => {
+    selectors = targetSelector(selectors);
     const translated = translateSelector(selectors);
     if (
       nativeMatches.call(options.html, selectors) ||
@@ -283,6 +296,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     return querySelectorWithShell(options.html, selectors);
   };
   const querySelectorAll = (selectors: string): NodeListOf<Element> => {
+    selectors = targetSelector(selectors);
     const translated = translateSelector(selectors);
     const matches = querySelectorAllWithShell(options.html, selectors);
     if (
@@ -541,8 +555,12 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       writable: true,
       value(this: Element, selectors: string): boolean {
         if (!isInVirtualDocumentTree(this)) {
-          return nativeMatches.call(this, selectors);
+          return nativeMatches.call(
+            this,
+            virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+          );
         }
+        selectors = targetSelector(selectors);
         return (
           nativeMatches.call(this, selectors) ||
           nativeMatches.call(this, translateSelector(selectors))
@@ -553,8 +571,12 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       writable: true,
       value(this: Element, selectors: string): Element | null {
         if (!isInVirtualDocumentTree(this)) {
-          return nativeClosest.call(this, selectors);
+          return nativeClosest.call(
+            this,
+            virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+          );
         }
+        selectors = targetSelector(selectors);
         const translated = translateSelector(selectors);
         let candidate: Element | null = this;
         while (candidate !== null) {
@@ -574,7 +596,10 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       value(this: Element, selectors: string): Element | null {
         return isInVirtualDocumentTree(this)
           ? querySelectorWithShell(this, selectors)
-          : nativeQuerySelector.call(this, selectors);
+          : nativeQuerySelector.call(
+              this,
+              virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+            );
       },
     });
     patch(elementPrototype, "querySelectorAll", {
@@ -582,9 +607,23 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       value(this: Element, selectors: string): NodeListOf<Element> {
         return isInVirtualDocumentTree(this)
           ? staticNodeList(querySelectorAllWithShell(this, selectors))
-          : nativeQuerySelectorAll.call(this, selectors);
+          : nativeQuerySelectorAll.call(
+              this,
+              virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+            );
       },
     });
+    for (const method of ["querySelector", "querySelectorAll"] as const) {
+      const nativeQuery = documentFragmentPrototype[method];
+      patch(documentFragmentPrototype, method, {
+        writable: true,
+        value(this: DocumentFragment, selectors: string) {
+          return Reflect.apply(nativeQuery, this, [
+            virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+          ]);
+        },
+      });
+    }
   };
 
   return {

@@ -240,6 +240,9 @@ test("exposes each lifecycle value as an exclusive custom element state", async 
     const failed = new Promise<void>((resolveFailed) => {
       frame.addEventListener("v-frame-error", () => resolveFailed(), { once: true });
     });
+    // A failed replacement keeps its live guest. Clear it to exercise a fatal
+    // load failure with no guest available for rollback.
+    frame.src = "";
     frame.src = "https://cross-origin.invalid/application";
     await failed;
     return { idle, loading, ready, error: matchingStates(), status: frame.status };

@@ -478,3 +478,195 @@ test("reports direction with the spec enum values and ignores addRange on a set 
     keptOffsets: [0, 2],
   });
 });
+
+test("preserves native offset coercion when retaining private selection direction", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountSelectionFrame(page);
+  const result = await frame.evaluate((element) => {
+    const child = (element as HTMLElement & { contentWindow: Window & typeof globalThis })
+      .contentWindow;
+    const run = (realm: Window & typeof globalThis) => {
+      const states = [];
+      for (const [anchor, focus] of [
+        [0.7, 3.8],
+        [3.8, 0.7],
+      ] as const) {
+        const copy = realm.document.createElement("p");
+        const text = realm.document.createTextNode("abcdef");
+        copy.append(text);
+        realm.document.body.append(copy);
+        const selection = realm.getSelection()!;
+        selection.setBaseAndExtent(text, anchor, text, focus);
+        const snapshot = () => ({
+          offsets: [selection.anchorOffset, selection.focusOffset],
+          direction: selection.direction,
+          text: selection.toString(),
+        });
+        const before = snapshot();
+        text.insertData(0, "XX");
+        states.push({ before, after: snapshot() });
+        selection.removeAllRanges();
+        copy.remove();
+      }
+      return states;
+    };
+    const native = run(window);
+    const hostCopy = document.createElement("p");
+    hostCopy.textContent = "host selection stays intact";
+    document.body.append(hostCopy);
+    const range = document.createRange();
+    range.selectNodeContents(hostCopy);
+    window.getSelection()!.addRange(range);
+    return {
+      native,
+      guest: run(child),
+      hostSelection: window.getSelection()!.toString(),
+    };
+  });
+  expect(result.guest).toEqual(result.native);
+  expect(result.guest[0]!.before.offsets).toEqual([0, 3]);
+  expect(result.guest[1]!.before.offsets).toEqual([3, 0]);
+  expect(result.hostSelection).toBe("host selection stays intact");
+});
+
+for (const backward of [false, true]) {
+  test(`keeps a private ${backward ? "backward" : "forward"} selection live through text insertion and deletion`, async ({
+    page,
+  }) => {
+    await installBundle(page, fixture.origin);
+    const frame = await mountSelectionFrame(page);
+    const result = await frame.evaluate((element, backward) => {
+      const child = (
+        element as HTMLElement & { contentWindow: Window & typeof globalThis }
+      ).contentWindow;
+      const run = (realm: Window & typeof globalThis) => {
+        const copy = realm.document.createElement("p");
+        const text = realm.document.createTextNode("abcdef");
+        copy.append(text);
+        realm.document.body.append(copy);
+        const selection = realm.getSelection()!;
+        selection.setBaseAndExtent(text, backward ? 4 : 2, text, backward ? 2 : 4);
+        const range = selection.getRangeAt(0);
+        const nodeName = (node: Node | null) =>
+          node === copy
+            ? "copy"
+            : node?.parentNode === copy
+              ? `child:${Array.from(copy.childNodes).indexOf(node as ChildNode)}`
+              : "outside";
+        const snapshot = () => ({
+          anchor: [nodeName(selection.anchorNode), selection.anchorOffset],
+          focus: [nodeName(selection.focusNode), selection.focusOffset],
+          start: [nodeName(range.startContainer), range.startOffset],
+          end: [nodeName(range.endContainer), range.endOffset],
+          direction: selection.direction,
+          text: selection.toString(),
+          rangeIdentity: selection.getRangeAt(0) === range,
+        });
+        const snapshots = [snapshot()];
+        text.insertData(0, "XX");
+        snapshots.push(snapshot());
+        text.deleteData(0, 5);
+        snapshots.push(snapshot());
+        selection.extend(text, 3);
+        const extended = {
+          anchorOffset: selection.anchorOffset,
+          focusOffset: selection.focusOffset,
+          direction: selection.direction,
+          text: selection.toString(),
+        };
+        selection.removeAllRanges();
+        copy.remove();
+        return { snapshots, extended };
+      };
+      const native = run(window);
+      const hostCopy = document.createElement("p");
+      hostCopy.textContent = "host selection stays intact";
+      document.body.append(hostCopy);
+      const hostRange = document.createRange();
+      hostRange.selectNodeContents(hostCopy);
+      window.getSelection()!.addRange(hostRange);
+      const guest = run(child);
+      return { native, guest, hostSelection: window.getSelection()!.toString() };
+    }, backward);
+
+    expect(result.guest).toEqual(result.native);
+    expect(result.guest.snapshots[1]!.text).toBe("cd");
+    expect(result.guest.snapshots[2]!.text).toBe("d");
+    expect(result.guest.snapshots.every((snapshot) => snapshot.rangeIdentity)).toBe(true);
+    expect(result.hostSelection).toBe("host selection stays intact");
+  });
+
+  test(`preserves private ${backward ? "backward" : "forward"} selection orientation through split, merge and direct range edits`, async ({
+    page,
+  }) => {
+    await installBundle(page, fixture.origin);
+    const frame = await mountSelectionFrame(page);
+    await page.evaluate(() => {
+      const copy = document.createElement("p");
+      copy.textContent = "host selection stays intact";
+      document.body.append(copy);
+      const range = document.createRange();
+      range.selectNodeContents(copy);
+      window.getSelection()!.addRange(range);
+    });
+    const result = await frame.evaluate((element, backward) => {
+      const realm = (
+        element as HTMLElement & { contentWindow: Window & typeof globalThis }
+      ).contentWindow;
+      const copy = realm.document.createElement("p");
+      const original = realm.document.createTextNode("abcdef");
+      copy.append(original);
+      realm.document.body.append(copy);
+      const selection = realm.getSelection()!;
+      selection.setBaseAndExtent(original, backward ? 4 : 2, original, backward ? 2 : 4);
+      const range = selection.getRangeAt(0);
+      const tail = original.splitText(0);
+      const snapshot = () => ({
+        anchorIsTail: selection.anchorNode === tail,
+        focusIsTail: selection.focusNode === tail,
+        offsets: [selection.anchorOffset, selection.focusOffset],
+        direction: selection.direction,
+        text: selection.toString(),
+        rangeIdentity: selection.getRangeAt(0) === range,
+      });
+      const split = snapshot();
+      tail.insertData(0, "XX");
+      copy.normalize();
+      const merged = snapshot();
+      // The Selection API requires direction to survive direct Range edits:
+      // https://www.w3.org/TR/selection-api/#dfn-direction
+      // Chromium resets it and WebKit can retain stale splitText endpoints, so
+      // those engine quirks must not become the facade's expected behavior.
+      range.setEnd(tail, 7);
+      const edited = snapshot();
+      selection.extend(tail, 8);
+      const extended = {
+        offsets: [selection.anchorOffset, selection.focusOffset],
+        direction: selection.direction,
+        text: selection.toString(),
+      };
+      return { split, merged, edited, extended };
+    }, backward);
+    const expected = (offsets: number[], text: string) => ({
+      anchorIsTail: true,
+      focusIsTail: true,
+      offsets: backward ? offsets.toReversed() : offsets,
+      direction: backward ? "backward" : "forward",
+      text,
+      rangeIdentity: true,
+    });
+    expect(result.split).toEqual(expected([2, 4], "cd"));
+    expect(result.merged).toEqual(expected([4, 6], "cd"));
+    expect(result.edited).toEqual(expected([4, 7], "cde"));
+    expect(result.extended).toEqual({
+      offsets: [backward ? 7 : 4, 8],
+      direction: "forward",
+      text: backward ? "f" : "cdef",
+    });
+    expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(
+      "host selection stays intact",
+    );
+  });
+}

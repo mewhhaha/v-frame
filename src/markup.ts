@@ -9,7 +9,13 @@ import {
 import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameWindow } from "./types.js";
 import type { LinkedStyle } from "./linked-styles.js";
-import { absolutizeSrcset, isSrcsetAttribute, isURLAttribute } from "./asset-urls.js";
+import {
+  HTML_NAMESPACE,
+  absolutizeSrcset,
+  isSrcsetAttribute,
+  isURLAttribute,
+  resolveAssetURL,
+} from "./asset-urls.js";
 import { SSR_ATTRIBUTES, SSR_LINK_REL, SSR_LINK_STYLE } from "./asset-urls.js";
 export {
   absolutizeSrcset,
@@ -18,7 +24,6 @@ export {
   XLINK_NAMESPACE,
 } from "./asset-urls.js";
 
-const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const RAW_TEXT_ELEMENTS = new Set([
   "iframe",
   "noembed",
@@ -432,6 +437,7 @@ function lowerStyleAttributes(
 
 function resolveMarkupBaseURL(root: Element, fallbackURL: string): string {
   for (const base of root.querySelectorAll("base[href]")) {
+    if (base.namespaceURI !== HTML_NAMESPACE) continue;
     const resolvedBase = URL.parse(base.getAttribute("href") ?? "", fallbackURL);
     if (resolvedBase !== null) {
       return resolvedBase.href;
@@ -485,20 +491,17 @@ function absolutizeElementAttributes(
       continue;
     }
 
-    const absoluteURL = URL.parse(value, baseURL);
-    if (absoluteURL !== null) {
-      const absoluteValue = absoluteURL.href;
-      if (absoluteValue !== value) {
-        if (attribute.namespaceURI === null) {
-          element.setAttribute(
-            attribute.name,
-            element.localName === "script" && attribute.localName === "src"
-              ? createScriptURL(absoluteValue)
-              : absoluteValue,
-          );
-        } else {
-          element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
-        }
+    const absoluteValue = resolveAssetURL(element, value, baseURL);
+    if (absoluteValue !== value) {
+      if (attribute.namespaceURI === null) {
+        element.setAttribute(
+          attribute.name,
+          element.localName === "script" && attribute.localName === "src"
+            ? createScriptURL(absoluteValue)
+            : absoluteValue,
+        );
+      } else {
+        element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
       }
     }
   }

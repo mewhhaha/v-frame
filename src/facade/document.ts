@@ -216,6 +216,7 @@ export function installDocumentProperties(
         listener: EventListenerOrEventListenerObject | null,
         listenerOptions?: boolean | AddEventListenerOptions,
       ) {
+        type = `${type}`;
         ensureRootEventRelay(type);
         documentListeners.add(type, listener, listenerOptions);
       },

@@ -26,9 +26,43 @@ navigation.addEventListener("navigate", (event) => {
 });
 ```
 
+`GET` forms use native URL-encoded submission rules, including CRLF line endings
+in field names, values, and filenames. A `method="dialog"` form does not navigate:
+it retains the native dialog-closing action, including when called through
+`form.submit()`.
+
+Synthetic mouse clicks are routed regardless of which window constructed the
+event. Synthetic `submit` events only notify listeners; use `requestSubmit()`
+(which validates and emits a submit event) or `submit()` to submit a form.
+
 Navigation to a different document — a link the guest's own router does not
 intercept — refetches through `src`'s origin and swaps the guest's document
 without touching the host page.
+
+Fragment navigation updates the guest's `:target` state for stylesheets and DOM
+selector APIs before its `popstate` and `hashchange` handlers run. Initial
+document fragments and back/forward traversal select the target too; ordinary
+`pushState` and `replaceState` calls leave the existing target unchanged, as in
+a native document. IDs take precedence over named HTML anchors. A fragment of
+`top`, case-insensitively, scrolls to the top only when no matching element exists.
+Initial fragments in fetched documents and subsequent fragment navigations
+scroll the rendered guest, not the host page. Scrolling occurs before
+`hashchange`; back/forward keeps the saved per-entry scroll position instead.
+SSR adoption preserves the preview's viewport rather than scrolling it at
+activation; see [Server-rendered adoption](./ssr.md).
+
+Same-origin HTTP download links keep their native browser action: an
+`<a download>` saves the file without replacing the guest or adding a history
+entry. Guest click listeners can cancel the download with `preventDefault()`.
+Downloads are not route changes and do not emit `v-frame-navigate` or
+`v-frame-navigated`. Cross-origin and non-HTTP links retain the restrictions
+described in [Limitations](./limitations.md).
+
+Guest history saves the frame's horizontal and vertical scroll positions per
+entry. Back and forward restore them when that entry's
+`history.scrollRestoration` is `"auto"`, the default. Setting it to `"manual"`
+leaves scrolling to the guest router; new same-document entries inherit that
+setting. A replacement document is restored before its first visible paint.
 
 ## Shell-owned routing
 
@@ -120,6 +154,8 @@ await frame.go(-2);
 receives a `popstate` — which is what a client-side router listens for — and its
 document is not refetched. Use `src` or `reload()` when the document itself
 should be replaced.
+Changing only its fragment also scrolls the guest to the target, as a fragment
+link would. Ordinary `pushState`/`replaceState` calls do not scroll.
 
 Routes resolve against `currentURL` and must share the host origin. In host mode
 these methods drive the shell's history and the guest follows it, so the host
@@ -186,11 +222,13 @@ until its replacement is ready; a failed reload restores the current guest,
 emits a nonfatal `v-frame-error`, and rejects with the same error — see
 [API](./api.md#element-methods) for how it settles in every case. Assigning
 `src` does the same thing for a different URL, and discards the guest's history
-session.
+session once the replacement activates. A failed assignment leaves the current
+guest and its history intact and emits a nonfatal `v-frame-error`.
 
 ## What does not navigate
 
 Link and form targets other than `_self` and `_blank`, and any scheme that is
 not `http:` or `https:`, are reported through `v-frame-navigate` and then
-dropped; non-`GET` form submission is reported as a nonfatal `v-frame-error`.
+dropped; non-`GET` navigation form submission is reported as a nonfatal
+`v-frame-error`. Dialog forms close natively without navigation events or errors.
 [Limitations](./limitations.md) explains why and what to do instead.

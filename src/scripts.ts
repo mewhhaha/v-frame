@@ -76,6 +76,8 @@ function errorComesFromCurrentDocument(filename: string, currentURL: string): bo
 
 export class ScriptRunner {
   readonly #window: VFrameWindow;
+  readonly #setTimeout: (callback: () => void) => number;
+  readonly #clearTimeout: (timer: number) => void;
   readonly #native: NativeDocumentHandles;
   readonly #facade: DocumentFacade;
   readonly #scripts: readonly HTMLScriptElement[];
@@ -96,6 +98,7 @@ export class ScriptRunner {
   readonly #deferredModuleErrors = new Set<DeferredModuleError>();
   readonly #claimedRuntimeErrors = new WeakSet<ErrorEvent>();
   readonly #bootstrapDynamicSettlements = new Set<Promise<void>>();
+  readonly #queuedScriptErrors = new Set<Promise<void>>();
   #orderedInlineModuleQueue: Promise<void> = Promise.resolve();
   #trackBootstrapDynamicScripts = true;
   #reconcilingModuleErrors = false;
@@ -104,6 +107,8 @@ export class ScriptRunner {
 
   constructor(options: ScriptRunnerOptions) {
     this.#window = options.window;
+    this.#setTimeout = options.window.setTimeout.bind(options.window);
+    this.#clearTimeout = options.window.clearTimeout.bind(options.window);
     this.#native = options.native;
     this.#facade = options.facade;
     this.#scripts = options.scripts;
@@ -370,6 +375,7 @@ export class ScriptRunner {
       this.#executeScript(script, "ordered"),
     );
     await Promise.all(deferredExecutions);
+    await Promise.all([...this.#queuedScriptErrors]);
 
     if (this.#signal.aborted) {
       return;
@@ -380,8 +386,14 @@ export class ScriptRunner {
       cancelable: false,
     });
     await Promise.all(asyncScripts);
-    while (this.#bootstrapDynamicSettlements.size > 0) {
-      await Promise.all([...this.#bootstrapDynamicSettlements]);
+    while (
+      this.#bootstrapDynamicSettlements.size > 0 ||
+      this.#queuedScriptErrors.size > 0
+    ) {
+      await Promise.all([
+        ...this.#bootstrapDynamicSettlements,
+        ...this.#queuedScriptErrors,
+      ]);
     }
 
     if (this.#signal.aborted) {
@@ -529,6 +541,28 @@ export class ScriptRunner {
     };
   }
 
+  #queueScriptError(script: HTMLScriptElement, failure: ScriptFailure): void {
+    const settlement: Promise<void> = new Promise((resolve) => {
+      const finish = () => {
+        this.#signal.removeEventListener("abort", abort);
+        this.#queuedScriptErrors.delete(settlement);
+        resolve();
+      };
+      const abort = () => {
+        this.#clearTimeout(timer);
+        finish();
+      };
+      const timer = this.#setTimeout(() => {
+        finish();
+        if (this.#signal.aborted) return;
+        script.dispatchEvent(new this.#window.Event("error"));
+        if (!this.#signal.aborted) this.#onError(failure);
+      });
+      this.#signal.addEventListener("abort", abort, { once: true });
+    });
+    this.#queuedScriptErrors.add(settlement);
+  }
+
   async #executeScript(
     pseudoScript: HTMLScriptElement,
     execution: "async" | "ordered",
@@ -543,8 +577,9 @@ export class ScriptRunner {
     ) {
       const url = this.#getCurrentURL();
       const error = new Error(`Script source is empty at ${url}`);
-      pseudoScript.dispatchEvent(new this.#window.Event("error"));
-      this.#onError({ url, error });
+      // A failed source does not block later inline classics, but its error
+      // belongs to a later task, after append returns and microtasks finish.
+      this.#queueScriptError(pseudoScript, { url, error });
       return;
     }
 
