@@ -1,23 +1,16 @@
 import generateCSS from "css-tree/generator";
-import { FRAGMENT_TARGET_ATTRIBUTE } from "./fragment.js";
+import { FRAGMENT_TARGET_ATTRIBUTE, SHELL_ELEMENT_NAMES } from "./wire-format.js";
 import parseCSS from "css-tree/parser";
 import walkCSS from "css-tree/walker";
-import { ident } from "css-tree/utils";
-import type {
-  Atrule,
-  CssNode,
-  List,
-  ListItem,
-  Selector,
-  StyleSheet,
-  Url,
-} from "css-tree";
+import { clone, ident } from "css-tree/utils";
+import type { Atrule, CssNode, List, ListItem, Selector, StyleSheet } from "css-tree";
 
-const SHELL_ELEMENT_NAMES = new Map([
-  ["html", "v-html"],
-  ["head", "v-head"],
-  ["body", "v-body"],
-]);
+// css-tree types the walk context loosely; only the ancestors read here.
+interface WalkContext {
+  atrule: Atrule | null;
+  atrulePrelude: CssNode | null;
+  function: { name: string } | null;
+}
 
 const SHADOW_ONLY_PSEUDO_CLASSES = new Set(["host", "host-context"]);
 
@@ -34,8 +27,13 @@ export interface StylesheetSource {
   url: string;
 }
 
+export interface StylesheetFetchOptions {
+  /** Aborted when the result is no longer wanted; a fetch should stop and reject. */
+  signal?: AbortSignal;
+}
+
 export interface StylesheetFetch {
-  (url: string): Promise<string | StylesheetSource>;
+  (url: string, options?: StylesheetFetchOptions): Promise<string | StylesheetSource>;
 }
 
 export interface StylesheetImportFailure {
@@ -46,12 +44,15 @@ export interface StylesheetImportFailure {
 export interface StylesheetContext {
   fetchText: StylesheetFetch;
   requests: Map<string, Promise<StylesheetSource>>;
+  /** Passed to every fetch; once aborted, failures are expected and not reported. */
+  signal?: AbortSignal;
   onImportFailure?(failure: StylesheetImportFailure): void;
 }
 
 export function createStylesheetContext(
   fetchText: StylesheetFetch,
   onImportFailure?: StylesheetContext["onImportFailure"],
+  signal?: AbortSignal,
 ): StylesheetContext {
   const context: StylesheetContext = {
     fetchText,
@@ -59,6 +60,9 @@ export function createStylesheetContext(
   };
   if (onImportFailure !== undefined) {
     context.onImportFailure = onImportFailure;
+  }
+  if (signal !== undefined) {
+    context.signal = signal;
   }
   return context;
 }
@@ -77,6 +81,15 @@ function parseStylesheet(source: string, stylesheetURL: string): StyleSheet {
     });
   }
 }
+
+// Parsed once; each use takes a deep clone so spliced nodes are never shared.
+const NEVER_MATCHES = parseCSS(":not(*)", { context: "selector" }) as Selector;
+const TARGET_SELECTOR = parseCSS(`[${FRAGMENT_TARGET_ATTRIBUTE}]`, {
+  context: "selector",
+}) as Selector;
+const ROOT_SELECTOR = parseCSS(":where(v-html):nth-child(n)", {
+  context: "selector",
+}) as Selector;
 
 function rewriteShellSelectors(
   ast: CssNode,
@@ -101,33 +114,53 @@ function rewriteShellSelectors(
           suppressShadowOnlyPseudoClasses &&
           SHADOW_ONLY_PSEUDO_CLASSES.has(pseudoClassName)
         ) {
-          const replacement = parseCSS(":not(*)", {
-            context: "selector",
-          }) as Selector;
-          list.replace(item, replacement.children.copy());
+          list.replace(item, (clone(NEVER_MATCHES) as Selector).children);
           return;
         }
 
         if (pseudoClassName === "target" && node.children === null) {
-          const replacement = parseCSS(`[${FRAGMENT_TARGET_ATTRIBUTE}]`, {
-            context: "selector",
-          }) as Selector;
-          list.replace(item, replacement.children.copy());
+          list.replace(item, (clone(TARGET_SELECTOR) as Selector).children);
         } else if (shellNames && pseudoClassName === "root") {
-          const replacement = parseCSS(":where(v-html):nth-child(n)", {
-            context: "selector",
-          }) as Selector;
-          list.replace(item, replacement.children.copy());
+          list.replace(item, (clone(ROOT_SELECTOR) as Selector).children);
         }
       }
     },
   });
 }
 
+// Bare strings are fetched as URLs only in these positions; elsewhere (format(),
+// local(), attr selectors, ...) a string is just text.
+const STRING_URL_FUNCTIONS = new Set(["image-set", "-webkit-image-set", "src"]);
+
+// A url() here names an identity, never a resource to fetch;
+// rebasing @namespace would change the namespace the selectors belong to.
+const NON_FETCHING_PRELUDES = new Set(["namespace"]);
+
 function absolutizeCssURLs(ast: CssNode, stylesheetURL: string): void {
   walkCSS(ast, {
-    visit: "Url",
-    enter(node: Url) {
+    enter(this: WalkContext, node: CssNode) {
+      if (node.type !== "Url" && node.type !== "String") {
+        return;
+      }
+      if (
+        this.atrulePrelude !== null &&
+        this.atrule !== null &&
+        NON_FETCHING_PRELUDES.has(this.atrule.name.toLowerCase())
+      ) {
+        return;
+      }
+      if (node.type === "String") {
+        const owner = this.function;
+        const fetched =
+          owner === null || owner === undefined
+            ? // `@import "x.css"` is the only bare string that is a URL by itself.
+              this.atrulePrelude !== null && this.atrule?.name.toLowerCase() === "import"
+            : STRING_URL_FUNCTIONS.has(owner.name.toLowerCase());
+        if (!fetched) {
+          return;
+        }
+      }
+
       // An empty url() is an invalid resource that must never be fetched, so
       // rebasing it against the stylesheet would invent a request.
       if (node.value === "" || node.value.startsWith("#")) {
@@ -234,13 +267,15 @@ export function fetchStylesheet(
     return existing;
   }
 
-  const request = context
-    .fetchText(url)
-    .then((source) =>
-      typeof source === "string"
-        ? { text: source, url }
-        : { text: source.text, url: new URL(source.url, url).href },
-    );
+  const request = (
+    context.signal === undefined
+      ? context.fetchText(url)
+      : context.fetchText(url, { signal: context.signal })
+  ).then((source) =>
+    typeof source === "string"
+      ? { text: source, url }
+      : { text: source.text, url: new URL(source.url, url).href },
+  );
   context.requests.set(url, request);
   // A rejected fetch is evicted so a later insertion can retry the network
   // instead of replaying the cached failure for the realm's lifetime.
@@ -297,42 +332,51 @@ async function inlineImports(
     importsAllowed = false;
   });
 
-  for (const entry of imports) {
-    const parts = importParts(entry.rule, stylesheetURL);
-    if (parts === null) {
-      continue;
-    }
-
-    if (ancestors.has(parts.url)) {
-      entry.list.remove(entry.item);
-      continue;
-    }
-
-    try {
-      const source = await fetchStylesheet(parts.url, context);
-      if (ancestors.has(source.url)) {
-        entry.list.remove(entry.item);
-        continue;
+  // Every import is known once the sheet is parsed, so sibling fetches overlap
+  // instead of queuing behind each other; replacements touch distinct list
+  // items, so the order they settle in cannot change the output.
+  await Promise.all(
+    imports.map(async (entry) => {
+      const parts = importParts(entry.rule, stylesheetURL);
+      if (parts === null) {
+        return;
       }
-      const importedAncestors = new Set(ancestors);
-      importedAncestors.add(parts.url);
-      importedAncestors.add(source.url);
-      const transformed = await transformStylesheet(
-        source.text,
-        source.url,
-        context,
-        importedAncestors,
-      );
-      const replacement = parseStylesheet(
-        wrapImportedStylesheet(transformed, parts),
-        parts.url,
-      );
-      entry.list.replace(entry.item, replacement.children.copy());
-    } catch (error) {
-      entry.list.remove(entry.item);
-      context.onImportFailure?.({ url: parts.url, error });
-    }
-  }
+
+      if (ancestors.has(parts.url)) {
+        entry.list.remove(entry.item);
+        return;
+      }
+
+      try {
+        const source = await fetchStylesheet(parts.url, context);
+        if (ancestors.has(source.url)) {
+          entry.list.remove(entry.item);
+          return;
+        }
+        const importedAncestors = new Set(ancestors);
+        importedAncestors.add(parts.url);
+        importedAncestors.add(source.url);
+        const transformed = await transformStylesheet(
+          source.text,
+          source.url,
+          context,
+          importedAncestors,
+        );
+        const replacement = parseStylesheet(
+          wrapImportedStylesheet(transformed, parts),
+          parts.url,
+        );
+        entry.list.replace(entry.item, replacement.children.copy());
+      } catch (error) {
+        entry.list.remove(entry.item);
+        // An aborted materialization is discarded, so its fetches failing is
+        // the cancellation working, not a stylesheet that is broken.
+        if (!context.signal?.aborted) {
+          context.onImportFailure?.({ url: parts.url, error });
+        }
+      }
+    }),
+  );
 }
 
 async function transformStylesheet(
@@ -342,9 +386,11 @@ async function transformStylesheet(
   ancestors: ReadonlySet<string>,
 ): Promise<string> {
   const ast = parseStylesheet(source, stylesheetURL);
-  await inlineImports(ast, stylesheetURL, context, ancestors);
+  // Rewrite before inlining: imported sheets arrive already transformed
+  // against their own URL, so a later pass would only revisit them per depth.
   rewriteShellSelectors(ast, true);
   absolutizeCssURLs(ast, stylesheetURL);
+  await inlineImports(ast, stylesheetURL, context, ancestors);
   return generateCSS(ast);
 }
 

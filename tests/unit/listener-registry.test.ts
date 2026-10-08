@@ -92,3 +92,54 @@ test("rolls back targets and the abort callback when signal hookup fails", () =>
   assert.equal(calls, 1);
   assert.equal(removals, 2);
 });
+
+function indexedRegistry() {
+  const target = new EventTarget();
+  return new ListenerRegistry({
+    abortSignal: captureAbortSignalMethods(globalThis),
+    createWrapper: (listener) => listener as EventListener,
+    addToTargets: (type, wrapper) => target.addEventListener(type, wrapper),
+    removeFromTargets: (type, wrapper) => target.removeEventListener(type, wrapper),
+  });
+}
+
+test("invokes only the dispatched type, in registration order, skipping removals", () => {
+  const calls: string[] = [];
+  const registry = indexedRegistry();
+  const second = () => calls.push("second");
+  registry.add("a", () => {
+    calls.push("first");
+    registry.remove("a", second);
+    registry.add("a", () => calls.push("late"));
+  });
+  registry.add("b", () => calls.push("other-type"));
+  registry.add("a", second);
+  registry.add("a", () => calls.push("third"));
+  registry.invoke(new Event("a"), false, () => true);
+  assert.deepEqual(calls, ["first", "third"]);
+  registry.dispose();
+  registry.invoke(new Event("a"), false, () => true);
+  assert.deepEqual(calls, ["first", "third"]);
+});
+
+test("deduplicates per type and capture and rejects non-object callbacks", () => {
+  const registry = indexedRegistry();
+  const listener = () => undefined;
+  registry.add("a", listener);
+  registry.add("a", listener);
+  registry.add("a", listener, true);
+  assert.equal(registry.remove("a", listener), true);
+  assert.equal(registry.remove("a", listener), false);
+  assert.equal(registry.remove("a", listener, { capture: true }), true);
+  assert.equal(registry.remove("b", listener), false);
+  for (const bad of ["notAFunction", 1, true]) {
+    assert.throws(
+      () => registry.add("a", bad as never),
+      (error) => error instanceof TypeError,
+    );
+  }
+  registry.add("a", null);
+  registry.add("a", undefined as never);
+  registry.add("a", { handleEvent() {} });
+  registry.dispose();
+});

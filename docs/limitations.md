@@ -12,6 +12,7 @@ test suite. Each entry says what throws, why it has to, and what to do instead.
 | [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)            | `NotSupportedError`                    |
 | [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets)            | `NotSupportedError`                    |
 | [Direct child mutation of `document`](#direct-child-mutation-of-document)                           | `NotSupportedError`                    |
+| [`Selection.modify()`](#selectionmodify)                                                            | `NotSupportedError`                    |
 | [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late |
 | [CSSOM `@import` rules](#cssom-import-rules)                                                        | `NotSupportedError`                    |
 | [Non-`GET` form submission](#non-get-form-submission)                                               | `v-frame-error`, navigation dropped    |
@@ -159,6 +160,36 @@ connected subtree the observer is the only repair left. A _detached_ subtree is
 still walked in full when it is inserted, so building a tree offline and then
 inserting it marks everything in it synchronously, before any observer runs.
 
+## Serialized markup and attribute order
+
+`innerHTML`, `outerHTML`, `getHTML()` and `XMLSerializer` return the markup the
+guest authored, not the tree v-frame keeps: inline `style`, `on*` handlers, a
+script's `src` and `type`, a link's `rel` and relative URLs are restored from
+what marking recorded. Native serialization writes attributes in the order they
+were set, but v-frame only records the _values_ of those it manages, so they come
+after the unmanaged attributes, in the order handlers, `style`, then `rel`. Two
+serializations of the same element agree, and the markup parses back to the same
+element, but `<p style="…" id="a">` serializes as `<p id="a" style="…">`.
+
+Serializing a guest shadow root is not covered: its children are not marked, so
+they are physical as the browser holds them. Text inside `<noscript>` serializes
+escaped rather than raw, because the copy that is serialized lives in a document
+without scripting.
+
+## `Selection.modify()`
+
+**Throws** a `NotSupportedError` `DOMException` from the guest realm.
+
+**Why.** `modify()` moves the selection by rendered text: characters, words,
+lines. That needs the browser's own selection and its layout, and the browser's
+selection only ever holds endpoints in the host page's tree. The guest's
+`Selection` is a facade over virtual endpoints, so there is nothing for the
+browser to move, and silently leaving the caret where it was would make the
+guest believe it had moved.
+
+**Instead.** Compute the new endpoint from the DOM and call `collapse()`,
+`extend()` or `setBaseAndExtent()`, all of which are supported.
+
 ## CSSOM `@import` rules
 
 **Throws** a `NotSupportedError` `DOMException` from `CSSStyleSheet.insertRule()`
@@ -198,6 +229,20 @@ of an API that has none of that state.
 **Instead.** Submit with `fetch()` from the guest's own script and update the
 DOM, which is what a client-rendered application does regardless of `v-frame`.
 `GET` forms navigate normally, including through `<base target>`.
+
+## `window.open` popups have no opener
+
+**Does not throw.** `window.open(url, "_blank")` opens a real new browsing
+context, but always with `noopener` added to the features, so the popup's
+`window.opener` is `null` and the guest receives `null` back instead of a
+`Window`. Arguments are coerced like the native signature (`null` is the string
+`"null"`, `""` is `about:blank`), and an unparsable URL throws a `SyntaxError`.
+
+**Why.** The guest's `window` is the hidden realm window. A popup holding it as
+`opener` could reach the realm's real, unvirtualized globals.
+
+**Instead.** Open popups from the host: listen for `v-frame-navigate` with
+`kind === "window"`, cancel it, and call `window.open` yourself.
 
 ## Form and link targets other than `_self` and `_blank`
 
@@ -255,6 +300,24 @@ frame.addEventListener("v-frame-navigate", (event) => {
   }
 });
 ```
+
+## Inline module graphs load late
+
+Initial `defer` and module scripts execute in document order, as in a real
+document. External ones are preloaded when the initial pass starts, so their
+fetches overlap and only their execution is chained. An inline module's imports
+are only discovered when it is its turn to run, so its graph starts loading after
+the scripts before it have executed. A slow import behind an early inline module
+therefore delays the scripts after it by its own fetch time rather than overlapping
+with them. Put heavy dependencies behind external module scripts to keep the fetch
+parallel.
+
+## `history.go(0)` never reloads
+
+`history.go()`, `go(0)`, and any delta that coerces to zero (`NaN`, a non-numeric
+string, `0.9`) do nothing in both navigation modes. A real document reloads;
+a guest cannot, because in host mode that would reload the shell page. Use
+`location.reload()` (which `v-frame` forwards) or `frame.reload()`.
 
 ## Guest size and activation cost
 
@@ -342,7 +405,7 @@ README](../README.md#what-you-are-trading) are what you would be giving up.
 
 The tables above are chromium. Firefox pays the same shape of cost and more of
 it: the same guests, the same harness, the same machine, `pnpm bench` measuring
-both engines in one run.
+chromium and firefox in one run (WebKit is not benchmarked).
 
 | guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
 | -------------- | ------------------ | ----------------- | ----------------- | ---------------- |
@@ -366,7 +429,7 @@ dramatically so_; the sample is too noisy to support a specific multiple.
 Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
 chromium's 32–44** across the two runs — very close to double — and still flat in
 the size of the tree already there. Re-parenting is the narrower one, 66–96 ms
-against 57–91 ms, because the work the gate skips is skipped in both engines.
+against 57–91 ms, because the work the gate skips is skipped in both engines measured.
 
 Every firefox reading above is a whole millisecond, and that is the clock rather
 than a coincidence: 20 consecutive `performance.now()` calls in a Playwright
@@ -379,7 +442,8 @@ collected heap size, which Playwright can only get through CDP's
 `Runtime.getHeapUsage`; `performance.measureUserAgentSpecificMemory` is
 chromium-only as well. What firefox retains for a large guest is therefore
 unknown, and the 7.5 MB above should not be read as a cross-engine number. That
-guest nodes are _released_ rather than retained is covered on both engines by
+guest nodes are _released_ rather than retained is covered in the chromium, firefox
+and webkit projects by
 [`tests/node-retention.spec.ts`](../tests/node-retention.spec.ts), which counts
 survivors rather than bytes.
 

@@ -118,7 +118,7 @@ const documentRoutes: Record<string, Route> = {
     html(`<main id="dynamic-target">Dynamic script fixture</main>
         <script>
           const script = document.createElement('script');
-          script.text = "window.__dynamicInsertRealm = window; document.body.insertAdjacentHTML('beforeend', '<output id=\\\"dynamic-insert-result\\\">child realm executed</output>');";
+          script.text = "window.__dynamicInsertRealm = window; document.body.insertAdjacentHTML('beforeend', '<output id=\\"dynamic-insert-result\\">child realm executed</output>');";
           document.querySelector('#dynamic-target').insertAdjacentElement('afterend', script);
         </script>`),
   "/documents/nested-network.html": html(

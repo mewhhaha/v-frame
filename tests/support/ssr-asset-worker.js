@@ -56,24 +56,29 @@ export default {
           ".copy:ta\\72 get{background:rgb(240,200,100)}</style></head>",
         )
       : guest;
-    const materialized = await materializeVFrameDocument(
-      new Response(guestSource),
-      publicURL.href,
-      {
-        async fetchText(href) {
-          const resource = new URL(href);
-          const response = await fetch(env.ASSET_ORIGIN + resource.pathname);
-          if (!response.ok) throw new Error(`Stylesheet returned ${response.status}`);
-          const final = new URL(response.url);
-          return { text: await response.text(), url: new URL(final.pathname, url).href };
+    const materialized = await (
+      await materializeVFrameDocument(
+        new Response(guestSource, { headers: { "content-type": "text/html" } }),
+        publicURL.href,
+        {
+          async fetchText(href) {
+            const resource = new URL(href);
+            const response = await fetch(env.ASSET_ORIGIN + resource.pathname);
+            if (!response.ok) throw new Error(`Stylesheet returned ${response.status}`);
+            const final = new URL(response.url);
+            return {
+              text: await response.text(),
+              url: new URL(final.pathname, url).href,
+            };
+          },
+          onImportFailure(failure) {
+            failures.push(failure.url);
+          },
+          onFontFace(css) {
+            fonts.add(css);
+          },
         },
-        onImportFailure(failure) {
-          failures.push(failure.url);
-        },
-        onFontFace(css) {
-          fonts.add(css);
-        },
-      },
+      )
     ).text();
     return new Response(
       `<!doctype html><html lang="en"><head><title>Host assets</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>${Array.from(fonts).join("\n")}</style></head><body style="margin:0"><main>

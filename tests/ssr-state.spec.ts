@@ -542,6 +542,63 @@ test("disconnecting during handoff notifications does not revive the frame or em
   await handle.dispose();
 });
 
+test("a replacement started during SSR handoff cannot roll back to the aborted realm", async ({
+  page,
+}) => {
+  const { frame, preview, register, release } = await pending(
+    page,
+    "/handoff",
+    "/handoff.js",
+  );
+  await preview.locator("#name").fill("user edit");
+  await register();
+  await frame.evaluate((element) => {
+    const frame = element as VFrameElement & {
+      handoffFailures: boolean[];
+      handoffLoads: number;
+    };
+    frame.handoffFailures = [];
+    frame.handoffLoads = 0;
+    frame.addEventListener("v-frame-error", (event) =>
+      frame.handoffFailures.push(event.detail.fatal),
+    );
+    frame.addEventListener("v-frame-load", () => frame.handoffLoads++);
+    frame.shadowRoot!.addEventListener(
+      "input",
+      () => {
+        frame.src = "/missing-replacement";
+      },
+      { capture: true, once: true },
+    );
+  });
+  await release();
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("error");
+  expect(
+    await frame.evaluate((element) => {
+      const frame = element as VFrameElement & {
+        handoffFailures: boolean[];
+        handoffLoads: number;
+      };
+      return {
+        failures: frame.handoffFailures,
+        loads: frame.handoffLoads,
+        window: frame.contentWindow,
+        url: frame.currentURL,
+      };
+    }),
+  ).toEqual({ failures: [true], loads: 0, window: null, url: null });
+  await expect(frame.locator("iframe")).toHaveCount(0);
+  await frame.evaluate((element: VFrameElement) => {
+    element.src = "/guest";
+  });
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("ready");
+  await expect(frame.locator("v-body")).toHaveText("Network fallback");
+});
+
 test("a failed SSR handoff reports its error and releases the failed realm", async ({
   page,
 }) => {

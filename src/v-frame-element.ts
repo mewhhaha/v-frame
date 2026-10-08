@@ -1,7 +1,9 @@
 import {
+  abortError,
   connectRealmIframe,
   type ConnectedRealmIframe,
   createRealm,
+  type CreateRealmOptions,
   type RealmFailure,
   type VFrameRealm,
 } from "./realm/index.js";
@@ -19,7 +21,6 @@ import type {
   VFrameNavigateOptions,
   VFrameNavigation,
   VFrameNavigationKind,
-  VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
@@ -48,6 +49,13 @@ function idleNavigationError(method: string): DOMException {
   );
 }
 
+function loadingNavigationError(method: string): DOMException {
+  return new DOMException(
+    `v-frame cannot ${method} while a replacement document is loading`,
+    "InvalidStateError",
+  );
+}
+
 function canceledNavigationError(url: string): DOMException {
   return new DOMException(`v-frame navigation to ${url} was canceled`, "AbortError");
 }
@@ -56,6 +64,23 @@ interface AdoptedMarkup {
   source: string;
   previewNodes: Node[];
   state: AdoptionState;
+}
+
+/** What a staged load falls back to if it fails: the guest that was committed. */
+interface PreviousGuest {
+  realm: VFrameRealm | null;
+  realmController: AbortController | null;
+  historySession: VirtualHistorySession | null;
+  url: string | null;
+}
+
+/** What `#load` learns while it runs and the realm callbacks must see. */
+interface LoadProgress {
+  finalURL: string;
+  failureURL: string;
+  // While a load is staged behind a live guest, the URL the host observes still
+  // belongs to that guest; this realm owns it only once it goes live.
+  staged: boolean;
 }
 
 interface FrameLoad {
@@ -68,7 +93,29 @@ interface FrameLoad {
   navigationKind: VFrameNavigationKind | null;
 }
 
-function identityTrustedTypesPolicy(name: string): VFrameTrustedTypesPolicyDefinition {
+function traversalSupersededError(): DOMException {
+  return new DOMException("The v-frame traversal was superseded", "AbortError");
+}
+
+function effectiveCredentials(value: string | null): VFrameCredentials {
+  return value === "omit" || value === "include" || value === "same-origin"
+    ? value
+    : "same-origin";
+}
+
+function effectiveNavigation(value: string | null): VFrameNavigation {
+  return value === "host" ? "host" : "guest";
+}
+
+function effectiveTrustedTypesPolicyName(value: string | null): string | null {
+  const name = value?.trim() ?? "";
+  return name === "" ? null : name;
+}
+
+// The string form of `trusted-types-policy` only names a policy the host's CSP
+// `trusted-types` directive already allows. It passes every value through
+// unchanged, so it grants the guest the right to create the policy and nothing more.
+function allowlistedTrustedTypesPolicy(name: string): VFrameTrustedTypesPolicyDefinition {
   return {
     name,
     createHTML: (source) => source,
@@ -88,7 +135,7 @@ export class VFrameElement extends HTMLElementBase {
 
   readonly #root: ShadowRoot;
   readonly #internals: ElementInternals;
-  #status: VFrameStatusValue = VFrameStatus.Idle;
+  #status: VFrameStatus = VFrameStatus.Idle;
   #currentURL: string | null = null;
   // The guest's index in its own session, or null while no realm has reported one.
   #currentPosition: number | null = null;
@@ -97,8 +144,10 @@ export class VFrameElement extends HTMLElementBase {
   #realmController: AbortController | null = null;
   #loadController: AbortController | null = null;
   #historySession: VirtualHistorySession | null = null;
+  // Only ever grows, so a number identifies one load for the element's lifetime.
   #generation = 0;
-  #realmGeneration = 0;
+  // The newest guest-initiated navigation still waiting for its microtask.
+  #pendingGuestLoad: object | null = null;
   #connected = false;
   #adoptionAvailable = false;
   #adoptionConsumed = false;
@@ -134,11 +183,7 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   get credentials(): VFrameCredentials {
-    const value = this.getAttribute("credentials");
-    if (value === "omit" || value === "include" || value === "same-origin") {
-      return value;
-    }
-    return "same-origin";
+    return effectiveCredentials(this.getAttribute("credentials"));
   }
 
   set credentials(value: VFrameCredentials) {
@@ -151,7 +196,7 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   get navigation(): VFrameNavigation {
-    return this.getAttribute("navigation") === "host" ? "host" : "guest";
+    return effectiveNavigation(this.getAttribute("navigation"));
   }
 
   set navigation(value: VFrameNavigation) {
@@ -224,7 +269,7 @@ export class VFrameElement extends HTMLElementBase {
     }
   }
 
-  get status(): VFrameStatusValue {
+  get status(): VFrameStatus {
     return this.#status;
   }
 
@@ -253,6 +298,11 @@ export class VFrameElement extends HTMLElementBase {
     const navigation = this.#realm?.navigation ?? null;
     if (navigation === null) {
       return Promise.reject(idleNavigationError("navigate"));
+    }
+    // A staged load has silenced the live guest, so delegating would surface as a
+    // listener-canceled navigation; "canceled" has to keep meaning exactly that.
+    if (this.#loadController !== null) {
+      return Promise.reject(loadingNavigationError("navigate"));
     }
 
     let route: URL;
@@ -292,6 +342,9 @@ export class VFrameElement extends HTMLElementBase {
     const navigation = this.#realm?.navigation ?? null;
     if (navigation === null) {
       throw idleNavigationError("traverse");
+    }
+    if (this.#loadController !== null) {
+      throw loadingNavigationError("traverse");
     }
 
     const steps = Number.isFinite(delta) ? Math.trunc(delta) : 0;
@@ -363,6 +416,12 @@ export class VFrameElement extends HTMLElementBase {
     this.#resetToIdle();
   }
 
+  // A state-preserving move (`Element.prototype.moveBefore`) keeps the realm iframe
+  // inside the shadow root alive, so the guest has nothing to restart. Defining this
+  // is what opts out of the disconnect/connect pair; a plain remove + insert still
+  // runs both and reloads the guest.
+  connectedMoveCallback(): void {}
+
   attributeChangedCallback(
     name: string,
     oldValue: string | null,
@@ -377,6 +436,24 @@ export class VFrameElement extends HTMLElementBase {
     }
     if (oldValue === newValue || !this.#connected) {
       return;
+    }
+    // The attribute falls back to a default for values it does not recognise, so two
+    // different strings can mean the same configuration. Only a real change reloads.
+    if (name === "credentials") {
+      if (effectiveCredentials(oldValue) === effectiveCredentials(newValue)) {
+        return;
+      }
+    } else if (name === "navigation") {
+      if (effectiveNavigation(oldValue) === effectiveNavigation(newValue)) {
+        return;
+      }
+    } else if (name === "trusted-types-policy") {
+      if (
+        effectiveTrustedTypesPolicyName(oldValue) ===
+        effectiveTrustedTypesPolicyName(newValue)
+      ) {
+        return;
+      }
     }
 
     this.#configurationChanged(name === "src");
@@ -394,31 +471,38 @@ export class VFrameElement extends HTMLElementBase {
     }
 
     this.#observeLoad(
-      this.#startLoad({
-        source,
-        adoptedMarkup: null,
-        historySession: null,
-        stageMarkup: stageMarkup && this.#realm !== null,
-        boundNavigation: this.navigation === "host",
-        navigationKind: null,
-      }),
+      this.#startLoad(
+        this.#frameLoad({
+          source,
+          stage: stageMarkup,
+          boundNavigation: this.navigation === "host",
+        }),
+      ),
     );
   }
 
   reload(): Promise<void> {
     const source = this.#loadSource();
-    if (!this.isConnected || source === null) {
+    if (!this.#connected || source === null) {
       this.#resetToIdle();
-      return Promise.resolve();
+      return Promise.reject(
+        new DOMException(
+          "v-frame cannot reload without a connected frame that has a src",
+          "InvalidStateError",
+        ),
+      );
     }
 
-    return this.#startLoad({
-      source: this.#currentURL ?? source,
-      adoptedMarkup: null,
-      historySession: this.#historySession?.clone() ?? null,
-      stageMarkup: this.#realm !== null,
-      boundNavigation: this.navigation === "host",
-      navigationKind: null,
+    return this.#startLoad(
+      this.#frameLoad({
+        source: this.#currentURL ?? source,
+        historySession: this.#historySession?.clone() ?? null,
+        boundNavigation: this.navigation === "host",
+      }),
+    ).then((committed) => {
+      if (!committed) {
+        throw abortError();
+      }
     });
   }
 
@@ -430,16 +514,16 @@ export class VFrameElement extends HTMLElementBase {
     if (this.#trustedTypesPolicy !== null) {
       return this.#trustedTypesPolicy;
     }
-    const name = this.getAttribute("trusted-types-policy")?.trim() ?? "";
-    return name === "" ? null : identityTrustedTypesPolicy(name);
+    const name = effectiveTrustedTypesPolicyName(
+      this.getAttribute("trusted-types-policy"),
+    );
+    return name === null ? null : allowlistedTrustedTypesPolicy(name);
   }
 
   #resetToIdle(): void {
     this.#generation += 1;
-    this.#destroyRealm();
-    this.#currentURL = null;
-    this.#currentPosition = null;
-    this.#historySession = null;
+    this.#pendingGuestLoad = null;
+    this.#releaseGuest(true);
     this.#setStatus(VFrameStatus.Idle);
   }
 
@@ -482,31 +566,83 @@ export class VFrameElement extends HTMLElementBase {
     super.removeEventListener(type, listener, options);
   }
 
-  #observeLoad(load: Promise<void>): void {
+  #observeLoad(load: Promise<unknown>): void {
     void load.catch(() => undefined);
   }
 
-  #startLoad(load: FrameLoad): Promise<void> {
+  // A load that replaces the document while a guest is live is staged behind it, so
+  // the guest stays on screen until the replacement is ready.
+  #frameLoad(options: {
+    source: string;
+    historySession?: VirtualHistorySession | null;
+    navigationKind?: VFrameNavigationKind | null;
+    boundNavigation?: boolean;
+    stage?: boolean;
+  }): FrameLoad {
+    return {
+      source: options.source,
+      adoptedMarkup: null,
+      historySession: options.historySession ?? null,
+      stageMarkup: (options.stage ?? true) && this.#realm !== null,
+      boundNavigation: options.boundNavigation ?? false,
+      navigationKind: options.navigationKind ?? null,
+    };
+  }
+
+  // A navigation the guest asked for begins on a microtask, so the guest's own call
+  // stack finishes before its document is replaced. The latest request wins: another
+  // guest navigation, or a host `src` change, made before the microtask runs clears
+  // the token (`#startLoad` does), and the request that lost settles as superseded
+  // rather than vanishing after the guest was told it was allowed.
+  #deferGuestLoad(
+    ownsController: () => boolean,
+    load: () => FrameLoad,
+    superseded: () => DOMException = abortError,
+  ): Promise<void> {
+    const token = {};
+    this.#pendingGuestLoad = token;
+    return new Promise<void>((resolve, reject) => {
+      queueMicrotask(() => {
+        if (this.#pendingGuestLoad !== token || !ownsController()) {
+          reject(superseded());
+          return;
+        }
+        this.#startLoad(load()).then((committed) => {
+          // The load reports its own commit, so a listener that starts another load
+          // from `v-frame-navigated` does not turn this navigation into a rejection.
+          if (committed) {
+            resolve();
+          } else {
+            reject(superseded());
+          }
+        }, reject);
+      });
+    });
+  }
+
+  // Resolves true when this load committed its guest, false when it was superseded or
+  // released first; it rejects when the load failed.
+  #startLoad(load: FrameLoad): Promise<boolean> {
+    // During reveal the realm still belongs to the load being aborted below.
+    // It cannot be a rollback target until the handoff has finished.
+    if (this.#loadController !== null && this.#loadController === this.#realmController) {
+      load = { ...load, stageMarkup: false };
+    }
     this.#loadController?.abort();
     this.#loadingRealm = null;
+    this.#pendingGuestLoad = null;
     const generation = this.#generation + 1;
     this.#generation = generation;
-    const previousRealm = this.#realm;
-    const previousRealmController = this.#realmController;
-    const previousHistorySession = this.#historySession;
-    const previousURL = this.#currentURL;
-    const previousStatus = this.#status;
+    const previous: PreviousGuest = load.stageMarkup
+      ? {
+          realm: this.#realm,
+          realmController: this.#realmController,
+          historySession: this.#historySession,
+          url: this.#currentURL,
+        }
+      : { realm: null, realmController: null, historySession: null, url: null };
     if (!load.stageMarkup) {
-      previousRealm?.dispose();
-      this.#realm = null;
-      previousRealmController?.abort();
-      this.#realmController = null;
-      this.#historySession = null;
-      this.#currentURL = null;
-      this.#currentPosition = null;
-      for (const child of Array.from(this.#root.children)) {
-        child.remove();
-      }
+      this.#releaseGuest(true);
     }
     const controller = new AbortController();
     const adoptedState = load.adoptedMarkup?.state;
@@ -516,27 +652,15 @@ export class VFrameElement extends HTMLElementBase {
       });
     }
     this.#loadController = controller;
-    return this.#load(generation, controller, load, {
-      realm: load.stageMarkup ? previousRealm : null,
-      realmController: load.stageMarkup ? previousRealmController : null,
-      historySession: load.stageMarkup ? previousHistorySession : null,
-      url: load.stageMarkup ? previousURL : null,
-      status: load.stageMarkup ? previousStatus : VFrameStatus.Idle,
-    });
+    return this.#load(generation, controller, load, previous);
   }
 
   async #load(
     generation: number,
     controller: AbortController,
     load: FrameLoad,
-    previous: {
-      realm: VFrameRealm | null;
-      realmController: AbortController | null;
-      historySession: VirtualHistorySession | null;
-      url: string | null;
-      status: VFrameStatusValue;
-    },
-  ): Promise<void> {
+    previous: PreviousGuest,
+  ): Promise<boolean> {
     this.#setStatus(VFrameStatus.Loading);
 
     let requestedURL: URL;
@@ -568,7 +692,11 @@ export class VFrameElement extends HTMLElementBase {
     }
 
     let entryResolved = false;
-    let failureURL = requestedURL.href;
+    const progress: LoadProgress = {
+      finalURL: requestedURL.href,
+      failureURL: requestedURL.href,
+      staged: previous.realm !== null,
+    };
     const pendingRealm = { iframe: null as HTMLIFrameElement | null };
     let realmConnectionFailed = false;
     const connectRealm = (url: string) =>
@@ -589,7 +717,6 @@ export class VFrameElement extends HTMLElementBase {
 
     try {
       let source: string;
-      let finalURL: string;
       let connection: ConnectedRealmIframe;
       if (load.adoptedMarkup === null) {
         const entryResponse = fetch(requestedURL, {
@@ -613,41 +740,41 @@ export class VFrameElement extends HTMLElementBase {
         if (responseURL.hash === "") {
           responseURL.hash = requestedURL.hash;
         }
-        finalURL = responseURL.href;
+        progress.finalURL = responseURL.href;
       } else {
         connection = await connectRealm(requestedURL.href);
         source = load.adoptedMarkup.source;
-        finalURL = requestedURL.href;
       }
       entryResolved = true;
-      failureURL = finalURL;
-      if (new URL(finalURL).origin !== this.ownerDocument.location.origin) {
+      progress.failureURL = progress.finalURL;
+      if (new URL(progress.finalURL).origin !== this.ownerDocument.location.origin) {
         throw new TypeError(
-          `v-frame route ${finalURL} must share host origin ${this.ownerDocument.location.origin}`,
+          `v-frame route ${progress.finalURL} must share host origin ${this.ownerDocument.location.origin}`,
         );
       }
-      if (finalURL !== requestedURL.href) {
+      if (progress.finalURL !== requestedURL.href) {
         const realmWindow = connection.iframe.contentWindow;
         if (realmWindow === null) {
           throw new Error(
-            `v-frame redirect ${requestedURL.href} to ${finalURL} lost its execution realm`,
+            `v-frame redirect ${requestedURL.href} to ${progress.finalURL} lost its execution realm`,
           );
         }
-        realmWindow.history.replaceState(null, "", finalURL);
+        realmWindow.history.replaceState(null, "", progress.finalURL);
       }
-      const historySession = load.historySession ?? new VirtualHistorySession(finalURL);
-      historySession.replaceCurrentURL(finalURL);
-      // While this load is staged behind a live guest, the URL the host observes still
-      // belongs to that guest; this realm owns it only once it goes live.
-      let staged = previous.realm !== null;
-      if (!staged) {
-        this.#currentURL = finalURL;
+      const historySession =
+        load.historySession ?? new VirtualHistorySession(progress.finalURL);
+      historySession.replaceCurrentURL(progress.finalURL);
+      if (!progress.staged) {
+        this.#currentURL = progress.finalURL;
       }
 
+      // A load owns its callbacks while it is the load in flight, and a committed realm
+      // owns them while nothing is loading behind it: a staged replacement silences the
+      // live guest until it commits or fails and hands the guest back.
       const ownsController = () =>
-        this.#generation === generation &&
-        (this.#loadController === controller || this.#realmController === controller) &&
-        !controller.signal.aborted;
+        !controller.signal.aborted &&
+        (this.#loadController === controller ||
+          (this.#realmController === controller && this.#loadController === null));
       const realm = await createRealm({
         host: this,
         shadowRoot: this.#root,
@@ -662,7 +789,7 @@ export class VFrameElement extends HTMLElementBase {
                 previewNodes: load.adoptedMarkup.previewNodes,
                 state: load.adoptedMarkup.state,
               },
-        pageURL: finalURL,
+        pageURL: progress.finalURL,
         historySession,
         boundNavigation: load.boundNavigation,
         stageMarkup: load.stageMarkup,
@@ -670,157 +797,19 @@ export class VFrameElement extends HTMLElementBase {
         credentials: this.credentials,
         signal: controller.signal,
         getNonce: () => this.nonce,
-        fetchStylesheet: async (url) => {
-          const stylesheetResponse = await fetch(url, {
-            credentials: this.credentials,
-            signal: controller.signal,
-          });
-          if (!stylesheetResponse.ok || stylesheetResponse.type === "opaque") {
-            throw new TypeError(
-              `v-frame stylesheet ${url} returned ${stylesheetResponse.status} ${stylesheetResponse.statusText}`,
-            );
-          }
-          return {
-            text: await stylesheetResponse.text(),
-            url: stylesheetResponse.url || url,
-          };
-        },
-        onURLChange: (url, kind) => {
-          finalURL = url;
-          failureURL = url;
-          if (ownsController() && !staged) {
-            this.#setCurrentURL(url, kind);
-          }
-        },
-        onNavigate: (detail, dispatchOptions) => {
-          if (!ownsController()) {
-            return false;
-          }
-
-          const allowed = this.#dispatchNavigate(
-            detail,
-            dispatchOptions?.cancelable === true,
-          );
-          return allowed && ownsController();
-        },
-        onDocumentNavigation: (
-          detail: VFrameNavigateEventDetail,
-          mode: DocumentHistoryMode,
-        ) => {
-          if (!ownsController() || !this.#dispatchNavigate(detail) || !ownsController()) {
-            return false;
-          }
-          historySession.captureScroll(this.scrollLeft, this.scrollTop);
-          const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
-          queueMicrotask(() => {
-            if (!ownsController()) {
-              return;
-            }
-            this.#observeLoad(
-              this.#startLoad({
-                source: detail.to,
-                adoptedMarkup: null,
-                historySession: nextSession,
-                stageMarkup: this.#realm !== null,
-                boundNavigation: false,
-                navigationKind: detail.kind,
-              }),
-            );
-          });
-          return true;
-        },
-        onDocumentTraversal: (nextSession) => {
-          return new Promise<void>((resolve, reject) => {
-            queueMicrotask(() => {
-              if (!ownsController()) {
-                reject(
-                  new DOMException("The v-frame traversal was superseded", "AbortError"),
-                );
-                return;
-              }
-              const traversalGeneration = this.#generation + 1;
-              void this.#startLoad({
-                source: nextSession.currentURL,
-                adoptedMarkup: null,
-                historySession: nextSession,
-                stageMarkup: this.#realm !== null,
-                boundNavigation: false,
-                navigationKind: "traverse",
-              }).then(() => {
-                if (
-                  this.#realmGeneration !== traversalGeneration ||
-                  this.#generation !== traversalGeneration
-                ) {
-                  reject(
-                    new DOMException(
-                      "The v-frame traversal was superseded",
-                      "AbortError",
-                    ),
-                  );
-                } else {
-                  resolve();
-                }
-              }, reject);
-            });
-          });
-        },
-        onShellNavigation: (detail) => {
-          if (!ownsController()) {
-            return false;
-          }
-          const allowed = this.#dispatchNavigate(detail) && ownsController();
-          if (allowed) {
-            this.ownerDocument.defaultView?.location.assign(detail.to);
-          }
-          return allowed;
-        },
-        onNativeLocationNavigation: (detail, mode) => {
-          if (!ownsController()) {
-            return;
-          }
-          if (load.boundNavigation) {
-            const hostLocation = this.ownerDocument.defaultView?.location;
-            if (mode === "replace") {
-              hostLocation?.replace(detail.to);
-            } else if (mode === "reload") {
-              hostLocation?.reload();
-            } else {
-              hostLocation?.assign(detail.to);
-            }
-            return;
-          }
-          historySession.captureScroll(this.scrollLeft, this.scrollTop);
-          const nextSession =
-            mode === "reload"
-              ? historySession.clone()
-              : historySession.forkDocumentNavigation(detail.to, mode);
-          queueMicrotask(() => {
-            if (!ownsController()) {
-              return;
-            }
-            this.#observeLoad(
-              this.#startLoad({
-                source: nextSession.currentURL,
-                adoptedMarkup: null,
-                historySession: nextSession,
-                stageMarkup: this.#realm !== null,
-                boundNavigation: load.boundNavigation,
-                navigationKind: detail.kind,
-              }),
-            );
-          });
-        },
-        onError: (failure) => {
-          if (ownsController()) {
-            this.#dispatchError({ ...failure, fatal: false });
-          }
-        },
+        fetchStylesheet: (url) => this.#fetchStylesheet(url, controller.signal),
+        ...this.#realmCallbacks(
+          load.boundNavigation,
+          historySession,
+          progress,
+          ownsController,
+        ),
       });
       pendingRealm.iframe = null;
 
       if (this.#generation !== generation || controller.signal.aborted) {
         realm.dispose();
-        return;
+        return false;
       }
 
       if (previous.realm === null) {
@@ -831,25 +820,37 @@ export class VFrameElement extends HTMLElementBase {
       this.#assertCurrentGeneration(generation, controller.signal);
       previous.realm?.dispose();
       previous.realmController?.abort();
-      // The live realm's callbacks share this load's closure. Drop rollback
-      // references once it commits so replacements cannot retain their parents.
+      // `previous.realm === null` is what tells the catch path a throw from
+      // `realm.reveal()` below fails this generation instead of rolling back to a
+      // guest that was just disposed.
       previous.realm = null;
-      previous.realmController = null;
-      previous.historySession = null;
       this.#realm = realm;
       this.#loadingRealm = null;
       this.#realmController = controller;
       this.#historySession = historySession;
-      this.#realmGeneration = generation;
-      staged = false;
-      this.#setCurrentURL(finalURL, load.navigationKind);
+      progress.staged = false;
+      // Publish the guest URL before the handoff restores its state. Until reveal
+      // returns, the realm still belongs to this load and cannot be a rollback target.
+      const navigated = this.#commitURL(progress.finalURL, load.navigationKind);
+      // An SSR handoff runs guest and host code while revealing: it can throw, which
+      // must still fail this load, or disconnect the frame, which already released it.
       realm.reveal();
-      this.#assertCurrentGeneration(generation, controller.signal);
+      if (this.#generation !== generation || controller.signal.aborted) {
+        return false;
+      }
       this.#loadController = null;
       this.#setStatus(VFrameStatus.Ready);
-      this.#dispatch<VFrameLoadEventDetail>("v-frame-load", {
-        url: this.#currentURL ?? finalURL,
-      });
+      // Lifecycle listeners now see a fully committed guest.
+      const loadedURL = this.#currentURL ?? progress.finalURL;
+      // `v-frame-navigated` still fires for a load that committed. If its listener
+      // supersedes this load (removes the frame, changes `src`), the load itself
+      // still counts as committed but never reports `v-frame-load`.
+      this.#dispatchNavigated(navigated);
+      if (this.#generation !== generation || controller.signal.aborted) {
+        return true;
+      }
+      this.#dispatch<VFrameLoadEventDetail>("v-frame-load", { url: loadedURL });
+      return true;
     } catch (error) {
       pendingRealm.iframe?.remove();
       if (
@@ -857,7 +858,7 @@ export class VFrameElement extends HTMLElementBase {
         controller.signal.aborted ||
         isAbortError(error)
       ) {
-        return;
+        return false;
       }
 
       const failure = {
@@ -865,7 +866,7 @@ export class VFrameElement extends HTMLElementBase {
           realmConnectionFailed || entryResolved
             ? ("bootstrap" as const)
             : ("entry" as const),
-        url: failureURL,
+        url: progress.failureURL,
         error,
       };
       this.#finishFailedLoad(generation, controller, previous, failure);
@@ -873,16 +874,135 @@ export class VFrameElement extends HTMLElementBase {
     }
   }
 
+  async #fetchStylesheet(
+    url: string,
+    signal: AbortSignal,
+  ): Promise<{ text: string; url: string }> {
+    const response = await fetch(url, { credentials: this.credentials, signal });
+    if (!response.ok || response.type === "opaque") {
+      throw new TypeError(
+        `v-frame stylesheet ${url} returned ${response.status} ${response.statusText}`,
+      );
+    }
+    return { text: await response.text(), url: response.url || url };
+  }
+
+  // The callbacks a realm uses to ask the host to navigate. They share the load's
+  // progress and its ownership test, so a realm the host has moved past is ignored.
+  #realmCallbacks(
+    boundNavigation: boolean,
+    historySession: VirtualHistorySession,
+    progress: LoadProgress,
+    ownsController: () => boolean,
+  ): Pick<
+    CreateRealmOptions,
+    | "onURLChange"
+    | "onNavigate"
+    | "onDocumentNavigation"
+    | "onDocumentTraversal"
+    | "onShellNavigation"
+    | "onNativeLocationNavigation"
+    | "onError"
+  > {
+    return {
+      onURLChange: (url, kind) => {
+        progress.finalURL = url;
+        progress.failureURL = url;
+        if (ownsController() && !progress.staged) {
+          this.#dispatchNavigated(this.#commitURL(url, kind));
+        }
+      },
+      onNavigate: (detail, dispatchOptions) => {
+        if (!ownsController()) {
+          return false;
+        }
+
+        const allowed = this.#dispatchNavigate(
+          detail,
+          dispatchOptions?.cancelable === true,
+        );
+        return allowed && ownsController();
+      },
+      onDocumentNavigation: (detail, mode) => {
+        if (!ownsController() || !this.#dispatchNavigate(detail) || !ownsController()) {
+          return false;
+        }
+        historySession.captureScroll(this.scrollLeft, this.scrollTop);
+        const nextSession = historySession.forkDocumentNavigation(detail.to, mode);
+        this.#observeLoad(
+          this.#deferGuestLoad(ownsController, () =>
+            this.#frameLoad({
+              source: detail.to,
+              historySession: nextSession,
+              navigationKind: detail.kind,
+            }),
+          ),
+        );
+        return true;
+      },
+      onDocumentTraversal: (nextSession) =>
+        this.#deferGuestLoad(
+          ownsController,
+          () =>
+            this.#frameLoad({
+              source: nextSession.currentURL,
+              historySession: nextSession,
+              navigationKind: "traverse",
+            }),
+          traversalSupersededError,
+        ),
+      onShellNavigation: (detail) => {
+        if (!ownsController()) {
+          return false;
+        }
+        const allowed = this.#dispatchNavigate(detail) && ownsController();
+        if (allowed) {
+          this.ownerDocument.defaultView?.location.assign(detail.to);
+        }
+        return allowed;
+      },
+      onNativeLocationNavigation: (detail, mode) => {
+        if (!ownsController()) {
+          return;
+        }
+        if (boundNavigation) {
+          const hostLocation = this.ownerDocument.defaultView?.location;
+          if (mode === "replace") {
+            hostLocation?.replace(detail.to);
+          } else if (mode === "reload") {
+            hostLocation?.reload();
+          } else {
+            hostLocation?.assign(detail.to);
+          }
+          return;
+        }
+        historySession.captureScroll(this.scrollLeft, this.scrollTop);
+        const nextSession =
+          mode === "reload"
+            ? historySession.clone()
+            : historySession.forkDocumentNavigation(detail.to, mode);
+        this.#observeLoad(
+          this.#deferGuestLoad(ownsController, () =>
+            this.#frameLoad({
+              source: nextSession.currentURL,
+              historySession: nextSession,
+              navigationKind: detail.kind,
+            }),
+          ),
+        );
+      },
+      onError: (failure) => {
+        if (ownsController()) {
+          this.#dispatchError({ ...failure, fatal: false });
+        }
+      },
+    };
+  }
+
   #finishFailedLoad(
     generation: number,
     controller: AbortController,
-    previous: {
-      realm: VFrameRealm | null;
-      realmController: AbortController | null;
-      historySession: VirtualHistorySession | null;
-      url: string | null;
-      status: VFrameStatusValue;
-    },
+    previous: PreviousGuest,
     failure: RealmFailure,
   ): void {
     if (this.#generation !== generation || this.#loadController !== controller) {
@@ -897,18 +1017,21 @@ export class VFrameElement extends HTMLElementBase {
       return;
     }
 
-    this.#generation = this.#realmGeneration;
+    // A failed replacement hands back the guest that was committed. That guest is
+    // ready whatever the frame was doing when this load began, and the generation
+    // stays where it is: numbers are never reused, so no dead load can match a
+    // live one. The restored realm owns its callbacks again once nothing is loading.
     this.#realm = previous.realm;
     this.#realmController = previous.realmController;
     this.#historySession = previous.historySession;
     this.#currentURL = previous.url;
-    this.#setStatus(previous.status);
+    this.#setStatus(VFrameStatus.Ready);
     this.#dispatchError({ ...failure, fatal: false });
   }
 
   #assertCurrentGeneration(generation: number, signal: AbortSignal): void {
     if (this.#generation !== generation || signal.aborted) {
-      throw new DOMException("The v-frame load was superseded", "AbortError");
+      throw abortError();
     }
   }
 
@@ -918,23 +1041,16 @@ export class VFrameElement extends HTMLElementBase {
     }
 
     this.#generation = generation + 1;
-    const realm = this.#realm;
-    this.#realm = null;
-    realm?.dispose();
-    this.#loadingRealm?.dispose();
-    this.#loadingRealm = null;
-    this.#realmController?.abort();
-    this.#realmController = null;
-    this.#loadController?.abort();
-    this.#loadController = null;
-    this.#historySession = null;
-    this.#realmGeneration = 0;
-    this.#currentURL = null;
+    // A failed first load leaves whatever the shadow root holds, such as adopted
+    // preview markup, for the host to keep showing.
+    this.#releaseGuest(false);
     this.#setStatus(VFrameStatus.Error);
     this.#dispatchError({ ...failure, fatal: true });
   }
 
-  #destroyRealm(): void {
+  // The one way a guest is released: every realm, controller and session goes, along
+  // with the URL and, unless the caller needs the shadow root's contents, its children.
+  #releaseGuest(clearRoot: boolean): void {
     const realm = this.#realm;
     this.#realm = null;
     realm?.dispose();
@@ -945,13 +1061,16 @@ export class VFrameElement extends HTMLElementBase {
     this.#loadController?.abort();
     this.#loadController = null;
     this.#historySession = null;
-    this.#realmGeneration = 0;
-    for (const child of Array.from(this.#root.children)) {
-      child.remove();
+    this.#currentURL = null;
+    this.#currentPosition = null;
+    if (clearRoot) {
+      for (const child of Array.from(this.#root.children)) {
+        child.remove();
+      }
     }
   }
 
-  #setStatus(status: VFrameStatusValue): void {
+  #setStatus(status: VFrameStatus): void {
     this.#status = status;
     this.#internals.states.clear();
     this.#internals.states.add(status);
@@ -991,16 +1110,20 @@ export class VFrameElement extends HTMLElementBase {
     return (this.#realm ?? this.#loadingRealm)?.navigation.position ?? null;
   }
 
-  // The past-tense counterpart of `v-frame-navigate`: the guest URL is already the new
-  // one, so a host router can read `currentURL`, `canGoBack` and `canGoForward` here.
-  #setCurrentURL(url: string, kind: VFrameNavigationKind | null): void {
+  // Records the guest's new URL and returns the `v-frame-navigated` detail it implies,
+  // or null when nothing moved. Dispatching is separate so a load can finish
+  // committing before any listener runs.
+  #commitURL(
+    url: string,
+    kind: VFrameNavigationKind | null,
+  ): VFrameNavigatedEventDetail | null {
     const from = this.#currentURL;
     const fromPosition = this.#currentPosition;
     const position = this.#historyPosition();
     this.#currentURL = url;
     this.#currentPosition = position;
     if (kind === null || from === null) {
-      return;
+      return null;
     }
     // Pushing the URL the guest is already on still moves the session, and
     // `canGoBack` moves with it, so the position decides — not the URL string.
@@ -1009,14 +1132,15 @@ export class VFrameElement extends HTMLElementBase {
     const moved =
       from !== url ||
       (fromPosition !== null && position !== null && fromPosition !== position);
-    if (!moved) {
-      return;
+    return moved ? { from, to: url, kind } : null;
+  }
+
+  // The past-tense counterpart of `v-frame-navigate`: the guest URL is already the new
+  // one, so a host router can read `currentURL`, `canGoBack` and `canGoForward` here.
+  #dispatchNavigated(detail: VFrameNavigatedEventDetail | null): void {
+    if (detail !== null) {
+      this.#dispatch<VFrameNavigatedEventDetail>("v-frame-navigated", detail);
     }
-    this.#dispatch<VFrameNavigatedEventDetail>("v-frame-navigated", {
-      from,
-      to: url,
-      kind,
-    });
   }
 
   #dispatchNavigate(detail: VFrameNavigateEventDetail, hostInitiated = false): boolean {

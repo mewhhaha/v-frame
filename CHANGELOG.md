@@ -3,6 +3,111 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 - 2026-10-08
+
+### Changed
+
+- **Breaking:** `materializeVFrameDocument` resolves to a `Response` instead of
+  returning one, transforms only `200 text/html` responses (anything else passes
+  through untouched), strips validator, range and encoding headers from the
+  rewritten body, and accepts `options.HTMLRewriter` for runtimes without a
+  global one. The module is `src/server/html-rewriter.ts`; it buffers the guest
+  document and streams the rewritten markup with backpressure and cancellation.
+- **Breaking:** removed the `VFrameStatusValue` type alias (`VFrameStatus` is
+  both the value and the type) and `VFrameLoadStartEventDetail` (use
+  `VFrameLoadEventDetail`).
+- `v-frame-navigated` and `v-frame-load` fire after the guest is revealed and
+  `status` is `ready`, so listeners may start another navigation.
+- Attribute changes that keep the effective configuration (an invalid
+  `credentials` value, removing `navigation="guest"`) no longer reload the
+  guest; `connectedMoveCallback` keeps the guest alive across `moveBefore()`.
+- `Selection.modify()` throws `NotSupportedError` instead of doing nothing.
+- Bootstrap fails loudly, as a `bootstrap` `v-frame-error`, when constructable
+  stylesheets are missing or a viewport property cannot be virtualized.
+- `build` no longer typechecks first; `pnpm check` runs exactly the CI pipeline.
+- **Breaking:** `reload()` settles with the load it starts: it rejects with
+  `AbortError` when superseded or removed, and with `InvalidStateError` when the
+  frame is disconnected or has no `src`. `navigate()`, `back()`, `forward()` and
+  `go()` reject with `InvalidStateError` while a replacement document is loading.
+- **Breaking:** `StylesheetFetch` is `(url, { signal })` and
+  `createStylesheetContext` takes an optional `AbortSignal`; the materializer
+  passes its own, so cancelling the response aborts custom fetches too.
+- The materializer decodes non-UTF-8 guests (BOM, header, `<meta>` prescan) and
+  emits UTF-8, marks the styles it materialized (`data-v-frame-materialized`),
+  fetches linked stylesheets and sibling `@import`s concurrently, and exports
+  the linked-stylesheet wire constants for hosts with their own HTML parser.
+- `window.open()` popups are always opened with `noopener`; host-mode
+  `history.go()` with a zero or non-numeric delta no longer reloads the host page.
+- Node `>=22.18` (`devEngines`) runs the dev scripts; `pnpm check:fast` and
+  `pnpm test:e2e:chromium` give a quick local loop, and CI runs pushes to `main`
+  and pull requests once each.
+
+### Fixed
+
+- Guest callbacks on listener events, including function-valued `detail`, keep
+  their identity; guest event subclass methods see the virtual current target.
+- Nested CSSOM `insertRule()` calls rewrite selectors and URLs, register inserted
+  rules, and keep staged styles from affecting the outgoing guest.
+- `XMLSerializer` accepts guest shadow roots and serializes the guest document,
+  including its doctype, instead of the hidden execution document.
+- A replacement started during SSR handoff cannot roll back to an aborted realm.
+- Range insertions reject non-nodes with the guest's `TypeError`, and
+  `cloneContents()` visits only the selected subtree and its boundary ancestors.
+- `document.links`, `document.anchors` and `document.scripts` exclude SVG elements.
+- Deferred-script preloads retain integrity, referrer policy and fetch priority.
+- SVG anchor fragment links resolve against the guest URL while SVG resource
+  fragments remain local to the rendered tree.
+- Package smoke tests check the server wire constants and stylesheet abort signal
+  against the installed build; the API method count is corrected.
+- A load that superseded a staged load and then failed left `status` stuck at
+  `loading`; load generations no longer rewind, and when a guest navigates
+  twice in one task the later request wins.
+- `Request` keeps the native prototype, so `clone()` and natively created
+  requests pass `instanceof Request`.
+- `querySelectorAll`, `childNodes`, `children` and `getClientRects()` return
+  native-branded lists; `Event.prototype` methods accept listener event objects.
+- WebIDL conversions: `innerHTML = null`, `style.setProperty(p, null)`,
+  `toggleAttribute(n, null)`, `setAttribute(null, …)`, `createElement(null)`,
+  `setAttributeNS` namespace errors, `insertAdjacentHTML` validation,
+  non-callable listeners, and `pushState` with an unparsable URL (`SecurityError`).
+- `document.on*`, `window.on*` and window-reflecting `<body>` handlers cover every
+  event type, keep their listener position when reassigned, and composed guest
+  events no longer escape the shadow root to host listeners.
+- Live collections no longer accumulate per-argument caches and invalidators.
+- `replaceChildren` validates before removing anything and reports one
+  mutation record.
+- Stylesheet URL rebasing covers string URLs in `image-set()` and `src()` and
+  leaves `@namespace` alone.
+- Server: a guest without explicit `<html>`/`<head>` still honours its `<base>`,
+  and inline `<style>` and `<link>` materialization failures are handled alike.
+- An `XMLHttpRequest` opened but never sent is no longer retained until teardown.
+- `innerHTML`, `outerHTML`, `getHTML()` and `XMLSerializer` serialize the
+  guest's authored markup instead of v-frame's physical attributes.
+- `before`, `after`, `prepend`, `append` and `replaceWith` insert in native order,
+  validate before touching the tree, and report one mutation record.
+- `Range.cloneContents()`/`extractContents()` keep authored styles, handlers and
+  script state.
+- Listener events expose their real `constructor`, stable method identities, `view`
+  only where it exists, and work with event subclass accessors.
+- The `MutationObserver` facade no longer exposes internals to the guest.
+- `body.onX` and `window.onX` are one handler, body `onerror` gets the five-argument
+  form, and reassigning a window handler keeps its listener position.
+- WebIDL: `Symbol` values throw in URL and attribute setters, `toggleAttribute`
+  validates names, `document.title` collapses whitespace, and `WebSocket`,
+  `EventSource`, `Worker` and `window.open()` throw `SyntaxError` for unparsable URLs.
+- Deferred inline modules run in document order.
+- A load superseded by a `v-frame-navigated` listener no longer emits
+  `v-frame-load`, and a guest navigation's promise resolves once its document
+  commits.
+- Host-mode `pushState` resolves against the guest `<base>`.
+- `<link imagesrcset>` and SVG `<a href>` are rebased.
+- A server-rendered inline `<style>` that failed to materialize is rewritten at
+  activation; alternate stylesheets stay unapplied; a client disconnect no longer
+  reports every pending stylesheet as failed.
+- Host bookkeeping never calls a guest-patched `querySelectorAll`, and CSSOM
+  `insertRule` installs only the inserted rule.
+- Navigation fidelity, event lifetimes, and SSR state preservation (`78b4398`).
+
 ## 0.1.1 - 2026-10-02
 
 ### Added

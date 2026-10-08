@@ -93,8 +93,10 @@ headers, request detection, or middleware. Watch the element's lifecycle from
 the host:
 
 ```ts
+import { VFrameElement } from "@mewhhaha/v-frame";
+
 const frame = document.querySelector("v-frame");
-if (frame === null) {
+if (!(frame instanceof VFrameElement)) {
   throw new Error("host is missing its orders v-frame");
 }
 
@@ -106,6 +108,11 @@ frame.addEventListener("v-frame-error", (event) => {
   console.error("orders failed", event.detail);
 });
 ```
+
+The package does not augment `HTMLElementTagNameMap` (JSR forbids global
+augmentation), which is why the snippet narrows with `instanceof`; the
+[API reference](./docs/api.md#typing-the-element) shows the one-line
+augmentation to add to your own project instead.
 
 That is the whole client-only path. The recommended production path is
 server-rendered adoption, where the host server materializes the guest document

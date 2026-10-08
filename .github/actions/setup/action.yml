@@ -1,0 +1,28 @@
+name: Set up workspace
+description: Install pnpm, Node and the locked dependencies, and optionally Playwright browsers.
+
+inputs:
+  browsers:
+    description: Space-separated Playwright browsers to install with their system dependencies. Leave empty to install none.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # pnpm must be on the PATH before setup-node can cache its store.
+    - uses: pnpm/action-setup@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+
+    - if: inputs.browsers != ''
+      run: pnpm exec playwright install --with-deps $BROWSERS
+      shell: bash
+      env:
+        BROWSERS: ${{ inputs.browsers }}

@@ -6,6 +6,7 @@ import {
   startHTTPFixture,
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
+import { settleAfterRoundTrip } from "./support/settle";
 
 let fixture: HTTPFixture;
 
@@ -220,7 +221,7 @@ test("keeps quoted and unquoted fragment URLs local across stylesheet and CSSOM 
     expect(fill, source).toMatch(/^url\(["']?#paint["']?\)$/);
   }
 
-  await page.waitForTimeout(100);
+  await settleAfterRoundTrip(page, `${fixture.origin}/`);
   expect(
     fixture.requests.filter((pathname) => pathname === "/documents/fragments.html"),
   ).toHaveLength(1);

@@ -5,8 +5,8 @@
  * Every configuration is measured twice — once through a mounted v-frame, once as the
  * same markup parsed and inserted straight into the host document — so the numbers are
  * an overhead multiple rather than an unanchored millisecond count. Run it with
- * `pnpm bench`; it drives both headless engines, and reports heap on the one that can
- * give a collected reading.
+ * `pnpm bench`; it drives chromium and firefox (not webkit), and reports heap on the one
+ * that can give a collected reading.
  */
 import { existsSync } from "node:fs";
 import { cpus } from "node:os";
@@ -28,10 +28,10 @@ import {
 import { installBundle } from "../tests/support/mount-frame.js";
 
 /**
- * Both engines the test suite runs on, so a timing claim is never made from one of
- * them. They are measured one after the other rather than in parallel — the numbers
- * are wall-clock main-thread work and two browsers competing for the machine would
- * measure the machine.
+ * Chromium and firefox, two of the three engines the test suite runs on (WebKit is not
+ * measured), so a timing claim is never made from one of them. They are measured one
+ * after the other rather than in parallel — the numbers are wall-clock main-thread work
+ * and two browsers competing for the machine would measure the machine.
  */
 const ENGINES: BrowserType[] = [chromium, firefox];
 

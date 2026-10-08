@@ -1,7 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    // The root project emits declarations out of "src"; this project only checks.
+    // The root project emits declarations out of "src" (and `pnpm build` thereby
+    // typechecks it); this project only checks.
     "noEmit": true,
     "declaration": false,
     "emitDeclarationOnly": false,
@@ -12,9 +13,9 @@
     // The client example's host is React, and nothing else in this project is
     // JSX, so the setting is free to be the one that host needs.
     "jsx": "react-jsx",
-    // That host imports the package by its public name. `dist/` is built after
-    // typecheck runs, so resolve the name to the sources instead of to the
-    // declarations that do not exist yet.
+    // That host imports the package by its public name. `dist/` only exists
+    // after `pnpm build`, and this project must typecheck without it, so resolve
+    // the name to the sources instead of to the declarations built there.
     "paths": {
       "@mewhhaha/v-frame": ["./src/index.ts"],
       "@mewhhaha/v-frame/register": ["./src/register.ts"]

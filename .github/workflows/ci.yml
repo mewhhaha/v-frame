@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  # A pull request's own commits are covered by `pull_request`, so pushing a branch
+  # that has one would otherwise run every job twice. Pushes to other branches get
+  # no run until they open a pull request.
   push:
+    branches: [main]
   pull_request:
   workflow_call:
     inputs:
@@ -9,48 +13,32 @@ on:
         required: true
         type: string
 
+# A newer push to a pull request supersedes the run in flight. Every other run gets
+# a group of its own, so none is cancelled and none waits behind another: a push to
+# main (or a release's verification) always completes.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   check:
-    name: format, lint, typecheck, build, test, publish dry run
+    name: format, lint, types, build, unit, package, browser tests, publish dry run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
+          browsers: chromium firefox webkit
 
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm exec playwright install --with-deps chromium firefox webkit
-
-      - run: pnpm format:check
-
-      - run: pnpm lint
-
-      - run: pnpm typecheck
-
-      - run: pnpm build
-
-      - run: pnpm size
-
-      - run: pnpm release:check
-
-      - run: pnpm test:unit
-
-      - run: pnpm exec jsr publish --dry-run
-
-      - run: pnpm test:package
-
-      - run: pnpm exec playwright test
+      # `pnpm check` is the whole pipeline, defined once in package.json, so
+      # running it locally is the same as running this job.
+      - run: pnpm check
 
       - if: failure()
         uses: actions/upload-artifact@v4
@@ -73,16 +61,21 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      # examples/ssr/playwright.config.ts has chromium, firefox and webkit projects.
+      - uses: ./.github/actions/setup
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
+          browsers: chromium firefox webkit
 
-      - run: pnpm install --frozen-lockfile
+      # The apps import the package through dist/, so it must exist before they are
+      # typechecked. `types` only reads each wrangler config and the bundled workerd
+      # declarations, so it needs no network or account.
+      - run: pnpm build
 
-      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      # A `vite build` strips types without checking them, and tsconfig.test.json only
+      # covers the host's browser entries. Without this, apps/host/src/index.ts (which
+      # calls materializeVFrameDocument) and the other Worker entries are never checked.
+      - run: pnpm --filter example-ssr run types
+      - run: pnpm --filter example-ssr run typecheck
 
       # test:routing runs all SSR browser tests, including paint and WCAG checks,
       # after building the five applications through its webServer command.

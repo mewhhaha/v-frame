@@ -349,7 +349,9 @@ test("reports a CSP-blocked inline classic once without dispatching load", async
     frame.setAttribute("src", source);
     document.querySelector("#host")?.append(frame);
     await loaded;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
     return {
       blockedErrorEvents: frame.contentWindow?.__blockedInlineErrors,
       blockedInlineExecuted: frame.contentWindow?.__blockedInlineExecuted === true,
@@ -429,7 +431,9 @@ test("waits for bootstrap dynamic resources before child and frame load", async 
       frame.setAttribute("src", source);
       document.querySelector("#host")?.append(frame);
       await loaded;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
       return {
         events: frame.contentWindow?.__dynamicBlockerEvents,
         frameLoadCalls,
@@ -552,7 +556,10 @@ for (const action of ["disconnect", "supersede"] as const) {
           }
         }
         await fetch(`${origin}/release-teardown?token=${token}`);
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        await fetch(`${origin}/documents/blank.html`);
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
         return { errors, loads };
       },
       { action, frameNonce: nonce, origin: fixture.origin, token },

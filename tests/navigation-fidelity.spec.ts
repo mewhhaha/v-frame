@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
+import { childValue } from "./support/guest-frames";
 import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
@@ -827,4 +828,40 @@ test("uses the first valid base target and scrolls to malformed legacy fragments
       (element) => (element as HTMLElement & { currentURL: string }).currentURL,
     ),
   ).toBe(`${fixture.origin}/documents/application.html#bad%ZZ`);
+});
+
+test("updates document base URLs after pushState without an explicit base", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}${"/documents/base-after-push.html"}`,
+    settle: "none",
+  });
+
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  expect(await childValue(frame, (window) => (window as any).__baseAfterPush)).toEqual({
+    baseURI: `${fixture.origin}/documents/nested/state.html`,
+    src: `${fixture.origin}/documents/nested/asset.png`,
+  });
+});
+
+test("preserves an explicit base URL after pushState", async ({ page }) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}${"/documents/explicit-base-after-push.html"}`,
+    settle: "none",
+  });
+
+  await expect
+    .poll(() => frame.evaluate((element) => (element as any).status))
+    .toBe("ready");
+  expect(
+    await childValue(frame, (window) => (window as any).__explicitBaseAfterPush),
+  ).toEqual({
+    baseURI: `${fixture.origin}/base-root/`,
+    src: `${fixture.origin}/base-root/asset.png`,
+  });
 });

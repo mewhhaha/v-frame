@@ -44,8 +44,6 @@ export interface VFrameLoadEventDetail {
   url: string;
 }
 
-export type VFrameLoadStartEventDetail = VFrameLoadEventDetail;
-
 export interface VFrameErrorEventDetail {
   phase: VFrameErrorPhase;
   url: string;
@@ -71,7 +69,7 @@ export interface VFrameNavigateOptions {
 }
 
 export interface VFrameEventMap {
-  "v-frame-loadstart": CustomEvent<VFrameLoadStartEventDetail>;
+  "v-frame-loadstart": CustomEvent<VFrameLoadEventDetail>;
   "v-frame-load": CustomEvent<VFrameLoadEventDetail>;
   "v-frame-error": CustomEvent<VFrameErrorEventDetail>;
   "v-frame-navigate": CustomEvent<VFrameNavigateEventDetail>;

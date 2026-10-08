@@ -11,18 +11,20 @@ import type { VFrameWindow } from "./types.js";
 import type { LinkedStyle } from "./linked-styles.js";
 import {
   HTML_NAMESPACE,
-  absolutizeSrcset,
+  isASCIIWhitespace,
   isSrcsetAttribute,
   isURLAttribute,
-  resolveAssetURL,
+  rewriteAssetAttribute,
 } from "./asset-urls.js";
-import { SSR_ATTRIBUTES, SSR_LINK_REL, SSR_LINK_STYLE } from "./asset-urls.js";
-export {
-  absolutizeSrcset,
-  isSrcsetAttribute,
-  isURLAttribute,
-  XLINK_NAMESPACE,
-} from "./asset-urls.js";
+import {
+  INERT_SCRIPT_TYPE,
+  SCRIPT_MARKER_ATTRIBUTE,
+  SCRIPT_TYPE_ATTRIBUTE,
+  SSR_ATTRIBUTES,
+  SSR_LINK_REL,
+  SSR_LINK_STYLE,
+  SSR_STYLE,
+} from "./wire-format.js";
 
 const RAW_TEXT_ELEMENTS = new Set([
   "iframe",
@@ -80,16 +82,6 @@ interface NeutralizedStyleMarkup {
 interface NeutralizedTag {
   source: string;
   end: number;
-}
-
-function isASCIIWhitespace(character: string | undefined): boolean {
-  return (
-    character === "\t" ||
-    character === "\n" ||
-    character === "\f" ||
-    character === "\r" ||
-    character === " "
-  );
 }
 
 function isASCIIAlpha(character: string | undefined): boolean {
@@ -404,25 +396,28 @@ function restoreStyleMarkup(
   return authoredStyleAttributes;
 }
 
+/**
+ * Tags every element whose authored style yields a rule with its selector
+ * attribute. The rule text is deliberately not generated here: the facade owns
+ * the live sheet, wipes any text this sheet carries and rebuilds each rule from
+ * the authored value, so only the attribute values it adopts are load-bearing.
+ */
 function lowerStyleAttributes(
   authoredStyleAttributes: EnumerableWeakMap<Element, string>,
-  head: Element,
   baseURL: string,
   selectorAttribute: string,
   document: Document,
 ): HTMLStyleElement {
-  const rules: string[] = [];
+  let selectors = 0;
 
   for (const [element, authoredStyle] of authoredStyleAttributes) {
     try {
-      const rewritten = rewriteStyleAttribute(authoredStyle, baseURL);
-      if (rewritten === "") {
+      if (rewriteStyleAttribute(authoredStyle, baseURL) === "") {
         continue;
       }
 
-      const selectorValue = String(rules.length);
-      element.setAttribute(selectorAttribute, selectorValue);
-      rules.push(`[${selectorAttribute}="${selectorValue}"]{${rewritten}}`);
+      element.setAttribute(selectorAttribute, String(selectors));
+      selectors += 1;
     } catch {
       continue;
     }
@@ -430,8 +425,6 @@ function lowerStyleAttributes(
 
   const style = document.createElement("style");
   style.dataset.vFrameInlineStyles = "";
-  style.textContent = rules.join("\n");
-  head.append(style);
   return style;
 }
 
@@ -482,47 +475,33 @@ function absolutizeElementAttributes(
   createScriptURL: PrepareMarkupOptions["createScriptURL"],
 ): void {
   for (const attribute of Array.from(element.attributes)) {
-    if (!isURLAttribute(element, attribute.localName, attribute.namespaceURI)) {
-      continue;
-    }
-
-    const value = attribute.value;
-    if (value.trim() === "" || value.trim().toLowerCase().startsWith("javascript:")) {
-      continue;
-    }
-
-    const absoluteValue = resolveAssetURL(element, value, baseURL);
-    if (absoluteValue !== value) {
-      if (attribute.namespaceURI === null) {
-        element.setAttribute(
-          attribute.name,
-          element.localName === "script" && attribute.localName === "src"
-            ? createScriptURL(absoluteValue)
-            : absoluteValue,
-        );
-      } else {
-        element.setAttributeNS(attribute.namespaceURI, attribute.name, absoluteValue);
-      }
-    }
-  }
-
-  if (element.hasAttribute("srcset")) {
-    const source = element.getAttribute("srcset") ?? "";
-    const rewritten = absolutizeSrcset(source, baseURL);
-    if (rewritten !== source) {
-      element.setAttribute("srcset", rewritten);
-    }
-  }
-
-  if (element.hasAttribute("style")) {
+    let rewritten: string | null;
     try {
-      const source = element.getAttribute("style") ?? "";
-      const rewritten = rewriteStyleAttribute(source, baseURL);
-      if (rewritten !== source) {
-        element.setAttribute("style", rewritten);
-      }
+      rewritten = rewriteAssetAttribute(
+        element,
+        attribute.localName,
+        attribute.namespaceURI,
+        attribute.value,
+        baseURL,
+      );
     } catch {
-      element.removeAttribute("style");
+      // A style attribute the CSS parser rejects is dropped rather than left
+      // to resolve its url()s against the host page.
+      element.removeAttributeNode(attribute);
+      continue;
+    }
+    if (rewritten === null) {
+      continue;
+    }
+    if (attribute.namespaceURI === null) {
+      element.setAttribute(
+        attribute.name,
+        element.localName === "script" && attribute.localName === "src"
+          ? createScriptURL(rewritten)
+          : rewritten,
+      );
+    } else {
+      element.setAttributeNS(attribute.namespaceURI, attribute.name, rewritten);
     }
   }
 }
@@ -575,6 +554,8 @@ async function prepareLinkedStyle(
   onError: PrepareMarkupOptions["onError"],
 ): Promise<void> {
   const href = link.href;
+  // An alternate sheet is not applied until the guest selects it.
+  const disabled = link.disabled || link.relList.contains("alternate");
 
   try {
     const materialized = link.nextElementSibling;
@@ -585,14 +566,14 @@ async function prepareLinkedStyle(
       const style = materialized as HTMLStyleElement;
       style.removeAttribute(SSR_LINK_STYLE);
       style.media = link.media;
-      style.disabled = link.disabled;
+      style.disabled = disabled;
       if (nonce) style.nonce = nonce;
       else style.removeAttribute("nonce");
       linkedStyles.set(link, {
         style,
         href,
         url: style.dataset.vFrameSource ?? href,
-        disabled: link.disabled,
+        disabled,
       });
       return;
     }
@@ -600,11 +581,11 @@ async function prepareLinkedStyle(
     const rewritten = await rewriteStylesheet(source.text, source.url, context);
     const style = createGeneratedStyle(document, rewritten, nonce, source.url);
     style.media = link.media;
-    style.disabled = link.disabled;
+    style.disabled = disabled;
     if (link.hasAttribute("title")) {
       style.title = link.title;
     }
-    linkedStyles.set(link, { style, href, url: source.url, disabled: link.disabled });
+    linkedStyles.set(link, { style, href, url: source.url, disabled });
     link.after(style);
   } catch (error) {
     onError({ phase: "stylesheet", url: href, error });
@@ -623,6 +604,104 @@ function neutralizeNoscriptContent(root: Element): void {
     }
     noscript.textContent = noscript.innerHTML;
   }
+}
+
+interface MarkupParts {
+  html: HTMLElement;
+  head: HTMLElement;
+  body: HTMLElement;
+  baseURL: string;
+  authoredURLAttributes: PreparedMarkup["authoredURLAttributes"];
+  authoredStyleAttributes: EnumerableWeakMap<Element, string>;
+  rewriteInlineStyles: boolean;
+}
+
+/** What parsed and adopted markup share once their tree and authored values exist. */
+async function finishMarkup(
+  options: PrepareMarkupOptions,
+  parts: MarkupParts,
+): Promise<PreparedMarkup> {
+  const { html, head, body, baseURL, authoredURLAttributes, authoredStyleAttributes } =
+    parts;
+  const inlineStyleSelectorAttribute = findUnusedAttributeName(
+    options.source,
+    "inline-style",
+  );
+  const inlineStyleSheet = lowerStyleAttributes(
+    authoredStyleAttributes,
+    baseURL,
+    inlineStyleSelectorAttribute,
+    options.document,
+  );
+
+  for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
+    const attributeBaseURL =
+      element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
+        ? options.pageURL
+        : baseURL;
+    absolutizeElementAttributes(element, attributeBaseURL, options.createScriptURL);
+  }
+
+  const stylesheetContext = createStylesheetContext(
+    options.fetchStylesheet,
+    ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
+  );
+  const stylesheetJobs: Promise<void>[] = [];
+  const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
+
+  for (const style of html.querySelectorAll("style")) {
+    // A server vouches for the styles it materialized; every other guest style
+    // (all of them, in a fetched document) still resolves against the host
+    // page until rewritten here. A linked preview is prepared with its link.
+    const materialized = style.hasAttribute(SSR_STYLE);
+    style.removeAttribute(SSR_STYLE);
+    if (
+      !parts.rewriteInlineStyles &&
+      (materialized || style.hasAttribute(SSR_LINK_STYLE))
+    ) {
+      continue;
+    }
+    stylesheetJobs.push(
+      prepareInlineStyle(
+        style,
+        baseURL,
+        options.nonce,
+        stylesheetContext,
+        options.onError,
+      ),
+    );
+  }
+
+  for (const link of html.querySelectorAll<HTMLLinkElement>(
+    'link[rel~="stylesheet"][href]',
+  )) {
+    stylesheetJobs.push(
+      prepareLinkedStyle(
+        link,
+        options.nonce,
+        stylesheetContext,
+        options.document,
+        linkedStyles,
+        options.onError,
+      ),
+    );
+  }
+
+  await Promise.all(stylesheetJobs);
+
+  return {
+    html,
+    head,
+    body,
+    baseURL,
+    scripts: Array.from(html.querySelectorAll("script")),
+    authoredURLAttributes,
+    authoredStyleAttributes,
+    inlineStyleSelectorAttribute,
+    inlineStyleSheet,
+    stylesheetContext,
+    linkedStyles,
+  };
 }
 
 export async function prepareMarkup(
@@ -672,76 +751,15 @@ export async function prepareMarkup(
             : element;
     authoredStyleAttributes.set(reconstructedElement, authoredStyle);
   }
-  const inlineStyleSelectorAttribute = findUnusedAttributeName(
-    options.source,
-    "inline-style",
-  );
-  const inlineStyleSheet = lowerStyleAttributes(
-    authoredStyleAttributes,
-    head,
-    baseURL,
-    inlineStyleSelectorAttribute,
-    options.document,
-  );
-
-  for (const element of html.querySelectorAll("*")) {
-    const attributeBaseURL =
-      element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
-        ? options.pageURL
-        : baseURL;
-    absolutizeElementAttributes(element, attributeBaseURL, options.createScriptURL);
-  }
-
-  const stylesheetContext = createStylesheetContext(
-    options.fetchStylesheet,
-    ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
-  );
-  const stylesheetJobs: Promise<void>[] = [];
-  const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
-
-  for (const style of html.querySelectorAll("style")) {
-    stylesheetJobs.push(
-      prepareInlineStyle(
-        style,
-        baseURL,
-        options.nonce,
-        stylesheetContext,
-        options.onError,
-      ),
-    );
-  }
-
-  for (const link of html.querySelectorAll<HTMLLinkElement>(
-    'link[rel~="stylesheet"][href]',
-  )) {
-    stylesheetJobs.push(
-      prepareLinkedStyle(
-        link,
-        options.nonce,
-        stylesheetContext,
-        options.document,
-        linkedStyles,
-        options.onError,
-      ),
-    );
-  }
-
-  await Promise.all(stylesheetJobs);
-  inlineStyleSheet.remove();
-
-  return {
+  return finishMarkup(options, {
     html,
     head,
     body,
     baseURL,
-    scripts: Array.from(html.querySelectorAll("script")),
     authoredURLAttributes,
     authoredStyleAttributes,
-    inlineStyleSelectorAttribute,
-    inlineStyleSheet,
-    stylesheetContext,
-    linkedStyles,
-  };
+    rewriteInlineStyles: true,
+  });
 }
 
 export async function prepareAdoptedMarkup(
@@ -806,14 +824,14 @@ export async function prepareAdoptedMarkup(
   }
 
   for (const script of html.querySelectorAll<HTMLScriptElement>(
-    "script[data-v-frame-script]",
+    `script[${SCRIPT_MARKER_ATTRIBUTE}]`,
   )) {
-    if (script.getAttribute("type") !== "application/vnd.v-frame") {
+    if (script.getAttribute("type") !== INERT_SCRIPT_TYPE) {
       continue;
     }
-    const authoredType = script.getAttribute("data-v-frame-type");
-    script.removeAttribute("data-v-frame-script");
-    script.removeAttribute("data-v-frame-type");
+    const authoredType = script.getAttribute(SCRIPT_TYPE_ATTRIBUTE);
+    script.removeAttribute(SCRIPT_MARKER_ATTRIBUTE);
+    script.removeAttribute(SCRIPT_TYPE_ATTRIBUTE);
     if (authoredType === null) {
       script.removeAttribute("type");
     } else {
@@ -831,58 +849,15 @@ export async function prepareAdoptedMarkup(
       authoredStyleAttributes.set(element, authoredStyle);
     }
   }
-  const inlineStyleSelectorAttribute = findUnusedAttributeName(
-    options.source,
-    "inline-style",
-  );
-  const inlineStyleSheet = lowerStyleAttributes(
-    authoredStyleAttributes,
-    head,
-    baseURL,
-    inlineStyleSelectorAttribute,
-    options.document,
-  );
-
-  for (const element of [html, ...Array.from(html.querySelectorAll("*"))]) {
-    const attributeBaseURL =
-      element.namespaceURI === HTML_NAMESPACE && element.localName === "base"
-        ? options.pageURL
-        : baseURL;
-    absolutizeElementAttributes(element, attributeBaseURL, options.createScriptURL);
-  }
-
-  const stylesheetContext = createStylesheetContext(
-    options.fetchStylesheet,
-    ({ url, error }) => options.onError({ phase: "stylesheet", url, error }),
-  );
-  const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
-  await Promise.all(
-    Array.from(
-      html.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'),
-    ).map((link) =>
-      prepareLinkedStyle(
-        link,
-        options.nonce,
-        stylesheetContext,
-        options.document,
-        linkedStyles,
-        options.onError,
-      ),
-    ),
-  );
-  inlineStyleSheet.remove();
-
-  return {
+  return finishMarkup(options, {
     html,
     head,
     body,
     baseURL,
-    scripts: Array.from(html.querySelectorAll("script")),
     authoredURLAttributes,
     authoredStyleAttributes,
-    inlineStyleSelectorAttribute,
-    inlineStyleSheet,
-    stylesheetContext,
-    linkedStyles,
-  };
+    // Server-materialized style elements arrive already rebased and marked;
+    // those it could not materialize are rewritten like a fetched document's.
+    rewriteInlineStyles: false,
+  });
 }

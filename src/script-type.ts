@@ -20,8 +20,13 @@ const CLASSIC_SCRIPT_TYPES = new Set([
   "text/x-javascript",
 ]);
 
+// The type attribute is stripped of ASCII whitespace only: a type padded with
+// U+00A0 or U+FEFF names no script type, and String.prototype.trim would strip both.
+const ASCII_WHITESPACE_EDGES = /^[\t\n\f\r ]+|[\t\n\f\r ]+$/g;
+
 export function scriptCategory(script: HTMLScriptElement): ScriptCategory {
-  const type = script.getAttribute("type")?.trim().toLowerCase() ?? "";
+  const type =
+    script.getAttribute("type")?.replace(ASCII_WHITESPACE_EDGES, "").toLowerCase() ?? "";
   if (type === "module" || type === "importmap") {
     return type;
   }

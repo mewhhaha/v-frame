@@ -6,7 +6,14 @@
 // current tree instead of from a snapshot.
 
 import { translateShellSelector, translateTargetSelector } from "../css.js";
+import { WeakValueMap } from "../enumerable-weak.js";
 import { type FacadeContext, HTML_NAMESPACE } from "./context.js";
+import {
+  type IndexedValues,
+  liveIndexedCollection,
+  propertyIndex,
+} from "./indexed-collection.js";
+import { toDOMString, toNullableDOMString } from "./webidl.js";
 
 function translateSelector(selector: string): string {
   try {
@@ -24,155 +31,9 @@ function targetSelector(selector: string): string {
   }
 }
 
-export function staticCollection<T extends Element>(elements: T[]): HTMLCollectionOf<T> {
-  const collection = elements as unknown as HTMLCollectionOf<T> & {
-    item(index: number): T | null;
-    namedItem(name: string): T | null;
-  };
-  Object.defineProperties(collection, {
-    item: {
-      value(index: number) {
-        return elements[index] ?? null;
-      },
-    },
-    namedItem: {
-      value(name: string) {
-        return (
-          elements.find(
-            (element) => element.id === name || element.getAttribute("name") === name,
-          ) ?? null
-        );
-      },
-    },
-  });
-  return collection;
-}
-
-export function staticNodeList<T extends Node>(nodes: T[]): NodeListOf<T> {
-  const list = nodes as unknown as NodeListOf<T> & { item(index: number): T | null };
-  Object.defineProperty(list, "item", {
-    value(index: number) {
-      return nodes[index] ?? null;
-    },
-  });
-  return list;
-}
-
-interface LiveIndexedCollection<T extends object> {
-  readonly length: number;
-  item(index: number): T | null;
-  readonly [index: number]: T;
-}
-
-interface IndexedValues<T> extends Iterable<T> {
-  readonly length: number;
-  readonly [index: number]: T;
-}
-
-function propertyIndex(property: PropertyKey): number | null {
-  if (typeof property !== "string" || !/^(0|[1-9]\d*)$/.test(property)) {
-    return null;
-  }
-  const index = Number(property);
-  return Number.isSafeInteger(index) ? index : null;
-}
-
-function liveIndexedCollection<T extends object>(
-  prototype: object,
-  currentValues: () => IndexedValues<T>,
-  currentNamedValue?: (name: string) => T | null,
-): LiveIndexedCollection<T> {
-  const target = Object.create(prototype) as object;
-  const itemAt = (index: number): T | null => currentValues()[index] ?? null;
-  const namedItem = (name: string): T | null => currentNamedValue?.(String(name)) ?? null;
-  const iterator = (): Iterator<T> => currentValues()[Symbol.iterator]();
-
-  const proxy = new Proxy(target, {
-    get(proxyTarget, property, receiver) {
-      if (property === "length") {
-        return currentValues().length;
-      }
-      if (property === "item") {
-        return itemAt;
-      }
-      if (property === "namedItem" && currentNamedValue !== undefined) {
-        return namedItem;
-      }
-      if (property === Symbol.iterator) {
-        return iterator;
-      }
-
-      const index = propertyIndex(property);
-      if (index !== null) {
-        return currentValues()[index];
-      }
-      if (Reflect.has(proxyTarget, property)) {
-        // Prototype iteration helpers brand-check their receiver, which the
-        // proxy fails; reimplement them over the live values instead.
-        switch (property) {
-          case "forEach":
-            return (
-              callback: (value: T, index: number, list: unknown) => void,
-              thisArg?: unknown,
-            ) => {
-              const values = currentValues();
-              for (let index = 0; index < values.length; index += 1) {
-                callback.call(thisArg, values[index]!, index, proxy);
-              }
-            };
-          case "entries":
-            return () => Array.from(currentValues()).entries();
-          case "keys":
-            return () => Array.from(currentValues()).keys();
-          case "values":
-            return iterator;
-        }
-        return Reflect.get(proxyTarget, property, receiver);
-      }
-      if (typeof property === "string" && currentNamedValue !== undefined) {
-        return currentNamedValue(property) ?? undefined;
-      }
-      return undefined;
-    },
-    has(proxyTarget, property) {
-      const index = propertyIndex(property);
-      if (index !== null) {
-        return index < currentValues().length;
-      }
-      if (typeof property === "string" && currentNamedValue !== undefined) {
-        const namedValue = currentNamedValue(property);
-        if (namedValue !== null) {
-          return true;
-        }
-      }
-      return Reflect.has(proxyTarget, property);
-    },
-    ownKeys(proxyTarget) {
-      return [
-        ...Array.from({ length: currentValues().length }, (_value, index) =>
-          String(index),
-        ),
-        ...Reflect.ownKeys(proxyTarget),
-      ];
-    },
-    getOwnPropertyDescriptor(proxyTarget, property) {
-      const index = propertyIndex(property);
-      const value = index === null ? undefined : currentValues()[index];
-      if (value !== undefined) {
-        return {
-          configurable: true,
-          enumerable: true,
-          value,
-          writable: false,
-        };
-      }
-      return Reflect.getOwnPropertyDescriptor(proxyTarget, property);
-    },
-  });
-  return proxy as LiveIndexedCollection<T>;
-}
-
 export interface CollectionFacade {
+  staticNodeList<T extends Node>(nodes: readonly T[]): NodeListOf<T>;
+  staticCollection<T extends Element>(elements: readonly T[]): HTMLCollectionOf<T>;
   querySelector(selectors: string): Element | null;
   querySelectorAll(selectors: string): NodeListOf<Element>;
   getElementsByTagName(qualifiedName: string): HTMLCollectionOf<Element>;
@@ -212,33 +73,49 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   } = context;
 
   // Filtered/shell collections cannot use a single native live collection.
-  // Cache their snapshots until a mutation, draining queued records on every
-  // read so changes are visible synchronously, before observer delivery.
-  const cachedCollections = new Set<() => void>();
-  const invalidateCollections = (): void => {
-    for (const invalidate of cachedCollections) invalidate();
-  };
-  const collectionObserver = new window.MutationObserver(invalidateCollections);
-  collectionObserver.observe(options.html, {
-    subtree: true,
-    childList: true,
-    attributes: true,
+  // Each caches its snapshot against a mutation version instead of registering
+  // an invalidator: a collection the guest drops then costs the observer
+  // nothing, where a registered invalidator would run on every mutation for as
+  // long as the frame lives. Records still queued are drained on every read so
+  // changes are visible synchronously, before observer delivery. Observation
+  // starts with the first read, since a snapshot taken after that is all any
+  // collection ever needs to be current against.
+  let mutationVersion = 0;
+  const collectionObserver = new context.NativeMutationObserver(() => {
+    mutationVersion += 1;
   });
+  let observing = false;
+  const currentMutationVersion = (): number => {
+    if (!observing) {
+      observing = true;
+      collectionObserver.observe(options.html, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+      });
+    } else if (collectionObserver.takeRecords().length > 0) {
+      mutationVersion += 1;
+    }
+    return mutationVersion;
+  };
   const cachedValues = <T>(read: () => IndexedValues<T>): (() => IndexedValues<T>) => {
     let values: IndexedValues<T> | undefined;
-    cachedCollections.add(() => {
-      values = undefined;
-    });
+    let snapshotVersion = -1;
     return () => {
-      if (collectionObserver.takeRecords().length > 0) {
-        invalidateCollections();
-      }
-      if (values === undefined) {
+      const version = currentMutationVersion();
+      if (values === undefined || snapshotVersion !== version) {
         values = read();
+        snapshotVersion = version;
       }
       return values;
     };
   };
+
+  const staticNodeList = <T extends Node>(nodes: readonly T[]): NodeListOf<T> =>
+    liveIndexedCollection(
+      window.NodeList.prototype,
+      () => nodes as unknown as IndexedValues<T>,
+    ) as unknown as NodeListOf<T>;
 
   const sortElementsInDocumentOrder = (elements: Element[]): Element[] =>
     elements.sort((left, right) => {
@@ -250,13 +127,19 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         : 1;
     });
 
-  const querySelectorAllWithShell = (root: Element, selectors: string): Element[] => {
-    selectors = targetSelector(selectors);
+  // The browser's own list is returned whenever no selector translation was
+  // needed; only a merged result has to be built, and it is a NodeList too.
+  const querySelectorAllWithShell = (
+    root: Element,
+    selectors: string,
+  ): NodeListOf<Element> => {
+    selectors = targetSelector(toDOMString(selectors));
     const translated = translateSelector(selectors);
-    const matches = Array.from(nativeQuerySelectorAll.call(root, selectors));
+    const nativeList = nativeQuerySelectorAll.call(root, selectors);
     if (translated === selectors) {
-      return matches;
+      return nativeList;
     }
+    const matches = Array.from(nativeList);
     const seen = new Set(matches);
     for (const match of Array.from(nativeQuerySelectorAll.call(root, translated))) {
       if (!seen.has(match)) {
@@ -264,11 +147,11 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         matches.push(match);
       }
     }
-    return sortElementsInDocumentOrder(matches);
+    return staticNodeList(sortElementsInDocumentOrder(matches));
   };
 
   const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
-    selectors = targetSelector(selectors);
+    selectors = targetSelector(toDOMString(selectors));
     const match = nativeQuerySelector.call(root, selectors);
     const translated = translateSelector(selectors);
     if (translated === selectors) {
@@ -285,7 +168,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   };
 
   const querySelector = (selectors: string): Element | null => {
-    selectors = targetSelector(selectors);
+    selectors = targetSelector(toDOMString(selectors));
     const translated = translateSelector(selectors);
     if (
       nativeMatches.call(options.html, selectors) ||
@@ -296,17 +179,23 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     return querySelectorWithShell(options.html, selectors);
   };
   const querySelectorAll = (selectors: string): NodeListOf<Element> => {
-    selectors = targetSelector(selectors);
+    selectors = targetSelector(toDOMString(selectors));
     const translated = translateSelector(selectors);
     const matches = querySelectorAllWithShell(options.html, selectors);
     if (
       nativeMatches.call(options.html, selectors) ||
       nativeMatches.call(options.html, translated)
     ) {
-      matches.unshift(options.html);
+      return staticNodeList([options.html, ...Array.from(matches)]);
     }
-    return staticNodeList(matches);
+    return matches;
   };
+  const staticCollection = <T extends Element>(
+    elements: readonly T[],
+  ): HTMLCollectionOf<T> =>
+    createLiveHTMLCollection(
+      () => elements as unknown as IndexedValues<T>,
+    ) as HTMLCollectionOf<T>;
   const createLiveHTMLCollection = <T extends Element>(
     currentElements: () => IndexedValues<T>,
   ): HTMLCollectionOf<T> => {
@@ -352,9 +241,11 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         return Reflect.get(target, property, target);
       },
     });
-  const tagCollections = new Map<string, HTMLCollectionOf<Element>>();
+  // Weakly held so that a guest asking for arbitrary names does not pin a
+  // collection per name; see WeakValueMap.
+  const tagCollections = new WeakValueMap<string, HTMLCollectionOf<Element>>();
   const getElementsByTagName = (qualifiedName: string): HTMLCollectionOf<Element> => {
-    const requestedName = String(qualifiedName);
+    const requestedName = toDOMString(qualifiedName);
     const existing = tagCollections.get(requestedName);
     if (existing !== undefined) {
       return existing;
@@ -376,7 +267,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       return nativeCollection;
     }
     const collection = createLiveHTMLCollection(() => {
-      const translated = collectionName === "*" ? "*" : translateSelector(collectionName);
+      const translated = translateSelector(collectionName);
       const matches = Array.from(
         nativeGetElementsByTagName.call(options.html, requestedName),
       );
@@ -391,11 +282,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         }
       }
       sortElementsInDocumentOrder(matches);
-      if (
-        collectionName === "*" ||
-        collectionName === "html" ||
-        options.html.localName === collectionName
-      ) {
+      if (collectionName === "html" || options.html.localName === collectionName) {
         matches.unshift(options.html);
       }
       return matches;
@@ -403,13 +290,13 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     tagCollections.set(requestedName, collection);
     return collection;
   };
-  const namespaceTagCollections = new Map<string, HTMLCollectionOf<Element>>();
+  const namespaceTagCollections = new WeakValueMap<string, HTMLCollectionOf<Element>>();
   const getElementsByTagNameNS = (
     namespaceURI: string | null,
     localName: string,
   ): HTMLCollectionOf<Element> => {
-    const namespace = namespaceURI === null ? null : String(namespaceURI);
-    const requestedName = String(localName);
+    const namespace = toNullableDOMString(namespaceURI);
+    const requestedName = toDOMString(localName);
     const collectionKey = `${namespace ?? "null"}\u0000${requestedName}`;
     const existing = namespaceTagCollections.get(collectionKey);
     if (existing !== undefined) {
@@ -440,32 +327,24 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       const matches = Array.from(
         nativeGetElementsByTagNameNS.call(options.html, namespace, requestedName),
       );
+      // Only html, head and body in a namespace that includes the shell get
+      // here: any other lookup returned above.
       const shellName =
         requestedName === "html"
           ? "v-html"
           : requestedName === "head"
             ? "v-head"
-            : requestedName === "body"
-              ? "v-body"
-              : requestedName;
-      if (
-        (namespace === "*" || namespace === HTML_NAMESPACE) &&
-        shellName !== requestedName
-      ) {
-        const seen = new Set(matches);
-        for (const match of Array.from(
-          nativeGetElementsByTagNameNS.call(options.html, HTML_NAMESPACE, shellName),
-        )) {
-          if (!seen.has(match)) {
-            matches.push(match);
-          }
+            : "v-body";
+      const seen = new Set(matches);
+      for (const match of Array.from(
+        nativeGetElementsByTagNameNS.call(options.html, HTML_NAMESPACE, shellName),
+      )) {
+        if (!seen.has(match)) {
+          matches.push(match);
         }
       }
       sortElementsInDocumentOrder(matches);
-      if (
-        (namespace === "*" || namespace === HTML_NAMESPACE) &&
-        (requestedName === "*" || requestedName === "html")
-      ) {
+      if (requestedName === "html") {
         matches.unshift(options.html);
       }
       return matches;
@@ -473,9 +352,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     namespaceTagCollections.set(collectionKey, collection);
     return collection;
   };
-  const classCollections = new Map<string, HTMLCollectionOf<Element>>();
+  const classCollections = new WeakValueMap<string, HTMLCollectionOf<Element>>();
   const getElementsByClassName = (names: string): HTMLCollectionOf<Element> => {
-    const classNames = String(names);
+    const classNames = toDOMString(names);
     const existing = classCollections.get(classNames);
     if (existing !== undefined) {
       return existing;
@@ -509,29 +388,30 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     options.html,
     "img",
   ) as HTMLCollectionOf<HTMLImageElement>;
-  const scriptCollection = nativeGetElementsByTagName.call(
+  const scriptCollection = nativeGetElementsByTagNameNS.call(
     options.html,
+    HTML_NAMESPACE,
     "script",
   ) as HTMLCollectionOf<HTMLScriptElement>;
   const linkCollection = createLiveHTMLCollection(
     () =>
-      Array.from(
-        nativeQuerySelectorAll.call(options.html, "a[href], area[href]"),
+      Array.from(nativeQuerySelectorAll.call(options.html, "a[href], area[href]")).filter(
+        (element) => element.namespaceURI === HTML_NAMESPACE,
       ) as Array<HTMLAnchorElement | HTMLAreaElement>,
   );
   const anchorCollection = createLiveHTMLCollection(
     () =>
-      Array.from(
-        nativeQuerySelectorAll.call(options.html, "a[name]"),
+      Array.from(nativeQuerySelectorAll.call(options.html, "a[name]")).filter(
+        (element) => element.namespaceURI === HTML_NAMESPACE,
       ) as HTMLAnchorElement[],
   );
   const embedCollection = nativeGetElementsByTagName.call(
     options.html,
     "embed",
   ) as HTMLCollectionOf<HTMLEmbedElement>;
-  const namedNodeLists = new Map<string, NodeListOf<HTMLElement>>();
+  const namedNodeLists = new WeakValueMap<string, NodeListOf<HTMLElement>>();
   const getElementsByName = (name: string): NodeListOf<HTMLElement> => {
-    const requestedName = String(name);
+    const requestedName = toDOMString(name);
     const existing = namedNodeLists.get(requestedName);
     if (existing !== undefined) {
       return existing;
@@ -578,15 +458,20 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         }
         selectors = targetSelector(selectors);
         const translated = translateSelector(selectors);
-        let candidate: Element | null = this;
-        while (candidate !== null) {
-          if (
-            nativeMatches.call(candidate, selectors) ||
-            nativeMatches.call(candidate, translated)
-          ) {
-            return candidate;
+        const matchesSelector = (candidate: Element): boolean =>
+          nativeMatches.call(candidate, selectors) ||
+          nativeMatches.call(candidate, translated);
+        if (matchesSelector(this)) {
+          return this;
+        }
+        for (
+          let ancestor = this.parentElement;
+          ancestor !== null;
+          ancestor = ancestor.parentElement
+        ) {
+          if (matchesSelector(ancestor)) {
+            return ancestor;
           }
-          candidate = candidate.parentElement;
         }
         return null;
       },
@@ -606,7 +491,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       writable: true,
       value(this: Element, selectors: string): NodeListOf<Element> {
         return isInVirtualDocumentTree(this)
-          ? staticNodeList(querySelectorAllWithShell(this, selectors))
+          ? querySelectorAllWithShell(this, toDOMString(selectors))
           : nativeQuerySelectorAll.call(
               this,
               virtualNodes.has(this) ? targetSelector(selectors) : selectors,
@@ -627,6 +512,8 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   };
 
   return {
+    staticNodeList,
+    staticCollection,
     querySelector,
     querySelectorAll,
     getElementsByTagName,
@@ -643,8 +530,6 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     installPatches,
     dispose() {
       collectionObserver.disconnect();
-      invalidateCollections();
-      cachedCollections.clear();
     },
   };
 }

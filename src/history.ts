@@ -235,6 +235,8 @@ export interface VirtualHistoryOptions extends HistoryControllerOptions {
 
 export interface BoundHistoryOptions extends HistoryControllerOptions {
   hostWindow: Window;
+  /** The guest document's base URL; defaults to the host location. */
+  getBaseURL?(): string;
 }
 
 /**
@@ -309,6 +311,25 @@ export abstract class HistoryController implements NavigationControls {
     return this.window.structuredClone(state);
   }
 
+  protected coerceDelta(value: unknown): number {
+    if (typeof value === "bigint" || typeof value === "symbol") {
+      throw new this.window.TypeError(
+        "History traversal delta cannot be converted to a number",
+      );
+    }
+
+    let number: number;
+    try {
+      number = +(value as number);
+    } catch (cause) {
+      throw new this.window.TypeError(
+        "History traversal delta cannot be converted to a number",
+        { cause },
+      );
+    }
+    return Number.isFinite(number) ? number | 0 : 0;
+  }
+
   protected resolveURL(
     url: string | URL | null | undefined,
     baseURL: string,
@@ -362,6 +383,7 @@ export abstract class HistoryController implements NavigationControls {
 
 export class BoundHistory extends HistoryController {
   readonly #hostWindow: Window;
+  readonly #getBaseURL: () => string;
   readonly #listenerLifetime = new AbortController();
   // Resolvers waiting for the shell to report the entry change this frame asked for.
   readonly #hostChangeWaiters = new Set<() => void>();
@@ -373,10 +395,13 @@ export class BoundHistory extends HistoryController {
   constructor(options: BoundHistoryOptions) {
     super(options);
     this.#hostWindow = options.hostWindow;
+    this.#getBaseURL = options.getBaseURL ?? (() => options.hostWindow.location.href);
     this.#currentURL = options.hostWindow.location.href;
   }
 
   override install(): void {
+    // The History accessors below get the guest's History as `this`.
+    // oxlint-disable-next-line typescript/no-this-alias
     const boundHistory = this;
     Object.defineProperties(this.window.History.prototype, {
       length: {
@@ -458,10 +483,14 @@ export class BoundHistory extends HistoryController {
       go: {
         configurable: true,
         writable: true,
-        value(this: History, delta?: number) {
+        value(this: History, delta: unknown = 0) {
           boundHistory.assertReceiver(this);
-          if (!boundHistory.disposed) {
-            boundHistory.#hostWindow.history.go(delta);
+          const traversal = boundHistory.coerceDelta(delta);
+          // go(0) would reload the host page; reloading is location.reload()'s job,
+          // and a router calling go() must not be able to do it by accident. This
+          // matches the virtual history, where go(0) is a no-op too.
+          if (!boundHistory.disposed && traversal !== 0) {
+            boundHistory.#hostWindow.history.go(traversal);
           }
         },
       },
@@ -512,6 +541,7 @@ export class BoundHistory extends HistoryController {
     if (this.disposed) {
       return { outcome: "unavailable" };
     }
+    delta = Math.trunc(delta);
 
     // Traversal is bounded by the entries the shell's navigation object reports,
     // which is the same list `canGoBack` and `canGoForward` answer from. Asking the
@@ -612,7 +642,7 @@ export class BoundHistory extends HistoryController {
       return;
     }
     const hostURL = this.#hostWindow.location.href;
-    const to = this.resolveURL(url, hostURL, hostURL);
+    const to = this.resolveURL(url, this.#getBaseURL(), hostURL);
     const nextState = this.cloneState(state);
     this.onNavigate({
       from: this.#currentURL,
@@ -623,7 +653,9 @@ export class BoundHistory extends HistoryController {
     if (this.disposed) {
       return;
     }
-    this.#changeHostEntry(change, nextState, url, change, unused);
+    // The host resolves relative URLs against its own base, so it gets the URL
+    // already resolved against the guest's.
+    this.#changeHostEntry(change, nextState, to, change, unused);
   }
 
   // Every host history change this frame originates is tagged, so the observer can
@@ -781,6 +813,8 @@ export class VirtualHistory extends HistoryController {
   }
 
   override install(): void {
+    // The History accessors below get the guest's History as `this`.
+    // oxlint-disable-next-line typescript/no-this-alias
     const controller = this;
 
     Object.defineProperties(this.window.History.prototype, {
@@ -873,7 +907,7 @@ export class VirtualHistory extends HistoryController {
           if (controller.disposed) {
             return;
           }
-          controller.go(controller.#coerceDelta(delta));
+          controller.go(controller.coerceDelta(delta));
         },
       },
     });
@@ -1034,6 +1068,9 @@ export class VirtualHistory extends HistoryController {
     const traversalDelta = Math.trunc(delta);
     this.window.setTimeout(() => {
       if (!this.disposed) {
+        // The only rejection is a cross-document traversal's: the load that
+        // performs it has already reported a failure as a v-frame-error, and a
+        // superseded one is routine, so neither has anywhere further to go.
         void Promise.resolve(this.#traverse(traversalDelta)).catch(() => undefined);
       }
     }, 0);
@@ -1044,25 +1081,6 @@ export class VirtualHistory extends HistoryController {
   protected override fragmentOf(url: string): string | null {
     const fragmentStart = url.indexOf("#");
     return fragmentStart === -1 ? null : url.slice(fragmentStart + 1);
-  }
-
-  #coerceDelta(value: unknown): number {
-    if (typeof value === "bigint" || typeof value === "symbol") {
-      throw new this.window.TypeError(
-        "History traversal delta cannot be converted to a number",
-      );
-    }
-
-    let number: number;
-    try {
-      number = +(value as number);
-    } catch (cause) {
-      throw new this.window.TypeError(
-        "History traversal delta cannot be converted to a number",
-        { cause },
-      );
-    }
-    return Number.isFinite(number) ? number | 0 : 0;
   }
 
   #traverse(

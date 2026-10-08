@@ -1,9 +1,8 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "rules": {
-    "eslint/no-extra-boolean-cast": "off",
-    "eslint/no-useless-escape": "off",
-    "typescript/no-this-alias": "off",
+    // The `[...x]` copies in src/ are snapshots: the loops and awaits they feed
+    // add or remove members of `x` meanwhile, and the rule cannot see that.
     "unicorn/no-useless-spread": "off"
   }
 }

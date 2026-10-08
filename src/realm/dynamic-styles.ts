@@ -24,7 +24,9 @@ import {
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 import type { RealmFailure } from "./connect.js";
+import { captureNativeDOM } from "./native-dom.js";
 import type { LinkedStyle } from "../linked-styles.js";
+import { NEUTRALIZED_STYLESHEET_REL } from "../wire-format.js";
 import { EnumerableWeakMap } from "../enumerable-weak.js";
 
 interface DynamicStyleSnapshot {
@@ -54,6 +56,11 @@ interface DynamicLinkUpdate {
   authoredRel: string | null;
 }
 
+interface RuleContainer {
+  cssRules: CSSRuleList;
+  insertRule(rule: string, index?: number): number;
+}
+
 function inheritedPropertyDescriptor(
   value: object,
   name: PropertyKey,
@@ -69,7 +76,7 @@ function inheritedPropertyDescriptor(
   return undefined;
 }
 
-export interface DynamicStyleOptions {
+interface DynamicStyleOptions {
   window: VFrameWindow;
   document: Document;
   stylesheetContext: StylesheetContext;
@@ -92,7 +99,8 @@ export interface DynamicStyles {
   dynamicLinksFrom(nodes: readonly Node[]): HTMLLinkElement[];
   installCSSOMStyleSheets(nodes: readonly Node[]): void;
   installCSSOMStyleSheet(style: HTMLStyleElement): void;
-  reveal(): void;
+  /** Puts every selector the staging scope rewrote back to its authored text. */
+  restoreScopedSelectors(): void;
   observeConnectedNodes(nodes: readonly Node[]): void;
   scheduleDynamicStyle(
     style: HTMLStyleElement,
@@ -123,6 +131,7 @@ export interface DynamicStyles {
 
 export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles {
   const window = options.window;
+  const nativeDOM = captureNativeDOM(window);
   const document = options.document;
   const processedStyles = new WeakMap<HTMLStyleElement, string>();
   const dynamicStyleUpdates = new WeakMap<HTMLStyleElement, DynamicStyleUpdate>();
@@ -142,8 +151,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     CSSStyleRule,
     { selector: string; restore(): void }
   >();
-  const installCSSOMRules = (sheet: CSSStyleSheet): void => {
-    const installRule = (rule: CSSRule): void => {
+  const installRule = (sheet: CSSStyleSheet, rule: CSSRule): void => {
+    {
       const newlyRegistered = !registeredRules.has(rule);
       if (newlyRegistered) {
         registeredRules.add(rule);
@@ -160,7 +169,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
               ...(ruleText.set === undefined ? {} : { set: ruleText.set.bind(rule) }),
             });
           } catch {
-            // Browser CSSOM objects may reject own property definitions.
+            // Platform fallback: engines that reject own definitions on CSSOM
+            // wrappers keep the native accessor and lose only the rewrite.
           }
         }
       }
@@ -201,7 +211,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
                 },
               });
             } catch {
-              // Browser CSSOM objects may reject own property definitions.
+              // Platform fallback: engines that reject own definitions on CSSOM
+              // wrappers keep the native accessor and lose only the rewrite.
             }
           }
 
@@ -222,24 +233,70 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
                   },
                 });
               } catch {
-                // Browser CSSOM objects may reject own property definitions.
+                // Platform fallback: engines that reject own definitions on CSSOM
+                // wrappers keep the native accessor and lose only the rewrite.
               }
             }
           }
         }
       }
 
-      const nested = rule as CSSRule & { cssRules?: CSSRuleList };
+      const nested = rule as CSSRule & Partial<RuleContainer>;
       if (nested.cssRules !== undefined) {
+        if (newlyRegistered && typeof nested.insertRule === "function") {
+          installInsertRule(sheet, nested as RuleContainer);
+        }
         for (const child of Array.from(nested.cssRules)) {
-          installRule(child);
+          installRule(sheet, child);
         }
       }
-    };
-
-    for (const rule of Array.from(sheet.cssRules)) {
-      installRule(rule);
     }
+  };
+  // Registers every rule of a sheet: for a sheet that is being registered, or one
+  // whose rules changed in ways this module did not observe.
+  const installCSSOMRules = (sheet: CSSStyleSheet): void => {
+    for (const rule of Array.from(sheet.cssRules)) {
+      installRule(sheet, rule);
+    }
+  };
+  // A script-driven insert adds exactly one rule, so walking the whole sheet each
+  // time would make inserting n rules quadratic.
+  const installInsertedRule = (
+    sheet: CSSStyleSheet,
+    container: RuleContainer,
+    index: number,
+  ): void => {
+    const rule = container.cssRules[index];
+    if (rule !== undefined) {
+      installRule(sheet, rule);
+    }
+  };
+  const installInsertRule = (sheet: CSSStyleSheet, container: RuleContainer): void => {
+    const nativeInsertRule = container.insertRule;
+    Object.defineProperty(container, "insertRule", {
+      configurable: true,
+      writable: true,
+      value(rule: string, index?: number): number {
+        let rewritten: string;
+        try {
+          rewritten = rewriteCSSOMInsertRule(String(rule), stylesheetURL(sheet));
+        } catch (error) {
+          if (error instanceof CSSOMImportRuleError) {
+            throw new window.DOMException(
+              "CSSOM @import rules are unsupported inside v-frame",
+              "NotSupportedError",
+            );
+          }
+          throw error;
+        }
+        const insertionIndex =
+          index === undefined
+            ? nativeInsertRule.call(container, rewritten)
+            : nativeInsertRule.call(container, rewritten, index);
+        installInsertedRule(sheet, container, insertionIndex);
+        return insertionIndex;
+      },
+    });
   };
   const applyNonce = (style: HTMLStyleElement): void => {
     if (options.getNonce() === "") {
@@ -280,32 +337,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       addRule?: (selector: string, declarations: string, index?: number) => number;
     };
     const nativeAddRule = legacySheet.addRule;
+    installInsertRule(sheet, sheet);
     Object.defineProperties(sheet, {
-      insertRule: {
-        configurable: true,
-        writable: true,
-        value(rule: string, index?: number): number {
-          let rewritten: string;
-          try {
-            rewritten = rewriteCSSOMInsertRule(String(rule), stylesheetURL(sheet));
-          } catch (error) {
-            if (error instanceof CSSOMImportRuleError) {
-              throw new window.DOMException(
-                "CSSOM @import rules are unsupported inside v-frame",
-                "NotSupportedError",
-              );
-            }
-            throw error;
-          }
-
-          const insertionIndex =
-            index === undefined
-              ? nativeInsertRule.call(sheet, rewritten)
-              : nativeInsertRule.call(sheet, rewritten, index);
-          installCSSOMRules(sheet);
-          return insertionIndex;
-        },
-      },
       addRule: {
         configurable: true,
         writable: true,
@@ -325,7 +358,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
                     rewritten.declarations,
                     index,
                   );
-            installCSSOMRules(sheet);
+            // Native addRule always reports -1, so the rule is found by position.
+            installInsertedRule(sheet, sheet, index ?? sheet.cssRules.length - 1);
             return result;
           }
 
@@ -335,7 +369,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
             `${rewritten.selector}{${rewritten.declarations}}`,
             insertionIndex,
           );
-          installCSSOMRules(sheet);
+          installInsertedRule(sheet, sheet, insertionIndex);
           return result;
         },
       },
@@ -353,9 +387,9 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       }
       if (node instanceof window.Element || node instanceof window.DocumentFragment) {
         styles.push(
-          ...Array.from(node.querySelectorAll("style")).filter(
-            (style) => style !== options.getInlineStyleSheet(),
-          ),
+          ...nativeDOM
+            .querySelectorAll<HTMLStyleElement>(node, "style")
+            .filter((style) => style !== options.getInlineStyleSheet()),
         );
       }
     }
@@ -376,7 +410,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         links.add(node);
       }
       if (node instanceof window.Element || node instanceof window.DocumentFragment) {
-        for (const link of node.querySelectorAll<HTMLLinkElement>("link")) {
+        for (const link of nativeDOM.querySelectorAll<HTMLLinkElement>(node, "link")) {
           links.add(link);
         }
       }
@@ -595,6 +629,13 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     first.media === second.media &&
     first.disabled === second.disabled &&
     first.authoredRel === second.authoredRel;
+  // An alternate stylesheet is not applied: browsers leave it off even when the
+  // guest sets its link's `disabled` to false, until the rel stops naming it.
+  const linkDisabled = (link: HTMLLinkElement, authoredRel: string): boolean =>
+    link.disabled ||
+    authoredRel
+      .split(/[\t\n\f\r ]+/)
+      .some((token) => token.toLowerCase() === "alternate");
   const linkRevisionIsCurrent = (
     link: HTMLLinkElement,
     update: DynamicLinkUpdate,
@@ -607,10 +648,11 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     update.revision === revision &&
     update.snapshot === snapshot &&
     update.authoredRel === snapshot.authoredRel &&
-    options.getFacade()?.native.getAttribute(link, "rel") === "v-frame-stylesheet" &&
+    options.getFacade()?.native.getAttribute(link, "rel") ===
+      NEUTRALIZED_STYLESHEET_REL &&
     link.href === snapshot.href &&
     link.media === snapshot.media &&
-    link.disabled === snapshot.disabled;
+    linkDisabled(link, snapshot.authoredRel) === snapshot.disabled;
   const scheduleDynamicLink = (
     link: HTMLLinkElement,
     forceRevision = false,
@@ -646,7 +688,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     const snapshot: DynamicLinkSnapshot = {
       href: link.href,
       media: link.media,
-      disabled: link.disabled,
+      disabled: linkDisabled(link, authoredRelValue),
       authoredRel: authoredRelValue,
     };
     if (
@@ -765,7 +807,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     dynamicLinksFrom,
     installCSSOMStyleSheets,
     installCSSOMStyleSheet,
-    reveal() {
+    restoreScopedSelectors() {
       for (const [rule, scoped] of scopedSelectors) {
         scoped.restore();
         scopedSelectors.delete(rule);

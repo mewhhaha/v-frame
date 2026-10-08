@@ -46,7 +46,15 @@ export function resolveHistoryURL(
     return currentURL;
   }
 
-  const nextURL = new realm.URL(serializedValue, baseURL);
+  // HTML's URL and history handling steps throw SecurityError, not TypeError,
+  // when the URL fails to parse.
+  const nextURL = realm.URL.parse(serializedValue, baseURL);
+  if (nextURL === null) {
+    throw new realm.DOMException(
+      `History URL ${JSON.stringify(serializedValue)} cannot be parsed against ${baseURL}`,
+      "SecurityError",
+    );
+  }
   const currentOrigin = new realm.URL(currentURL).origin;
 
   if (nextURL.origin !== currentOrigin) {

@@ -1,11 +1,21 @@
-export interface SelectionFacadeOptions {
+// The guest's Selection as a state machine over the host's: the host selection
+// can only point into the shadow tree, so the model tracks what the guest sees
+// (the shell standing in for its document) and reconciles it with native
+// selection changes. It takes everything it touches through its options and
+// knows nothing of the facade; selection.ts is the wiring that supplies them.
+
+export interface SelectionModelOptions {
   window: Window & typeof globalThis;
   hostDocument: Document;
   root: HTMLElement;
+  // The guest's document, which stands for the root in selection endpoints.
+  document: Document;
+  // Gives a range handed to the guest the behavior of a guest range.
+  adoptRange(range: Range): Range;
   onSelectionChange(): void;
 }
 
-export interface SelectionFacade {
+export interface SelectionModel {
   selection: Selection;
   dispose(): void;
 }
@@ -39,15 +49,36 @@ function selectionStateFromRange(range: Range, backward = false): SelectionState
   };
 }
 
-export function createSelectionFacade(options: SelectionFacadeOptions): SelectionFacade {
-  const { window, hostDocument, onSelectionChange } = options;
+export function createSelectionModel(options: SelectionModelOptions): SelectionModel {
+  const { window, hostDocument, onSelectionChange, adoptRange } = options;
   let virtualRoot: HTMLElement | null = options.root;
   let privateSelection: { range: Range; backward: boolean } | null = null;
   let expectedNativeSelectionChange: SelectionSnapshot | null = null;
   let previousNativeSelectionSnapshot: SelectionSnapshot | null = null;
 
-  const containsVirtualNode = (node: Node): boolean =>
-    virtualRoot !== null && (node === virtualRoot || virtualRoot.contains(node));
+  const nativeGetRootNode = hostDocument.defaultView!.Node.prototype.getRootNode;
+  const containsVirtualNode = (node: Node): boolean => {
+    if (virtualRoot === null) return false;
+    if (node === virtualRoot || virtualRoot.contains(node)) return true;
+    // contains() stops at a shadow boundary, but the selection API treats a
+    // shadow tree as part of the document that hosts it, so a node inside a
+    // component the guest attached a shadow root to belongs to the guest too.
+    let root = nativeGetRootNode.call(node);
+    while (root.nodeType === 11 && "host" in root) {
+      const host = (root as ShadowRoot).host;
+      if (host === virtualRoot || virtualRoot.contains(host)) return true;
+      root = nativeGetRootNode.call(host);
+    }
+    return false;
+  };
+  // The guest document's children are the doctype and the root, and a selection
+  // endpoint on the document itself has no node of its own to land on in the
+  // shell. Offsets up to the root's slot land before the root's content, the one
+  // after it lands at the end.
+  const virtualEndpoint = (node: Node, offset: number): [Node, number] =>
+    node === options.document
+      ? [virtualRoot!, Number(offset) > 1 ? virtualRoot!.childNodes.length : 0]
+      : [node, offset];
   const containsVirtualRange = (range: Range): boolean =>
     containsVirtualNode(range.startContainer) && containsVirtualNode(range.endContainer);
   const nativeSelection = (): Selection | null => hostDocument.getSelection();
@@ -270,7 +301,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         "IndexSizeError",
       );
     }
-    return range;
+    return adoptRange(range);
   };
   const hostSelectionChanged = (): void => {
     const snapshot = nativeSelectionSnapshot();
@@ -380,6 +411,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
           facade.removeAllRanges();
           return;
         }
+        [node, offset] = virtualEndpoint(node, offset);
         if (!containsVirtualNode(node)) {
           return;
         }
@@ -446,6 +478,7 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         if (state === null) {
           return invalidSelectionState();
         }
+        [node, offset] = virtualEndpoint(node, offset);
         if (!containsVirtualNode(node)) {
           return;
         }
@@ -480,8 +513,14 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     },
     getRangeAt: { value: rangeAt },
     modify: {
-      value(): void {
-        // Moving by rendered text depends on layout outside the virtual tree.
+      value(): never {
+        // Moving by rendered text needs the browser's own selection, which only
+        // ever holds host-page endpoints; a silent no-op would let the guest
+        // believe the caret moved.
+        throw new window.DOMException(
+          "Selection.modify() is unsupported inside v-frame",
+          "NotSupportedError",
+        );
       },
     },
     removeAllRanges: {
@@ -519,6 +558,9 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
     },
     selectAllChildren: {
       value(node: Node): void {
+        if (node === options.document) {
+          node = virtualRoot!;
+        }
         if (!containsVirtualNode(node)) {
           return;
         }
@@ -537,6 +579,8 @@ export function createSelectionFacade(options: SelectionFacadeOptions): Selectio
         focusNode: Node,
         focusOffset: number,
       ): void {
+        [anchorNode, anchorOffset] = virtualEndpoint(anchorNode, anchorOffset);
+        [focusNode, focusOffset] = virtualEndpoint(focusNode, focusOffset);
         if (!containsVirtualNode(anchorNode) || !containsVirtualNode(focusNode)) {
           return;
         }

@@ -111,3 +111,36 @@ export class EnumerableWeakMap<K extends object, V> {
     }
   }
 }
+
+// Memoizing by an arbitrary guest string is only affordable if the memo lets go
+// of what the guest dropped: the keys here are unbounded (every distinct tag or
+// class name ever asked for) and the values can be large. Holding values weakly
+// still returns the same object for as long as anyone holds it, which is all the
+// identity the DOM promises for such lookups, and the registry sweeps the keys
+// whose value has gone.
+export class WeakValueMap<K, V extends object> {
+  readonly #references = new Map<K, WeakRef<V>>();
+  readonly #collected = new FinalizationRegistry<{ key: K; reference: WeakRef<V> }>(
+    ({ key, reference }) => {
+      // The key may have been refilled with a newer value since.
+      if (this.#references.get(key) === reference) {
+        this.#references.delete(key);
+      }
+    },
+  );
+
+  get(key: K): V | undefined {
+    const reference = this.#references.get(key);
+    const value = reference?.deref();
+    if (reference !== undefined && value === undefined) {
+      this.#references.delete(key);
+    }
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    const reference = new WeakRef(value);
+    this.#references.set(key, reference);
+    this.#collected.register(value, { key, reference });
+  }
+}

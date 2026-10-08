@@ -14,10 +14,63 @@ export interface ReleaseCandidate {
   commit?: string;
   expectedCommit?: string;
   notes?: string;
+  /** The text of CHANGELOG.md. */
+  changelog?: string;
+  /** Whether publication, rather than a routine push, depends on this check. */
+  release?: boolean;
+}
+
+interface ChangelogSection {
+  /** The first word of the `## ` heading, without Keep a Changelog's brackets. */
+  name: string;
+  body: string;
+}
+
+function changelogSections(changelog: string): ChangelogSection[] {
+  const sections: ChangelogSection[] = [];
+  let current: ChangelogSection | undefined;
+  for (const line of changelog.split(/\r?\n/)) {
+    const name = /^## +\[?([^\s\]]+)/.exec(line)?.[1];
+    if (name !== undefined) {
+      current = { name, body: "" };
+      sections.push(current);
+    } else if (current) {
+      current.body += `${line}\n`;
+    }
+  }
+  return sections;
+}
+
+// A release must have its notes written. Between releases the notes may sit under
+// "Unreleased", so a routine check only insists that the manifest version is either
+// already recorded or pending there. That catches a version bump that skipped the
+// changelog before it reaches a release.
+function validateChangelog(changelog: string, version: string, release: boolean): void {
+  const sections = changelogSections(changelog);
+  const released = sections.find((section) => section.name === version);
+  if (release) {
+    if (!released) throw new Error(`CHANGELOG.md has no "## ${version}" section`);
+    if (released.body.trim() === "")
+      throw new Error(`CHANGELOG.md section "## ${version}" is empty`);
+  } else if (
+    !released &&
+    !sections.some((section) => /^unreleased$/i.test(section.name))
+  ) {
+    throw new Error(`CHANGELOG.md needs a "## ${version}" or "## Unreleased" section`);
+  }
 }
 
 export function validateRelease(candidate: ReleaseCandidate): void {
-  const { npmVersion, jsrVersion, tag, commit, expectedCommit, notes } = candidate;
+  const {
+    npmVersion,
+    jsrVersion,
+    tag,
+    commit,
+    expectedCommit,
+    notes,
+    changelog,
+    release,
+  } = candidate;
   if (npmVersion !== jsrVersion)
     throw new Error("package.json and jsr.json versions differ");
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(npmVersion))
@@ -26,6 +79,7 @@ export function validateRelease(candidate: ReleaseCandidate): void {
     throw new Error(`Release tag must be v${npmVersion}`);
   if (expectedCommit !== undefined && commit !== expectedCommit)
     throw new Error("Checked-out commit differs from the release event commit");
+  if (changelog !== undefined) validateChangelog(changelog, npmVersion, release === true);
   if (notes !== undefined) {
     if (!commit || !/^[0-9a-f]{40}$/.test(commit))
       throw new Error("Manual verification requires a full commit SHA");
@@ -48,6 +102,8 @@ if (import.meta.main) {
     validateRelease({
       npmVersion: npm.version,
       jsrVersion: jsr.version,
+      changelog: readFileSync("CHANGELOG.md", "utf8"),
+      release,
       ...(tag ? { tag } : {}),
       ...(release
         ? {

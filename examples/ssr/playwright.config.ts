@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
+  // Not verified in parallel: the suite needs the wrangler dev server (webServer below),
+  // which could not be started when this was evaluated. Tests keep no per-file state, so
+  // true is probably safe; try it where the server runs.
   fullyParallel: false,
   timeout: 30_000,
   expect: { timeout: 10_000 },

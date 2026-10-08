@@ -9,13 +9,11 @@ export type {
   VFrameErrorPhase,
   VFrameEventMap,
   VFrameLoadEventDetail,
-  VFrameLoadStartEventDetail,
   VFrameNavigatedEventDetail,
   VFrameNavigateEventDetail,
   VFrameNavigateOptions,
   VFrameNavigation,
   VFrameNavigationKind,
-  VFrameStatus as VFrameStatusValue,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";

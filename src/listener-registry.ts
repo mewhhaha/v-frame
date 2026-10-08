@@ -92,11 +92,16 @@ export interface ListenerRegistryOptions {
   removeFromTargets(type: string, wrapper: EventListener, capture: boolean): void;
   /** Reports errors from manually relayed dispatches; native dispatch reports its own. */
   onError?(error: unknown): void;
+  /** The realm whose TypeError a rejected listener argument should throw. */
+  TypeError?: new (message?: string) => Error;
 }
 
 export class ListenerRegistry {
   readonly #options: ListenerRegistryOptions;
-  readonly #records = new Set<ListenerRecord>();
+  // Indexed by type: dispatch and lookup only ever concern one type, and a
+  // registry with many types should not scan the others. Each set keeps
+  // registration order, which is the order listeners must run in.
+  readonly #records = new Map<string, Set<ListenerRecord>>();
 
   constructor(options: ListenerRegistryOptions) {
     this.#options = options;
@@ -107,12 +112,8 @@ export class ListenerRegistry {
     listener: EventListenerOrEventListenerObject,
     capture: boolean,
   ): ListenerRecord | undefined {
-    for (const record of this.#records) {
-      if (
-        record.type === type &&
-        record.listener === listener &&
-        record.capture === capture
-      ) {
+    for (const record of this.#records.get(type) ?? []) {
+      if (record.listener === listener && record.capture === capture) {
         if (
           record.signal !== undefined &&
           this.#options.abortSignal.aborted.call(record.signal)
@@ -127,8 +128,12 @@ export class ListenerRegistry {
   }
 
   #forget(record: ListenerRecord): void {
-    if (!this.#records.delete(record)) {
+    const sameType = this.#records.get(record.type);
+    if (sameType === undefined || !sameType.delete(record)) {
       return;
+    }
+    if (sameType.size === 0) {
+      this.#records.delete(record.type);
     }
     try {
       this.#options.removeFromTargets(record.type, record.wrapper, record.capture);
@@ -156,6 +161,17 @@ export class ListenerRegistry {
     // callbacks, without consulting guest-overridden signal properties.
     const aborted =
       signal !== undefined && this.#options.abortSignal.aborted.call(signal);
+    // A nullable callback interface still rejects primitives at registration;
+    // waiting until dispatch would hide the mistake from the caller.
+    if (
+      listener != null &&
+      typeof listener !== "object" &&
+      typeof listener !== "function"
+    ) {
+      throw new (this.#options.TypeError ?? TypeError)(
+        "Failed to execute 'addEventListener': parameter 2 is not of type 'Object'.",
+      );
+    }
     if (listener == null || aborted) {
       return;
     }
@@ -191,7 +207,12 @@ export class ListenerRegistry {
       }
       invokeListener(event);
     };
-    this.#records.add(record);
+    let sameType = this.#records.get(type);
+    if (sameType === undefined) {
+      sameType = new Set();
+      this.#records.set(type, sameType);
+    }
+    sameType.add(record);
     try {
       this.#options.addToTargets(type, record.wrapper, normalized);
       if (signal !== undefined) {
@@ -240,13 +261,17 @@ export class ListenerRegistry {
   }
 
   invoke(event: Event, capture: boolean, shouldContinue: () => boolean): void {
-    for (const record of [...this.#records]) {
+    const sameType = this.#records.get(event.type);
+    if (sameType === undefined) {
+      return;
+    }
+    for (const record of [...sameType]) {
       // A listener removed by an earlier listener in this dispatch is skipped,
       // matching the DOM inner-invoke algorithm.
-      if (!this.#records.has(record)) {
+      if (!sameType.has(record)) {
         continue;
       }
-      if (record.type === event.type && record.capture === capture) {
+      if (record.capture === capture) {
         try {
           record.wrapper(event);
         } catch (error) {
@@ -263,8 +288,10 @@ export class ListenerRegistry {
   }
 
   dispose(): void {
-    for (const record of [...this.#records]) {
-      this.#forget(record);
+    for (const sameType of [...this.#records.values()]) {
+      for (const record of [...sameType]) {
+        this.#forget(record);
+      }
     }
   }
 }

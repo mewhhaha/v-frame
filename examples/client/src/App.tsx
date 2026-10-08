@@ -1,11 +1,7 @@
 import { Button, Dialog, DialogContent, DialogTrigger } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { VFrameStatus } from "@mewhhaha/v-frame";
-import type {
-  VFrameElement,
-  VFrameErrorEventDetail,
-  VFrameStatusValue,
-} from "@mewhhaha/v-frame";
+import type { VFrameElement, VFrameErrorEventDetail } from "@mewhhaha/v-frame";
 import "./App.css";
 
 /**
@@ -89,7 +85,7 @@ export function App() {
   const [compositionVisible, setCompositionVisible] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [status, setStatus] = useState<VFrameStatusValue>(VFrameStatus.Idle);
+  const [status, setStatus] = useState<VFrameStatus>(VFrameStatus.Idle);
   const frameElementsRef = useRef(new Map<HostSectionKey, VFrameElement>());
   const activeSectionRef = useRef<HostSectionKey>("plugins");
 

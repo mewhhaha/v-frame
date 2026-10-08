@@ -4,6 +4,7 @@ import {
   startContractFixtureServers,
 } from "./support/fixture-server";
 import { installBundle, mountFrame } from "./support/mount-frame";
+import { flushTasks } from "./support/settle";
 
 let fixture: ContractFixtureServers;
 
@@ -124,12 +125,18 @@ test("dispatches private selection transitions without exposing host selections"
     range.selectNodeContents(copy);
     let eventCount = 0;
     window.document.addEventListener("selectionchange", () => eventCount++);
+    const changed = () =>
+      new Promise((resolve) =>
+        window.document.addEventListener("selectionchange", resolve, { once: true }),
+      );
 
+    let next = changed();
     selection.addRange(range);
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
     const selected = selection.toString();
+    next = changed();
     selection.removeRange(range);
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
 
     return { eventCount, selected, rangeCount: selection.rangeCount };
   });
@@ -166,11 +173,17 @@ test("supports replacing and clearing document.onselectionchange", async ({ page
         childRealmEvent: event instanceof window.Event,
       });
     };
+    const changed = () =>
+      new Promise((resolve) =>
+        window.document.addEventListener("selectionchange", resolve, { once: true }),
+      );
+    let next = changed();
     selection.addRange(range);
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
     window.document.onselectionchange = null;
+    next = changed();
     selection.removeAllRanges();
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
 
     return {
       firstCalls,
@@ -208,6 +221,10 @@ test("notifies when a native selection leaves a frame while isolating host and s
     let secondEvents = 0;
     firstWindow.document.addEventListener("selectionchange", () => firstEvents++);
     secondWindow.document.addEventListener("selectionchange", () => secondEvents++);
+    const changed = (target: Document) =>
+      new Promise((resolve) =>
+        target.addEventListener("selectionchange", resolve, { once: true }),
+      );
 
     const hostCopy = document.createElement("p");
     hostCopy.textContent = "host-only";
@@ -215,15 +232,17 @@ test("notifies when a native selection leaves a frame while isolating host and s
     const hostRange = document.createRange();
     hostRange.selectNodeContents(hostCopy);
     const hostSelection = window.getSelection()!;
+    let next = changed(document);
     hostSelection.removeAllRanges();
     hostSelection.addRange(hostRange);
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
 
     const copy = firstWindow.document.createElement("p");
     copy.textContent = "first frame";
     firstWindow.document.body.append(copy);
     const range = document.createRange();
     range.selectNodeContents(copy);
+    next = changed(firstWindow.document);
     hostSelection.removeAllRanges();
     // Native WebKit addRange silently ignores shadow-tree ranges. Selecting
     // the same endpoints through setBaseAndExtent works in all three engines.
@@ -233,11 +252,16 @@ test("notifies when a native selection leaves a frame while isolating host and s
       range.endContainer,
       range.endOffset,
     );
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
 
+    next = changed(firstWindow.document);
     hostSelection.removeAllRanges();
     hostSelection.addRange(hostRange);
-    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await next;
+    // The sibling frame must stay silent; let the rest of the notifications drain.
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
 
     return {
       firstEvents,
@@ -279,7 +303,7 @@ test("cancels queued selectionchange when the frame is removed", async ({ page }
     child.getSelection()!.addRange(range);
     frame.remove();
   });
-  await page.waitForTimeout(20);
+  await flushTasks(page);
 
   expect(
     await page.evaluate(

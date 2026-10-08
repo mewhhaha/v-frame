@@ -624,17 +624,23 @@ for (const hash of ["#top", "#ToP", "#%74op"]) {
         scroll: (top: number) => void,
         read: () => number,
       ) {
+        // Scrolling lands on a later frame in some engines; wait for the position.
+        const scrolled = async (done: (top: number) => boolean) => {
+          for (let frames = 0; frames < 120 && !done(read()); frames++) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+        };
         const link = view.document.querySelector("#top-link") as HTMLAnchorElement;
         link.href = hash;
         scroll(500);
         link.click();
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await scrolled((top) => top === 0);
         const fallback = read();
         const target = view.document.querySelector("#two")!;
         target.id = decodeURIComponent(hash.slice(1));
         scroll(500);
         link.click();
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await scrolled((top) => top > 500);
         return { fallback, matched: read() > 500 };
       }
       return {

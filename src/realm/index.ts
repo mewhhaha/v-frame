@@ -8,8 +8,6 @@
 // disposers unwind in the reverse of that order.
 
 import { installDocumentFacade, type DocumentFacade } from "../facade/index.js";
-import { HTML_NAMESPACE } from "../asset-urls.js";
-import { findFragmentTarget, FRAGMENT_TARGET_ATTRIBUTE } from "../fragment.js";
 import {
   BoundHistory,
   type DocumentHistoryMode,
@@ -26,7 +24,9 @@ import {
 } from "../markup.js";
 import { installNetworkPatches } from "../network.js";
 import type { AdoptionState } from "./adoption-state.js";
-import { scrollToFragment } from "./fragment-scroll.js";
+import { createDocumentBase } from "./base-url.js";
+import { createFragmentTargets, scrollToFragment } from "./fragment-scroll.js";
+import { observeRealmMutations } from "./mutation-observer.js";
 import { ScriptRunner } from "../scripts.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
 import { createDynamicStyles } from "./dynamic-styles.js";
@@ -48,10 +48,10 @@ import type {
 } from "../types.js";
 
 export {
+  abortError,
   connectRealmIframe,
   type ConnectedRealmIframe,
   type RealmFailure,
-  type RealmTrustedTypes,
 } from "./connect.js";
 
 export interface CreateRealmOptions {
@@ -103,15 +103,24 @@ export interface VFrameRealm {
 }
 
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
-  const internalStyles = installInternalStyles(options.shadowRoot);
-  const bootstrapDisposers: Array<() => void> = [];
+  // One stack unwinds the realm, whether bootstrap fails halfway or dispose()
+  // runs on a finished one. Each resource registers as it comes into being, so
+  // teardown is its reverse and no resource has to be listed a second time.
+  const disposers: Array<() => void> = [];
+  const teardown = (): void => {
+    for (const dispose of disposers.splice(0).reverse()) dispose();
+  };
   const adoptionState = options.markup.kind === "adopted" ? options.markup.state : null;
-  if (adoptionState) bootstrapDisposers.push(() => adoptionState.dispose());
   let restoreStagingStyles: () => void = () => undefined;
-  let iframe: HTMLIFrameElement | null = options.iframe;
   let markup: PreparedMarkup | null = null;
 
   try {
+    const internalStyles = installInternalStyles(options.shadowRoot);
+    disposers.push(() => internalStyles.dispose());
+    if (adoptionState) disposers.push(() => adoptionState.dispose());
+    disposers.push(() => options.iframe.remove());
+    disposers.push(() => restoreStagingStyles());
+    const iframe = options.iframe;
     const window = iframe.contentWindow as VFrameWindow | null;
     const document = iframe.contentDocument;
     if (window === null || document === null) {
@@ -119,8 +128,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     }
     const hostListenerLifetime = new AbortController();
     const childListenerLifetime = new window.AbortController();
-    bootstrapDisposers.push(() => hostListenerLifetime.abort());
-    bootstrapDisposers.push(() => childListenerLifetime.abort());
+    disposers.push(() => hostListenerLifetime.abort());
+    disposers.push(() => childListenerLifetime.abort());
 
     const nativeCurrentScriptGetter = Object.getOwnPropertyDescriptor(
       window.Document.prototype,
@@ -151,6 +160,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       throw abortError();
     }
 
+    // The serialized document is parsed into `markup`; the realm outlives the load
+    // that built these options, so it must not keep a second copy of an SSR payload.
+    options.markup.source = "";
+    const preparedMarkup = markup;
+    disposers.push(() => {
+      preparedMarkup.html.remove();
+      preparedMarkup.inlineStyleSheet.remove();
+    });
+
     const privateHead = document.head;
     if (privateHead === null) {
       throw new Error("The execution document lost its private head before bootstrap");
@@ -163,94 +181,31 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     let disposed = false;
     let scriptRunner: ScriptRunner | null = null;
     let facade: DocumentFacade | null = null;
-    let fragmentTarget: Element | null = null;
     let markupRevealed = !options.stageMarkup && options.markup.kind !== "adopted";
-    const nativeSetAttribute = window.Element.prototype.setAttribute;
-    const nativeRemoveAttribute = window.Element.prototype.removeAttribute;
-    const nativeQuerySelectorAll = window.Element.prototype.querySelectorAll;
-    const clearClonedTargets = (nodes: readonly Node[]): void => {
-      for (const node of nodes) {
-        const elements = node.nodeType === 1 ? [node as Element] : [];
-        if ("querySelectorAll" in node) {
-          elements.push(
-            ...Array.from(
-              (node as ParentNode).querySelectorAll(`[${FRAGMENT_TARGET_ATTRIBUTE}]`),
-            ),
-          );
-        }
-        for (const element of elements) {
-          if (element !== fragmentTarget)
-            nativeRemoveAttribute.call(element, FRAGMENT_TARGET_ATTRIBUTE);
-        }
-      }
-    };
-    const updateFragmentTarget = (url: string): void => {
-      if (!markup || disposed) return;
-      if (fragmentTarget)
-        nativeRemoveAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE);
-      fragmentTarget =
-        new URL(url).hash === ""
-          ? null
-          : findFragmentTarget(
-              [markup.html, ...Array.from(nativeQuerySelectorAll.call(markup.html, "*"))],
-              url,
-            );
-      if (fragmentTarget)
-        nativeSetAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE, "");
-    };
+    const fragmentTargets = createFragmentTargets({
+      window,
+      getRoot: () => markup?.html ?? null,
+      isDisposed: () => disposed,
+    });
+    disposers.push(() => fragmentTargets.dispose());
     const isConnectedToRealm = (node: Node): boolean =>
       markup?.html.contains(node) ?? false;
     const scrollFragment = (url: string): void => {
       if (!disposed && markupRevealed) {
-        scrollToFragment(options.host, fragmentTarget, url);
+        scrollToFragment(options.host, fragmentTargets.current, url);
       }
     };
 
-    const getDocumentBaseURL = (): string => {
-      for (const base of markup?.html.querySelectorAll("base[href]") ?? []) {
-        if (base.namespaceURI !== HTML_NAMESPACE) continue;
-        const authoredHref =
-          markup?.authoredURLAttributes.get(base)?.get("href") ??
-          base.getAttribute("href") ??
-          "";
-        const resolvedBase = window.URL.parse(authoredHref, currentURL);
-        if (resolvedBase !== null) {
-          return resolvedBase.href;
-        }
-      }
-      return currentURL;
-    };
-    const getDocumentBaseTarget = (): string => {
-      for (const base of markup?.html.querySelectorAll("base[target]") ?? []) {
-        if (base.namespaceURI !== HTML_NAMESPACE) continue;
-        const target = base.getAttribute("target") ?? "";
-        const normalizedTarget = target.toLowerCase();
-        const isKeyword =
-          normalizedTarget === "_blank" ||
-          normalizedTarget === "_self" ||
-          normalizedTarget === "_parent" ||
-          normalizedTarget === "_top";
-        if (
-          target === "" ||
-          /[\t\n\r<]/.test(target) ||
-          (target.startsWith("_") && !isKeyword)
-        ) {
-          continue;
-        }
-        return normalizedTarget;
-      }
-      return "_self";
-    };
-    let previousBaseURL = markup.baseURL;
-    const updateDocumentBaseURL = (): void => {
-      const baseURL = getDocumentBaseURL();
-      if (baseURL === previousBaseURL) {
-        return;
-      }
-      previousBaseURL = baseURL;
-      privateBase.href = baseURL;
-      facade?.rebaseURLs();
-    };
+    const documentBase = createDocumentBase({
+      window,
+      privateBase,
+      getMarkup: () => markup,
+      getCurrentURL: () => currentURL,
+      onRebase: () => facade?.rebaseURLs(),
+    });
+    const getDocumentBaseURL = documentBase.getBaseURL;
+    const getDocumentBaseTarget = documentBase.getBaseTarget;
+    const updateDocumentBaseURL = documentBase.update;
 
     const historyURLChanged = (url: string, kind: VFrameNavigationKind | null) => {
       currentURL = url;
@@ -261,9 +216,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       ? new BoundHistory({
           window,
           hostWindow: options.host.ownerDocument.defaultView!,
+          getBaseURL: getDocumentBaseURL,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
-          onActivate: updateFragmentTarget,
+          onActivate: fragmentTargets.update,
           onFragmentScroll: scrollFragment,
         })
       : new VirtualHistory({
@@ -273,14 +229,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           getBaseURL: getDocumentBaseURL,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
-          onActivate: updateFragmentTarget,
+          onActivate: fragmentTargets.update,
           onFragmentScroll: scrollFragment,
           onDocumentTraversal: options.onDocumentTraversal,
         });
     history.install();
-    clearClonedTargets([markup.html]);
-    updateFragmentTarget(currentURL);
-    bootstrapDisposers.push(() => history.dispose());
+    fragmentTargets.clearClones([markup.html]);
+    fragmentTargets.update(currentURL);
+    disposers.push(() => history.dispose());
 
     const networkDispose = installNetworkPatches({
       window,
@@ -291,7 +247,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       // network disposer, not the changed attribute, determine its lifetime.
       isActive: () => options.host.isConnected,
     });
-    bootstrapDisposers.push(networkDispose);
+    disposers.push(networkDispose);
     const viewport = installViewportPatches(
       options.host,
       window,
@@ -300,7 +256,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         facade?.dispatchDocumentEvent("scroll", { bubbles: true });
       },
     );
-    bootstrapDisposers.push(() => viewport.dispose());
+    disposers.push(() => viewport.dispose());
 
     const styles = createDynamicStyles({
       window,
@@ -380,12 +336,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
       },
       onConnectedNodes(nodes) {
-        clearClonedTargets(nodes);
+        fragmentTargets.clearClones(nodes);
         styles.installCSSOMStyleSheets(nodes);
         styles.observeConnectedNodes(nodes);
       },
     });
-    bootstrapDisposers.push(() => facade?.dispose());
+    disposers.push(() => facade?.dispose());
     if (!markupRevealed) styles.installCSSOMStyleSheet(markup.inlineStyleSheet);
     const liveMarkup = markup.html;
     if (options.markup.kind === "adopted" || options.stageMarkup) {
@@ -447,136 +403,19 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       facade.eventForListener,
       facade.finishEventListener,
     );
-    bootstrapDisposers.push(windowEventDispose);
+    disposers.push(windowEventDispose);
 
-    const mutationObserver = new globalThis.MutationObserver((records) => {
-      const stylesWithContentChanges = new Set<HTMLStyleElement>();
-      const stylesWithAttributeChanges = new Set<HTMLStyleElement>();
-      const linksWithAttributeChanges = new Set<HTMLLinkElement>();
-      const stylesConnectedWithoutFacade = new Set<HTMLStyleElement>();
-      const linksConnectedWithoutFacade = new Set<HTMLLinkElement>();
-      const removedStyles = new Set<HTMLStyleElement>();
-      const removedLinks = new Set<HTMLLinkElement>();
-      let baseElementsChanged = false;
-      // Only HTML-namespace base elements affect the document base URL;
-      // querySelector's unprefixed type selector also matches foreign ones.
-      const isHTMLBase = (element: Element): boolean =>
-        element.localName === "base" && element.namespaceURI === HTML_NAMESPACE;
-      const subtreeHasBaseElement = (node: Node): boolean =>
-        (node instanceof window.Element && isHTMLBase(node)) ||
-        ("querySelectorAll" in node &&
-          Array.from((node as ParentNode).querySelectorAll("base")).some(isHTMLBase));
-      for (const record of records) {
-        if (record.type === "childList") {
-          if (
-            record.target instanceof window.HTMLStyleElement &&
-            record.target !== markup?.inlineStyleSheet
-          ) {
-            stylesWithContentChanges.add(record.target);
-          }
-          for (const node of record.addedNodes) {
-            facade?.markVirtualTree(node);
-            for (const style of styles.virtualStylesFrom([node])) {
-              if (!styles.claimAwaitedStyle(style)) {
-                stylesConnectedWithoutFacade.add(style);
-              }
-            }
-            for (const link of styles.dynamicLinksFrom([node])) {
-              if (!styles.claimAwaitedLink(link)) {
-                linksConnectedWithoutFacade.add(link);
-              }
-            }
-            baseElementsChanged ||= subtreeHasBaseElement(node);
-          }
-          for (const node of record.removedNodes) {
-            for (const style of styles.virtualStylesFrom([node])) {
-              removedStyles.add(style);
-            }
-            for (const link of styles.dynamicLinksFrom([node])) {
-              removedLinks.add(link);
-            }
-            baseElementsChanged ||= subtreeHasBaseElement(node);
-          }
-        } else if (record.type === "characterData") {
-          const parentStyle =
-            record.target.parentNode instanceof window.HTMLStyleElement
-              ? record.target.parentNode
-              : null;
-          if (parentStyle !== null) {
-            stylesWithContentChanges.add(parentStyle);
-          }
-        } else if (
-          record.type === "attributes" &&
-          record.target instanceof window.Element
-        ) {
-          facade?.synchronizeURLAttribute(
-            record.target,
-            record.attributeName ?? "",
-            record.attributeNamespace,
-          );
-          if (record.attributeName === "style") {
-            facade?.synchronizeStyleAttribute(record.target);
-          }
-          if (
-            record.target instanceof window.HTMLStyleElement &&
-            record.target !== markup?.inlineStyleSheet
-          ) {
-            stylesWithAttributeChanges.add(record.target);
-          } else if (record.target instanceof window.HTMLLinkElement) {
-            linksWithAttributeChanges.add(record.target);
-          }
-        }
-      }
-      if (baseElementsChanged) {
-        updateDocumentBaseURL();
-      }
-      for (const style of removedStyles) {
-        if (!isConnectedToRealm(style)) {
-          styles.invalidateDynamicStyle(style);
-        }
-      }
-      for (const link of removedLinks) {
-        if (!isConnectedToRealm(link)) {
-          styles.invalidateDynamicLink(link);
-        }
-      }
-      for (const style of stylesConnectedWithoutFacade) {
-        styles.scheduleConnectedDynamicStyle(style);
-      }
-      for (const link of linksConnectedWithoutFacade) {
-        styles.scheduleDynamicLink(link, true);
-      }
-      for (const style of stylesWithContentChanges) {
-        styles.scheduleDynamicStyleContent(style);
-      }
-      for (const style of stylesWithAttributeChanges) {
-        styles.scheduleDynamicStyleAttributes(style);
-      }
-      for (const link of linksWithAttributeChanges) {
-        styles.scheduleDynamicLink(link);
-      }
-    });
-    mutationObserver.observe(markup.html, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-      attributes: true,
-      attributeFilter: [
-        "action",
-        "cite",
-        "data",
-        "disabled",
-        "formaction",
-        "href",
-        "media",
-        "poster",
-        "rel",
-        "src",
-        "srcset",
-        "style",
-      ],
-    });
-    bootstrapDisposers.push(() => mutationObserver.disconnect());
+    disposers.push(
+      observeRealmMutations({
+        window,
+        root: markup.html,
+        styles,
+        inlineStyleSheet: markup.inlineStyleSheet,
+        getFacade: () => facade,
+        isConnectedToRealm,
+        onBaseElementChange: updateDocumentBaseURL,
+      }),
+    );
 
     const navigation = installRealmNavigation({
       window,
@@ -601,7 +440,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       onNativeLocationNavigation: options.onNativeLocationNavigation,
       onError: options.onError,
     });
-    bootstrapDisposers.push(() => navigation.dispose());
+    disposers.push(() => navigation.dispose());
 
     const runtimeErrorURL = (filename: string): string => {
       if (filename === "") {
@@ -683,7 +522,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
       markupRevealed = true;
-      styles.reveal();
+      styles.restoreScopedSelectors();
       for (const node of options.markup.kind === "adopted"
         ? options.markup.previewNodes.splice(0)
         : []) {
@@ -722,23 +561,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
         disposed = true;
         options.signal.removeEventListener("abort", runtime.dispose);
-        hostListenerLifetime.abort();
-        childListenerLifetime.abort();
-        mutationObserver.disconnect();
-        navigation.dispose();
-        history.dispose();
-        viewport.dispose();
-        windowEventDispose();
-        networkDispose();
-        if (fragmentTarget)
-          nativeRemoveAttribute.call(fragmentTarget, FRAGMENT_TARGET_ATTRIBUTE);
-        fragmentTarget = null;
-        iframe?.remove();
-        facade?.dispose();
-        markup?.html.remove();
-        markup?.inlineStyleSheet.remove();
-        restoreStagingStyles();
-        internalStyles.dispose();
+        teardown();
         markup = null;
         facade = null;
         scriptRunner = null;
@@ -747,14 +570,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     options.signal.addEventListener("abort", runtime.dispose, { once: true });
     return runtime;
   } catch (error) {
-    for (const disposeBootstrapResource of bootstrapDisposers.reverse()) {
-      disposeBootstrapResource();
-    }
-    markup?.html.remove();
-    markup?.inlineStyleSheet.remove();
-    iframe?.remove();
-    restoreStagingStyles();
-    internalStyles.dispose();
+    teardown();
     throw error;
   }
 }

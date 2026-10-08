@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
 import { installBundle, mountFrame } from "./support/mount-frame";
+import { settleAfterRoundTrip } from "./support/settle";
 
 let fixture: FixtureServer;
 
@@ -133,8 +134,9 @@ test("preserves native missing network argument errors without issuing requests"
       sendBeacon: { name: "TypeError", isRealmTypeError: true },
     });
 
-    await page.waitForTimeout(100);
-    expect(fixture.requests.slice(requestsBefore)).toEqual([]);
+    // Any request the calls above issued is ahead of this one on the loopback server.
+    await settleAfterRoundTrip(page, `${fixture.origin}/api/message`);
+    expect(fixture.requests.slice(requestsBefore)).toEqual(["/api/message"]);
 
     const explicitURLs = await childValue(frame, async (window) => {
       const xhr = (input: unknown) =>
@@ -172,4 +174,18 @@ test("preserves native missing network argument errors without issuing requests"
       xhr: [`${fixture.origin}/documents/undefined`, `${fixture.origin}/documents/null`],
     });
   }
+});
+
+test("keeps the signal and credentials when a Request is constructed from another request", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}${"/documents/request-abort.html"}`,
+    settle: "none",
+  });
+
+  await expect(frame.locator("#request-result")).toHaveText(
+    "true:true:include:include:AbortError",
+  );
 });

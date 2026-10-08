@@ -76,7 +76,7 @@ function errorComesFromCurrentDocument(filename: string, currentURL: string): bo
 
 export class ScriptRunner {
   readonly #window: VFrameWindow;
-  readonly #setTimeout: (callback: () => void) => number;
+  readonly #setTimeout: (callback: () => void, delay?: number) => number;
   readonly #clearTimeout: (timer: number) => void;
   readonly #native: NativeDocumentHandles;
   readonly #facade: DocumentFacade;
@@ -371,9 +371,25 @@ export class ScriptRunner {
     }
 
     this.#facade.setReadyState("interactive");
-    const deferredExecutions = deferredScripts.map((script) =>
-      this.#executeScript(script, "ordered"),
-    );
+    // Engines do not order inline modules (or an inline module against an external
+    // script) among themselves, so each deferred script waits for the previous one
+    // to start executing. External sources are preloaded first so the fetches, and
+    // the module graphs behind them, still overlap; only execution is chained.
+    let previousExecuted: Promise<void> = Promise.resolve();
+    const deferredExecutions = deferredScripts.map((script) => {
+      const preload = this.#preloadDeferred(script);
+      const gate = previousExecuted;
+      let markExecuted!: () => void;
+      previousExecuted = new Promise<void>((resolve) => {
+        markExecuted = resolve;
+      });
+      return this.#executeScript(script, "ordered", { gate, markExecuted }).finally(
+        () => {
+          markExecuted();
+          preload?.remove();
+        },
+      );
+    });
     await Promise.all(deferredExecutions);
     await Promise.all([...this.#queuedScriptErrors]);
 
@@ -563,9 +579,70 @@ export class ScriptRunner {
     this.#queuedScriptErrors.add(settlement);
   }
 
+  #crossOriginFor(pseudoScript: HTMLScriptElement): string | null {
+    if (pseudoScript.hasAttribute("crossorigin")) {
+      return null;
+    }
+    if (this.#credentials === "include") {
+      return "use-credentials";
+    }
+    if (this.#credentials === "omit") {
+      return "anonymous";
+    }
+    if (hasExternalSource(pseudoScript)) {
+      // An unresolvable src stays on the companion so its native load failure
+      // reports a per-script error instead of failing the whole document.
+      try {
+        if (new URL(pseudoScript.src).origin !== this.#executionOrigin) {
+          return "anonymous";
+        }
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
+   * Starts fetching an external deferred script before its turn to execute. The
+   * request mode mirrors the companion's so the later fetch reuses the response.
+   * Inline modules cannot be prefetched: their imports are only discovered when
+   * their turn comes, so their graph loads after the earlier scripts ran.
+   */
+  #preloadDeferred(pseudoScript: HTMLScriptElement): HTMLLinkElement | null {
+    if (!hasExternalSource(pseudoScript)) {
+      return null;
+    }
+    const module = scriptCategory(pseudoScript) === "module";
+    const link = this.#native.createElement("link");
+    link.rel = module ? "modulepreload" : "preload";
+    if (!module) {
+      link.as = "script";
+    }
+    const crossOrigin =
+      pseudoScript.getAttribute("crossorigin") ?? this.#crossOriginFor(pseudoScript);
+    if (crossOrigin !== null) {
+      link.crossOrigin = crossOrigin;
+    }
+    for (const name of ["integrity", "referrerpolicy", "fetchpriority"]) {
+      const value = pseudoScript.getAttribute(name);
+      if (value !== null) this.#native.setAttribute(link, name, value);
+    }
+    const nonce = this.#getNonce();
+    if (nonce !== "") {
+      link.nonce = nonce;
+    }
+    try {
+      link.href = this.#createScriptURL(pseudoScript.getAttribute("src") ?? "");
+      this.#native.appendChild(this.#native.privateHead, link);
+    } catch {
+      return null;
+    }
+    return link;
+  }
+
   async #executeScript(
     pseudoScript: HTMLScriptElement,
     execution: "async" | "ordered",
+    ordering?: { gate: Promise<void>; markExecuted(): void },
   ): Promise<void> {
     if (this.#signal.aborted) {
       return;
@@ -608,20 +685,9 @@ export class ScriptRunner {
       companion.nonce = nonce;
     }
 
-    if (!pseudoScript.hasAttribute("crossorigin")) {
-      if (this.#credentials === "include") {
-        companion.crossOrigin = "use-credentials";
-      } else if (this.#credentials === "omit") {
-        companion.crossOrigin = "anonymous";
-      } else if (hasExternalSource(pseudoScript)) {
-        // An unresolvable src stays on the companion so its native load failure
-        // reports a per-script error instead of failing the whole document.
-        try {
-          if (new URL(pseudoScript.src).origin !== this.#executionOrigin) {
-            companion.crossOrigin = "anonymous";
-          }
-        } catch {}
-      }
+    const crossOrigin = this.#crossOriginFor(pseudoScript);
+    if (crossOrigin !== null) {
+      companion.crossOrigin = crossOrigin;
     }
 
     if (execution === "ordered") {
@@ -668,13 +734,18 @@ export class ScriptRunner {
         },
       };
       this.#inlineClassicCandidates.push(candidate);
-      // CSP violation events arrive in a later task than zero-delay timers in both engines.
-      this.#window.setTimeout(() => {
+      // CSP violation events arrive in a later task than zero-delay timers in both
+      // engines, so a candidate stays claimable for a grace period (not just one
+      // tick) before it is treated as having run.
+      const abortExpiry = () => this.#clearTimeout(expiry);
+      const expiry = this.#setTimeout(() => {
+        this.#signal.removeEventListener("abort", abortExpiry);
         const candidateIndex = this.#inlineClassicCandidates.indexOf(candidate);
         if (candidateIndex !== -1) {
           this.#inlineClassicCandidates.splice(candidateIndex, 1);
         }
       }, 100);
+      this.#signal.addEventListener("abort", abortExpiry, { once: true });
       companion.addEventListener(
         "error",
         () => {
@@ -700,6 +771,7 @@ export class ScriptRunner {
           return;
         }
         finished = true;
+        ordering?.markExecuted();
         this.#signal.removeEventListener("abort", abort);
         externalModuleObservation?.cancel();
         if (completionName !== null) {
@@ -718,6 +790,7 @@ export class ScriptRunner {
           inlineModuleSettlement.status = "fulfilled";
         }
         pseudoScript.dispatchEvent(new this.#window.Event("load"));
+        ordering?.markExecuted();
         if (externalModuleObservation !== null) {
           externalModuleObservation.start();
           void externalModuleObservation.settled.then(finish);
@@ -768,6 +841,13 @@ export class ScriptRunner {
       };
       this.#signal.addEventListener("abort", abort, { once: true });
     });
+
+    if (ordering !== undefined) {
+      await ordering.gate;
+    }
+    if (this.#signal.aborted) {
+      return;
+    }
 
     try {
       this.#native.appendChild(this.#native.privateHead, companion);

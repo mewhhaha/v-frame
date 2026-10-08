@@ -1,11 +1,15 @@
 {
   "name": "@mewhhaha/v-frame",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Render a trusted web application in a shadow tree backed by an isolated browser realm",
   "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.18.0",
+      "onFail": "error"
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,29 +25,28 @@
     }
   },
   "files": [
-    "dist",
-    "README.md",
-    "THIRD_PARTY_NOTICES.md"
+    "dist"
   ],
   "sideEffects": [
-    "./dist/register.js",
-    "./src/register.ts"
+    "./dist/register.js"
   ],
   "scripts": {
-    "build": "npm run typecheck && node rolldown.mjs && tsc --emitDeclarationOnly",
-    "prepack": "npm run build",
+    "build": "node rolldown.mjs && tsc --emitDeclarationOnly",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint . --deny-warnings",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "typecheck": "tsc --noEmit && pnpm run typecheck:tests",
+    "typecheck:tests": "tsc -p tsconfig.test.json",
     "size": "node scripts/bundle-size.mjs",
-    "test": "npm run build && playwright test",
     "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
     "test:package": "node scripts/package-smoke.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:chromium": "pnpm run build && playwright test --project=chromium",
     "release:check": "node scripts/release-check.ts",
-    "bench": "npm run build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts",
-    "check": "npm run format:check && npm run lint && npm run build && npm run size && npm run test:unit",
-    "publish:check": "npm run check && jsr publish --dry-run"
+    "publish:dry-run": "jsr publish --dry-run --allow-dirty",
+    "bench": "pnpm run build && node --import ./scripts/resolve-ts-sources.mjs bench/mark-virtual-node.ts",
+    "check:fast": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm run size",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run build && pnpm run typecheck:tests && pnpm run size && pnpm run release:check && pnpm run test:unit && pnpm run publish:dry-run && pnpm run test:package && pnpm run test:e2e"
   },
   "keywords": [
     "custom-element",
@@ -61,7 +64,7 @@
   "bugs": {
     "url": "https://github.com/mewhhaha/v-frame/issues"
   },
-  "packageManager": "pnpm@12.8.1+sha512.f64ba907507f5ceafe06c8d38e6052d0179444580ec1279ddd5bfc11cb48aa8a2644b66598e07e761da84872a9fc57d5f902b87fa49d024198d558612aabbe45",
+  "packageManager": "pnpm@12.10.1+sha512.ba40a37eb1a370d60fea8c4cf1d364c13bcccef518e98ad2bcee954f539d38da37458e58261a3fa55e06523450ea0ffff9f497b135be41f2c15c1642bacace6c",
   "dependencies": {
     "css-tree": "3.2.1"
   },

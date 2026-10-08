@@ -44,13 +44,6 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
 
       - run: pnpm exec jsr publish --provenance

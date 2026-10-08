@@ -7,6 +7,7 @@
 import type { EnumerableWeakMap } from "../enumerable-weak.js";
 import type { VFrameWindow } from "../types.js";
 import type { LinkedStyle } from "../linked-styles.js";
+import { liveIndexedCollection } from "./indexed-collection.js";
 
 export { HTML_NAMESPACE, SVG_NAMESPACE } from "../asset-urls.js";
 
@@ -53,6 +54,30 @@ export interface PatchRegistry {
  * first patch, and unwinding has to be idempotent, so a second run finds
  * nothing left rather than replaying the record in the wrong order.
  */
+// A patch written as `{ value() {} }` or `{ get() {} }` is called "value" or
+// "get", which the guest can read off the member it replaced. Give such a
+// function the name and length of the native one it stands in for.
+function adoptNativeShape(
+  replacement: unknown,
+  original: unknown,
+  name: string,
+  length?: number,
+): void {
+  if (
+    typeof replacement !== "function" ||
+    !["", "value", "get", "set"].includes(replacement.name)
+  ) {
+    return;
+  }
+  Object.defineProperty(replacement, "name", { value: name, configurable: true });
+  if (typeof original === "function") {
+    Object.defineProperty(replacement, "length", {
+      value: length ?? original.length,
+      configurable: true,
+    });
+  }
+}
+
 export function createPatchRegistry(): PatchRegistry {
   const patchedDescriptors: Array<{
     target: object;
@@ -62,11 +87,13 @@ export function createPatchRegistry(): PatchRegistry {
 
   return {
     patch(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void {
-      patchedDescriptors.push({
-        target,
-        key,
-        descriptor: Object.getOwnPropertyDescriptor(target, key),
-      });
+      const original = Object.getOwnPropertyDescriptor(target, key);
+      patchedDescriptors.push({ target, key, descriptor: original });
+      if (original !== undefined && typeof key === "string") {
+        adoptNativeShape(descriptor.value, original.value, key);
+        adoptNativeShape(descriptor.get, original.get, `get ${key}`, 0);
+        adoptNativeShape(descriptor.set, original.set, `set ${key}`, 1);
+      }
       Object.defineProperty(target, key, { configurable: true, ...descriptor });
     },
     restorePatches(): void {
@@ -95,22 +122,6 @@ export interface NativeDocumentHandles {
 // the exact `this`-bound signatures of the realm prototypes they came from, and
 // restating fifty of them by hand would only be a second place to get wrong.
 export type FacadeContext = ReturnType<typeof createFacadeContext>;
-
-// Scripts created before nodes.ts installs the real execution hook stay inert,
-// which is what the facade did before the hook was assigned.
-function ignoreConnectedScript(_script: HTMLScriptElement): void {
-  return undefined;
-}
-
-// Nothing writes an attribute through the facade before nodes.ts assigns the
-// real marker: the Element patches that route here are installed after it.
-function ignoreVirtualAttribute(_attribute: Attr): void {
-  return undefined;
-}
-
-function mutateInternally(mutation: () => void): void {
-  mutation();
-}
 
 export function createFacadeContext(options: DocumentFacadeOptions) {
   const window = options.window;
@@ -176,6 +187,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeClosest = elementPrototype.closest;
   const nativeQuerySelector = elementPrototype.querySelector;
   const nativeQuerySelectorAll = elementPrototype.querySelectorAll;
+  const nativeFragmentQuerySelectorAll = documentFragmentPrototype.querySelectorAll;
   const nativeGetElementsByTagName = elementPrototype.getElementsByTagName;
   const nativeGetElementsByTagNameNS = elementPrototype.getElementsByTagNameNS;
   const nativeAttachShadow = elementPrototype.attachShadow;
@@ -310,12 +322,11 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const getVirtualClientRects = (element: Element): DOMRectList => {
     const rects = Array.from(nativeGetClientRects.call(element), (rect) =>
       toVirtualDOMRect(rect),
-    ) as DOMRect[] & { item(index: number): DOMRect | null };
-    Object.defineProperty(rects, "item", {
-      configurable: true,
-      value: (index: number) => rects[index] ?? null,
-    });
-    return rects as unknown as DOMRectList;
+    );
+    return liveIndexedCollection(
+      window.DOMRectList.prototype,
+      () => rects,
+    ) as unknown as DOMRectList;
   };
   const toHostViewportPoint = (x: number, y: number): { x: number; y: number } => {
     const origin = viewportOrigin();
@@ -356,8 +367,6 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     document,
     hostDocument,
     privateHead,
-    privateBody,
-    documentPrototype,
     nodePrototype,
     characterDataPrototype,
     elementPrototype,
@@ -389,7 +398,6 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeAddEventListener,
     nativeRemoveEventListener,
     nativeDispatchEvent,
-    mutateInternally,
     nativeGetAttribute,
     nativeGetAttributeNS,
     nativeGetAttributeNode,
@@ -407,6 +415,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeClosest,
     nativeQuerySelector,
     nativeQuerySelectorAll,
+    nativeFragmentQuerySelectorAll,
     nativeGetElementsByTagName,
     nativeGetElementsByTagNameNS,
     nativeAttachShadow,
@@ -444,12 +453,6 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     cssomMutatedStyleElements,
     authoredLinkRelValues,
     logicalEventTargets,
-    // Reassigned by nodes.ts once script execution is wired up; the attribute
-    // facades reach dynamic scripts through this slot.
-    executeConnectedScript: ignoreConnectedScript,
-    // Reassigned by nodes.ts once marking exists; the attribute facade reaches
-    // the Attr nodes its writes create through this slot.
-    markVirtualAttribute: ignoreVirtualAttribute,
     patch,
     restorePatches,
     getVirtualBoundingClientRect,

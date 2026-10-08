@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
+  rewriteAssetAttribute,
   XLINK_NAMESPACE,
-} from "../../src/markup.js";
+} from "../../src/asset-urls.js";
 
 const BASE = "https://host.test/app/page.html";
+
+/** `rewriteAssetAttribute` reports an unchanged attribute as null. */
+function rebaseSrcset(source: string): string {
+  const img = { localName: "img", namespaceURI: "http://www.w3.org/1999/xhtml" };
+  return rewriteAssetAttribute(img, "srcset", null, source, BASE) ?? source;
+}
 
 const srcsetCases: Array<{ name: string; source: string; rewritten: string }> = [
   {
@@ -81,8 +87,8 @@ const srcsetCases: Array<{ name: string; source: string; rewritten: string }> = 
 ];
 
 for (const srcsetCase of srcsetCases) {
-  test(`absolutizeSrcset ${srcsetCase.name}`, () => {
-    assert.equal(absolutizeSrcset(srcsetCase.source, BASE), srcsetCase.rewritten);
+  test(`rewriteAssetAttribute srcset ${srcsetCase.name}`, () => {
+    assert.equal(rebaseSrcset(srcsetCase.source), srcsetCase.rewritten);
   });
 }
 
@@ -265,6 +271,104 @@ for (const attributeCase of attributeCases) {
         attributeCase.namespace ?? null,
       ),
       attributeCase.srcset,
+    );
+  });
+}
+
+const HTML = "http://www.w3.org/1999/xhtml";
+const SVG = "http://www.w3.org/2000/svg";
+
+test("rewriteAssetAttribute rebases link imagesrcset like srcset", () => {
+  assert.equal(
+    rewriteAssetAttribute(
+      { localName: "link", namespaceURI: HTML },
+      "imagesrcset",
+      null,
+      "p1.png 1x, p2.png 2x",
+      BASE,
+    ),
+    "https://host.test/app/p1.png 1x, https://host.test/app/p2.png 2x",
+  );
+});
+
+test("rewriteAssetAttribute leaves imagesizes and non-link imagesrcset alone", () => {
+  assert.equal(
+    rewriteAssetAttribute(
+      { localName: "link", namespaceURI: HTML },
+      "imagesizes",
+      null,
+      "100vw",
+      BASE,
+    ),
+    null,
+  );
+  assert.equal(
+    rewriteAssetAttribute(
+      { localName: "img", namespaceURI: HTML },
+      "imagesrcset",
+      null,
+      "p1.png 1x",
+      BASE,
+    ),
+    null,
+  );
+});
+
+test("rewriteAssetAttribute rebases svg a href and xlink:href including fragments", () => {
+  const anchor = { localName: "a", namespaceURI: SVG };
+  assert.equal(
+    rewriteAssetAttribute(anchor, "href", null, "next.html", BASE),
+    "https://host.test/app/next.html",
+  );
+  assert.equal(
+    rewriteAssetAttribute(anchor, "href", XLINK_NAMESPACE, "next.html", BASE),
+    "https://host.test/app/next.html",
+  );
+  for (const namespace of [null, XLINK_NAMESPACE]) {
+    assert.equal(
+      rewriteAssetAttribute(anchor, "href", namespace, "#section", BASE),
+      `${BASE}#section`,
+    );
+    for (const localName of ["use", "image", "feImage"]) {
+      assert.equal(
+        rewriteAssetAttribute(
+          { localName, namespaceURI: SVG },
+          "href",
+          namespace,
+          "#section",
+          BASE,
+        ),
+        null,
+      );
+    }
+  }
+});
+
+for (const [localName, attribute] of [
+  ["object", "data"],
+  ["embed", "src"],
+  ["video", "poster"],
+  ["input", "src"],
+  ["form", "action"],
+  ["button", "formaction"],
+  ["input", "formaction"],
+  ["blockquote", "cite"],
+  ["q", "cite"],
+  ["del", "cite"],
+  ["ins", "cite"],
+  ["area", "href"],
+  ["base", "href"],
+] as const) {
+  test(`rewriteAssetAttribute rebases ${localName}[${attribute}]`, () => {
+    assert.equal(
+      rewriteAssetAttribute(
+        { localName, namespaceURI: HTML },
+        attribute,
+        null,
+        "rel/value",
+        BASE,
+      ),
+      "https://host.test/app/rel/value",
     );
   });
 }

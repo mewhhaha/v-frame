@@ -75,10 +75,17 @@ for (const category of ["classic", "module"]) {
           script.addEventListener("error", () => resolve(), { once: true });
         });
         await Promise.resolve().then(() => events.push("microtask"));
-        await Promise.race([
-          failed,
-          new Promise<void>((resolve) => setTimeout(resolve, 100)),
-        ]);
+        if (events.includes("error")) {
+          // The engine reported the error synchronously, before `failed` could listen
+          // for it, so no event is left to wait on. Only elapsed time can show that
+          // nothing further is dispatched to the listeners added after the append.
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        } else {
+          // Queued: `failed` settles after the error and every listener and handler
+          // added above have run. An error that never comes ends in the test timeout,
+          // instead of a timer cutting the wait short when the machine is loaded.
+          await failed;
+        }
         script.remove();
         return {
           events,
@@ -131,7 +138,9 @@ test("cancels pending bootstrap errors when an error handler removes the frame",
     frame.src = source;
     document.querySelector("#host")!.append(frame);
     await removed;
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
     return { events, errors: body!.dataset.errors, status: frame.status };
   }, fixture.origin + "/documents/cancel-bootstrap.html");
   expect(result).toEqual({ events: ["frame-error"], errors: "1", status: "idle" });
@@ -200,7 +209,9 @@ for (const teardown of ["remove", "clear"] as const) {
       } else {
         frame.src = "";
       }
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
       return { events, status: frame.status };
     }, teardown);
     expect(result).toEqual({

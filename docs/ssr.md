@@ -93,9 +93,11 @@ scrolling before registration. Automatically scrolling to a deep fragment at
 handoff would visibly jump an already-painted preview. Subsequent guest
 fragment navigations scroll normally.
 
-`@mewhhaha/v-frame/server` ships this transformation. On Cloudflare Workers,
-`materializeVFrameDocument` parses it through `HTMLRewriter`; it takes a normal
-`Response` and the guest's public URL and returns a `Response`:
+`@mewhhaha/v-frame/server` ships this transformation. `materializeVFrameDocument`
+drives an `HTMLRewriter` (Cloudflare Workers, Bun, or any port that transforms a
+`Response`): it takes a normal `Response` and the guest's public URL and resolves
+to a `Response`. Where the runtime has no global `HTMLRewriter`, pass one as
+`options.HTMLRewriter`; without either it throws a `TypeError` naming that option.
 
 ```ts
 import { materializeVFrameDocument } from "@mewhhaha/v-frame/server";
@@ -110,37 +112,88 @@ if (!guestResponse.ok) {
 }
 
 const fonts = new Set<string>();
-const materializedResponse = materializeVFrameDocument(guestResponse, guestURL.href, {
-  onFontFace: (css) => {
-    fonts.add(css);
+const materializedResponse = await materializeVFrameDocument(
+  guestResponse,
+  guestURL.href,
+  {
+    onFontFace: (css) => {
+      fonts.add(css);
+    },
   },
-});
+);
 // Consume the response before reading fonts: materialization is asynchronous.
 const guestMarkup = await materializedResponse.text();
 const fontStyle = fonts.size ? `<style>${[...fonts].join("\n")}</style>` : "";
 // Put fontStyle in the host head, then guestMarkup inside the frame's DSD template.
 ```
 
+Only a `200` response whose `content-type` is `text/html` is transformed. Any
+other response (a redirect, `204`, `206`, `304`, an error page, JSON) is returned
+as it came, so check `response.ok` first as above rather than embedding it. A
+transformed response keeps its status and headers except those that describe the
+guest's bytes: `content-length`, `content-encoding`, `content-range`,
+`accept-ranges`, `etag`, `last-modified`, `content-md5`, `digest`,
+`content-digest` and `repr-digest` are removed, and `content-type` becomes
+`text/html; charset=utf-8`.
+
+The guest may be in any encoding the platform's `TextDecoder` knows. The bytes
+are decoded once, by the HTML sniffing order this adapter supports: a byte order
+mark, then the `charset` of the `content-type` header, then a `<meta charset>` or
+`<meta http-equiv="content-type">` in the first 1024 bytes, then UTF-8 (a
+`<meta>` that names UTF-16 is read as UTF-8, as the HTML standard does). The
+output is always UTF-8, so a `<meta charset>` or `http-equiv` declaration in the
+guest is rewritten to say so rather than contradict the bytes.
+
+What is buffered and what streams: the guest document is read in full before
+anything is returned, because a `<base>` applies to the whole document and the
+fragment target is chosen across all of it. The rewritten output then streams:
+the returned body is pulled on demand, so a slow reader slows the rewriter.
+
+Stylesheet work starts as soon as the document has been read, before the first
+byte is returned: every `<link rel~=stylesheet>` and every `<style>` is
+materialized concurrently, and so are the `@import`s of one sheet. The output
+then waits on each sheet only where it reaches it, so the slowest sheet, not the
+sum of all of them, delays the bytes after it. Duplicate URLs are fetched once.
+
+Cancelling the response aborts the work in flight. The default `fetch` is
+aborted, and a custom `fetchText` receives the same signal as its second
+argument, `fetchText(url, { signal })`; honour it to stop your own request. An
+aborted materialization reports nothing to `onImportFailure`, since the failures
+are the cancellation itself.
+
 A third argument configures the stylesheet stage: `fetchText` overrides how a
 linked stylesheet or `@import` target is fetched (useful when the sheet lives behind an
 internal service binding). It can return CSS text, or `{ text, url }` to retain
 the final response URL after redirects so nested imports and assets resolve
-relative to that stylesheet. `onImportFailure` observes sheets that could not
-be inlined, which are dropped from the preview and retried at activation.
-`onFontFace(css)` receives rewritten, HTML-safe font declarations. Put the collected
-CSS in a host `<style>` before the frame: browsers do not consistently register
-`@font-face` rules inside shadow trees. Use application-specific font-family names
-to avoid conflicts between guests. This host step is required for webfont fidelity
-before JavaScript; it is not necessary for system fonts.
-The adapter buffers the guest document to resolve its first valid head `base[href]`
-before transforming any assets; a late base therefore cannot change URLs at handoff.
+relative to that stylesheet. `onFontFace(css)` receives rewritten, HTML-safe font
+declarations. Put the collected CSS in a host `<style>` before the frame: browsers
+do not consistently register `@font-face` rules inside shadow trees. Use
+application-specific font-family names to avoid conflicts between guests. This
+host step is required for webfont fidelity before JavaScript; it is not necessary
+for system fonts.
+
+`onImportFailure` observes every stylesheet the preview could not materialize,
+and recovery is the same for each: a failed `@import` is dropped from its sheet;
+a linked sheet that cannot be fetched or parsed stays neutralized with no preview
+style beside it, and the runtime fetches it at activation; an inline `<style>`
+that cannot be materialized stays as authored and, because the server marks only
+the styles it did materialize (`data-v-frame-materialized`), the runtime rewrites
+every unmarked one at activation. A failure never errors the stream.
+
+An alternate stylesheet (`rel="alternate stylesheet"`) is previewed with
+`media="not all"`, like a `disabled` link, because a browser does not apply it
+until the guest selects it.
+
+The `<base>` is the first `base[href]` outside template contents in the HTML
+namespace, wherever the parser would put it, so a guest without explicit `<html>`
+or `<head>` tags is read the same way the runtime reads it. A late base therefore
+cannot change URLs at handoff.
 
 ### On another runtime
 
-Only the `HTMLRewriter` adapter is runtime-specific, because server HTML
-transformation APIs differ. The decisions it drives are runtime-neutral and are
-exported from the same entry, so a host on Node, Deno, or Bun points its own
-streaming HTML parser at them:
+The `HTMLRewriter` adapter needs a lol-html style `Response` transformer. A host
+without one (Node, Deno) points its own streaming HTML parser at the
+runtime-neutral decisions exported from the same entry:
 
 | Export                                                 | Called with                                                | Returns                                                                                                                                                               |
 | ------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -153,6 +206,43 @@ streaming HTML parser at them:
 matters: materializing twice would record `application/vnd.v-frame` as the
 script's authored type and leave the guest with a script the runtime could never
 restore.
+
+The complete export list, which [the API reference](./api.md#server-entry) defers
+to, is:
+
+| Export                                                                                                                                                                                                                                                                                                                                                        | Kind      | Purpose                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `materializeVFrameDocument(response, documentURL, options?)`                                                                                                                                                                                                                                                                                                  | adapter   | The `HTMLRewriter` transform above. Options: the stylesheet options plus `HTMLRewriter`. |
+| `fragmentIdentifiers(documentURL)`, `fragmentTargetRank(element, identifiers)`                                                                                                                                                                                                                                                                                | fragment  | Select the initial `:target` element for a custom materializer.                          |
+| `FRAGMENT_TARGET_ATTRIBUTE`                                                                                                                                                                                                                                                                                                                                   | constant  | The reserved marker set on that element.                                                 |
+| `escapeStylesheetText(source)`                                                                                                                                                                                                                                                                                                                                | core      | The `</style` escape on its own.                                                         |
+| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SSR_LINK_REL`, `SSR_LINK_STYLE`, `SSR_LINK_SOURCE`, `SSR_STYLE`, `NEUTRALIZED_STYLESHEET_REL`, `SHELL_DISPLAY_STYLE`                                                                                                                                                                | constants | The wire format between materializer and runtime.                                        |
+| `createStylesheetContext(fetchText, onImportFailure?, signal?)`, `rewriteStylesheet(source, url, ctx)`                                                                                                                                                                                                                                                        | CSS       | The pure stylesheet rewriter the browser runtime also uses.                              |
+| Types: `HTMLRewriterConstructor`, `MaterializeDocumentOptions`, `MaterializeStylesheetOptions`, `AttributeAssignment`, `AssetElementAttributes`, `ScriptElementAttributes`, `ScriptElementRewrite`, `ShellElementRewrite`, `FragmentElement`, `StylesheetContext`, `StylesheetFetch`, `StylesheetFetchOptions`, `StylesheetImportFailure`, `StylesheetSource` | types     | Shapes of the above.                                                                     |
+
+#### Linked stylesheets on the wire
+
+A host with its own parser must produce the same markup the adapter does for a
+`<link rel~=stylesheet href>`, or the runtime cannot adopt it. For each such link,
+after rebasing its `href` and fetching and materializing the sheet:
+
+1. Set `SSR_LINK_REL` (`data-v-frame-rel`) on the link to its authored `rel`, then
+   set `rel` to `NEUTRALIZED_STYLESHEET_REL` (`v-frame-stylesheet`). Do this even
+   when the fetch fails: a live link would load against the host page. The
+   runtime restores `rel`, and fetches the sheet itself if no preview follows.
+2. On success, insert immediately after the link a
+   `<style data-v-frame-source="FINAL_URL" data-v-frame-linked="" media="MEDIA">CSS</style>`:
+   `SSR_LINK_SOURCE` carries the response URL after redirects (nested URLs
+   already resolve against it), `SSR_LINK_STYLE` marks the preview, `media` is the
+   link's (use `not all` when the link has `disabled` or is an alternate sheet),
+   and `nonce` and `title` are copied across. The CSS is `materializeStylesheet`
+   output, which is already `</style`-escaped. Attribute values must be
+   HTML-escaped.
+3. Every other `<style>` the host materialized gets the `SSR_STYLE`
+   (`data-v-frame-materialized`) attribute, including the `SHELL_DISPLAY_STYLE`
+   element, which already carries it. A `<style>` that failed to materialize is
+   left unmarked, and a guest-authored marker must be removed first, so the
+   runtime rewrites it at activation.
 
 For a host that only needs the CSS half, `rewriteStylesheet` and
 `createStylesheetContext` are exported too — they are the same pure functions the

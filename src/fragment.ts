@@ -1,7 +1,5 @@
 import { HTML_NAMESPACE } from "./asset-urls.js";
 
-export const FRAGMENT_TARGET_ATTRIBUTE = "data-v-frame-target";
-
 export interface FragmentElement {
   readonly localName: string;
   readonly namespaceURI: string | null;

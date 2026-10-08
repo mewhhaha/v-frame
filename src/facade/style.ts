@@ -10,7 +10,9 @@ import parseCSS from "css-tree/parser";
 import walkCSS from "css-tree/walker";
 import type { Declaration, DeclarationList } from "css-tree";
 import { rewriteStyleAttribute } from "../css.js";
+import { NEUTRALIZED_STYLESHEET_REL } from "../wire-format.js";
 import type { FacadeContext } from "./context.js";
+import { toDOMString, toLegacyNullToEmptyString } from "./webidl.js";
 
 const INLINE_STYLE_SELECTOR_ID_COUNT = 32;
 
@@ -26,10 +28,19 @@ function stylePropertyNameFromIDL(property: string): string {
   return cssName.startsWith("webkit-") ? `-${cssName}` : cssName;
 }
 
-function authoredStylePropertyValues(source: string): Map<string, string> {
+const NO_AUTHORED_VALUES: ReadonlyMap<string, string> = new Map();
+
+function authoredStylePropertyValues(
+  source: string,
+  parse: typeof parseCSS,
+): ReadonlyMap<string, string> {
+  // Only a url() is kept, and a url() cannot be written without a parenthesis.
+  if (!source.includes("(")) {
+    return NO_AUTHORED_VALUES;
+  }
   const properties = new Map<string, string>();
   try {
-    const declarations = parseCSS(source, {
+    const declarations = parse(source, {
       context: "declarationList",
       parseCustomProperty: true,
     });
@@ -47,6 +58,28 @@ function authoredStylePropertyValues(source: string): Map<string, string> {
     // The native declaration remains the source of truth for malformed CSS.
   }
   return properties;
+}
+
+/**
+ * Every string-valued read of `el.style.x` needs the authored values, and
+ * parsing the whole attribute for each one made reading a property cost as much
+ * as a write. The values are a pure function of the attribute text, so they are
+ * kept per element and drop out by themselves when the text changes.
+ */
+export function createAuthoredValueCache(parse: typeof parseCSS = parseCSS) {
+  const cache = new WeakMap<
+    object,
+    { source: string; values: ReadonlyMap<string, string> }
+  >();
+  return (owner: object, source: string): ReadonlyMap<string, string> => {
+    const cached = cache.get(owner);
+    if (cached?.source === source) {
+      return cached.values;
+    }
+    const values = authoredStylePropertyValues(source, parse);
+    cache.set(owner, { source, values });
+    return values;
+  };
 }
 
 function normalizeAuthoredStyleAttribute(source: string): string {
@@ -177,6 +210,8 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     }
   }
 
+  const authoredValues = createAuthoredValueCache();
+
   const nativeStyleDeclaration = (element: Element): CSSStyleDeclaration => {
     const existing = styleDeclarations.get(element);
     if (existing !== undefined) {
@@ -249,7 +284,11 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   const updateInlineStyle = (element: Element): void => {
     let rewritten = "";
     const cssText = options.authoredStyleAttributes.get(element) ?? "";
-    if (cssText !== "") {
+    if (cssText !== "" && !cssText.includes("(")) {
+      // Rewriting only rebases url(), image-set() and src() arguments, and each
+      // of those needs a parenthesis; the browser parses the rest itself.
+      rewritten = cssText;
+    } else if (cssText !== "") {
       try {
         rewritten = rewriteStyleAttribute(cssText, options.getBaseURL());
       } catch {
@@ -325,12 +364,23 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     updateInlineStyle(element);
   };
 
+  // One scratch declaration serves every probe; each use finishes before the
+  // next begins, so it only has to start empty.
+  let probeDeclaration: CSSStyleDeclaration | undefined;
   const probeStyleDeclaration = (): CSSStyleDeclaration | undefined => {
-    const scratch = nativeCreateElement.call(
-      styleDeclarationDocument,
-      "span",
-    ) as HTMLElement;
-    return nativeHTMLElementStyle?.get?.call(scratch) as CSSStyleDeclaration | undefined;
+    if (probeDeclaration === undefined) {
+      const scratch = nativeCreateElement.call(
+        styleDeclarationDocument,
+        "span",
+      ) as HTMLElement;
+      probeDeclaration = nativeHTMLElementStyle?.get?.call(scratch) as
+        | CSSStyleDeclaration
+        | undefined;
+    }
+    if (probeDeclaration !== undefined) {
+      probeDeclaration.cssText = "";
+    }
+    return probeDeclaration;
   };
 
   const styleFacade = (element: Element): CSSStyleDeclaration => {
@@ -353,9 +403,10 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       value: string | null,
       priority?: string,
     ): void => {
-      const propertyName = String(property);
-      const nextValue = String(value);
-      const requestedPriority = priority === undefined ? "" : String(priority);
+      const propertyName = toDOMString(property);
+      const nextValue = toLegacyNullToEmptyString(value);
+      const requestedPriority =
+        priority === undefined ? "" : toLegacyNullToEmptyString(priority);
       if (requestedPriority !== "" && requestedPriority.toLowerCase() !== "important") {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
         return;
@@ -404,7 +455,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       synchronizeDeclaration(logicalValue);
     };
     const removeProperty = (property: string): string => {
-      const propertyName = String(property);
+      const propertyName = toDOMString(property);
       const previous = declaration.removeProperty(propertyName);
       let logicalValue: string;
       try {
@@ -421,15 +472,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       return previous;
     };
     const getPropertyValue = (property: string): string => {
-      const propertyName = String(property);
+      const propertyName = toDOMString(property);
       if (declaration.getPropertyValue(propertyName) === "") {
         return "";
       }
       return (
-        authoredStylePropertyValues(
-          options.authoredStyleAttributes.get(element) ?? "",
-        ).get(stylePropertyKey(propertyName)) ??
-        declaration.getPropertyValue(propertyName)
+        authoredValues(element, options.authoredStyleAttributes.get(element) ?? "").get(
+          stylePropertyKey(propertyName),
+        ) ?? declaration.getPropertyValue(propertyName)
       );
     };
     boundMethods.set("setProperty", setProperty);
@@ -449,7 +499,8 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         }
         const value = Reflect.get(target, property, target);
         if (typeof property === "string" && typeof value === "string") {
-          const authoredValue = authoredStylePropertyValues(
+          const authoredValue = authoredValues(
+            element,
             options.authoredStyleAttributes.get(element) ?? "",
           ).get(stylePropertyNameFromIDL(property));
           if (authoredValue !== undefined) {
@@ -465,7 +516,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       },
       set(target, property, value) {
         if (property === "cssText") {
-          setLogicalStyleAttribute(element, String(value), true);
+          setLogicalStyleAttribute(element, toLegacyNullToEmptyString(value), true);
           return true;
         }
         const previousProperties = new Set(
@@ -475,6 +526,8 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         );
         let logicalValue = options.authoredStyleAttributes.get(element) ?? "";
         const updated = Reflect.set(target, property, value, target);
+        // CSS properties are [LegacyNullToEmptyString]: null clears, not "null".
+        const assigned = toLegacyNullToEmptyString(value);
         if (updated) {
           const currentProperties = new Set(
             Array.from({ length: target.length }, (_value, index) =>
@@ -496,7 +549,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
               logicalValue = target.cssText;
             }
           }
-          if (typeof property === "string" && String(value) === "") {
+          if (typeof property === "string" && assigned === "") {
             // Clearing a shorthand IDL attribute must also drop an authored
             // shorthand declaration, which the vanished-longhand pass misses.
             try {
@@ -510,7 +563,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
               logicalValue = target.cssText;
             }
           }
-          if (typeof property === "string" && String(value) !== "") {
+          if (typeof property === "string" && assigned !== "") {
             const probe = probeStyleDeclaration();
             if (probe !== undefined && Reflect.set(probe, property, value, probe)) {
               const probeProperties = Array.from(
@@ -534,7 +587,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
                   logicalValue = updateAuthoredStyleProperty(
                     logicalValue,
                     canonicalProperty,
-                    String(value),
+                    assigned,
                     target.getPropertyPriority(canonicalProperty),
                   );
                 } catch {
@@ -562,7 +615,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   ): void => {
     const authoredRel = authoredLinkRelValues.get(link) ?? null;
     if (hrefPresent && linkRelIncludesStylesheet(authoredRel)) {
-      nativeSetAttribute.call(link, "rel", "v-frame-stylesheet");
+      nativeSetAttribute.call(link, "rel", NEUTRALIZED_STYLESHEET_REL);
       return;
     }
     if (authoredRel === null) {
@@ -577,7 +630,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     value: string,
     normalize: boolean,
   ): void => {
-    let authoredRel = String(value);
+    let authoredRel = value;
     const relList = nativeLinkRelLists.get(link);
     if (relList !== undefined) {
       relList.value = authoredRel;
@@ -732,8 +785,12 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
           linkDisabledValues.set(this, Boolean(value));
           const linked = options.linkedStyles.get(this);
           if (linked !== undefined) {
-            linked.disabled = Boolean(value);
-            linked.style.disabled = Boolean(value);
+            // An alternate sheet stays off natively even when its link is enabled.
+            const alternate = (authoredLinkRelValues.get(this) ?? "")
+              .split(/[\t\n\f\r ]+/)
+              .some((token) => token.toLowerCase() === "alternate");
+            linked.disabled = Boolean(value) || alternate;
+            linked.style.disabled = linked.disabled;
           }
           options.onLinkElementChange(this, authoredLinkRelValues.get(this) ?? null);
         },
@@ -774,7 +831,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         },
         set(this: Element, value: string) {
           if (virtualNodes.has(this)) {
-            setLogicalStyleAttribute(this, String(value), true);
+            setLogicalStyleAttribute(this, toLegacyNullToEmptyString(value), true);
             return;
           }
           nativeStyle.set?.call(this, value);
@@ -792,7 +849,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         },
         set(this: HTMLLinkElement, value: string) {
           if (virtualNodes.has(this)) {
-            setLogicalLinkRel(this, String(value), false);
+            setLogicalLinkRel(this, toDOMString(value), false);
             return;
           }
           nativeLinkRel.set?.call(this, value);

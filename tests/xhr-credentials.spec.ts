@@ -6,6 +6,7 @@ import {
   requestPathname,
   startHTTPFixture,
 } from "./support/http-fixture";
+import { flushTasks, settleAfterRoundTrip } from "./support/settle";
 import { installBundle, mountFrame } from "./support/mount-frame";
 
 interface ObservedRequest {
@@ -276,7 +277,13 @@ test("disposal aborts reentrant XHR sends", async ({ page }) => {
     });
   });
   await page.evaluate(() => document.querySelector("#reentrant")?.remove());
-  await page.waitForTimeout(50);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { reentrantXHR?: XMLHttpRequest }).reentrantXHR?.status,
+      ),
+    )
+    .toBe(0);
   const result = await page.evaluate(() => {
     const host = window as Window & { reentrantXHR?: XMLHttpRequest };
     const xhr = host.reentrantXHR;
@@ -388,20 +395,23 @@ test("teardown suppresses XHR callbacks", async ({ page }) => {
         .toBe("ready");
     }
 
-    await page.waitForTimeout(350);
-    await expect
-      .poll(
-        () =>
-          page.evaluate(
-            () =>
-              (window as Window & { xhrTeardownEvents?: string[] }).xhrTeardownEvents ??
-              [],
-          ),
-        {
-          message: `XHR emitted callbacks while ${teardown}ing its realm`,
-        },
-      )
-      .toEqual([]);
+    // Teardown aborts the request synchronously, so any abort or loadend it leaked
+    // would have been dispatched by the time queued tasks have run.
+    await flushTasks(page);
+    const events = await page.evaluate(
+      () => (window as Window & { xhrTeardownEvents?: string[] }).xhrTeardownEvents ?? [],
+    );
+    if (teardown === "disconnect") {
+      expect(events, "XHR emitted callbacks while disconnecting its realm").toEqual([]);
+    } else {
+      // A src replacement is staged: the old guest stays live, as a navigating
+      // document does, until the new one commits, so its progress events may still
+      // arrive. Releasing it at commit must not surface the abort.
+      expect(
+        events.filter((event) => !/readystatechange:[23]$/.test(event)),
+        "XHR emitted teardown callbacks while superseding its realm",
+      ).toEqual([]);
+    }
     await page.evaluate(() => {
       const host = window as Window & {
         xhrTeardownEvents?: string[];
@@ -451,7 +461,8 @@ test("host and ancestor removal silence an active XHR before native unload callb
       if (removeAncestor) element.parentElement!.remove();
       else element.remove();
     }, ancestor);
-    await page.waitForTimeout(50);
+    // Teardown aborts at removal; a later round trip is ordered after any callback it queued.
+    await settleAfterRoundTrip(page, `${fixture.origin}/api/xhr-echo`);
     expect(
       await page.evaluate(
         () =>

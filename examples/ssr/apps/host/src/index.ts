@@ -258,11 +258,16 @@ function widgetContent(
   return {
     async element(element) {
       const fonts = new Set<string>();
-      const markup = await materializeVFrameDocument(response, definition.documentURL, {
-        onFontFace(css) {
-          fonts.add(css);
+      const materialized = await materializeVFrameDocument(
+        response,
+        definition.documentURL,
+        {
+          onFontFace(css) {
+            fonts.add(css);
+          },
         },
-      }).text();
+      );
+      const markup = await materialized.text();
       element.before(
         `<style data-v-frame-fonts>${Array.from(fonts).join("\n")}</style><v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
         { html: true },
@@ -395,9 +400,11 @@ export default {
             };
           }
 
-          const nestedMarkup = await materializeVFrameDocument(
-            nestedResponse,
-            new URL(nestedSource, url).href,
+          const nestedMarkup = await (
+            await materializeVFrameDocument(
+              nestedResponse,
+              new URL(nestedSource, url).href,
+            )
           ).text();
           response = new HTMLRewriter()
             .on("v-frame.nested-workspace-widget", {

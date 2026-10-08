@@ -24,5 +24,5 @@ declare module "css-tree/walker" {
 }
 
 declare module "css-tree/utils" {
-  export { ident } from "css-tree";
+  export { clone, ident } from "css-tree";
 }

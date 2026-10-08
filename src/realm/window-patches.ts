@@ -40,83 +40,73 @@ interface WindowEventHandler {
   wrapper: EventListener;
 }
 
-const VIRTUAL_WINDOW_EVENT_HANDLER_TYPES = new Set([
-  "auxclick",
-  "beforeinput",
-  "blur",
-  "change",
-  "click",
-  "contextmenu",
-  "dblclick",
-  "focus",
-  "input",
-  "keydown",
-  "keypress",
-  "keyup",
-  "mousedown",
-  "mouseenter",
-  "mouseleave",
-  "mousemove",
-  "mouseout",
-  "mouseover",
-  "mouseup",
-  "pointercancel",
-  "pointerdown",
-  "pointerenter",
-  "pointerleave",
-  "pointermove",
-  "pointerout",
-  "pointerover",
-  "pointerup",
-  "resize",
-  "scroll",
-  "submit",
-  "touchcancel",
-  "touchend",
-  "touchmove",
-  "touchstart",
-  "wheel",
+// Handler properties whose events are fired at the realm window itself and are
+// not part of the guest's logical event path. Every other `on*` accessor the
+// window exposes is bridged like addEventListener is, so the set follows the
+// browser instead of a hand-kept list. `resize` and `scroll` are deliberately
+// absent: the viewport patches re-dispatch them from the host.
+const NATIVE_WINDOW_EVENT_HANDLER_TYPES = new Set([
+  "afterprint",
+  "appinstalled",
+  "beforeinstallprompt",
+  "beforeprint",
+  "beforeunload",
+  "devicemotion",
+  "deviceorientation",
+  "deviceorientationabsolute",
+  "error",
+  "gamepadconnected",
+  "gamepaddisconnected",
+  "hashchange",
+  "languagechange",
+  "load",
+  "message",
+  "messageerror",
+  "offline",
+  "online",
+  "orientationchange",
+  "pagehide",
+  "pagereveal",
+  "pageshow",
+  "pageswap",
+  "popstate",
+  "rejectionhandled",
+  "storage",
+  "unhandledrejection",
+  "unload",
 ]);
 
-export interface InternalStyles {
+interface InternalStyles {
   updateTopLayerViewport(x: number, y: number): void;
   dispose(): void;
 }
 
 export function installInternalStyles(shadowRoot: ShadowRoot): InternalStyles {
-  const previous = [...shadowRoot.adoptedStyleSheets];
+  // Without these rules v-html/v-body are inline and v-head is visible, so a
+  // guest would render wrongly with no error. Constructable stylesheets are a
+  // documented requirement; fail like installStagingStyles does.
   const view = shadowRoot.ownerDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
-    return {
-      updateTopLayerViewport: () => undefined,
-      dispose: () => undefined,
-    };
+    throw new Error("v-frame requires constructable stylesheet support");
   }
 
-  try {
-    const sheet = new view.CSSStyleSheet();
-    sheet.replaceSync(INTERNAL_CSS);
-    shadowRoot.adoptedStyleSheets = [...previous, sheet];
-    return {
-      updateTopLayerViewport(x, y) {
-        sheet.replaceSync(`${INTERNAL_CSS}
+  const sheet = new view.CSSStyleSheet();
+  sheet.replaceSync(INTERNAL_CSS);
+  shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
+  return {
+    updateTopLayerViewport(x, y) {
+      sheet.replaceSync(`${INTERNAL_CSS}
 :where([popover]:popover-open) {
   translate: ${x}px ${y}px !important;
 }
 `);
-      },
-      dispose() {
-        shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
-          (candidate) => candidate !== sheet,
-        );
-      },
-    };
-  } catch {
-    return {
-      updateTopLayerViewport: () => undefined,
-      dispose: () => undefined,
-    };
-  }
+    },
+    dispose() {
+      shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
+        (candidate) => candidate !== sheet,
+      );
+    },
+  };
 }
 
 export function installStagingStyles(shadowRoot: ShadowRoot): () => void {
@@ -254,7 +244,7 @@ export function installWindowEventBridge(
       if (
         discoveredHandlerProperties.has(name) ||
         !name.startsWith("on") ||
-        !VIRTUAL_WINDOW_EVENT_HANDLER_TYPES.has(name.slice(2))
+        NATIVE_WINDOW_EVENT_HANDLER_TYPES.has(name.slice(2))
       ) {
         continue;
       }
@@ -273,22 +263,36 @@ export function installWindowEventBridge(
       get: () => eventHandlers.get(eventType)?.listener ?? null,
       set(value: unknown) {
         const previous = eventHandlers.get(eventType);
-        if (previous !== undefined) {
-          window.removeEventListener(eventType, previous.wrapper);
-          eventHandlers.delete(eventType);
-        }
         if (typeof value !== "function") {
+          if (previous !== undefined) {
+            window.removeEventListener(eventType, previous.wrapper);
+            eventHandlers.delete(eventType);
+          }
           return;
         }
-
-        const listener = value as (this: VFrameWindow, event: Event) => unknown;
-        const wrapper: EventListener = (event) => {
-          if (listener.call(window, event) === false) {
-            event.preventDefault();
-          }
+        // Replacing a live handler keeps its place among the listeners: the one
+        // wrapper reads the current value, as the element handlers do.
+        if (previous !== undefined) {
+          previous.listener = value as EventListener;
+          return;
+        }
+        const handler: WindowEventHandler = {
+          listener: value as EventListener,
+          wrapper: (event) => {
+            const current = eventHandlers.get(eventType)?.listener;
+            if (current === undefined) return;
+            if (
+              (current as (this: VFrameWindow, event: Event) => unknown).call(
+                window,
+                event,
+              ) === false
+            ) {
+              event.preventDefault();
+            }
+          },
         };
-        eventHandlers.set(eventType, { listener: value as EventListener, wrapper });
-        window.addEventListener(eventType, wrapper);
+        eventHandlers.set(eventType, handler);
+        window.addEventListener(eventType, handler.wrapper);
       },
     });
   }
@@ -318,13 +322,27 @@ export function installViewportPatches(
   }
 
   const descriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
+  const restore = (): void => {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor === undefined) {
+        delete (window as unknown as Record<PropertyKey, unknown>)[name];
+      } else {
+        Object.defineProperty(window, name, descriptor);
+      }
+    }
+    descriptors.clear();
+  };
   const patch = (name: PropertyKey, descriptor: PropertyDescriptor) => {
-    descriptors.set(name, Object.getOwnPropertyDescriptor(window, name));
+    const original = Object.getOwnPropertyDescriptor(window, name);
     try {
       Object.defineProperty(window, name, { configurable: true, ...descriptor });
-    } catch {
-      descriptors.delete(name);
+    } catch (error) {
+      // A property left unpatched would keep reporting the hidden 1px iframe,
+      // so the failure aborts bootstrap; undo what already landed first.
+      restore();
+      throw error;
     }
+    descriptors.set(name, original);
   };
 
   patch("innerWidth", { get: () => hostWindow.innerWidth });
@@ -411,13 +429,7 @@ export function installViewportPatches(
       listenerLifetime.abort();
       for (const id of animationFrames) hostWindow.cancelAnimationFrame(id);
       animationFrames.clear();
-      for (const [name, descriptor] of descriptors) {
-        if (descriptor === undefined) {
-          delete (window as unknown as Record<PropertyKey, unknown>)[name];
-        } else {
-          Object.defineProperty(window, name, descriptor);
-        }
-      }
+      restore();
     },
   };
 }

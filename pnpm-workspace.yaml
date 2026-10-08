@@ -14,14 +14,3 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - "@comp0/core@0.1.0-next.11"
   - "@comp0/react@0.1.0-next.11"
-  - "@cloudflare/workerd-darwin-64@1.20260721.1"
-  - "@cloudflare/workerd-darwin-arm64@1.20260721.1"
-  - "@cloudflare/workerd-linux-64@1.20260721.1"
-  - "@cloudflare/workerd-linux-arm64@1.20260721.1"
-  - "@cloudflare/workerd-windows-64@1.20260721.1"
-  - miniflare@4.20260721.0
-  - workerd@1.20260721.1
-  - wrangler@4.113.0
-  - "@cloudflare/vite-plugin@1.46.0"
-onlyBuiltDependencies:
-  - esbuild

@@ -22,7 +22,8 @@ pnpm bench
 ```
 
 `bench/mark-virtual-node.ts` serves a generated guest document of _N_ elements and
-measures it two ways, in each of the two headless engines the test suite runs on:
+measures it two ways, in chromium and in firefox (`ENGINES` in the script; WebKit, the
+third engine the test suite runs on, is not benchmarked):
 
 - **v-frame** — mount a `v-frame`, time from assigning `src` to `v-frame-load`.
 - **host DOM** — `fetch` the same URL, `DOMParser.parseFromString`, `adoptNode` the body
@@ -42,8 +43,8 @@ removes them and drops every reference, and reports the heap that survives. That
 twice, because the registries hold weak references and the first collection only clears
 them — the second collects what their finalizers released.
 
-The timings are taken on both engines; the two heap measurements are chromium-only,
-because CDP is the only way to ask a browser for a collected heap size that
+The timings are taken in chromium and firefox; the two heap measurements are
+chromium-only, because CDP is the only way to ask a browser for a collected heap size that
 Playwright can drive, and `performance.measureUserAgentSpecificMemory` — the
 standard alternative — is chromium-only as well. On firefox the run prints the three
 timing tables, says the heap is not measurable, and skips the churn, which has no
@@ -139,9 +140,9 @@ The design's central trick is that guest nodes are created in the realm and then
 into the host shadow tree. Adoption changes the node document; it does not rebuild the JS
 wrapper, so the wrapper keeps the realm's prototypes and a patch on the realm's
 `Node.prototype` still answers for it. Probed directly (`row instanceof Node` evaluated in
-the guest, after adoption), this holds in both engines for elements, text nodes, attribute
-nodes, `template.content` children, nodes parsed by `innerHTML` after adoption, and nodes
-created by `document.createElement`.
+the guest, after adoption), this holds in chromium and firefox, the two engines probed,
+for elements, text nodes, attribute nodes, `template.content` children, nodes parsed by
+`innerHTML` after adoption, and nodes created by `document.createElement`.
 
 The one exception found: **Gecko binds a `ShadowRoot` to its node document's global**, so
 a shadow root a guest attaches after adoption is a host-realm object and the realm's
@@ -149,7 +150,8 @@ a shadow root a guest attaches after adoption is a host-realm object and the rea
 therefore keeps the per-node accessors as a fallback for any node that is not
 `instanceof window.Node`, which is the same shape `installForeignElementFacade` already
 used for foreign elements. `tests/dom-event-fidelity.spec.ts` asserts
-`nestedShadow.ownerDocument === virtualDocument` and covers this on both engines.
+`nestedShadow.ownerDocument === virtualDocument` and runs in every desktop project
+(chromium, firefox and webkit).
 
 Two things that are per-node by nature and stayed per-node: the doctype's and the shell's
 `parentNode`/sibling overrides, which answer with different values for each of the two
@@ -209,9 +211,9 @@ column reports, so they are comparable with the table above.) The strong columns
 rows it will not release make the next round quadratic (below).
 
 What the first round's 1,329 KB is made of was not identified. It is not the rows — every
-one of them is provably collected, which is what `tests/node-retention.spec.ts` asserts on
-both engines with `page.requestGC()`, and it reported all 2,000 alive against the strong
-registries. It is not the generated inline stylesheet either: forcing it to be rebuilt
+one of them is provably collected, which is what `tests/node-retention.spec.ts` asserts in
+all three desktop projects with `page.requestGC()`, and it reported all 2,000 alive against
+the strong registries. It is not the generated inline stylesheet either: forcing it to be rebuilt
 afterwards returns 10 KB of the 1,329. The shape of the numbers — paid once, roughly in
 proportion to the _peak_ number of live rows and to how many registries each row entered
 (2,000 plain rows cost 525 KB, the same rows with a style attribute 930 KB) — fits the
@@ -328,11 +330,12 @@ and it is a separate change from this one.
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and
   its own-property cost model differs; on firefox the retention is covered by
-  `tests/node-retention.spec.ts`, which runs on both engines through
-  `page.requestGC()`, not by this benchmark. What firefox _retains_ for a large guest
-  is therefore still unknown. Its timings are not: they are in
+  `tests/node-retention.spec.ts`, which runs in the chromium, firefox and webkit projects
+  through `page.requestGC()`, not by this benchmark. What firefox _retains_ for a large
+  guest is therefore still unknown. Its timings are not: they are in
   [`limitations.md`](./limitations.md#what-firefox-costs), and the before/after tables
-  on this page predate the second engine, so they are chromium throughout.
+  on this page predate the firefox runs, so they are chromium throughout. WebKit is
+  neither timed nor measured for heap here.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
 - Detached subtrees are still walked in full every time they are inserted, and a guest that

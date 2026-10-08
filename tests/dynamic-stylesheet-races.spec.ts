@@ -7,6 +7,7 @@ import {
   startHTTPFixture,
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
+import { settleAfterRoundTrip, flushTasks } from "./support/settle";
 
 interface PendingStylesheet {
   requested: Promise<void>;
@@ -285,7 +286,8 @@ test("keeps an authored clear while an inline rewrite is pending", async ({ page
     200,
     "#race-target { color: rgb(21, 22, 23); }",
   );
-  await page.waitForTimeout(50);
+  // The released stylesheet response is ahead of this request, so any late application has happened.
+  await settleAfterRoundTrip(page, `${fixture.origin}/`);
 
   await expect(frame.locator("#race-target")).toHaveCSS("color", "rgb(0, 0, 0)");
   expect(
@@ -473,7 +475,8 @@ test("does not commit delayed dynamic styles after removal or frame teardown", a
 
   fixture.release("/styles/removal.css", 200, "#race-target { color: rgb(1, 2, 3); }");
   fixture.release("/styles/teardown.css", 200, "#race-target { color: rgb(1, 2, 3); }");
-  await page.waitForTimeout(50);
+  // The released stylesheet response is ahead of this request, so any late application has happened.
+  await settleAfterRoundTrip(page, `${fixture.origin}/`);
 
   await expect(removedFrame.locator("#race-target")).toHaveCSS("color", "rgb(0, 0, 0)");
   expect(await failures(removedFrame)).toEqual([]);
@@ -609,7 +612,7 @@ test("restores the authored link relation after pending work is disconnected and
       link;
     link.remove();
   });
-  await page.waitForTimeout(0);
+  await flushTasks(page);
   const reconnected = await frame.evaluate((element) => {
     const child = (
       element as HTMLElement & { contentWindow: (Window & typeof globalThis) | null }
@@ -628,7 +631,8 @@ test("restores the authored link relation after pending work is disconnected and
     200,
     "#race-target { color: rgb(81, 82, 83); }",
   );
-  await page.waitForTimeout(50);
+  // The released stylesheet response is ahead of this request, so any late application has happened.
+  await settleAfterRoundTrip(page, `${fixture.origin}/`);
 
   expect(reconnected).toEqual({ hasHref: false, relation: "stylesheet" });
   await expect(frame.locator("#race-target")).toHaveCSS("color", "rgb(0, 0, 0)");

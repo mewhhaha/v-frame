@@ -1,3 +1,9 @@
+import { abortError } from "./connect.js";
+
+const CONTROL_SELECTOR = "input,textarea,select";
+// Decoding is best-effort: a slow image or font must not hold the reveal forever.
+const ASSET_SETTLE_TIMEOUT_MS = 10_000;
+
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 type Path = Array<number | "shadow">;
 
@@ -17,7 +23,7 @@ function controls(root: Element): Control[] {
   const result: Control[] = [];
   const visit = (scope: Element | ShadowRoot) => {
     for (const element of scope.querySelectorAll("*")) {
-      if (element.matches("input,textarea,select")) result.push(element as Control);
+      if (element.matches(CONTROL_SELECTOR)) result.push(element as Control);
       if (element.shadowRoot) visit(element.shadowRoot);
     }
   };
@@ -74,7 +80,7 @@ export class AdoptionState {
         (target) =>
           "nodeType" in target &&
           target.nodeType === 1 &&
-          (target as Element).matches("input,textarea,select"),
+          (target as Element).matches(CONTROL_SELECTOR),
       ) as Control | undefined;
     };
     for (const type of ["input", "change"]) {
@@ -193,7 +199,7 @@ export class AdoptionState {
         )
           return;
         this.#targets.set(element, next);
-        if (element.matches("input,textarea,select")) {
+        if (element.matches(CONTROL_SELECTOR)) {
           this.#pairs.push({
             source: element as Control,
             initial: read(next as Control),
@@ -340,10 +346,10 @@ export class AdoptionState {
     ];
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(done, 10_000);
+        const timer = setTimeout(done, ASSET_SETTLE_TIMEOUT_MS);
         const aborted = () => {
           clearTimeout(timer);
-          reject(new DOMException("The v-frame load was superseded", "AbortError"));
+          reject(abortError());
         };
         function done() {
           clearTimeout(timer);
@@ -360,8 +366,7 @@ export class AdoptionState {
           image.setAttribute("loading", loading);
       }
     }
-    if (signal.aborted)
-      throw new DOMException("The v-frame load was superseded", "AbortError");
+    if (signal.aborted) throw abortError();
     if (!this.#composing.size) return;
     await new Promise<void>((resolve, reject) => {
       const done = () => {
@@ -370,7 +375,7 @@ export class AdoptionState {
       };
       const aborted = () => {
         this.#compositionWaiters.delete(done);
-        reject(new DOMException("The v-frame load was superseded", "AbortError"));
+        reject(abortError());
       };
       this.#compositionWaiters.add(done);
       signal.addEventListener("abort", aborted, { once: true });

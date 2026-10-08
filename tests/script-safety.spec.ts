@@ -9,6 +9,7 @@ import {
   startHTTPFixture,
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
+import { flushTasks } from "./support/settle";
 
 const nonce = "fixture-nonce";
 const contentSecurityPolicy = {
@@ -330,7 +331,9 @@ for (const [name, pathname] of [
         frame.setAttribute("src", source);
         document.querySelector("#host")?.append(frame);
         await loaded;
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
         return { failures, status: frame.status };
       },
       { frameNonce: nonce, source: `${fixture.origin}${pathname}` },
@@ -371,7 +374,9 @@ test("reports an unresolvable script source as an Error without failing the load
       frame.setAttribute("src", source);
       document.querySelector("#host")?.append(frame);
       await loaded;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
       return {
         failures,
         status: frame.status,
@@ -899,7 +904,7 @@ test("preserves the logical window event path and window handler properties", as
   });
 
   await frame.locator("#blocked-link").click();
-  await page.waitForTimeout(20);
+  await flushTasks(page);
   const canceledState = await childValue(
     frame,
     (window) =>

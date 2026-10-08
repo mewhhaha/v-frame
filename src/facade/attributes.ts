@@ -6,16 +6,17 @@
 // indirection hides the style, rel and inert-script attributes the facade owns.
 
 import {
-  absolutizeSrcset,
   isSrcsetAttribute,
   isURLAttribute,
-  resolveAssetURL,
+  rewriteAssetAttribute,
   XLINK_NAMESPACE,
 } from "../asset-urls.js";
 import { type FacadeContext, HTML_NAMESPACE, SVG_NAMESPACE } from "./context.js";
 import type { EventFacade } from "./events.js";
+import type { ScriptExecution } from "./script-execution.js";
 import type { StyleFacade } from "./style.js";
-import { FRAGMENT_TARGET_ATTRIBUTE } from "../fragment.js";
+import { toDOMString, toNullableDOMString, toUSVString } from "./webidl.js";
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 
 const URL_PROPERTY_NAMES = [
   "href",
@@ -80,6 +81,8 @@ export interface AttributeFacade {
     attributeName: string,
     namespaceURI: string | null,
   ): void;
+  /** Marking is built from this facade, so it hands its marker back afterwards. */
+  setAttributeMarker(mark: (attribute: Attr) => void): void;
   installPatches(): void;
 }
 
@@ -87,6 +90,7 @@ export function installAttributeFacade(
   context: FacadeContext,
   style: StyleFacade,
   events: EventFacade,
+  scripts: ScriptExecution,
 ): AttributeFacade {
   const options = context.options;
   const {
@@ -136,9 +140,11 @@ export function installAttributeFacade(
   // and on Gecko ownerDocument from the host document, because Gecko binds the
   // Attr to the node document the element was adopted into. So every physical
   // write on a virtual element hands the node it produced back to marking.
+  let markVirtualAttribute: ((attribute: Attr) => void) | undefined;
   const markAttributeNode = (element: Element, attribute: Attr | null): Attr | null => {
     if (attribute !== null && virtualNodes.has(element)) {
-      context.markVirtualAttribute(attribute);
+      // Marking exists before any guest code can write an attribute.
+      markVirtualAttribute!(attribute);
     }
     return attribute;
   };
@@ -178,7 +184,10 @@ export function installAttributeFacade(
     element: Element,
     qualifiedName: string,
   ): Attr | null =>
-    markAttributeNode(element, nativeGetAttributeNode.call(element, qualifiedName));
+    markAttributeNode(
+      element,
+      nativeGetAttributeNode.call(element, toDOMString(qualifiedName)),
+    );
   const getVirtualAttributeNodeNS = (
     element: Element,
     namespaceURI: string | null,
@@ -186,7 +195,11 @@ export function installAttributeFacade(
   ): Attr | null =>
     markAttributeNode(
       element,
-      nativeGetAttributeNodeNS.call(element, namespaceURI, localName),
+      nativeGetAttributeNodeNS.call(
+        element,
+        toNullableDOMString(namespaceURI),
+        toDOMString(localName),
+      ),
     );
 
   const physicalURLAttributeValues = new WeakMap<Element, Map<string, string | null>>();
@@ -205,6 +218,28 @@ export function installAttributeFacade(
       return "xlink:href";
     }
     return attributeName.toLowerCase();
+  };
+  // What the physical attribute carries for an authored URL. Whether and how it
+  // is rewritten is the asset policy's decision; a value it leaves alone (blank,
+  // `javascript:`, already absolute) is physically what the guest authored. A
+  // <base> resolves against the document's own URL, since it is what sets the
+  // base everything else resolves against.
+  const physicalURLValue = (
+    element: Element,
+    attributeName: string,
+    authoredValue: string,
+  ): string => {
+    const baseURL = isBaseElement(element)
+      ? options.getCurrentURL()
+      : options.getBaseURL();
+    const [name, namespaceURI] =
+      attributeName === "xlink:href"
+        ? (["href", XLINK_NAMESPACE] as const)
+        : ([attributeName, null] as const);
+    return (
+      rewriteAssetAttribute(element, name, namespaceURI, authoredValue, baseURL) ??
+      authoredValue
+    );
   };
   const physicalURLAttributeValue = (
     element: Element,
@@ -284,7 +319,7 @@ export function installAttributeFacade(
             return window.URL.parse(value, baseURL)?.href ?? value;
           },
           set(value: string) {
-            setVirtualAttribute(element, attributeName, String(value));
+            setVirtualAttribute(element, attributeName, toUSVString(value));
           },
         });
       } catch {
@@ -297,7 +332,7 @@ export function installAttributeFacade(
         Object.defineProperty(element, "srcset", {
           configurable: true,
           get: () => options.authoredURLAttributes.get(element)?.get("srcset") ?? "",
-          set: (value: string) => element.setAttribute("srcset", String(value)),
+          set: (value: string) => element.setAttribute("srcset", toDOMString(value)),
         });
       } catch {
         // Some browser-owned element instances reject expandos for reflected attributes.
@@ -330,7 +365,8 @@ export function installAttributeFacade(
         baseVal: {
           configurable: true,
           get: authoredHref,
-          set: (value: string) => setVirtualAttribute(element, "href", String(value)),
+          set: (value: string) =>
+            setVirtualAttribute(element, "href", toUSVString(value)),
         },
         animVal: {
           configurable: true,
@@ -375,20 +411,7 @@ export function installAttributeFacade(
     }
 
     for (const [attributeName, authoredValue] of authoredAttributes) {
-      let value =
-        attributeName === "srcset"
-          ? absolutizeSrcset(authoredValue, options.getBaseURL())
-          : authoredValue;
-      const baseURL = isBaseElement(element)
-        ? options.getCurrentURL()
-        : options.getBaseURL();
-      if (
-        attributeName !== "srcset" &&
-        value.trim() !== "" &&
-        !value.trim().toLowerCase().startsWith("javascript:")
-      ) {
-        value = resolveAssetURL(element, value, baseURL);
-      }
+      const value = physicalURLValue(element, attributeName, authoredValue);
       if (
         isHTMLScriptElement(element) &&
         protectedScriptAttributes.has(element) &&
@@ -401,77 +424,223 @@ export function installAttributeFacade(
     }
   };
 
-  function logicalAttribute(
-    element: Element,
-    attributeName: string,
-  ): { managed: boolean; value: string | null } {
-    const normalizedAttributeName =
-      element.namespaceURI === HTML_NAMESPACE
-        ? attributeName.toLowerCase()
-        : attributeName;
-    if (virtualNodes.has(element)) {
-      if (
-        normalizedAttributeName === options.inlineStyleSelectorAttribute ||
-        normalizedAttributeName === FRAGMENT_TARGET_ATTRIBUTE
-      ) {
-        return { managed: true, value: null };
-      }
-      if (normalizedAttributeName === "style") {
-        return {
-          managed: true,
-          value: options.authoredStyleAttributes.get(element) ?? null,
-        };
-      }
-      if (isHTMLLinkElement(element) && normalizedAttributeName === "rel") {
-        return {
-          managed: true,
-          value: authoredLinkRelValues.get(element) ?? null,
-        };
-      }
-      const authoredAttributes = options.authoredURLAttributes.get(element);
-      const urlAttributeName =
-        element.namespaceURI === SVG_NAMESPACE &&
-        normalizedAttributeName.toLowerCase() === "xlink:href" &&
-        authoredAttributes?.has("xlink:href") === true
-          ? "xlink:href"
-          : urlAttributeKey(element, normalizedAttributeName, null);
-      if (
-        urlAttributeName !== null &&
-        authoredAttributes?.has(urlAttributeName) === true
-      ) {
-        return {
-          managed: true,
-          value: authoredAttributes.get(urlAttributeName) ?? null,
-        };
-      }
-    }
-    if (isHTMLScriptElement(element)) {
-      const scriptAttributes = protectedScriptAttributes.get(element);
-      if (
-        scriptAttributes !== undefined &&
-        (normalizedAttributeName === "src" || normalizedAttributeName === "type")
-      ) {
-        return {
-          managed: true,
-          value: scriptAttributes.get(normalizedAttributeName) ?? null,
-        };
-      }
-    }
-    const eventName = eventAttributeName(element, normalizedAttributeName);
-    if (eventName !== null && virtualNodes.has(element)) {
-      return {
-        managed: true,
-        value: eventAttributeValues.get(element)?.get(eventName) ?? null,
-      };
-    }
-    return { managed: false, value: null };
+  // The attributes the guest sees differently from the DOM: the physical
+  // attribute is rewritten, defused or hidden, so each of them is answered from
+  // the facade's own record. One entry per kind, each owning every operation on
+  // it, and one precedence — the order of the table — for deciding who owns a
+  // name. Getting, setting, removing and listing used to each carry their own
+  // chain of these checks in a different order.
+  //
+  // Only one thing ever depends on that order: a protected script's `src` is
+  // both a script attribute and a URL attribute, and the script entry owns it
+  // by coming first (its record holds the value the inert script will run, the
+  // URL record holds what the guest authored; the script entry keeps both in
+  // step). Every other name matches at most one entry.
+  interface ManagedAttribute {
+    // `name` is already normalized for the element's namespace. A read and a
+    // write can disagree on who owns a name, which is why `access` is passed.
+    matches(element: Element, name: string, access: "read" | "write"): boolean;
+    // The authored value; null when the guest has none. undefined means the
+    // facade holds nothing for this name and the physical attribute answers.
+    get(element: Element, name: string): string | null | undefined;
+    set(element: Element, name: string, value: string): void;
+    remove(element: Element, name: string): void;
+    // Brings the physical attribute names in line with the authored ones.
+    names?(element: Element, names: string[]): void;
   }
 
+  const isProtectedScript = (element: Element): element is HTMLScriptElement =>
+    isHTMLScriptElement(element) && protectedScriptAttributes.has(element);
+  const authoredURLKey = (
+    element: Element,
+    name: string,
+    access: "read" | "write",
+  ): string | null =>
+    // Only a read recognizes the legacy `xlink:href` spelling, and only once an
+    // authored value is on record for it: a write by that name is the native
+    // attribute with a colon in its name.
+    access === "read" &&
+    element.namespaceURI === SVG_NAMESPACE &&
+    name.toLowerCase() === "xlink:href" &&
+    options.authoredURLAttributes.get(element)?.has("xlink:href") === true
+      ? "xlink:href"
+      : urlAttributeKey(element, name, null);
+
+  const removeAuthoredURLAttribute = (element: Element, attributeName: string): void => {
+    options.authoredURLAttributes.get(element)?.delete(attributeName);
+    removePhysicalURLAttribute(element, attributeName);
+    if (isHTMLLinkElement(element) && attributeName === "href") {
+      synchronizePhysicalLinkRel(element, false);
+      options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
+    }
+  };
+
+  const managedAttributes: readonly ManagedAttribute[] = [
+    // The facade's own bookkeeping attributes. The fragment target marker is
+    // hidden from reads but writable: the realm writes it natively to select an
+    // element, and a guest copying it onto another is no different.
+    {
+      matches: (element, name, access) =>
+        virtualNodes.has(element) &&
+        (name === options.inlineStyleSelectorAttribute ||
+          (access === "read" && name === FRAGMENT_TARGET_ATTRIBUTE)),
+      get: () => null,
+      set: () => undefined,
+      remove: () => undefined,
+    },
+    // The inert script's `src` and `type`, held aside so nothing runs by itself.
+    {
+      matches: (element, name) =>
+        isProtectedScript(element) && (name === "src" || name === "type"),
+      get(element, name) {
+        const authored = options.authoredURLAttributes.get(element);
+        if (name === "src" && authored?.has("src") === true) {
+          return authored.get("src") ?? null;
+        }
+        return (
+          protectedScriptAttributes
+            .get(element as HTMLScriptElement)
+            ?.get(name as "src" | "type") ?? null
+        );
+      },
+      set(element, name, value) {
+        if (name === "src") {
+          setVirtualURLAttribute(element, "src", value);
+        } else {
+          protectedScriptAttributes.get(element as HTMLScriptElement)?.set("type", value);
+        }
+      },
+      remove(element, name) {
+        protectedScriptAttributes
+          .get(element as HTMLScriptElement)
+          ?.delete(name as "src" | "type");
+        if (name === "src") {
+          options.authoredURLAttributes.get(element)?.delete("src");
+        }
+      },
+      names(element, names) {
+        if (!isHTMLScriptElement(element)) {
+          return;
+        }
+        const scriptAttributes = protectedScriptAttributes.get(element);
+        for (const attributeName of ["src", "type"] as const) {
+          const index = names.indexOf(attributeName);
+          if (!scriptAttributes?.has(attributeName) && index !== -1) {
+            names.splice(index, 1);
+          } else if (scriptAttributes?.has(attributeName) && index === -1) {
+            names.push(attributeName);
+          }
+        }
+      },
+    },
+    // Inline event handlers, compiled in the realm instead of left on the element.
+    {
+      matches: (element, name) =>
+        virtualNodes.has(element) && eventAttributeName(element, name) !== null,
+      get: (element, name) =>
+        eventAttributeValues.get(element)?.get(eventAttributeName(element, name)!) ??
+        null,
+      set(element, name, value) {
+        const eventName = eventAttributeName(element, name)!;
+        let attributes = eventAttributeValues.get(element);
+        if (attributes === undefined) {
+          attributes = new Map();
+          eventAttributeValues.set(element, attributes);
+        }
+        attributes.set(eventName, value);
+        compileEventAttribute(element, eventName, value);
+      },
+      remove(element, name) {
+        const eventName = eventAttributeName(element, name)!;
+        eventAttributeValues.get(element)?.delete(eventName);
+        setElementHandler(element, eventName.slice(2), null);
+      },
+      names(element, names) {
+        for (const attributeName of eventAttributeValues.get(element)?.keys() ?? []) {
+          if (!names.includes(attributeName)) {
+            names.push(attributeName);
+          }
+        }
+      },
+    },
+    {
+      matches: (element, name) => virtualNodes.has(element) && name === "style",
+      get: (element) => options.authoredStyleAttributes.get(element) ?? null,
+      set: (element, _name, value) => setLogicalStyleAttribute(element, value, false),
+      remove: (element) => removeLogicalStyleAttribute(element),
+      names(element, names) {
+        if (options.authoredStyleAttributes.has(element) && !names.includes("style")) {
+          names.push("style");
+        }
+      },
+    },
+    {
+      matches: (element, name) =>
+        virtualNodes.has(element) && isHTMLLinkElement(element) && name === "rel",
+      get: (element) => authoredLinkRelValues.get(element as HTMLLinkElement) ?? null,
+      set: (element, _name, value) =>
+        setLogicalLinkRel(element as HTMLLinkElement, value, false),
+      remove: (element) => removeLogicalLinkRel(element as HTMLLinkElement),
+      names(element, names) {
+        if (
+          isHTMLLinkElement(element) &&
+          (authoredLinkRelValues.get(element) ?? null) !== null &&
+          !names.includes("rel")
+        ) {
+          names.push("rel");
+        }
+      },
+    },
+    // URL attributes: the physical value is absolutized, the authored one is
+    // what the guest reads back.
+    {
+      matches: (element, name, access) =>
+        virtualNodes.has(element) && authoredURLKey(element, name, access) !== null,
+      get(element, name) {
+        const attributeName = authoredURLKey(element, name, "read")!;
+        const authored = options.authoredURLAttributes.get(element);
+        return authored?.has(attributeName) === true
+          ? (authored.get(attributeName) ?? null)
+          : undefined;
+      },
+      set: (element, name, value) =>
+        setVirtualURLAttribute(element, authoredURLKey(element, name, "write")!, value),
+      remove(element, name) {
+        removeAuthoredURLAttribute(element, authoredURLKey(element, name, "write")!);
+        connectedBaseElementChanged(element);
+      },
+    },
+  ];
+
+  // HTML attribute names are ASCII case-insensitive; other namespaces compare
+  // exactly, which is why the style and rel entries see the name as authored.
+  const normalizeAttributeName = (element: Element, qualifiedName: string): string =>
+    element.namespaceURI === HTML_NAMESPACE ? qualifiedName.toLowerCase() : qualifiedName;
+
+  const managedAttributeFor = (
+    element: Element,
+    name: string,
+    access: "read" | "write",
+  ): ManagedAttribute | undefined =>
+    managedAttributes.find((managed) => managed.matches(element, name, access));
+
+  // The authored value of an attribute the facade manages, null when it has
+  // none, undefined when the name is not managed and the physical attribute is
+  // the answer.
+  const logicalAttribute = (
+    element: Element,
+    qualifiedName: string,
+  ): string | null | undefined => {
+    const name = normalizeAttributeName(element, qualifiedName);
+    return managedAttributeFor(element, name, "read")?.get(element, name);
+  };
+
   function getVirtualAttribute(element: Element, qualifiedName: string): string | null {
+    qualifiedName = toDOMString(qualifiedName);
     const logical = logicalAttribute(element, qualifiedName);
-    return logical.managed
-      ? logical.value
-      : nativeGetAttribute.call(element, qualifiedName);
+    return logical === undefined
+      ? nativeGetAttribute.call(element, qualifiedName)
+      : logical;
   }
 
   function getVirtualAttributeNS(
@@ -479,6 +648,8 @@ export function installAttributeFacade(
     namespaceURI: string | null,
     localName: string,
   ): string | null {
+    namespaceURI = toNullableDOMString(namespaceURI);
+    localName = toDOMString(localName);
     // With no namespace, the lookup covers the same managed attributes as
     // getAttribute. localName stays case-sensitive, so only the canonical
     // lowercase spelling can name a managed attribute.
@@ -487,8 +658,8 @@ export function installAttributeFacade(
       localName === localName.toLowerCase()
     ) {
       const logical = logicalAttribute(element, localName);
-      if (logical.managed) {
-        return logical.value;
+      if (logical !== undefined) {
+        return logical;
       }
     }
     if (virtualNodes.has(element)) {
@@ -502,10 +673,11 @@ export function installAttributeFacade(
   }
 
   function hasVirtualAttribute(element: Element, qualifiedName: string): boolean {
+    qualifiedName = toDOMString(qualifiedName);
     const logical = logicalAttribute(element, qualifiedName);
-    return logical.managed
-      ? logical.value !== null
-      : nativeHasAttribute.call(element, qualifiedName);
+    return logical === undefined
+      ? nativeHasAttribute.call(element, qualifiedName)
+      : logical !== null;
   }
 
   function hasVirtualAttributeNS(
@@ -513,6 +685,8 @@ export function installAttributeFacade(
     namespaceURI: string | null,
     localName: string,
   ): boolean {
+    namespaceURI = toNullableDOMString(namespaceURI);
+    localName = toDOMString(localName);
     // Mirrors getVirtualAttributeNS: null-namespace lookups resolve the same
     // managed attributes as hasAttribute.
     if (
@@ -520,8 +694,8 @@ export function installAttributeFacade(
       localName === localName.toLowerCase()
     ) {
       const logical = logicalAttribute(element, localName);
-      if (logical.managed) {
-        return logical.value !== null;
+      if (logical !== undefined) {
+        return logical !== null;
       }
     }
     if (virtualNodes.has(element)) {
@@ -535,35 +709,13 @@ export function installAttributeFacade(
   }
 
   function getVirtualAttributeNames(element: Element): string[] {
-    const names = nativeGetAttributeNames.call(element).filter((name) => {
-      const logical = logicalAttribute(element, name);
-      return !logical.managed || logical.value !== null;
-    });
-    if (isHTMLScriptElement(element)) {
-      const scriptAttributes = protectedScriptAttributes.get(element);
-      for (const attributeName of ["src", "type"] as const) {
-        const index = names.indexOf(attributeName);
-        if (!scriptAttributes?.has(attributeName) && index !== -1) {
-          names.splice(index, 1);
-        } else if (scriptAttributes?.has(attributeName) && index === -1) {
-          names.push(attributeName);
-        }
-      }
-    }
-    for (const attributeName of eventAttributeValues.get(element)?.keys() ?? []) {
-      if (!names.includes(attributeName)) {
-        names.push(attributeName);
-      }
-    }
-    if (options.authoredStyleAttributes.has(element) && !names.includes("style")) {
-      names.push("style");
-    }
-    if (
-      isHTMLLinkElement(element) &&
-      authoredLinkRelValues.get(element) !== null &&
-      !names.includes("rel")
-    ) {
-      names.push("rel");
+    const names = nativeGetAttributeNames
+      .call(element)
+      .filter((name) => logicalAttribute(element, name) !== null);
+    // The order of the table is the order the authored-only names come after the
+    // physical ones.
+    for (const managed of managedAttributes) {
+      managed.names?.(element, names);
     }
     return names;
   }
@@ -584,18 +736,7 @@ export function installAttributeFacade(
       synchronizePhysicalLinkRel(element, true);
     }
 
-    let physicalValue =
-      attributeName === "srcset" ? absolutizeSrcset(value, options.getBaseURL()) : value;
-    const baseURL = isBaseElement(element)
-      ? options.getCurrentURL()
-      : options.getBaseURL();
-    if (
-      attributeName !== "srcset" &&
-      physicalValue.trim() !== "" &&
-      !physicalValue.trim().toLowerCase().startsWith("javascript:")
-    ) {
-      physicalValue = resolveAssetURL(element, physicalValue, baseURL);
-    }
+    const physicalValue = physicalURLValue(element, attributeName, value);
 
     if (
       isHTMLScriptElement(element) &&
@@ -603,7 +744,7 @@ export function installAttributeFacade(
       attributeName === "src"
     ) {
       protectedScriptAttributes.get(element)?.set("src", physicalValue);
-      context.executeConnectedScript(element);
+      scripts.executeConnectedScript(element);
     } else {
       setPhysicalURLAttribute(element, attributeName, physicalValue);
     }
@@ -618,59 +759,12 @@ export function installAttributeFacade(
     qualifiedName: string,
     value: string,
   ): void {
-    let nextValue = String(value);
-    const attributeName = qualifiedName.toLowerCase();
-    const normalizedAttributeName =
-      element.namespaceURI === HTML_NAMESPACE ? attributeName : qualifiedName;
-    if (
-      virtualNodes.has(element) &&
-      normalizedAttributeName === options.inlineStyleSelectorAttribute
-    ) {
-      return;
-    }
-    if (virtualNodes.has(element) && normalizedAttributeName === "style") {
-      setLogicalStyleAttribute(element, nextValue, false);
-      return;
-    }
-    if (
-      virtualNodes.has(element) &&
-      isHTMLLinkElement(element) &&
-      normalizedAttributeName === "rel"
-    ) {
-      setLogicalLinkRel(element, nextValue, false);
-      return;
-    }
-    const inlineEventAttribute = eventAttributeName(element, attributeName);
-    if (virtualNodes.has(element) && inlineEventAttribute !== null) {
-      let attributes = eventAttributeValues.get(element);
-      if (attributes === undefined) {
-        attributes = new Map();
-        eventAttributeValues.set(element, attributes);
-      }
-      attributes.set(inlineEventAttribute, nextValue);
-      compileEventAttribute(element, inlineEventAttribute, nextValue);
-      return;
-    }
-    if (
-      isHTMLScriptElement(element) &&
-      protectedScriptAttributes.has(element) &&
-      attributeName === "type"
-    ) {
-      protectedScriptAttributes.get(element)?.set("type", nextValue);
-      return;
-    }
-    const urlAttributeName = urlAttributeKey(element, attributeName, null);
-    if (virtualNodes.has(element) && urlAttributeName !== null) {
-      setVirtualURLAttribute(element, urlAttributeName, nextValue);
-      return;
-    }
-    if (
-      isHTMLScriptElement(element) &&
-      protectedScriptAttributes.has(element) &&
-      attributeName === "src"
-    ) {
-      protectedScriptAttributes.get(element)?.set("src", nextValue);
-      context.executeConnectedScript(element);
+    qualifiedName = toDOMString(qualifiedName);
+    const nextValue = toDOMString(value);
+    const name = normalizeAttributeName(element, qualifiedName);
+    const managed = managedAttributeFor(element, name, "write");
+    if (managed !== undefined) {
+      managed.set(element, name, nextValue);
       return;
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
@@ -678,68 +772,36 @@ export function installAttributeFacade(
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
-    const attributeName = qualifiedName.toLowerCase();
-    const normalizedAttributeName =
-      element.namespaceURI === HTML_NAMESPACE ? attributeName : qualifiedName;
-    if (
-      virtualNodes.has(element) &&
-      normalizedAttributeName === options.inlineStyleSelectorAttribute
-    ) {
-      return;
-    }
-    if (virtualNodes.has(element) && normalizedAttributeName === "style") {
-      removeLogicalStyleAttribute(element);
-      return;
-    }
-    if (
-      virtualNodes.has(element) &&
-      isHTMLLinkElement(element) &&
-      normalizedAttributeName === "rel"
-    ) {
-      removeLogicalLinkRel(element);
-      return;
-    }
-    const inlineEventAttribute = eventAttributeName(element, attributeName);
-    if (virtualNodes.has(element) && inlineEventAttribute !== null) {
-      eventAttributeValues.get(element)?.delete(inlineEventAttribute);
-      setElementHandler(element, inlineEventAttribute.slice(2), null);
-      return;
-    }
-    if (
-      isHTMLScriptElement(element) &&
-      protectedScriptAttributes.has(element) &&
-      (attributeName === "src" || attributeName === "type")
-    ) {
-      protectedScriptAttributes.get(element)?.delete(attributeName);
-      if (attributeName === "src") {
-        options.authoredURLAttributes.get(element)?.delete("src");
-      }
-      return;
-    }
-    const urlAttributeName = urlAttributeKey(element, attributeName, null);
-    if (virtualNodes.has(element) && urlAttributeName !== null) {
-      options.authoredURLAttributes.get(element)?.delete(urlAttributeName);
-      removePhysicalURLAttribute(element, urlAttributeName);
-      if (isHTMLLinkElement(element) && urlAttributeName === "href") {
-        synchronizePhysicalLinkRel(element, false);
-        options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
-      }
-      connectedBaseElementChanged(element);
+    qualifiedName = toDOMString(qualifiedName);
+    const name = normalizeAttributeName(element, qualifiedName);
+    const managed = managedAttributeFor(element, name, "write");
+    if (managed !== undefined) {
+      managed.remove(element, name);
       return;
     }
     nativeRemoveAttribute.call(element, qualifiedName);
   }
+
+  let nameProbeElement: Element | undefined;
+  const nameProbe = (): Element =>
+    (nameProbeElement ??= context.nativeCreateElement.call(document, "span"));
 
   function toggleVirtualAttribute(
     element: Element,
     qualifiedName: string,
     force?: boolean,
   ): boolean {
+    qualifiedName = toDOMString(qualifiedName);
+    // `optional boolean force`: only undefined means "not given"; null is false.
+    const forced = force === undefined ? undefined : Boolean(force);
     if (!virtualNodes.has(element)) {
-      return nativeToggleAttribute.call(element, qualifiedName, force);
+      return nativeToggleAttribute.call(element, qualifiedName, forced);
     }
+    // Removal never reaches a native call that validates the name, but the
+    // method throws InvalidCharacterError for a bad name whatever force says.
+    nativeToggleAttribute.call(nameProbe(), qualifiedName, false);
     const present = hasVirtualAttribute(element, qualifiedName);
-    const nextPresent = force ?? !present;
+    const nextPresent = forced ?? !present;
     if (nextPresent) {
       if (!present) {
         setVirtualAttribute(element, qualifiedName, "");
@@ -756,19 +818,35 @@ export function installAttributeFacade(
     qualifiedName: string,
     value: string,
   ): void {
-    if (virtualNodes.has(element) && namespace === null) {
-      setVirtualAttribute(element, qualifiedName, value);
+    // The empty string is the null namespace, as for every namespace argument.
+    namespace = toNullableDOMString(namespace);
+    if (namespace === "") {
+      namespace = null;
+    }
+    qualifiedName = toDOMString(qualifiedName);
+    const authoredValue = toDOMString(value);
+    // Without a namespace and prefix the call names the same attribute
+    // setAttribute would, minus its lowercasing, so only the lowercase spelling
+    // can be one of the attributes the facade manages. A prefix with no
+    // namespace is the native NamespaceError, which setAttribute would swallow.
+    if (
+      virtualNodes.has(element) &&
+      namespace === null &&
+      !qualifiedName.includes(":") &&
+      qualifiedName === qualifiedName.toLowerCase()
+    ) {
+      setVirtualAttribute(element, qualifiedName, authoredValue);
       return;
     }
     const localName = qualifiedName.includes(":")
       ? qualifiedName.slice(qualifiedName.indexOf(":") + 1)
       : qualifiedName;
     const attributeName = urlAttributeKey(element, localName, namespace);
-    if (virtualNodes.has(element) && attributeName !== null) {
-      setVirtualURLAttribute(element, attributeName, String(value));
+    if (virtualNodes.has(element) && attributeName !== null && namespace !== null) {
+      setVirtualURLAttribute(element, attributeName, authoredValue);
       return;
     }
-    nativeSetAttributeNS.call(element, namespace, qualifiedName, value);
+    nativeSetAttributeNS.call(element, namespace, qualifiedName, authoredValue);
     getVirtualAttributeNodeNS(element, namespace, localName);
   }
 
@@ -777,18 +855,22 @@ export function installAttributeFacade(
     namespaceURI: string | null,
     localName: string,
   ): void {
-    if (virtualNodes.has(element) && namespaceURI === null) {
+    namespaceURI = toNullableDOMString(namespaceURI);
+    localName = toDOMString(localName);
+    if (namespaceURI === "") {
+      namespaceURI = null;
+    }
+    if (
+      virtualNodes.has(element) &&
+      namespaceURI === null &&
+      localName === localName.toLowerCase()
+    ) {
       removeVirtualAttribute(element, localName);
       return;
     }
     const attributeName = urlAttributeKey(element, localName, namespaceURI);
-    if (virtualNodes.has(element) && attributeName !== null) {
-      options.authoredURLAttributes.get(element)?.delete(attributeName);
-      removePhysicalURLAttribute(element, attributeName);
-      if (isHTMLLinkElement(element) && attributeName === "href") {
-        synchronizePhysicalLinkRel(element, false);
-        options.onLinkElementChange(element, authoredLinkRelValues.get(element) ?? null);
-      }
+    if (virtualNodes.has(element) && attributeName !== null && namespaceURI !== null) {
+      removeAuthoredURLAttribute(element, attributeName);
       return;
     }
     nativeRemoveAttributeNS.call(element, namespaceURI, localName);
@@ -981,6 +1063,9 @@ export function installAttributeFacade(
     setVirtualAttributeNS,
     removeVirtualAttributeNS,
     synchronizeURLAttribute,
+    setAttributeMarker(mark) {
+      markVirtualAttribute = mark;
+    },
     installPatches,
   };
 }

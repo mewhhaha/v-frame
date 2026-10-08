@@ -35,6 +35,20 @@ Shadow DOM must contain exactly one `v-html` with direct `v-head` and `v-body`
 children. Adoption is available only on the element's first connection — reloads,
 reconnection, and `src` changes always load over the network.
 
+## The guest restarts when the element moves
+
+Removing a `v-frame` and inserting it again disconnects it, which tears the guest
+down; the insertion loads `src` from scratch (and never adopts, see above). Move
+it with `parent.moveBefore(frame, reference)` to keep the guest alive. Browsers
+without `moveBefore` have no state-preserving move.
+
+## Changing an attribute does not reload
+
+Only a change in the _effective_ value reloads. `credentials="bogus"` falls back
+to `"same-origin"`, `navigation="bogus"` to `"guest"`, and a blank
+`trusted-types-policy` means none, so switching between two spellings of the same
+setting is a no-op. See [API](./api.md#configuration).
+
 ## Reload returns 404
 
 `src` still needs to serve an ordinary guest document, even though the initial

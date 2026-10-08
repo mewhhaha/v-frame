@@ -163,6 +163,9 @@ page's URL changes too.
 
 `back()`, `forward()`, and `go(delta)` traverse the guest session.
 Non-integer deltas are truncated, and `go(0)` resolves without doing anything.
+The guest's own `history.go()` coerces its delta the same way in both modes
+(`NaN` and non-numeric values become 0) and never reloads, including in host mode,
+where a reload would reload the shell page.
 Traversal past either end of the session is a no-op, exactly as `history.go()`
 is — read `canGoBack` and `canGoForward` first if you need to know.
 
@@ -170,7 +173,9 @@ They resolve once the traversal has been applied, so `currentURL`, `canGoBack`,
 and `canGoForward` already report the new entry when the promise settles, and
 `v-frame-navigated` has already fired. A cross-document traversal waits for the
 replacement guest to load; it rejects with the load error on failure, or an
-`AbortError` if disconnected or superseded before activation. That holds in host mode too, where the
+`AbortError` if disconnected or superseded before activation. A traversal whose
+load committed resolves even if a `v-frame-navigated` or `v-frame-load`
+listener immediately starts another load. That holds in host mode too, where the
 shell performs the traversal asynchronously and the frame waits for it. The
 session traversed there is the one the shell's `navigation.entries()` reports —
 the same list `canGoBack` and `canGoForward` answer from — so a step that would
@@ -181,11 +186,11 @@ leave the shell's own entries does nothing.
 Every one of these methods returns a `Promise<void>` and rejects rather than
 throwing synchronously.
 
-| Rejection           | When                                                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AbortError`        | A `v-frame-navigate` listener called `preventDefault()`, or a cross-document traversal was superseded or disconnected. |
-| `TypeError`         | The route is cross-origin, or its scheme is not `http:`/`https:`.                                                      |
-| `InvalidStateError` | There is no live guest to move — the element is idle, disconnected, or still loading its first document.               |
+| Rejection           | When                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AbortError`        | A `v-frame-navigate` listener called `preventDefault()`, or a cross-document traversal was superseded or disconnected.                         |
+| `TypeError`         | The route is cross-origin, or its scheme is not `http:`/`https:`.                                                                              |
+| `InvalidStateError` | There is no live guest to move (the element is idle, disconnected, or still loading its first document), or a replacement document is loading. |
 
 ```text
 AbortError: v-frame navigation to https://host.example/documents/denied was canceled
@@ -199,6 +204,12 @@ still sitting on, so a host logging the message learns which route was blocked.
 
 Traversal in host mode is the exception to the first row: the shell has already
 performed it by the time `v-frame` sees it, so it cannot be canceled.
+
+While a replacement document is loading behind a live guest, the guest is
+silenced until the load commits or fails, so these methods reject with
+`InvalidStateError` ("while a replacement document is loading") rather than
+`AbortError`. `AbortError` from a navigation method therefore always means a
+listener canceled it.
 
 A freshly mounted frame has no guest until `v-frame-load` fires — its first
 realm is still in flight — so these methods reject with `InvalidStateError`
@@ -224,6 +235,15 @@ emits a nonfatal `v-frame-error`, and rejects with the same error — see
 `src` does the same thing for a different URL, and discards the guest's history
 session once the replacement activates. A failed assignment leaves the current
 guest and its history intact and emits a nonfatal `v-frame-error`.
+
+When a replacement fails the frame goes back to `status === "ready"` with the
+guest it had committed, even if the failed load had itself superseded another
+load that was still in flight. `v-frame-navigated` and `v-frame-load` fire only
+after the new guest is revealed and `status` is `"ready"`, so a listener can start
+the next navigation from inside them.
+
+Moving the element in the DOM with `Element.prototype.moveBefore` keeps the guest
+and its history; removing and re-inserting it reloads the guest from `src`.
 
 ## What does not navigate
 

@@ -6,11 +6,11 @@ materializer, see [SSR](./ssr.md).
 
 ## Entries
 
-| Import                       | Contents                                                                                       |
-| ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.               |
-| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.             |
-| `@mewhhaha/v-frame/server`   | The SSR materializer core, its Cloudflare `HTMLRewriter` adapter, and the stylesheet rewriter. |
+| Import                       | Contents                                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.    |
+| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.  |
+| `@mewhhaha/v-frame/server`   | The SSR materializer core, its `HTMLRewriter` adapter, and the stylesheet rewriter. |
 
 ```ts
 import "@mewhhaha/v-frame/register";
@@ -48,22 +48,49 @@ path and remain confined to their frame.
 
 ## Configuration
 
-Observed attributes, each with a matching property. Changing `src`,
-`credentials`, `navigation`, or `trusted-types-policy` on a connected element
-restarts the guest with a fresh network load; changing `nonce` applies to the
-next load instead of forcing one.
+Attributes, each with a matching property. Changing `src`, `credentials`,
+`navigation`, or `trusted-types-policy` on a connected element restarts the
+guest with a fresh network load, but only when the _effective_ value changes:
+`credentials="same-origin"` becoming `credentials="bogus"` means the same thing
+and does not reload. Changing `nonce` applies to the next load instead of
+forcing one.
 
-| Attribute              | Property             | Default         | Purpose                                                                                                                      |
-| ---------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `src`                  | `src`                | `""`            | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle.                             |
-| `adopt`                | `adopt`              | `false`         | Activates the initial Declarative Shadow DOM instead of fetching `src`. Not observed — it is read on connection.             |
-| `navigation`           | `navigation`         | `"guest"`       | `"host"` when the shell owns the guest's route.                                                                              |
-| `credentials`          | `credentials`        | `"same-origin"` | `"omit"`, `"same-origin"`, or `"include"`. See below.                                                                        |
-| `nonce`                | `nonce`              | `""`            | CSP nonce applied to executed scripts and generated styles.                                                                  |
-| `trusted-types-policy` | `trustedTypesPolicy` | none            | Name of an identity Trusted Types policy allowed by the host CSP, or a full policy definition assigned through the property. |
+| Attribute              | Property             | Default         | Purpose                                                                                                                     |
+| ---------------------- | -------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `src`                  | `src`                | `""`            | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle.                            |
+| `adopt`                | `adopt`              | `false`         | Activates the initial Declarative Shadow DOM instead of fetching `src`. Not observed — read once, see below.                |
+| `navigation`           | `navigation`         | `"guest"`       | `"host"` when the shell owns the guest's route.                                                                             |
+| `credentials`          | `credentials`        | `"same-origin"` | `"omit"`, `"same-origin"`, or `"include"`. See below.                                                                       |
+| `nonce`                | `nonce`              | `""`            | CSP nonce applied to executed scripts and generated styles.                                                                 |
+| `trusted-types-policy` | `trustedTypesPolicy` | none            | Name of a Trusted Types policy the host CSP allows (no sanitization), or a full policy definition set through the property. |
 
-Assigning `credentials` a value other than the three above throws a `TypeError`,
-as does assigning an empty `trustedTypesPolicy` string.
+Attributes and properties treat invalid values differently, on purpose. An
+attribute follows the HTML convention that an unrecognised value falls back to
+the default: `credentials="bogus"` reads back as `"same-origin"` and
+`navigation="bogus"` as `"guest"`. The property setters validate instead:
+assigning `credentials` or `navigation` a value outside the ones listed throws a
+`TypeError`, as does assigning an empty `trustedTypesPolicy` string or a policy
+object that lacks a name or one of its three methods.
+
+### When `adopt` is read
+
+`adopt` is a reflecting property, but no attribute observer watches it. It is
+read once, when the element connects, and only the first connection of an
+element that arrived with a Declarative Shadow DOM tree can adopt it. After that
+the adoption has been spent: setting or removing `adopt` later changes the
+attribute and nothing else, and reconnecting the element fetches `src` like any
+other frame. See [SSR](./ssr.md).
+
+### Moving the element
+
+Removing the element and inserting it again, whether with `append`,
+`insertBefore`, or `replaceChildren`, disconnects it: the guest is torn down, the
+frame returns to `status === "idle"`, and the insertion fetches and runs the guest
+from scratch. A state-preserving move through `Element.prototype.moveBefore`
+keeps the guest alive instead. The element implements `connectedMoveCallback()`
+and does nothing in it, so the guest's realm, scripts, history, and
+`status === "ready"` survive the move. Browsers without `moveBefore` only have the
+restarting form.
 
 ### What `credentials` means
 
@@ -93,8 +120,11 @@ Readonly:
 | `canGoBack`     | Whether the guest session has an earlier entry. In host mode, the shell's. `false` when idle. |
 | `canGoForward`  | Whether the guest session has a later entry. In host mode, the shell's. `false` when idle.    |
 
-`VFrameStatus` is exported as a value as well, so a host can compare against
-`VFrameStatus.Ready` rather than a string literal.
+`VFrameStatus` is exported as both a value and a type, so a host can compare
+against `VFrameStatus.Ready` rather than a string literal.
+
+`HTMLElementTagNameMap` is not augmented, because a published package cannot
+declare global types. See [Typing the element](#typing-the-element).
 
 Teardown restores the document and node facades, including on retained documents.
 Retained history methods stay inert; an old window does not keep the replaced
@@ -121,11 +151,11 @@ v-frame:state(error) {
 | `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved. |
 | `reload()`                         | Reloads the current guest document over the network.      |
 
-All four return a `Promise<void>`. The navigation methods are described in
+All five return a `Promise<void>`. The navigation methods are described in
 [Navigation](./navigation.md), including exactly which errors they reject with.
-None of those three can run before `v-frame-load`, because the first guest is
-not live until then. `reload()` can: on a connected frame with a `src` it starts
-a fresh load whether or not a guest is live yet.
+None of the four navigation methods can run before `v-frame-load`, because the
+first guest is not live until then. `reload()` can: on a connected frame with a
+`src` it starts a fresh load whether or not a guest is live yet.
 
 `reload()` settles with the load it starts. It resolves when that load succeeds,
 and rejects with the same error the frame reports through `v-frame-error` when it
@@ -134,9 +164,13 @@ fails: a `TypeError` for a `src` that is not an `http:` or `https:` URL, a
 response that is not `ok`, and the fetch's own error when the request fails at
 the network layer. Reloading a frame whose route 404s therefore rejects.
 
-Two cases resolve without starting a load at all: a disconnected element, and one
-with no `src`. Both return the element to `status === "idle"`. A load that a
-later one supersedes before it finishes also resolves.
+A load that a later one supersedes, or that the element's removal abandons,
+before it commits rejects with an `AbortError`. A load that did commit resolves
+even if a `v-frame-navigated` or `v-frame-load` listener then starts another one.
+
+Two cases have nothing to reload and reject with an `InvalidStateError` without
+starting a load: a disconnected element, and one with no `src`. Both return the
+element to `status === "idle"`.
 
 ```ts
 try {
@@ -151,8 +185,8 @@ fails with a live guest to fall back on restores it and emits a nonfatal
 `v-frame-error`; one that fails without a guest to restore — a frame already in
 `status === "error"`, or one reloading before its first guest went live — emits
 a fatal `v-frame-error` and leaves the element in `status === "error"`.
-`tests/contract.spec.ts` pins how `reload()` itself settles; the fatal and
-nonfatal error paths are covered by the lifecycle tests in `tests/v-frame.spec.ts`.
+`tests/element-lifecycle.spec.ts` pins how `reload()` itself settles; the fatal and
+nonfatal error paths are covered by `tests/frame-lifecycle.spec.ts`.
 
 ## Events
 
@@ -174,12 +208,28 @@ an ancestor rather than on each frame.
 window actions, and for every navigation the host starts — the one exception is
 traversal in host mode, which the shell performs and cannot take back.
 
+Both of the events that finish a load fire after the load has fully committed:
+the new guest is revealed and `status` is already `"ready"`. `v-frame-navigated`
+comes first (when the load moved the guest URL, for example a document
+navigation or traversal) and `v-frame-load` second. A listener on either may
+start another navigation or assign `src`; the new load simply supersedes the
+guest that just went live. `v-frame-navigated` always fires for a load that
+committed, but if its listener supersedes that load (assigns `src`, calls
+`reload()`, or removes the element) the load's own `v-frame-load` is not
+dispatched: it never became the settled guest.
+
 `v-frame-navigated` is the past-tense counterpart: the guest URL is already the
 new one when it fires, so `currentURL`, `canGoBack`, and `canGoForward` can be
 read directly from the listener. It covers guest-initiated `pushState` and
 `replaceState`, fragment navigation, traversal, and document navigation. It
 reports a move through the session rather than a change of the URL string, so a
 push of the route the guest is already on fires with `from === to`.
+
+A navigation the guest asks for, such as a link click or `location.assign`, is
+reported as allowed once `v-frame-navigate` was not canceled, and its load begins
+on the next microtask. If another navigation, or a host `src` change, is
+requested before then, the latest request wins and the earlier one is dropped as
+superseded.
 
 Error `phase` is one of `entry`, `bootstrap`, `stylesheet`, `script`, `runtime`,
 `navigation`, or `network`. A fatal error ends the current load and moves the
@@ -212,9 +262,11 @@ that name on the frame:
 trusted-types orders-frame; require-trusted-types-for 'script'
 ```
 
-The named policy is an identity policy, intended for a guest that is already
-trusted to execute. A host that needs validation or transformation can assign a
-full policy definition through the property instead:
+The string form only _names_ a policy the CSP already allows. The policy it
+installs returns every value unchanged and performs **no sanitization**, so it
+gives the guest permission to create that policy and nothing else. It suits a
+guest that is already trusted to execute. A host that needs validation or
+transformation can assign a full policy definition through the property instead:
 
 ```ts
 frame.trustedTypesPolicy = {
@@ -225,16 +277,42 @@ frame.trustedTypesPolicy = {
 };
 ```
 
+## Typing the element
+
+`@mewhhaha/v-frame` does not augment `HTMLElementTagNameMap`: JSR rejects
+published packages that declare global types. `document.querySelector("v-frame")`
+therefore returns a plain `Element` until you narrow it:
+
+```ts
+import { VFrameElement } from "@mewhhaha/v-frame";
+
+const frame = document.querySelector("v-frame");
+if (!(frame instanceof VFrameElement)) {
+  throw new Error("host is missing its orders v-frame");
+}
+frame.addEventListener("v-frame-load", (event) => event.detail.url);
+```
+
+To get the typed result from `querySelector`, `createElement`, and friends, add
+the one-line augmentation to your own project:
+
+```ts
+declare global {
+  interface HTMLElementTagNameMap {
+    "v-frame": import("@mewhhaha/v-frame").VFrameElement;
+  }
+}
+```
+
 ## Server entry
 
-`@mewhhaha/v-frame/server` is documented in [SSR](./ssr.md). Its exports:
-
-| Export                                                                                            | Kind               | Purpose                                                                                                          |
-| ------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `materializeVFrameDocument(response, documentURL, options?)`                                      | Cloudflare adapter | Streams a guest `Response` through `HTMLRewriter` into adoptable markup.                                         |
-| `rewriteShellElement(tagName)`                                                                    | core               | Maps `html`/`head`/`body` to `v-html`/`v-head`/`v-body`, and returns the display rules to prepend into `v-head`. |
-| `rewriteScriptElement(script)`                                                                    | core               | Returns the attribute edits that make a guest script parser-inert, or `null` if it already is.                   |
-| `materializeStylesheet(source, documentURL, options?)`                                            | core               | Rewrites one inline stylesheet for the guest's public URL and escapes it for a `<style>` element.                |
-| `escapeStylesheetText(source)`                                                                    | core               | The `</style` escape on its own.                                                                                 |
-| `rewriteStylesheet(source, url, context)`, `createStylesheetContext(fetchText, onImportFailure?)` | CSS                | The runtime-neutral stylesheet rewriter, for a host building its own adapter.                                    |
-| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SHELL_DISPLAY_STYLE`    | constants          | The wire format between materializer and runtime.                                                                |
+`@mewhhaha/v-frame/server` is documented in [SSR](./ssr.md), which holds the
+complete export table. `materializeVFrameDocument(response, documentURL, options?)`
+resolves to a `Response`: it buffers a `200 text/html` guest document, then
+streams the rewritten markup with backpressure and cancellation (any other
+response is returned unchanged). It drives the runtime's global `HTMLRewriter`,
+or `options.HTMLRewriter` where there is none, and `options` also takes the
+stylesheet options `fetchText(url, { signal })`, `onImportFailure` and
+`onFontFace`. The guest may use any encoding the platform decodes (BOM, header
+charset, then `<meta>`); the output is UTF-8. Stylesheets are fetched
+concurrently, and cancelling the response aborts them through `signal`.

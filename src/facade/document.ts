@@ -5,15 +5,13 @@
 // need a real parsed document — write(), open(), adoptedStyleSheets, direct
 // child mutation — throw rather than lie.
 
-import {
-  type CollectionFacade,
-  staticCollection,
-  staticNodeList,
-} from "./collections.js";
-import type { FacadeContext } from "./context.js";
-import { DOCUMENT_EVENT_HANDLER_NAMES, type EventFacade } from "./events.js";
-import type { NodeFacade } from "./nodes.js";
+import type { CollectionFacade } from "./collections.js";
+import { type FacadeContext, HTML_NAMESPACE } from "./context.js";
+import { eventHandlerNames, type EventFacade } from "./events.js";
+import type { NodeCloning } from "./clone.js";
+import type { NodeMarking } from "./marking.js";
 import type { SelectionFacadeInstallation } from "./selection.js";
+import { toDOMString } from "./webidl.js";
 
 export interface DocumentProperties {
   setReadyState(state: DocumentReadyState): void;
@@ -68,7 +66,8 @@ function releasableDescriptor(descriptor: PropertyDescriptor) {
 export function installDocumentProperties(
   context: FacadeContext,
   events: EventFacade,
-  nodes: NodeFacade,
+  marking: NodeMarking,
+  cloning: NodeCloning,
   collections: CollectionFacade,
   selectionFacade: SelectionFacadeInstallation,
 ): DocumentProperties {
@@ -77,6 +76,8 @@ export function installDocumentProperties(
     window,
     document,
     hostDocument,
+    nativeCreateElement,
+    nativeSetAttribute,
     nativeCreateElementNS,
     nativeCreateTextNode,
     nativeCreateComment,
@@ -89,14 +90,15 @@ export function installDocumentProperties(
     nativeQuerySelector,
     nativeCurrentScript,
     virtualNodes,
-    createdScripts,
     logicalEventTargets,
     toHostViewportPoint,
   } = context;
-  const { documentListeners, ensureRootEventRelay } = events;
-  const { markVirtualNode, virtualDoctype, virtualCreateElement, finishVirtualClone } =
-    nodes;
+  const { documentListeners, ensureRootEventRelay, listenerEventSource } = events;
+  const { markVirtualNode, adoptAndMark, adoptCreatedElement, virtualDoctype } = marking;
+  const { finishVirtualClone } = cloning;
   const {
+    staticCollection,
+    staticNodeList,
     querySelector,
     querySelectorAll,
     getElementsByTagName,
@@ -116,6 +118,13 @@ export function installDocumentProperties(
 
   const documentChildNodes = staticNodeList([virtualDoctype, options.html]);
   const documentChildren = staticCollection([options.html]);
+  // The first HTML title in the document, wherever it sits, not only in head.
+  const documentTitleElement = (): Element | null => {
+    for (const candidate of Array.from(options.html.querySelectorAll("title"))) {
+      if (candidate.namespaceURI === HTML_NAMESPACE) return candidate;
+    }
+    return null;
+  };
   const releases: Array<() => void> = [];
   const patchDocument = (name: string, descriptor: PropertyDescriptor) => {
     if (descriptor.get || descriptor.set || typeof descriptor.value === "function") {
@@ -185,14 +194,24 @@ export function installDocumentProperties(
     },
     title: {
       configurable: true,
-      get: () => options.head.querySelector("title")?.textContent ?? "",
+      get() {
+        const title = documentTitleElement();
+        if (title === null) return "";
+        let text = "";
+        for (const child of Array.from(title.childNodes)) {
+          if (child.nodeType === 3) text += child.nodeValue;
+        }
+        // Strip and collapse ASCII whitespace.
+        return text.replace(/[\t\n\f\r ]+/g, " ").replace(/^ | $/g, "");
+      },
       set(value: string) {
-        let title = options.head.querySelector("title");
+        const text = toDOMString(value);
+        let title = documentTitleElement();
         if (title === null) {
           title = document.createElement("title");
           options.head.append(title);
         }
-        title.textContent = String(value);
+        title.textContent = text;
       },
     },
     childNodes: {
@@ -236,8 +255,26 @@ export function installDocumentProperties(
       configurable: true,
       writable: true,
       value(event: Event) {
-        logicalEventTargets.set(event, document);
-        return nativeDispatchEvent.call(document, event);
+        // Native dispatch rejects a non-event, or one already being dispatched,
+        // and the logical target must not be rewritten by a rejected call: for
+        // an event still in flight that would change where it appears to be.
+        if (typeof event !== "object" || event === null) {
+          return nativeDispatchEvent.call(document, event);
+        }
+        // Listeners hold a proxy, which the browser will not dispatch.
+        const source = listenerEventSource(event);
+        const previousTarget = logicalEventTargets.get(source);
+        logicalEventTargets.set(source, document);
+        try {
+          return nativeDispatchEvent.call(document, source);
+        } catch (error) {
+          if (previousTarget === undefined) {
+            logicalEventTargets.delete(source);
+          } else {
+            logicalEventTargets.set(source, previousTarget);
+          }
+          throw error;
+        }
       },
     },
     querySelector: { configurable: true, writable: true, value: querySelector },
@@ -246,7 +283,7 @@ export function installDocumentProperties(
       configurable: true,
       writable: true,
       value(id: string) {
-        const identifier = String(id);
+        const identifier = toDOMString(id);
         // An empty id attribute means the element has no ID.
         if (identifier === "") {
           return null;
@@ -298,7 +335,25 @@ export function installDocumentProperties(
     createElement: {
       configurable: true,
       writable: true,
-      value: virtualCreateElement,
+      value<K extends keyof HTMLElementTagNameMap>(
+        name: K,
+        creationOptions?: ElementCreationOptions,
+      ): HTMLElementTagNameMap[K] {
+        // Convert before creating: the name is read again below, and a value that
+        // cannot become a string has to fail before an element exists.
+        const localName = toDOMString(name);
+        const element = adoptCreatedElement(
+          nativeCreateElement.call(
+            document,
+            localName,
+            creationOptions,
+          ) as HTMLElementTagNameMap[K],
+        );
+        if (localName.toLowerCase() === "style" && options.getNonce() !== "") {
+          nativeSetAttribute.call(element, "nonce", options.getNonce());
+        }
+        return element;
+      },
     },
     createElementNS: {
       configurable: true,
@@ -314,42 +369,28 @@ export function installDocumentProperties(
           qualifiedName,
           creationOptions,
         );
-        hostDocument.adoptNode(element);
-        markVirtualNode(element);
-        if (element instanceof window.HTMLScriptElement) {
-          createdScripts.add(element);
-        }
-        return element;
+        return adoptCreatedElement(element);
       },
     },
     createTextNode: {
       configurable: true,
       writable: true,
       value(data: string) {
-        const node = nativeCreateTextNode.call(document, data);
-        hostDocument.adoptNode(node);
-        markVirtualNode(node);
-        return node;
+        return adoptAndMark(nativeCreateTextNode.call(document, data));
       },
     },
     createComment: {
       configurable: true,
       writable: true,
       value(data: string) {
-        const node = nativeCreateComment.call(document, data);
-        hostDocument.adoptNode(node);
-        markVirtualNode(node);
-        return node;
+        return adoptAndMark(nativeCreateComment.call(document, data));
       },
     },
     createDocumentFragment: {
       configurable: true,
       writable: true,
       value() {
-        const fragment = nativeCreateDocumentFragment.call(document);
-        hostDocument.adoptNode(fragment);
-        markVirtualNode(fragment);
-        return fragment;
+        return adoptAndMark(nativeCreateDocumentFragment.call(document));
       },
     },
     importNode: {
@@ -369,9 +410,7 @@ export function installDocumentProperties(
       configurable: true,
       writable: true,
       value<T extends Node>(node: T): T {
-        const adopted = hostDocument.adoptNode(node);
-        markVirtualNode(adopted);
-        return adopted;
+        return adoptAndMark(node);
       },
     },
     createAttribute: {
@@ -516,36 +555,48 @@ export function installDocumentProperties(
     );
   }
 
+  // One wrapper per type reads the handler's current value at dispatch, so
+  // assigning a new function keeps the handler's place in the listener order;
+  // only null removes it, and setting it again registers at the end.
   const handlerValues = new Map<
     string,
     { listener: EventListener; wrapper: EventListener }
   >();
-  for (const eventName of DOCUMENT_EVENT_HANDLER_NAMES) {
+  for (const eventName of eventHandlerNames(
+    [window.Document.prototype],
+    context.eventTargetPrototype,
+  )) {
     patchDocument(`on${eventName}`, {
       configurable: true,
       get: () => handlerValues.get(eventName)?.listener ?? null,
       set(value: EventListener | null) {
-        const previous = handlerValues.get(eventName);
-        if (previous !== undefined) {
-          documentListeners.remove(eventName, previous.wrapper);
-          handlerValues.delete(eventName);
-        }
         const listener = typeof value === "function" ? value : null;
+        const previous = handlerValues.get(eventName);
         if (listener === null) {
+          if (previous !== undefined) {
+            documentListeners.remove(eventName, previous.wrapper);
+            handlerValues.delete(eventName);
+          }
           return;
         }
-        const wrapper: EventListener = (event) => {
-          const result = (listener as (this: Document, event: Event) => unknown).call(
-            document,
-            event,
-          );
-          if (result === false) {
-            event.preventDefault();
-          }
+        if (previous !== undefined) {
+          previous.listener = listener;
+          return;
+        }
+        const entry = {
+          listener,
+          wrapper: ((event: Event) => {
+            const result = (
+              entry.listener as (this: Document, event: Event) => unknown
+            ).call(document, event);
+            if (result === false) {
+              event.preventDefault();
+            }
+          }) as EventListener,
         };
-        handlerValues.set(eventName, { listener, wrapper });
+        handlerValues.set(eventName, entry);
         ensureRootEventRelay(eventName);
-        documentListeners.add(eventName, wrapper);
+        documentListeners.add(eventName, entry.wrapper);
       },
     });
   }

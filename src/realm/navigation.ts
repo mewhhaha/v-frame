@@ -20,6 +20,7 @@ import type {
 } from "../types.js";
 import { isSameDocumentFragment } from "../url.js";
 import type { NavigationWindow, RealmFailure } from "./connect.js";
+import { captureNativeDOM } from "./native-dom.js";
 
 export type NativeLocationNavigationMode = "push" | "replace" | "reload";
 
@@ -33,7 +34,7 @@ function normalizeFormLineEndings(value: string): string {
   return value.replace(/\r\n|\r|\n/g, "\r\n");
 }
 
-export interface RealmNavigationOptions {
+interface RealmNavigationOptions {
   window: VFrameWindow;
   host: HTMLElement;
   shadowRoot: ShadowRoot;
@@ -67,7 +68,7 @@ export interface RealmNavigationOptions {
   onError(failure: RealmFailure): void;
 }
 
-export interface RealmNavigation {
+interface RealmNavigation {
   /**
    * Interception starts only once the guest's initial scripts are about to run,
    * so markup-time DOM work cannot trip a navigation.
@@ -78,6 +79,7 @@ export interface RealmNavigation {
 
 export function installRealmNavigation(options: RealmNavigationOptions): RealmNavigation {
   const window = options.window;
+  const nativeDOM = captureNativeDOM(window);
   guestMarkupRoots.add(options.guestRoot);
   let navigationInstalled = false;
   const nativeFormSubmit = window.HTMLFormElement.prototype.submit;
@@ -196,13 +198,13 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
   ) => {
     const href =
       anchor instanceof window.SVGAElement
-        ? (anchor.getAttribute("href") ??
+        ? (nativeDOM.getAttribute(anchor, "href") ??
           anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
           "")
         : anchor.href;
     const targetURL = new URL(href || options.getCurrentURL(), options.getBaseURL());
-    const target = anchor.hasAttribute("target")
-      ? (anchor.getAttribute("target") ?? "").toLowerCase()
+    const target = nativeDOM.hasAttribute(anchor, "target")
+      ? (nativeDOM.getAttribute(anchor, "target") ?? "").toLowerCase()
       : options.getBaseTarget();
     const opensNewContext =
       event.type === "auxclick" || event.ctrlKey || event.metaKey || event.shiftKey;
@@ -211,15 +213,15 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     if (
       !opensNewContext &&
       !(anchor instanceof window.SVGAElement) &&
-      anchor.hasAttribute("download") &&
+      nativeDOM.hasAttribute(anchor, "download") &&
       (targetURL.protocol === "http:" || targetURL.protocol === "https:") &&
       targetURL.origin === window.location.origin
     ) {
       const download = options.host.ownerDocument.createElement("a");
       download.href = targetURL.href;
-      download.download = anchor.getAttribute("download") ?? "";
+      download.download = nativeDOM.getAttribute(anchor, "download") ?? "";
       for (const name of ["referrerpolicy", "rel"]) {
-        const value = anchor.getAttribute(name);
+        const value = nativeDOM.getAttribute(anchor, name);
         if (value !== null) download.setAttribute(name, value);
       }
       download.click();
@@ -316,11 +318,13 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     try {
       submitter = submitterGetter.call(event) as HTMLElement | null;
     } catch {
+      // Platform fallback: the native getter brand-checks, so a submit event
+      // from another realm has no readable submitter.
       submitter = null;
     }
     const method = (
-      submitter?.getAttribute("formmethod") ??
-      form.getAttribute("method") ??
+      (submitter ? nativeDOM.getAttribute(submitter, "formmethod") : null) ??
+      nativeDOM.getAttribute(form, "method") ??
       ""
     ).toLowerCase();
     // A dialog submission navigates nowhere; its default action (closing
@@ -481,9 +485,23 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
   Object.defineProperty(window, "open", {
     configurable: true,
     writable: true,
-    value(url?: string | URL, target = "_blank", features?: string): Window | null {
-      const targetURL = new URL(String(url ?? "about:blank"), options.getBaseURL());
-      const normalizedTarget = target.toLowerCase();
+    value(url?: unknown, target?: unknown, features?: unknown): Window | null {
+      // Arguments are coerced as the WebIDL signature does: only `undefined` takes
+      // the default, so `null` is the string "null" (a named target, a relative URL).
+      const requestedURL = url === undefined ? "" : `${url}`.toWellFormed();
+      const targetName = target === undefined ? "_blank" : `${target}`;
+      const windowFeatures = features === undefined ? "" : `${features}`;
+      const targetURL = window.URL.parse(
+        requestedURL === "" ? "about:blank" : requestedURL,
+        options.getBaseURL(),
+      );
+      if (targetURL === null) {
+        throw new window.DOMException(
+          `Failed to execute 'open' on 'Window': Unable to open a window with invalid URL '${requestedURL}'.`,
+          "SyntaxError",
+        );
+      }
+      const normalizedTarget = targetName.toLowerCase();
       const detail: VFrameNavigateEventDetail = {
         from: options.getCurrentURL(),
         to: targetURL.href,
@@ -492,7 +510,12 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       };
       if (normalizedTarget === "_blank") {
         return options.onNavigate(detail)
-          ? options.nativeWindowOpen(targetURL.href, target, features)
+          ? // The popup never gets an opener: it would be the hidden realm window.
+            options.nativeWindowOpen(
+              targetURL.href,
+              targetName,
+              windowFeatures === "" ? "noopener" : `${windowFeatures},noopener`,
+            )
           : null;
       }
       if (

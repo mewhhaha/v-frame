@@ -1,3 +1,5 @@
+import { rewriteStyleAttribute } from "./css.js";
+
 export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 export const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 export const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
@@ -25,12 +27,9 @@ const URL_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
   video: ["src", "poster"],
 };
 
-const SVG_EXTERNAL_RESOURCE_ELEMENTS = new Set(["feImage", "image", "use"]);
-
-/** Authored asset values retained while the server preview uses absolute URLs. */
-export const SSR_ATTRIBUTES = "data-v-frame-attributes";
-export const SSR_LINK_REL = "data-v-frame-rel";
-export const SSR_LINK_STYLE = "data-v-frame-linked";
+// `a` is here for the browser's own link affordances (open in new tab, drag, copy
+// link address), which read the physical href against the host document's base.
+const SVG_EXTERNAL_RESOURCE_ELEMENTS = new Set(["a", "feImage", "image", "use"]);
 
 export interface AssetElement {
   localName: string;
@@ -38,17 +37,17 @@ export interface AssetElement {
 }
 
 /** SVG fragment resources belong to the rendered tree, not the guest URL. */
-export function resolveAssetURL(
-  element: AssetElement,
-  value: string,
-  baseURL: string,
-): string {
-  if (element.namespaceURI === SVG_NAMESPACE && value.trimStart().startsWith("#"))
+function resolveAssetURL(element: AssetElement, value: string, baseURL: string): string {
+  if (
+    element.namespaceURI === SVG_NAMESPACE &&
+    element.localName !== "a" &&
+    value.trimStart().startsWith("#")
+  )
     return value;
   return URL.parse(value, baseURL)?.href ?? value;
 }
 
-function isASCIIWhitespace(character: string | undefined): boolean {
+export function isASCIIWhitespace(character: string | undefined): boolean {
   return (
     character === "\t" ||
     character === "\n" ||
@@ -58,7 +57,37 @@ function isASCIIWhitespace(character: string | undefined): boolean {
   );
 }
 
-export function absolutizeSrcset(source: string, baseURL: string): string {
+/**
+ * The one decision for how an authored attribute becomes a rebased asset
+ * reference: `style` values, srcset candidates and URL attributes. Returns null
+ * when the attribute must stay as authored. Rebasing `style` can throw on input
+ * the CSS parser rejects; each caller decides what that costs the attribute.
+ */
+export function rewriteAssetAttribute(
+  element: AssetElement,
+  attributeName: string,
+  attributeNamespace: string | null,
+  value: string,
+  baseURL: string,
+): string | null {
+  let rewritten: string;
+  if (attributeNamespace === null && attributeName.toLowerCase() === "style") {
+    rewritten = rewriteStyleAttribute(value, baseURL);
+  } else if (isSrcsetAttribute(element, attributeName, attributeNamespace)) {
+    rewritten = absolutizeSrcset(value, baseURL);
+  } else if (isURLAttribute(element, attributeName, attributeNamespace)) {
+    const trimmed = value.trim();
+    if (trimmed === "" || trimmed.toLowerCase().startsWith("javascript:")) {
+      return null;
+    }
+    rewritten = resolveAssetURL(element, value, baseURL);
+  } else {
+    return null;
+  }
+  return rewritten === value ? null : rewritten;
+}
+
+function absolutizeSrcset(source: string, baseURL: string): string {
   const candidates: string[] = [];
   let position = 0;
 
@@ -128,8 +157,10 @@ export function isSrcsetAttribute(
   return (
     element.namespaceURI === HTML_NAMESPACE &&
     namespaceURI === null &&
-    (element.localName === "img" || element.localName === "source") &&
-    attributeName.toLowerCase() === "srcset"
+    (((element.localName === "img" || element.localName === "source") &&
+      attributeName.toLowerCase() === "srcset") ||
+      // <link rel=preload as=image> carries its candidates in imagesrcset.
+      (element.localName === "link" && attributeName.toLowerCase() === "imagesrcset"))
   );
 }
 

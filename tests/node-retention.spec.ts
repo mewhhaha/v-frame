@@ -101,11 +101,11 @@ test("releases marked nodes once the guest has removed and dropped them", async 
   expect(await page.locator("#host v-frame#churn").count()).toBe(1);
 
   // Two passes: the first clears the weak references, the second collects what
-  // their finalizers released. `page.requestGC()` reaches both engines — it is
-  // `HeapProfiler.collectGarbage` over CDP on chromium and the juggler
-  // `Heap.collectGarbage` on firefox — so this case is not chromium-only. Only
-  // reading how many *bytes* are retained is, which is why `pnpm bench` still
-  // opens a CDP session and this test does not.
+  // their finalizers released. `page.requestGC()` reaches every engine — it is
+  // `HeapProfiler.collectGarbage` over CDP on chromium, the juggler
+  // `Heap.collectGarbage` on firefox and `Heap.gc` on webkit — so this case is not
+  // chromium-only. Only reading how many *bytes* are retained is, which is why
+  // `pnpm bench` still opens a CDP session and this test does not.
   await page.requestGC();
   await page.requestGC();
 

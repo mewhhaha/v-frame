@@ -147,6 +147,27 @@ const styleAttributeCases: Array<{ name: string; source: string; rewritten: stri
     rewritten: "background:image-set(url(https://host.test/app/a.png)1x)",
   },
   {
+    name: "rebases a bare string inside image-set()",
+    source: 'background: image-set("p.png" 1x, url(q.png) 2x)',
+    rewritten:
+      'background:image-set("https://host.test/app/p.png"1x,url(https://host.test/app/q.png)2x)',
+  },
+  {
+    name: "rebases a bare string inside -webkit-image-set()",
+    source: 'background: -webkit-image-set("p.png" 1x)',
+    rewritten: 'background:-webkit-image-set("https://host.test/app/p.png"1x)',
+  },
+  {
+    name: "rebases a bare string inside src()",
+    source: 'background: src("p.png")',
+    rewritten: 'background:src("https://host.test/app/p.png")',
+  },
+  {
+    name: "leaves strings that are not URLs alone",
+    source: 'content: "a.png"; font-family: "x.y"',
+    rewritten: 'content:"a.png";font-family:"x.y"',
+  },
+  {
     name: "preserves a brace inside a string",
     source: 'content: "}"',
     rewritten: 'content:"}"',
@@ -404,3 +425,98 @@ for (const malformed of malformedStylesheets) {
     );
   });
 }
+
+const nonFetchingCases: Array<{ name: string; source: string; rewritten: string }> = [
+  {
+    name: "keeps @namespace url() identity untouched",
+    source: '@namespace url(http://w.test);@namespace svg "http://s.test";a{color:red}',
+    rewritten: '@namespace url(http://w.test);@namespace svg"http://s.test";a{color:red}',
+  },
+  {
+    name: "rebases @font-face urls but not format() strings",
+    source: '@font-face{src:url(f.woff2) format("woff2"),local("F")}',
+    rewritten:
+      '@font-face{src:url(https://host.test/app/f.woff2)format("woff2"),local("F")}',
+  },
+];
+
+for (const nonFetching of nonFetchingCases) {
+  test(`rewriteCSSOMInsertRule ${nonFetching.name}`, () => {
+    assert.equal(rewriteCSSOMInsertRule(nonFetching.source, BASE), nonFetching.rewritten);
+  });
+}
+
+test("rewriteStylesheet output is unchanged by nested imports", async () => {
+  const sheets = new Map([
+    [
+      "https://host.test/app/a.css",
+      "@import url(sub/b.css); body{background:url(a.png)}",
+    ],
+    [
+      "https://host.test/app/sub/b.css",
+      ':root{--x:1} html p{background:image-set("b.png" 1x)} @media print{body{}}',
+    ],
+  ]);
+  const context = createStylesheetContext(async (url) => sheets.get(url) ?? "");
+  const rewritten = await rewriteStylesheet("@import url(a.css);", MAIN, context);
+  assert.equal(
+    rewritten,
+    `${ROOT_SELECTOR}{--x:1}v-html p{background:image-set("https://host.test/app/sub/b.png"1x)}@media print{v-body{}}v-body{background:url(https://host.test/app/a.png)}`,
+  );
+});
+
+test("sibling @imports are in flight together, once each, and keep their order", async () => {
+  let active = 0;
+  let peak = 0;
+  const fetched: string[] = [];
+  const context = createStylesheetContext(async (url) => {
+    fetched.push(url);
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active--;
+    return `.${url.split("/").pop()!.replace(".", "-")}{order:0}`;
+  });
+  const css = await rewriteStylesheet(
+    '@import "a.css"; @import "b.css"; @import "c.css"; @import "a.css";',
+    BASE,
+    context,
+  );
+  assert.equal(peak, 3);
+  assert.equal(fetched.length, 3);
+  const [a, b, c] = ["a.css", "b.css", "c.css"].map((name) =>
+    css.indexOf(`.${name.replace(".", "-")}{`),
+  );
+  assert.ok(a! >= 0 && a! < b! && b! < c!);
+  assert.equal(css.split(".a-css{").length, 3);
+});
+
+test("fetches receive the context signal, and failures after an abort are not reported", async () => {
+  const controller = new AbortController();
+  const received: Array<AbortSignal | undefined> = [];
+  const failures: StylesheetImportFailure[] = [];
+  const context = createStylesheetContext(
+    (_url, options) =>
+      new Promise((_, reject) => {
+        received.push(options?.signal);
+        options?.signal?.addEventListener("abort", () => reject(options.signal!.reason));
+      }),
+    (failure) => failures.push(failure),
+    controller.signal,
+  );
+  const pending = rewriteStylesheet('@import "a.css"; @import "b.css";', BASE, context);
+  controller.abort(new Error("gone"));
+  await pending;
+  assert.deepEqual(received, [controller.signal, controller.signal]);
+  assert.equal(failures.length, 0);
+
+  // Without an abort the same rejection is a failure worth reporting.
+  const live = createStylesheetContext(
+    async () => {
+      throw new Error("down");
+    },
+    (failure) => failures.push(failure),
+  );
+  await rewriteStylesheet('@import "a.css";', BASE, live);
+  assert.equal(failures.length, 1);
+});

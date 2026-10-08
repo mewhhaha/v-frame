@@ -11,12 +11,43 @@ export interface NetworkPatchOptions {
   isActive?(): boolean;
 }
 
+const XHR_HANDLER_NAMES = [
+  "onabort",
+  "onerror",
+  "onload",
+  "onloadend",
+  "onloadstart",
+  "onprogress",
+  "onreadystatechange",
+  "ontimeout",
+] as const;
+
 function resolveNetworkURL(
   window: VFrameWindow,
   value: unknown,
   baseURL: string,
 ): string {
   return new window.URL(String(value), baseURL).href;
+}
+
+/**
+ * WebSocket, EventSource and the worker constructors report an unparsable URL as
+ * a SyntaxError DOMException, where fetch, Request and sendBeacon throw TypeError.
+ */
+function resolveConstructorURL(
+  window: VFrameWindow,
+  value: unknown,
+  baseURL: string,
+): URL {
+  const serialized = String(value);
+  const url = window.URL.parse(serialized, baseURL);
+  if (url === null) {
+    throw new window.DOMException(
+      `Failed to construct: the URL ${JSON.stringify(serialized)} is invalid.`,
+      "SyntaxError",
+    );
+  }
+  return url;
 }
 
 function combinedSignal(
@@ -27,27 +58,7 @@ function combinedSignal(
   if (right === undefined || right === null || right === left) {
     return left;
   }
-
-  const abortSignal = window.AbortSignal as typeof AbortSignal & {
-    any?: (signals: AbortSignal[]) => AbortSignal;
-  };
-  if (abortSignal.any !== undefined) {
-    return abortSignal.any([left, right]);
-  }
-
-  const controller = new window.AbortController();
-  const abort = (event: Event) => {
-    const source = event.target as AbortSignal;
-    controller.abort(source.reason);
-  };
-  left.addEventListener("abort", abort, { once: true });
-  right.addEventListener("abort", abort, { once: true });
-  if (left.aborted) {
-    controller.abort(left.reason);
-  } else if (right.aborted) {
-    controller.abort(right.reason);
-  }
-  return controller.signal;
+  return window.AbortSignal.any([left, right]);
 }
 
 function eventSourceOptions(
@@ -182,16 +193,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     NativeXMLHttpRequest.prototype,
     NativeXMLHttpRequestUpload.prototype,
   ]) {
-    for (const name of [
-      "onabort",
-      "onerror",
-      "onload",
-      "onloadend",
-      "onloadstart",
-      "onprogress",
-      "onreadystatechange",
-      "ontimeout",
-    ]) {
+    for (const name of XHR_HANDLER_NAMES) {
       let owner: object | null = prototype;
       let native: PropertyDescriptor | undefined;
       while (owner && !native) {
@@ -222,9 +224,8 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
             descriptor.set!.call(this, value);
             return;
           }
-          const target = this;
           const wrapper: EventListener = (event) => {
-            invokeNativeListener(target, value, event);
+            invokeNativeListener(this, value, event);
           };
           values.set(name, { listener: value, wrapper });
           descriptor.set!.call(this, wrapper);
@@ -296,16 +297,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   };
 
   const clearNativeEventHandlers = (target: XMLHttpRequest | XMLHttpRequestUpload) => {
-    for (const name of [
-      "onabort",
-      "onerror",
-      "onload",
-      "onloadend",
-      "onloadstart",
-      "onprogress",
-      "onreadystatechange",
-      "ontimeout",
-    ]) {
+    for (const name of XHR_HANDLER_NAMES) {
       (target as unknown as Record<string, unknown>)[name] = null;
     }
   };
@@ -389,31 +381,42 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     return [request ?? input, forwarded];
   };
 
-  class VFrameRequest extends NativeRequest {
-    constructor(...argumentsList: [] | ConstructorParameters<typeof NativeRequest>) {
+  // A Proxy rather than a subclass: natively created requests (clone(), Cache
+  // API, service worker events) keep NativeRequest.prototype, so only a
+  // constructor that shares that prototype keeps `instanceof Request` true.
+  const WrappedRequest = new Proxy(NativeRequest, {
+    construct(target, argumentsList: unknown[], newTarget) {
       if (argumentsList.length === 0) {
-        super(
-          ...(argumentsList as unknown as ConstructorParameters<typeof NativeRequest>),
-        );
-        return;
+        return Reflect.construct(target, argumentsList, newTarget);
       }
 
-      const [input, init] = argumentsList;
+      const [input, init] = argumentsList as [unknown, RequestInit | undefined];
       const requestInput = isRequest(input);
       const resolvedInput = requestInput
         ? input
         : resolveNetworkURL(window, input, options.getBaseURL());
-      super(...forwardedRequestArguments(resolvedInput, init, requestInput));
-    }
-  }
-
-  Object.defineProperty(VFrameRequest, "name", { value: "Request" });
+      return Reflect.construct(
+        target,
+        forwardedRequestArguments(resolvedInput, init, requestInput),
+        newTarget,
+      );
+    },
+  });
 
   remember(window, "Request");
   Object.defineProperty(window, "Request", {
     configurable: true,
     writable: true,
-    value: VFrameRequest,
+    value: WrappedRequest,
+  });
+  // `request.constructor` must name the exposed constructor, as it does natively.
+  const nativeRequestConstructor = Object.getOwnPropertyDescriptor(
+    NativeRequest.prototype,
+    "constructor",
+  );
+  Object.defineProperty(NativeRequest.prototype, "constructor", {
+    ...nativeRequestConstructor,
+    value: WrappedRequest,
   });
 
   remember(window, "fetch");
@@ -486,7 +489,8 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         activeXHRSends.delete(this);
       }
     }
-    registerNativeXHR(this);
+    // Not registered until send(): an XHR the guest opens and never sends has
+    // nothing to abort, and tracking it would pin it until realm teardown.
     nativeXHRAsync.set(
       this,
       argumentsList[2] === undefined ? true : Boolean(argumentsList[2]),
@@ -502,6 +506,11 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       !nativeXHRCredentialsAssigned.has(this)
     ) {
       Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
+    }
+    if (disposed) {
+      // Teardown already aborted every request; an XHR opened before it and sent
+      // afterwards must fail the way a natively aborted one does, not go out.
+      disposeNativeXHR(this);
     }
     nativeXHRUploads.set(this.upload, this);
     const inFlightRequest = activeXHRSends.get(this);
@@ -611,7 +620,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
         return argumentsList;
       }
 
-      const url = new window.URL(String(argumentsList[0]), options.getBaseURL());
+      const url = resolveConstructorURL(window, argumentsList[0], options.getBaseURL());
       if (url.protocol === "http:") {
         url.protocol = "ws:";
       } else if (url.protocol === "https:") {
@@ -632,7 +641,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       }
 
       return [
-        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        resolveConstructorURL(window, argumentsList[0], options.getBaseURL()).href,
         eventSourceOptions(argumentsList[1], options.credentials),
         ...argumentsList.slice(2),
       ];
@@ -649,7 +658,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       }
 
       return [
-        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        resolveConstructorURL(window, argumentsList[0], options.getBaseURL()).href,
         workerOptions(argumentsList[1], options.credentials),
         ...argumentsList.slice(2),
       ];
@@ -666,7 +675,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       }
 
       return [
-        resolveNetworkURL(window, argumentsList[0], options.getBaseURL()),
+        resolveConstructorURL(window, argumentsList[0], options.getBaseURL()).href,
         sharedWorkerOptions(argumentsList[1], options.credentials),
         ...argumentsList.slice(2),
       ];
@@ -728,6 +737,13 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     for (const { prototype, name, descriptor } of handlerDescriptors) {
       if (descriptor) Object.defineProperty(prototype, name, descriptor);
       else delete (prototype as Record<string, unknown>)[name];
+    }
+    if (nativeRequestConstructor !== undefined) {
+      Object.defineProperty(
+        NativeRequest.prototype,
+        "constructor",
+        nativeRequestConstructor,
+      );
     }
     NativeXMLHttpRequest.prototype.open = nativeXHROpen;
     NativeXMLHttpRequest.prototype.send = nativeXHRSend;

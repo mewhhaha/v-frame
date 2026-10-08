@@ -180,12 +180,6 @@ test("resolveHistoryURL wraps a value that cannot be stringified", () => {
   });
 });
 
-test("resolveHistoryURL lets a malformed URL reject as a plain TypeError", () => {
-  // Nothing wraps this one: the realm's own URL parser rejects before the
-  // origin check, which is the same failure a real History method reports.
-  assert.throws(() => resolveHistory("http://"), { name: "TypeError" });
-});
-
 const sameDocumentCases: Array<{
   name: string;
   from: string;
@@ -254,5 +248,14 @@ for (const fragmentCase of sameDocumentCases) {
       isSameDocumentFragment(fragmentCase.from, fragmentCase.to),
       fragmentCase.same,
     );
+  });
+}
+
+for (const value of ["http://[", "https://exa mple.test/"]) {
+  test(`resolveHistoryURL throws SecurityError for the unparsable URL ${value}`, () => {
+    assert.throws(() => resolveHistory(value), {
+      name: "SecurityError",
+      message: /cannot be parsed against https:\/\/host\.test\/app\//,
+    });
   });
 }

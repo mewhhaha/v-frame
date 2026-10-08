@@ -1,17 +1,18 @@
-import {
-  createStylesheetContext,
-  extractFontFaces,
-  rewriteStyleAttribute,
-  rewriteStylesheet,
+import { createStylesheetContext, extractFontFaces, rewriteStylesheet } from "../css.js";
+import { rewriteAssetAttribute, XLINK_NAMESPACE } from "../asset-urls.js";
+import type {
+  StylesheetFetch,
+  StylesheetFetchOptions,
+  StylesheetImportFailure,
 } from "../css.js";
 import {
-  absolutizeSrcset,
-  isURLAttribute,
-  isSrcsetAttribute,
-  resolveAssetURL,
+  INERT_SCRIPT_TYPE,
+  SCRIPT_MARKER_ATTRIBUTE,
+  SCRIPT_TYPE_ATTRIBUTE,
+  SHELL_ELEMENT_NAMES,
   SSR_ATTRIBUTES,
-} from "../asset-urls.js";
-import type { StylesheetFetch, StylesheetImportFailure } from "../css.js";
+  SSR_STYLE,
+} from "../wire-format.js";
 
 /**
  * Runtime-neutral rules for turning a trusted guest document into markup that a
@@ -20,27 +21,11 @@ import type { StylesheetFetch, StylesheetImportFailure } from "../css.js";
  * per-element decisions and leaves the streaming to the host's own parser.
  */
 
-/** The parser-inert type a materialized guest script carries until activation. */
-export const INERT_SCRIPT_TYPE = "application/vnd.v-frame";
-
-/** Marks a script that a materializer neutralized. */
-export const SCRIPT_MARKER_ATTRIBUTE = "data-v-frame-script";
-
-/** Carries the authored script type across neutralization. */
-export const SCRIPT_TYPE_ATTRIBUTE = "data-v-frame-type";
-
 /**
  * The shell elements are unknown to the user agent, so the materialized
  * document has to carry their display rules itself.
  */
-export const SHELL_DISPLAY_STYLE =
-  "<style>:host{contain:layout;display:block;position:relative;overflow:auto}v-html,v-body{display:block}v-head{display:none!important}</style>";
-
-const SHELL_ELEMENT_NAMES = new Map([
-  ["html", "v-html"],
-  ["head", "v-head"],
-  ["body", "v-body"],
-]);
+export const SHELL_DISPLAY_STYLE: string = `<style ${SSR_STYLE}>:host{contain:layout;display:block;position:relative;overflow:auto}v-html,v-body{display:block}v-head{display:none!important}</style>`;
 
 export interface ShellElementRewrite {
   /** The custom element name that replaces the shell tag. */
@@ -96,23 +81,15 @@ export function rewriteAssetAttributes(
   const assignments: AttributeAssignment[] = [];
   const authored: Record<string, string> = {};
   for (const [name, value] of element.attributes) {
-    let rewritten = value;
-    if (name === "style") {
-      rewritten = rewriteStyleAttribute(value, baseURL);
-    } else if (isSrcsetAttribute(node, name)) {
-      rewritten = absolutizeSrcset(value, baseURL);
-    } else if (
-      isURLAttribute(
-        node,
-        name.replace(/^xlink:/, ""),
-        name.startsWith("xlink:") ? "http://www.w3.org/1999/xlink" : null,
-      )
-    ) {
-      if (value.trim() && !value.trim().toLowerCase().startsWith("javascript:")) {
-        rewritten = resolveAssetURL(node, value, baseURL);
-      }
-    }
-    if (rewritten !== value) {
+    const prefixed = name.startsWith("xlink:");
+    const rewritten = rewriteAssetAttribute(
+      node,
+      prefixed ? name.slice("xlink:".length) : name,
+      prefixed ? XLINK_NAMESPACE : null,
+      value,
+      baseURL,
+    );
+    if (rewritten !== null) {
       authored[name] = value;
       assignments.push({ name, value: rewritten });
     }
@@ -171,14 +148,19 @@ export function rewriteScriptElement(
 export interface MaterializeStylesheetOptions {
   /** Fetches a linked stylesheet or `@import`. Defaults to platform `fetch`. */
   fetchText?: StylesheetFetch;
-  /** Called when an `@import` cannot be inlined; the rule is dropped. */
+  /** Called when an `@import` cannot be inlined (the rule is dropped), or when a linked or inline stylesheet cannot be materialized at all (the runtime handles it at activation). Not called once `signal` is aborted. */
   onImportFailure?(failure: StylesheetImportFailure): void;
   /** HTML-safe font declarations to put in a host style before the SSR frame. */
   onFontFace?(css: string): void;
+  /** Aborts the fetches still in flight and silences their failures. */
+  signal?: AbortSignal;
 }
 
-export async function fetchStylesheetSource(url: string) {
-  const response = await fetch(url);
+export async function fetchStylesheetSource(
+  url: string,
+  { signal }: StylesheetFetchOptions = {},
+) {
+  const response = await fetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     throw new TypeError(
       `v-frame SSR stylesheet ${url} returned ${response.status} ${response.statusText}`,
@@ -209,6 +191,7 @@ export async function materializeStylesheet(
   const context = createStylesheetContext(
     options.fetchText ?? fetchStylesheetSource,
     options.onImportFailure,
+    options.signal,
   );
   const rewritten = await rewriteStylesheet(source, documentURL, context);
   const fonts = options.onFontFace ? extractFontFaces(rewritten, documentURL) : "";

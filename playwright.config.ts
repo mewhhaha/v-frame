@@ -5,7 +5,9 @@ export default defineConfig({
   // tests/unit holds `node --test` files, which playwright's default match would
   // otherwise pick up and fail to run.
   testMatch: "**/*.spec.ts",
-  fullyParallel: false,
+  // Tests in a file share only the fixture server started in beforeAll, which is per worker
+  // and never serves two tests at once, so tests can be spread across workers freely.
+  fullyParallel: true,
   timeout: 15_000,
   expect: { timeout: 5_000 },
   use: {

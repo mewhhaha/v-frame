@@ -7,6 +7,7 @@ import {
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
 import type { VFrameElement } from "../src/index";
+import { settleAfterRoundTrip } from "./support/settle";
 
 let fixture: HTTPFixture;
 // Snapshot recording retains detached execution realms and adds rendering work.
@@ -226,7 +227,7 @@ test("superseding a stalled request never lets its eventual response replace the
     contentType: "text/html",
     body: htmlDocument('<h1 id="stale">The superseded response</h1>'),
   });
-  await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+  await settleAfterRoundTrip(page, `${fixture.origin}/sentinel`);
   await expect(frame.locator("#stale")).toHaveCount(0);
   await frame.locator("#counter").click();
   await expect(frame.locator("#count")).toHaveText("1");
