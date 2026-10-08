@@ -1,3 +1,5 @@
+/// <reference types="./css-tree-subpaths.d.ts" />
+
 import generateCSS from "css-tree/generator";
 import { FRAGMENT_TARGET_ATTRIBUTE, SHELL_ELEMENT_NAMES } from "./wire-format.js";
 import parseCSS from "css-tree/parser";
