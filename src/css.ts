@@ -1,10 +1,11 @@
-/// <reference types="./css-tree-subpaths.d.ts" />
-
-import generateCSS from "css-tree/generator";
+import {
+  clone,
+  generate as generateCSS,
+  ident,
+  parse as parseCSS,
+  walk as walkCSS,
+} from "./css-tree-subpaths.js";
 import { FRAGMENT_TARGET_ATTRIBUTE, SHELL_ELEMENT_NAMES } from "./wire-format.js";
-import parseCSS from "css-tree/parser";
-import walkCSS from "css-tree/walker";
-import { clone, ident } from "css-tree/utils";
 import type { Atrule, CssNode, List, ListItem, Selector, StyleSheet } from "css-tree";
 
 // css-tree types the walk context loosely; only the ancestors read here.

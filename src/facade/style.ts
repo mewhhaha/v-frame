@@ -5,9 +5,11 @@
 // the CSSOM (element.style, cssText, setProperty) and the stylesheet link rel,
 // which v-frame renames so the browser does not fetch the sheet itself.
 
-import generateCSS from "css-tree/generator";
-import parseCSS from "css-tree/parser";
-import walkCSS from "css-tree/walker";
+import {
+  generate as generateCSS,
+  parse as parseCSS,
+  walk as walkCSS,
+} from "../css-tree-subpaths.js";
 import type { Declaration, DeclarationList } from "css-tree";
 import { rewriteStyleAttribute } from "../css.js";
 import { NEUTRALIZED_STYLESHEET_REL } from "../wire-format.js";

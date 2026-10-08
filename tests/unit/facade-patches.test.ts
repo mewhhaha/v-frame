@@ -118,7 +118,7 @@ test("DOMString conversion follows WebIDL", async () => {
 
 test("the authored style values are parsed once per attribute text", async () => {
   const { createAuthoredValueCache } = await import("../../src/facade/style.js");
-  const { default: parse } = await import("css-tree/parser");
+  const { parse } = await import("../../src/css-tree-subpaths.js");
   let parses = 0;
   const values = createAuthoredValueCache(((...args: Parameters<typeof parse>) => {
     parses += 1;
