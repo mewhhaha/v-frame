@@ -9,9 +9,8 @@ into server-rendered `v-frame` elements:
 - Solid renders and hydrates with SolidStart.
 
 The guests are ordinary applications. Each owns its routes, HTML document,
-browser entry, framework dependencies, Worker, and asset paths. None imports a
-host API or emits `v-frame` markup. The host is the only application that knows
-about composition.
+browser entry, framework dependencies, Worker, and asset paths. The React app also composes a Qwik preview. Each composing app declares its own
+slots and knows only the public mounts it uses.
 
 ## Run it
 
@@ -105,26 +104,21 @@ bindings without making the guest deployments depend on host code.
 
 ## Compose a guest response
 
-For a host route, the Worker requests the guest's ordinary HTML through its
-service binding. `materializeVFrameDocument` from `@mewhhaha/v-frame/server` then:
+The host renders ordinary frame declarations, such as
+`<v-frame src="/widgets/angular/dashboard" aria-label="Angular delivery frontend"></v-frame>`.
+It passes the shell response and its public widget router to the server entry:
 
-- changes `html`, `head`, and `body` into materializable document elements;
-- rewrites inline CSS selectors and URLs for the public guest URL;
-- makes guest scripts inert while the host response is parsed; and
-- preserves framework hydration and resume metadata.
-
-The host inserts that transformed stream into Declarative Shadow DOM:
-
-```html
-<v-frame adopt src="/widgets/angular/dashboard">
-  <template shadowrootmode="open" shadowrootserializable>
-    <v-html>
-      <v-head><!-- Angular document head --></v-head>
-      <v-body><!-- Angular SSR output and client entry --></v-body>
-    </v-html>
-  </template>
-</v-frame>
+```ts
+return composeFrames(shellResponse, {
+  request,
+  fetchGuest: (guest) => widgetResponse(guest, env),
+});
 ```
+
+The React Worker uses the same API to render the Qwik slot in its transcript.
+Only the React app chooses its location and article. Visiting React directly
+includes the same Qwik preview as visiting it inside the shell. Qwik serves
+its own mounted routes and bundles.
 
 When `@mewhhaha/v-frame/register` loads, the element activates the preserved scripts in
 the guest realm. React Router hydrates, Qwik resumes, Angular hydrates with

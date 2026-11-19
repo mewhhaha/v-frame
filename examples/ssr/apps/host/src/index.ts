@@ -7,14 +7,8 @@ import {
   type HostSectionKey,
   type PageFrameId,
 } from "./host-config.js";
-import {
-  isVFrameDocumentResponse,
-  materializeVFrameDocument,
-  type MaterializeDocumentOptions,
-  type ServerStylesheetFetch,
-} from "@mewhhaha/v-frame/server";
+import { composeFrames } from "@mewhhaha/v-frame/server";
 
-const qwikRoutes = new Set(["/inventory", "/catalog"]);
 const widgetDocumentRoutes = new Map([
   ["/widgets/react-router/activity", "/"],
   ["/widgets/react-router/research", "/research"],
@@ -28,7 +22,8 @@ const widgetDocumentRoutes = new Map([
 
 function shell(hostSection: HostSectionKey): string {
   const section = hostSections[hostSection];
-  const sectionRoutes = hostSectionRoutes[hostSection];
+  const sectionRoutes: Partial<Record<PageFrameId, string>> =
+    hostSectionRoutes[hostSection];
   const frameIds = Object.keys(sectionRoutes) as PageFrameId[];
   const threadSection =
     hostSection === "migration" || hostSection === "research" || hostSection === "brief";
@@ -39,7 +34,7 @@ function shell(hostSection: HostSectionKey): string {
     .map((frameId) => {
       const presentation = pageFramePresentation[frameId];
       const label = pageFrameLabel(frameId, hostSection);
-      return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><div id="${frameId}-widget"></div></div>`;
+      return `<div id="${presentation.surfaceId}" class="widget-surface ${presentation.className}" data-composition-label="${label}"><v-frame id="${frameId}-frontend" data-frame-id="${frameId}" src="${pageFrameSource(frameId, sectionRoutes[frameId]!)}" aria-label="${label}"></v-frame></div>`;
     })
     .join("");
   const hostConfig = JSON.stringify({ initialRoutes: sectionRoutes }).replaceAll(
@@ -115,6 +110,7 @@ function shell(hostSection: HostSectionKey): string {
       v-frame { display: block; width: 100%; height: 100%; min-width: 0; border: 0; background: var(--canvas); overflow: hidden; }
       .widget-grid-single .widget-surface { width: 100%; height: 100%; flex: 1; margin: 0; border: 0; border-radius: 0; background: var(--canvas); }
       .host-route { display: none; }
+      html[data-composition-visible] { --composition-overlay-display: block; }
       html[data-composition-visible] .host-sidebar::before, html[data-composition-visible] .widget-surface::before { position: absolute; z-index: 4; border: 2px solid var(--composition-color); border-radius: inherit; background: color-mix(in srgb, var(--composition-color) 7%, transparent); content: ""; inset: 0; pointer-events: none; }
       html[data-composition-visible] .host-sidebar::after, html[data-composition-visible] .widget-surface::after { position: absolute; z-index: 5; top: 0.45rem; right: 0.45rem; padding: 0.22rem 0.42rem; border-radius: 999px; background: var(--composition-color); color: white; content: attr(data-composition-label); font-size: 0.625rem; font-weight: 600; pointer-events: none; }
       html[data-composition-visible] .account-menu::before { position: absolute; z-index: 6; border: 2px solid var(--composition-qwik); border-radius: 0.5rem; background: color-mix(in srgb, var(--composition-qwik) 7%, transparent); content: ""; inset: 0; pointer-events: none; }
@@ -173,7 +169,7 @@ function shell(hostSection: HostSectionKey): string {
             </ul>
           </div>
         </nav>
-        <div class="account-menu" data-composition-label="Qwik account frontend"><div id="account-widget"></div></div>
+        <div class="account-menu" data-composition-label="Qwik account frontend"><v-frame id="account-frontend" data-frame-id="account" src="/widgets/qwik/inventory?surface=profile" aria-label="Qwik account frontend"></v-frame></div>
       </aside>
       <div class="host-content">
         <header class="mobile-header">
@@ -236,96 +232,20 @@ function shell(hostSection: HostSectionKey): string {
 </html>`;
 }
 
-interface WidgetDefinition {
-  documentURL: string;
-  frameId: string;
-  label: string;
-  source: string;
-}
-
-interface PageWidget {
-  failureName: string;
-  frameId: PageFrameId;
-  response: Response;
-  source: string;
-}
-
-function serviceRequest(service: string, path: string): Request {
-  return new Request(`https://${service}.internal${path}`, {
-    headers: { Accept: "text/html" },
+function widgetResponse(request: Request, env: Env): Promise<Response> | Response {
+  const { pathname } = new URL(request.url);
+  // All widgets in this example are public. Forward only content negotiation.
+  const upstream = new Request(request.url, {
+    headers: { Accept: request.headers.get("Accept") ?? "*/*" },
+    redirect: "manual",
+    signal: request.signal,
   });
-}
-
-function widgetStylesheetFetch(origin: string, env: Env): ServerStylesheetFetch {
-  const services = [
-    { id: "react-router", binding: env.REACT_ROUTER_WIDGET },
-    { id: "qwik", binding: env.QWIK_WIDGET },
-    { id: "angular", binding: env.ANGULAR_WIDGET },
-    { id: "solid", binding: env.SOLID_WIDGET },
-  ];
-  return async (href, { signal } = {}) => {
-    const url = new URL(href);
-    if (url.origin !== origin || url.username !== "" || url.password !== "") {
-      throw new TypeError(`Unexpected stylesheet origin: ${url.origin}`);
-    }
-    const service = services.find(({ id }) => url.pathname.startsWith(`/widgets/${id}/`));
-    if (!service)
-      throw new TypeError(`Unexpected widget stylesheet path: ${url.pathname}`);
-
-    let path = url.pathname;
-    if (service.id === "qwik") path = path.slice("/widgets/qwik".length);
-    const response = await service.binding.fetch(
-      `https://${service.id}-widget.internal${path}${url.search}`,
-      { headers: { Accept: "text/css" }, redirect: "manual", signal },
-    );
-    // The same bindings serve the public URLs in development and production.
-    // Reject redirects so a guest asset cannot move the request to another service.
-    if (!response.ok) {
-      throw new TypeError(
-        `Widget stylesheet ${url.pathname} returned ${response.status}`,
-      );
-    }
-    return { bytes: await response.arrayBuffer(), url: url.href };
-  };
-}
-
-function widgetContent(
-  response: Response,
-  definition: WidgetDefinition,
-  options: MaterializeDocumentOptions,
-): HTMLRewriterElementContentHandlers {
-  return {
-    async element(element) {
-      const fonts = new Set<string>();
-      const materialized = await materializeVFrameDocument(
-        response,
-        definition.documentURL,
-        {
-          ...options,
-          onFontFace(css) {
-            fonts.add(css);
-          },
-        },
-      );
-      const markup = await materialized.text();
-      element.before(
-        `<style data-v-frame-fonts>${Array.from(fonts).join("\n")}</style><v-frame adopt id="${definition.frameId}-frontend" data-frame-id="${definition.frameId}" src="${definition.source}" aria-label="${definition.label}"><template shadowrootmode="open" shadowrootserializable>`,
-        { html: true },
-      );
-      element.replace(markup, {
-        html: true,
-      });
-      element.after("</template></v-frame>", { html: true });
-    },
-  };
-}
-
-function failedWidget(
-  name: string,
-  response: Response,
-): { name: string; response: Response } | null {
-  if (isVFrameDocumentResponse(response)) return null;
-  return { name, response };
+  if (pathname.startsWith("/widgets/react-router/"))
+    return env.REACT_ROUTER_WIDGET.fetch(upstream);
+  if (pathname.startsWith("/widgets/qwik/")) return env.QWIK_WIDGET.fetch(upstream);
+  if (pathname.startsWith("/widgets/angular/")) return env.ANGULAR_WIDGET.fetch(upstream);
+  if (pathname.startsWith("/widgets/solid/")) return env.SOLID_WIDGET.fetch(upstream);
+  return new Response("Unknown widget mount", { status: 404 });
 }
 
 export default {
@@ -347,160 +267,12 @@ export default {
       shellURL.hash = url.hash;
       return Response.redirect(shellURL, 302);
     }
-    if (url.pathname.startsWith("/widgets/react-router/")) {
-      return env.REACT_ROUTER_WIDGET.fetch(
-        serviceRequest("react-router-widget", url.pathname + url.search),
-      );
-    }
-    if (url.pathname.startsWith("/widgets/qwik/")) {
-      const mountedPath = url.pathname.slice("/widgets/qwik".length);
-      let componentPath = mountedPath + url.search;
-      if (qwikRoutes.has(mountedPath)) {
-        const componentParameters = new URLSearchParams({
-          route: mountedPath,
-          base: "/widgets/qwik/build/",
-        });
-        const surface = url.searchParams.get("surface");
-        if (surface === "definition" || surface === "profile") {
-          componentParameters.set("surface", surface);
-        }
-        const article = url.searchParams.get("article");
-        if (surface === "definition" && article !== null) {
-          componentParameters.set("article", article);
-        }
-        componentPath = `/document?${componentParameters}`;
-      }
-      return env.QWIK_WIDGET.fetch(serviceRequest("qwik-widget", componentPath));
-    }
-    if (url.pathname.startsWith("/widgets/angular/")) {
-      return env.ANGULAR_WIDGET.fetch(
-        serviceRequest("angular-widget", url.pathname + url.search),
-      );
-    }
-    if (url.pathname.startsWith("/widgets/solid/")) {
-      return env.SOLID_WIDGET.fetch(
-        serviceRequest("solid-widget", url.pathname + url.search),
-      );
-    }
+    if (url.pathname.startsWith("/widgets/")) return widgetResponse(request, env);
     const hostSection = (Object.keys(hostSections) as HostSectionKey[]).find(
       (sectionKey) => hostSections[sectionKey].path === url.pathname,
     );
     if (hostSection === undefined) {
       return new Response("page not found", { status: 404 });
-    }
-
-    const sectionRoutes = hostSectionRoutes[hostSection];
-    const materializeOptions: MaterializeDocumentOptions = {
-      requireDocument: true,
-      fetchText: widgetStylesheetFetch(url.origin, env),
-      signal: request.signal,
-    };
-    const pageWidgetsPromise: Promise<PageWidget[]> = Promise.all(
-      (Object.entries(sectionRoutes) as [PageFrameId, string][]).map(
-        async ([frameId, route]) => {
-          const source = pageFrameSource(frameId, route);
-          let response: Response;
-          if (frameId === "angular") {
-            response = await env.ANGULAR_WIDGET.fetch(
-              serviceRequest("angular-widget", source),
-            );
-          } else if (frameId === "react-router") {
-            response = await env.REACT_ROUTER_WIDGET.fetch(
-              serviceRequest("react-router-widget", source),
-            );
-          } else if (frameId === "solid") {
-            response = await env.SOLID_WIDGET.fetch(
-              serviceRequest("solid-widget", source),
-            );
-          } else {
-            response = await env.QWIK_WIDGET.fetch(
-              serviceRequest(
-                "qwik-widget",
-                `/document?route=${encodeURIComponent(route)}&base=/widgets/qwik/build/`,
-              ),
-            );
-          }
-          if (
-            !isVFrameDocumentResponse(response) ||
-            frameId !== "react-router" ||
-            route === "/plugins"
-          ) {
-            return { failureName: frameId, frameId, response, source };
-          }
-
-          const article =
-            route === "/research"
-              ? "research"
-              : route === "/brief"
-                ? "brief"
-                : "migration";
-          const nestedSource = `/widgets/qwik/inventory?surface=definition&article=${article}`;
-          const nestedResponse = await env.QWIK_WIDGET.fetch(
-            serviceRequest(
-              "qwik-widget",
-              `/document?route=%2Finventory&base=%2Fwidgets%2Fqwik%2Fbuild%2F&surface=definition&article=${article}`,
-            ),
-          );
-          if (!isVFrameDocumentResponse(nestedResponse)) {
-            return {
-              failureName: "nested-qwik",
-              frameId,
-              response: nestedResponse,
-              source,
-            };
-          }
-
-          const nestedMarkup = await (
-            await materializeVFrameDocument(
-              nestedResponse,
-              new URL(nestedSource, url).href,
-              materializeOptions,
-            )
-          ).text();
-          response = new HTMLRewriter()
-            .on("v-frame.nested-workspace-widget", {
-              element(element) {
-                element.setAttribute("adopt", "");
-                element.setInnerContent(
-                  `<template shadowrootmode="open" shadowrootserializable>${nestedMarkup}</template>`,
-                  { html: true },
-                );
-              },
-            })
-            .transform(response);
-          return { failureName: frameId, frameId, response, source };
-        },
-      ),
-    );
-    const accountPromise: Promise<Response> = env.QWIK_WIDGET.fetch(
-      serviceRequest(
-        "qwik-widget",
-        "/document?route=%2Finventory&base=%2Fwidgets%2Fqwik%2Fbuild%2F&surface=profile",
-      ),
-    );
-    const [pageWidgets, account] = await Promise.all([
-      pageWidgetsPromise,
-      accountPromise,
-    ]);
-    let failure =
-      pageWidgets
-        .map(({ failureName, response }) => failedWidget(failureName, response))
-        .find((candidate) => candidate !== null) ?? null;
-    if (failure === null) {
-      failure = failedWidget("account", account);
-    }
-    if (failure !== null) {
-      console.error(
-        JSON.stringify({
-          message: "SSR widget composition failed",
-          widget: failure.name,
-          status: failure.response.status,
-        }),
-      );
-      return new Response(
-        `SSR widget ${failure.name} returned an unexpected document response (${failure.response.status})`,
-        { status: 502 },
-      );
     }
 
     const shellResponse = new Response(shell(hostSection), {
@@ -509,35 +281,9 @@ export default {
         "Cache-Control": "no-store",
       },
     });
-    const rewriter = new HTMLRewriter();
-    for (const { frameId, response, source } of pageWidgets) {
-      rewriter.on(
-        `#${frameId}-widget`,
-        widgetContent(
-          response,
-          {
-            documentURL: new URL(source, url).href,
-            frameId,
-            label: pageFrameLabel(frameId, hostSection),
-            source,
-          },
-          materializeOptions,
-        ),
-      );
-    }
-    rewriter.on(
-      "#account-widget",
-      widgetContent(
-        account,
-        {
-          documentURL: new URL("/widgets/qwik/inventory?surface=profile", url).href,
-          frameId: "account",
-          label: "Qwik account frontend",
-          source: "/widgets/qwik/inventory?surface=profile",
-        },
-        materializeOptions,
-      ),
-    );
-    return rewriter.transform(shellResponse);
+    return composeFrames(shellResponse, {
+      request,
+      fetchGuest: (guest) => widgetResponse(guest, env),
+    });
   },
 } satisfies ExportedHandler<Env>;

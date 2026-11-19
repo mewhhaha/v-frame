@@ -734,6 +734,7 @@ export async function prepareMarkup(
     neutralized.inertStyleAttribute,
   );
 
+  restoreNestedFrames(parsedRoot, parsedStyleAttributes);
   const baseURL = resolveMarkupBaseURL(parsedRoot, options.pageURL);
   const html = options.document.createElement("v-html") as HTMLElement;
   const head = options.document.createElement("v-head") as HTMLElement;
@@ -799,6 +800,50 @@ function restoreAuthoredAttributes(element: Element, marker: string): void {
   element.removeAttribute(marker);
 }
 
+function restoreNestedFrames(root: Element, styles?: Map<Element, string>): void {
+  if (!root.querySelector("template")) return;
+  const shadowHosts = new WeakSet<Element>();
+  for (const element of collectParsedElements(root)) {
+    if (element.namespaceURI !== HTML_NAMESPACE || element.localName !== "template") {
+      continue;
+    }
+
+    const template = element as HTMLTemplateElement;
+    const host = template.parentElement;
+    const mode = template.getAttribute("shadowrootmode");
+    if (
+      host === null ||
+      host.namespaceURI !== HTML_NAMESPACE ||
+      host.localName !== "v-frame" ||
+      shadowHosts.has(host) ||
+      mode !== "open"
+    ) {
+      continue;
+    }
+
+    // The fetched-document parser moved inline styles into a side table for CSP.
+    // Give the nested guest its own styles back before handing it the preview.
+    if (styles?.size) {
+      for (const node of collectParsedElements(template.content)) {
+        const style = styles.get(node);
+        if (style !== undefined) {
+          node.setAttribute("style", style);
+          styles.delete(node);
+        }
+      }
+    }
+    const shadowRoot = host.attachShadow({
+      mode,
+      clonable: template.hasAttribute("shadowrootclonable"),
+      delegatesFocus: template.hasAttribute("shadowrootdelegatesfocus"),
+      serializable: template.hasAttribute("shadowrootserializable"),
+    });
+    shadowHosts.add(host);
+    shadowRoot.append(template.content);
+    template.remove();
+  }
+}
+
 export async function prepareAdoptedMarkup(
   options: PrepareMarkupOptions,
 ): Promise<PreparedMarkup> {
@@ -821,35 +866,7 @@ export async function prepareAdoptedMarkup(
       element.removeAttribute(SSR_LINK_REL);
     }
   }
-  const shadowHosts = new WeakSet<Element>();
-  for (const element of collectParsedElements(html)) {
-    if (element.namespaceURI !== HTML_NAMESPACE || element.localName !== "template") {
-      continue;
-    }
-
-    const template = element as HTMLTemplateElement;
-    const host = template.parentElement;
-    const mode = template.getAttribute("shadowrootmode");
-    if (
-      host === null ||
-      host.namespaceURI !== HTML_NAMESPACE ||
-      host.localName !== "v-frame" ||
-      shadowHosts.has(host) ||
-      mode !== "open"
-    ) {
-      continue;
-    }
-
-    const shadowRoot = host.attachShadow({
-      mode,
-      clonable: template.hasAttribute("shadowrootclonable"),
-      delegatesFocus: template.hasAttribute("shadowrootdelegatesfocus"),
-      serializable: template.hasAttribute("shadowrootserializable"),
-    });
-    shadowHosts.add(host);
-    shadowRoot.append(template.content);
-    template.remove();
-  }
+  restoreNestedFrames(html);
 
   // Nested adopting shadows have already been moved out of this traversal.
   // Ordinary templates are owned by this guest even though their contents are inert.

@@ -72,8 +72,8 @@ jobs:
       - run: pnpm build
 
       # A `vite build` strips types without checking them, and tsconfig.test.json only
-      # covers the host's browser entries. Without this, apps/host/src/index.ts (which
-      # calls materializeVFrameDocument) and the other Worker entries are never checked.
+      # covers the host's browser entries. Check the Workers that call
+      # composeFrames and the guest applications against their generated types.
       - run: pnpm --filter example-ssr run types
       - run: pnpm --filter example-ssr run typecheck
 

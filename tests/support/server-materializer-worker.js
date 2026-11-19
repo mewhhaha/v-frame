@@ -1,5 +1,6 @@
 import {
   isVFrameDocumentResponse,
+  composeFrames,
   materializeVFrameDocument,
 } from "../../dist/server/index.js";
 
@@ -15,6 +16,76 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Each case runs the real materializer under workerd and reports what a caller
 // could observe: status, headers, body, and the failures it was told about.
 const cases = {
+  async composition() {
+    const upstream = [];
+    const shell = html(
+      `<!doctype html><html><body><svg/><math/>
+      <v-frame id="healthy" nonce="hostNonce" src="orders?a=1&amp;b=2#detail"><v-frame src="nested-fallback"><template shadowrootmode="open"></template></v-frame></v-frame>
+      <v-frame id="cached" adopt src="old"><template shadowrootmode="open"><v-frame src="hidden"></v-frame></template></v-frame>
+      <template><v-frame src="inert"></v-frame></template>
+      <v-frame src="https://external.example/off"></v-frame>
+      <v-frame src="offline">fallback</v-frame><v-frame src="unavailable"></v-frame>
+      <base href="/apps/"></body></html>`,
+      { headers: { etag: "stale", "content-language": "fr" } },
+    );
+    const composed = await composeFrames(shell, {
+      request: new Request("https://host.test/page", {
+        headers: { Cookie: "session=a" },
+      }),
+      async fetchGuest(request) {
+        const url = new URL(request.url);
+        upstream.push([
+          url.pathname + url.search,
+          request.headers.get("Accept"),
+          request.headers.get("Cookie"),
+          request.redirect,
+        ]);
+        if (url.pathname === "/apps/offline")
+          return html("private diagnostic", { status: 503 });
+        if (url.pathname === "/apps/unavailable") throw new Error("offline");
+        if (url.pathname === "/apps/orders")
+          return html(
+            '<html><head><link rel="stylesheet" href="theme.css?x=1&amp;y=2"></head><body><svg/><p id="detail">Orders</p></body></html>',
+          );
+        if (url.pathname === "/apps/theme.css")
+          return new Response(
+            "@font-face{font-family:Example;src:url(font.woff)}p{color:green}",
+          );
+        throw new Error("unexpected mount");
+      },
+    });
+    const markup = await composed.text();
+    return { upstream, markup, headers: headersOf(composed) };
+  },
+  async cancelComposition() {
+    let stop;
+    const stopped = new Promise((resolve) => {
+      stop = resolve;
+    });
+    const started = [];
+    const composed = await composeFrames(
+      html('<v-frame src="/a"></v-frame><v-frame src="/b"></v-frame>'),
+      {
+        request: new Request("https://host.test/"),
+        fetchGuest(request) {
+          started.push(new URL(request.url).pathname);
+          return new Promise((_, reject) =>
+            request.signal.addEventListener(
+              "abort",
+              () => {
+                stop();
+                reject(request.signal.reason);
+              },
+              { once: true },
+            ),
+          );
+        },
+      },
+    );
+    await composed.body.cancel("consumer disconnected");
+    await stopped;
+    return started;
+  },
   async gate() {
     const body = "<html><body><script>1</script></body></html>";
     const variants = {

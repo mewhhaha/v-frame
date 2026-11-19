@@ -16,6 +16,7 @@ function isWidgetEndpoint(pathname: string): pathname is WidgetEndpoint {
 }
 
 function widgetBuildBase(url: URL): string {
+  if (url.pathname.startsWith("/widgets/qwik/")) return "/widgets/qwik/build/";
   const requestedBase = url.searchParams.get("base");
   if (requestedBase === "/build/" || requestedBase === "/widgets/qwik/build/") {
     return requestedBase;
@@ -74,7 +75,7 @@ function networkDocument(markup: string): string {
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "GET") {
       return new Response("method not allowed", {
         status: 405,
@@ -83,7 +84,14 @@ export default {
     }
 
     const url = new URL(request.url);
-    const { pathname } = url;
+    let pathname = url.pathname;
+    if (pathname.startsWith("/widgets/qwik/")) {
+      pathname = pathname.slice("/widgets/qwik".length);
+      if (pathname.startsWith("/build/")) {
+        url.pathname = pathname;
+        return env.ASSETS.fetch(new Request(url, request));
+      }
+    }
     if (!isWidgetEndpoint(pathname)) {
       return new Response("Qwik widget not found", { status: 404 });
     }
@@ -96,4 +104,4 @@ export default {
       },
     });
   },
-} satisfies ExportedHandler;
+} satisfies ExportedHandler<Env>;

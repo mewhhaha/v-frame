@@ -65,19 +65,12 @@ sidebarToggle?.addEventListener("click", () => {
   }
 });
 
-const updateNestedCompositionSurface = (visible: boolean) => {
-  const reactFrame = document.querySelector('v-frame[data-frame-id="react-router"]');
-  const reactWidget = reactFrame?.shadowRoot?.querySelector(".activity-widget");
-  reactWidget?.toggleAttribute("data-composition-visible", visible);
-};
-
 const showComposition = (visible: boolean) => {
   document.documentElement.toggleAttribute("data-composition-visible", visible);
   compositionToggle?.setAttribute("aria-pressed", String(visible));
   if (compositionToggleLabel !== null) {
     compositionToggleLabel.textContent = visible ? "Hide frontends" : "Show frontends";
   }
-  updateNestedCompositionSurface(visible);
   try {
     sessionStorage.setItem(compositionStorageKey, String(visible));
   } catch (error) {
@@ -295,11 +288,6 @@ document.addEventListener("v-frame-load", (event) => {
       commitPendingNavigation();
     }
     return;
-  }
-  if (event.target.matches('v-frame[data-frame-id="react-router"]')) {
-    updateNestedCompositionSurface(
-      document.documentElement.hasAttribute("data-composition-visible"),
-    );
   }
 });
 

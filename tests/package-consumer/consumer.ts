@@ -5,6 +5,7 @@ import {
 } from "@mewhhaha/v-frame";
 import "@mewhhaha/v-frame/register";
 import {
+  composeFrames,
   materializeVFrameDocument,
   materializeStylesheet,
   rewriteAssetAttributes,
@@ -67,3 +68,9 @@ rewriteAssetAttributes(
   },
   "https://consumer.test/guest/",
 );
+
+const composed: Response = await composeFrames(new Response(null, { status: 204 }), {
+  request: new Request("https://consumer.test/"),
+  fetchGuest: async (guest) => new Response(guest.url),
+});
+void composed;

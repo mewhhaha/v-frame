@@ -48,6 +48,36 @@ async function run<T>(name: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+test("composes owned slots through one public route and isolates guest failures", async () => {
+  const { upstream, markup, headers } = await run<{
+    upstream: string[][];
+    markup: string;
+    headers: Record<string, string>;
+  }>("composition");
+  expect(upstream.map(([url]) => url).sort()).toEqual([
+    "/apps/offline",
+    "/apps/orders?a=1&b=2",
+    "/apps/theme.css?x=1&y=2",
+    "/apps/unavailable",
+  ]);
+  expect(
+    upstream.every(([, , cookie, redirect]) => cookie === null && redirect === "manual"),
+  ).toBe(true);
+  expect(upstream.find(([url]) => url?.includes("theme.css"))?.[1]).toBe("text/css");
+  expect(markup).toContain("Orders</p>");
+  expect(markup).not.toContain("private diagnostic");
+  expect(markup).toContain('src="offline">fallback</v-frame>');
+  expect(markup.match(/shadowrootmode="open"/g)).toHaveLength(3);
+  expect(markup).toContain("data-v-frame-fonts");
+  expect(markup).toContain('nonce="hostNonce"');
+  expect(headers.etag).toBeUndefined();
+  expect(headers["content-language"]).toBe("fr");
+});
+
+test("starts sibling guest requests together and cancels them with the shell body", async () => {
+  expect(await run<string[]>("cancelComposition")).toEqual(["/a", "/b"]);
+});
+
 test("transforms only a 200 text/html response and returns anything else untouched", async () => {
   const result = await run<
     Record<

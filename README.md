@@ -114,10 +114,19 @@ augmentation), which is why the snippet narrows with `instanceof`; the
 [API reference](./docs/api.md#typing-the-element) shows the one-line
 augmentation to add to your own project instead.
 
-That is the whole client-only path. The recommended production path is
-server-rendered adoption, where the host server materializes the guest document
-into Declarative Shadow DOM so it paints in the first response and activates in
-place without a second request — see [SSR](./docs/ssr.md).
+For first paint from the server, keep the same `<v-frame src>` in the shell HTML.
+Pass the shell response and its existing public mount router to `composeFrames`:
+
+```ts
+import { composeFrames } from "@mewhhaha/v-frame/server";
+
+return composeFrames(shellResponse, { request, fetchGuest: routeToTeam });
+```
+
+The Orders team owns the document, routes, and assets under its public mount.
+The shell team owns where that mount appears and which service handles its requests.
+An app that embeds another team's app can compose its own response the same way.
+[Server composition and request routing](./docs/ssr.md#compose-the-shell-response)
 
 ## Documentation
 

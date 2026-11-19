@@ -1,3 +1,4 @@
+export { composeFrames, type ComposeFramesOptions } from "./compose.js";
 export { materializeVFrameDocument } from "./html-rewriter.js";
 export { isHTMLDocumentResponse as isVFrameDocumentResponse } from "../html-response.js";
 export type {

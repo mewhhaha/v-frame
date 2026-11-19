@@ -562,6 +562,16 @@ test("keeps the current composition visible until the destination is ready", asy
 test("waits for every top-level frame instead of nested load events", async ({
   page,
 }) => {
+  const nestedEntryRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/widgets/qwik/inventory" &&
+      url.searchParams.get("surface") === "definition"
+    ) {
+      nestedEntryRequests.push(url.href);
+    }
+  });
   await page.goto("/plugins");
   await expectReady(reactFrame(page));
 
@@ -607,6 +617,7 @@ test("waits for every top-level frame instead of nested load events", async ({
     .toBe("ready");
 
   try {
+    expect(nestedEntryRequests).toEqual([]);
     await expect(page).toHaveURL("/plugins");
     await expect(
       reactFrame(page).getByRole("heading", { name: "Plugins" }),
@@ -946,7 +957,13 @@ test("composes ordinary framework documents into adopted shadow markup", async (
     expect(normalizedMarkup).toContain("<!doctype html><html");
     expect(normalizedMarkup).toContain("<head>");
     expect(normalizedMarkup).toContain("<body>");
-    expect(normalizedMarkup).not.toContain("<v-html");
+    if (response === reactDocument) {
+      // This guest is itself the composer of the nested Qwik article.
+      expect(normalizedMarkup).toContain('<template shadowrootmode="open"');
+      expect(normalizedMarkup).toContain("two production environments");
+    } else {
+      expect(normalizedMarkup).not.toContain("<v-html");
+    }
   }
 
   const composedMarkup = await hostDocument.text();

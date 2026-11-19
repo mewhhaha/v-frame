@@ -1,3 +1,4 @@
+import { decodeHTMLAttribute } from "entities/decode";
 import { isHTMLDocumentResponse, readHTMLDocument } from "../html-response.js";
 import {
   materializeStylesheet,
@@ -33,7 +34,7 @@ interface RewriterContentOptions {
   html?: boolean;
 }
 
-interface RewriterElement {
+export interface RewriterElement {
   tagName: string;
   readonly namespaceURI: string;
   readonly attributes: Iterable<[string, string]>;
@@ -91,9 +92,33 @@ const STALE_HEADERS = [
   "last-modified",
 ];
 
-const UTF8_HTML = { "content-type": "text/html; charset=utf-8" };
+export const UTF8_HTML = { "content-type": "text/html; charset=utf-8" };
 
-const charsetDeclarationHandlers: RewriterHandlers = {
+// Register on the same parse that discovers resources. Ancestor selectors also
+// work for self-closing SVG/MathML nodes, which have no end-tag callback.
+export function observeHTMLBase(parser: Rewriter, publicURL: string): () => string {
+  const candidates: string[] = [];
+  parser
+    .on("base[href]", {
+      element(el) {
+        candidates.push(el.getAttribute("href")!);
+      },
+    })
+    .on("template base[href], svg base[href], math base[href]", {
+      element() {
+        candidates.pop();
+      },
+    });
+  return () => {
+    for (const href of candidates) {
+      const url = URL.parse(decodeHTMLAttribute(href), publicURL);
+      if (url) return url.href;
+    }
+    return publicURL;
+  };
+}
+
+export const charsetDeclarationHandlers: RewriterHandlers = {
   element(element) {
     // The output is UTF-8 whatever the guest authored; a stale declaration
     // would make a reader decode it as the guest's original encoding.
@@ -119,7 +144,7 @@ type LinkResult =
 const isStylesheetRel = (rel: string, token = "stylesheet") =>
   rel.split(/\s+/).some((part) => part.toLowerCase() === token);
 
-const escapeAttribute = (value: string) =>
+export const escapeAttribute = (value: string) =>
   value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 
 const shellHandlers: RewriterHandlers = {
@@ -175,21 +200,11 @@ export async function materializeVFrameDocument(
     }
     return response;
   }
-  const Rewriter =
-    options.HTMLRewriter ??
-    (globalThis as { HTMLRewriter?: HTMLRewriterConstructor }).HTMLRewriter;
-  if (typeof Rewriter !== "function") {
-    throw new TypeError(
-      "materializeVFrameDocument needs an HTMLRewriter: this runtime has no global one, so pass one as options.HTMLRewriter",
-    );
-  }
+  const Rewriter = getHTMLRewriter(options.HTMLRewriter);
 
-  let baseURL = documentURL;
-  let hasBase = false;
   const identifiers = fragmentIdentifiers(documentURL);
   let elementIndex = 0;
   let templateDepth = 0;
-  let foreignDepth = 0;
   let targetIndex = -1;
   let targetRank = Infinity;
   const enterTemplate = (element: RewriterElement) => {
@@ -209,7 +224,9 @@ export async function materializeVFrameDocument(
   const linkHrefs: Array<{ href: string; stylesheet: boolean; integrity: string }> = [];
   // A base applies to the entire document, even to resources preceding it. The
   // first parse is deliberately side-effect free.
-  const source = await new Rewriter()
+  const scan = new Rewriter();
+  const readBase = observeHTMLBase(scan, documentURL);
+  const source = await scan
     .on("*", {
       element(element) {
         const index = elementIndex++;
@@ -226,34 +243,8 @@ export async function materializeVFrameDocument(
             targetIndex = index;
             targetRank = rank;
           }
-          // The runtime takes the first valid `base[href]` in the parsed tree
-          // outside template contents, wherever the parser put it, so tags the
-          // source omits (`<html>`, `<head>`) must not matter here either.
-          if (
-            !hasBase &&
-            foreignDepth === 0 &&
-            element.namespaceURI === HTML_NAMESPACE &&
-            element.tagName === "base"
-          ) {
-            const href = element.getAttribute("href");
-            const url = href === null ? null : URL.parse(href, documentURL);
-            if (url) {
-              baseURL = url.href;
-              hasBase = true;
-            }
-          }
         }
         enterTemplate(element);
-        // lol-html reports a `<base>` that a foreign `<head>` breaks out of as
-        // HTML, but the runtime does not treat anything inside an `<svg>` or
-        // `<math>` as the document's base.
-        if (
-          element.namespaceURI !== HTML_NAMESPACE &&
-          (element.tagName === "svg" || element.tagName === "math")
-        ) {
-          foreignDepth++;
-          element.onEndTag(() => foreignDepth--);
-        }
       },
     })
     .on("style", {
@@ -267,7 +258,7 @@ export async function materializeVFrameDocument(
     .on("link[href]", {
       element(element) {
         linkHrefs.push({
-          href: element.getAttribute("href")!,
+          href: decodeHTMLAttribute(element.getAttribute("href")!),
           stylesheet: isStylesheetRel(element.getAttribute("rel") ?? ""),
           integrity: element.getAttribute("integrity")?.trim() ?? "",
         });
@@ -275,6 +266,7 @@ export async function materializeVFrameDocument(
     })
     .transform(new Response(guest, { headers: UTF8_HTML }))
     .text();
+  const baseURL = readBase();
   const abort = new AbortController();
   let signal = abort.signal;
   if (options.signal !== undefined) signal = AbortSignal.any([signal, options.signal]);
@@ -458,6 +450,28 @@ export async function materializeVFrameDocument(
     // The buffered source is a UTF-8 string, whatever charset the guest declared.
     .transform(new Response(source, { headers: UTF8_HTML }));
 
+  return rewrittenHTMLResponse(response, transformed, abort, signal);
+}
+
+export function getHTMLRewriter(
+  override?: HTMLRewriterConstructor,
+): HTMLRewriterConstructor {
+  const Rewriter =
+    override ?? (globalThis as { HTMLRewriter?: HTMLRewriterConstructor }).HTMLRewriter;
+  if (typeof Rewriter !== "function") {
+    throw new TypeError(
+      "No global HTMLRewriter is available; pass one as options.HTMLRewriter",
+    );
+  }
+  return Rewriter;
+}
+
+export function rewrittenHTMLResponse(
+  response: Response,
+  transformed: Response,
+  abort: AbortController,
+  signal: AbortSignal,
+): Response {
   const headers = new Headers(response.headers);
   for (const name of STALE_HEADERS) headers.delete(name);
   headers.set("content-type", "text/html; charset=utf-8");

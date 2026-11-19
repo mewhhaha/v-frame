@@ -380,8 +380,8 @@ export const widgetStyle = `
   .preview-popover:not(:popover-open) { display: none; }
   .nested-widget-surface { position: relative; border-radius: 0.55rem; }
   .nested-workspace-widget { display: block; min-height: 10.5rem; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 0.55rem; overflow: hidden; }
-  .activity-widget[data-composition-visible] .nested-widget-surface::before { position: absolute; z-index: 4; border: 2px solid #a78bfa; border-radius: inherit; background: color-mix(in srgb, #a78bfa 7%, transparent); content: ""; inset: 0; pointer-events: none; }
-  .activity-widget[data-composition-visible] .nested-widget-surface::after { position: absolute; z-index: 5; top: 0.45rem; right: 0.45rem; padding: 0.22rem 0.42rem; border-radius: 999px; background: #a78bfa; color: white; content: attr(data-composition-label); font-size: 0.625rem; font-weight: 600; pointer-events: none; }
+  .nested-widget-surface::before { display: var(--composition-overlay-display, none); position: absolute; z-index: 4; border: 2px solid #a78bfa; border-radius: inherit; background: color-mix(in srgb, #a78bfa 7%, transparent); content: ""; inset: 0; pointer-events: none; }
+  .nested-widget-surface::after { display: var(--composition-overlay-display, none); position: absolute; z-index: 5; top: 0.45rem; right: 0.45rem; padding: 0.22rem 0.42rem; border-radius: 999px; background: #a78bfa; color: white; content: attr(data-composition-label); font-size: 0.625rem; font-weight: 600; pointer-events: none; }
   .activity-actions { display: flex; align-items: center; gap: 0.7rem; margin-top: 1rem; }
   .activity-actions button, .plugin button { min-height: 2.125rem; padding: 0.4rem 0.7rem; border: 0; border-radius: 0.5rem; background: #10a37f; color: white; cursor: pointer; font: inherit; font-size: 0.75rem; font-weight: 600; }
   .activity-actions output { color: #71717a; font-size: 0.75rem; }

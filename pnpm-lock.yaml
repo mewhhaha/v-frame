@@ -169,6 +169,9 @@ importers:
       css-tree:
         specifier: 3.2.1
         version: 3.2.1
+      entities:
+        specifier: 8.0.0
+        version: 8.0.0
     devDependencies:
       '@axe-core/playwright':
         specifier: 4.13.0

@@ -5,6 +5,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- `composeFrames(shell, { request, fetchGuest })` renders a host's frame declarations
+  through its existing public route handler. Nested applications can compose their
+  own guests, and an unavailable service leaves healthy siblings interactive.
+
 ### Fixed
 
 - Replacing a guest keeps input, scrolling, and modal interactions with the visible

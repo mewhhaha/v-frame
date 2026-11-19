@@ -6,11 +6,11 @@ materializer, see [SSR](./ssr.md).
 
 ## Entries
 
-| Import                       | Contents                                                                            |
-| ---------------------------- | ----------------------------------------------------------------------------------- |
-| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.    |
-| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.  |
-| `@mewhhaha/v-frame/server`   | The SSR materializer core, its `HTMLRewriter` adapter, and the stylesheet rewriter. |
+| Import                       | Contents                                                                                     |
+| ---------------------------- | -------------------------------------------------------------------------------------------- |
+| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.             |
+| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.           |
+| `@mewhhaha/v-frame/server`   | `composeFrames()` for shells, plus the materializer and stylesheet APIs for custom adapters. |
 
 ```ts
 import "@mewhhaha/v-frame/register";
