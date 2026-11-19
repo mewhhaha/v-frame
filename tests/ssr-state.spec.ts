@@ -109,6 +109,22 @@ test.beforeAll(async () => {
           const component = document.querySelector("#component").attachShadow({ mode: "open" });
           component.innerHTML = '<input id="code" value="Component field">';`,
       },
+      "/named-forms": host(
+        `<form name="survey"><input id="name" name="subject" value="Original"></form>
+         <form name="shared"><input id="removed" name="subject"></form>
+         <form name="shared"><input id="survivor" name="subject" value="Survivor"></form>
+         <form name="expanded"><input id="expanded" name="subject"></form>`,
+        "/named-forms.js",
+      ),
+      "/named-forms.js": {
+        type: "text/javascript",
+        body: `document.querySelector("form[name=survey]").outerHTML =
+          '<form name="survey"><input id="replacement" name="subject" value="New default"></form>';
+          document.querySelector("form[name=shared]").remove();
+          document.querySelector("form[name=expanded]").outerHTML =
+            '<form name="expanded"><input name="subject" value="First"></form>' +
+            '<form name="expanded"><input name="subject" value="Second"></form>';`,
+      },
       "/options": host(selectForm, "/options.js"),
       "/options.js": {
         type: "text/javascript",
@@ -180,6 +196,7 @@ test.beforeAll(async () => {
         body: `
       const snapshot=()=>({name:document.querySelector('#name').value,note:document.querySelector('#note').value,checked:document.querySelector('#enabled').checked,choice:document.querySelector('#choice').value,choices:Array.from(document.querySelector('#choices').selectedOptions,o=>o.value),file:document.querySelector('#upload').files[0]?.name,a:document.querySelector('#a').checked,b:document.querySelector('#b').checked});
       globalThis.initial=snapshot(); globalThis.notifications=[];
+      document.addEventListener('click',e=>notifications.push('click:'+e.target.id));
       document.addEventListener('input',e=>notifications.push('input:'+e.target.id));
       document.addEventListener('change',e=>notifications.push('change:'+e.target.id));
       document.querySelector('#name').addEventListener('input',e=>globalThis.nameModel=e.target.value);
@@ -281,6 +298,11 @@ test("preserves early and pending form edits, selection, focus and both scroll p
     b: true,
   });
   expect(state.nameModel).toBe("before registration");
+  expect(state.notifications.filter((entry) => /:[ab]$/.test(entry))).toEqual([
+    "click:b",
+    "input:b",
+    "change:b",
+  ]);
   expect(state.notifications.filter((entry) => entry === "change:enabled")).toHaveLength(
     1,
   );
@@ -604,6 +626,27 @@ test("remembers an external form owner when restoring focus after preview remova
   await activate();
   await expect(frame.locator("#unowned")).toHaveValue("");
   await expect(frame.locator("#unowned")).not.toBeFocused();
+});
+
+test("restores an edit and focus only when the replacement form name is unique in both trees", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/named-forms",
+    "/named-forms.js",
+  );
+  await preview.locator("#removed").fill("Draft for the removed form");
+  await preview.locator("#expanded").fill("Draft for the expanded form");
+  await preview.locator("#name").fill("Draft for the survey");
+  await register();
+  await activate();
+  await expect(frame.locator("#survivor")).toHaveValue("Survivor");
+  const expanded = frame.locator("form[name=expanded] input");
+  await expect(expanded.nth(0)).toHaveValue("First");
+  await expect(expanded.nth(1)).toHaveValue("Second");
+  await expect(frame.locator("#replacement")).toHaveValue("Draft for the survey");
+  await expect(frame.locator("#replacement")).toBeFocused();
 });
 
 test("disconnecting during handoff notifications does not revive the frame or emit load", async ({

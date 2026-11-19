@@ -1,3 +1,20 @@
+import type { VFrameWindow } from "../types.js";
+
+export function renderedBy(
+  guestRoot: Element,
+  target: Node,
+  hostWindow: VFrameWindow,
+): boolean {
+  const { contains, getRootNode } = hostWindow.Node.prototype;
+  let node = target;
+  while (!contains.call(guestRoot, node)) {
+    const root = getRootNode.call(node);
+    if (!("host" in root)) return false;
+    node = (root as ShadowRoot).host;
+  }
+  return true;
+}
+
 const PART_SELECTOR = "[part], [exportparts]";
 const RENDER_HOST = "data-v-frame-render-root";
 const STAGED = "data-v-frame-staged";

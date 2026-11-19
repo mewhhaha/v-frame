@@ -312,6 +312,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       focus = installStagedFocus(
         window,
         renderRoot.ownerDocument.defaultView!,
+        options.host,
         liveMarkup,
         () => !markupRevealed,
         isActive,

@@ -23,7 +23,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   during framework layout effects.
 - SSR handoff preserves scroll on reordered panels and restores edits and focus
   only to the matching field in its original form and shadow tree.
-
+- Pending activation preserves rich-text edits and their selection, recognizes
+  uniquely named replacement forms, and notifies only the selected radio.
+- Later keyboard or focus interaction in the shell cancels pending guest focus.
 - Replacing a guest keeps input, scrolling, and modal interactions with the visible
   document until the new one takes over. Cleanup can remove or navigate the frame.
 - Server previews defer guest navigation and inline handlers, and stylesheet

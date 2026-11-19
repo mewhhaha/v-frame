@@ -18,11 +18,14 @@ the entry document.
 
 Edits to preview form controls are preserved before guest scripts start and
 again at handoff, including changes made while those scripts are delayed.
-Edited controls receive synthetic input/change notifications so client-side
-form state can catch up. Focus, control text selection, and scroll positions
-are restored without scrolling the host page. Control restoration follows the
-original connected control, or an unambiguous matching ID/name if the framework
-replaces it; it never assigns a removed control's state to a shifted neighbour.
+Edited controls receive input and change notifications so client-side form
+state can catch up. A radio group sends them only to the newly checked radio.
+Edits made in a `contenteditable` host during activation carry over with their
+markup and selection. The live editor receives one input event at handoff.
+Focus, text selection, and scroll positions are restored without scrolling the
+host page. Control restoration follows the original connected control, or an
+unambiguous matching ID or name in its original form and shadow tree. If the
+framework replaces a form, its ID or a unique form name identifies the owner.
 Buttons and other focusable elements follow the same original-element identity;
 replacing an unkeyed element never transfers focus to an unrelated sibling.
 Selected options follow their original elements, or an unambiguous matching
@@ -35,7 +38,8 @@ A handoff waits for an observed IME composition to finish rather than replacing
 its focused control mid-edit.
 Preview links have a disabled link role, and forms retain their editable
 controls. Navigation and inline handlers become available on the activated
-tree. The handoff preserves edits without replaying clicks or submissions.
+tree. The handoff does not submit forms. It uses native checkbox and radio
+activation to deliver changes to guest frameworks.
 
 ## Compose the shell response
 

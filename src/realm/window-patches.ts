@@ -8,6 +8,7 @@ import {
   listenerCapture,
   listenerPassive,
 } from "../listener-registry.js";
+import { renderedBy } from "./staging.js";
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 
@@ -123,34 +124,24 @@ export function installInternalStyles(
   };
 }
 
-function renderedBy(guestRoot: Element, target: Node, hostWindow: VFrameWindow): boolean {
-  const { contains, getRootNode } = hostWindow.Node.prototype;
-  let node = target;
-  while (!contains.call(guestRoot, node)) {
-    const root = getRootNode.call(node);
-    if (!("host" in root)) return false;
-    node = (root as ShadowRoot).host;
-  }
-  return true;
-}
-
 export function installStagedFocus(
   window: VFrameWindow,
   hostWindow: VFrameWindow,
+  host: HTMLElement,
   root: HTMLElement,
   isStaged: () => boolean,
   isActive: () => boolean,
 ) {
   const requests: Array<() => void> = [];
   const restores: Array<() => void> = [];
-  let staged = true;
+  const lifetime = new AbortController();
   for (const prototype of [window.HTMLElement.prototype, window.SVGElement.prototype]) {
     for (const name of ["focus", "blur"] as const) {
       const native = prototype[name];
       if (typeof native !== "function") continue;
       const wrapper = function (this: HTMLElement | SVGElement, options?: FocusOptions) {
         if (
-          !staged ||
+          lifetime.signal.aborted ||
           !isStaged() ||
           !this.isConnected ||
           !renderedBy(root, this, hostWindow)
@@ -185,20 +176,49 @@ export function installStagedFocus(
       });
     }
   }
+  const capture = { capture: true, signal: lifetime.signal };
+  const { getRootNode } = hostWindow.Node.prototype;
+  const addListener = hostWindow.EventTarget.prototype.addEventListener;
+  const observeFocus = (target: EventTarget, branch: Node): void => {
+    const preserveShellFocus = (event: Event): void => {
+      if (!event.isTrusted || event.composedPath().includes(branch)) return;
+      requests.length = 0;
+    };
+    addListener.call(target, "focusin", preserveShellFocus, capture);
+    // Typing can claim focus without firing a new focus event.
+    addListener.call(target, "input", preserveShellFocus, capture);
+  };
+  // Focus events can stop at a common shadow host when two controls change
+  // focus inside it. Observe all enclosing shadow boundaries.
+  let branch: Node = host;
+  for (;;) {
+    const tree = getRootNode.call(branch);
+    if (!("host" in tree)) {
+      observeFocus(hostWindow, branch);
+      break;
+    }
+    const shadow = tree as ShadowRoot;
+    observeFocus(shadow, branch);
+    branch = shadow.host;
+  }
   const dispose = () => {
-    if (!staged) return;
-    staged = false;
+    if (lifetime.signal.aborted) return;
+    lifetime.abort();
     requests.length = 0;
     for (const restore of restores) restore();
   };
   return {
     dispose,
     reveal() {
-      const pending = requests.slice();
-      dispose();
-      for (const request of pending) {
-        if (!isActive()) break;
-        request();
+      try {
+        // Iterate the live queue so a focus handler that moves focus to the
+        // shell also cancels any requests still waiting to run.
+        for (const request of requests) {
+          if (!isActive()) break;
+          request();
+        }
+      } finally {
+        dispose();
       }
     },
   };

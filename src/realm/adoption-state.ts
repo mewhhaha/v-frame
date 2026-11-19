@@ -1,4 +1,6 @@
+import { renderedBy } from "./staging.js";
 import { abortError } from "./connect.js";
+import { editableSelection, isEditingHost, syncEditable } from "./editable.js";
 
 const CONTROL_SELECTOR = "input,textarea,select";
 // Decoding is best-effort: a slow image or font must not hold the reveal forever.
@@ -18,16 +20,20 @@ interface ControlPair {
   initial: Value;
 }
 
-function descendants(root: Element): Element[] {
-  const result: Element[] = [];
-  const visit = (scope: Element | ShadowRoot) => {
-    for (const element of scope.querySelectorAll("*")) {
-      result.push(element);
-      if (element.shadowRoot) visit(element.shadowRoot);
-    }
-  };
-  visit(root);
-  return result;
+function visitPreview(
+  scope: Element | ShadowRoot,
+  visit: (node: Element | ShadowRoot) => void,
+): void {
+  visit(scope);
+  for (const element of scope.querySelectorAll("*")) {
+    visit(element);
+    if (element.shadowRoot) visitPreview(element.shadowRoot, visit);
+  }
+}
+
+function unique<T>(matches: T[]): T | null {
+  if (matches.length === 1) return matches[0]!;
+  return null;
 }
 
 function read(control: Control): Value {
@@ -61,9 +67,13 @@ export class AdoptionState {
   #preview: HTMLElement | null;
   readonly #root: ShadowRoot;
   readonly #lifetime = new AbortController();
-  readonly #edited = new Set<Control>();
+  readonly #edited = new Set<HTMLElement>();
+  readonly #formatting = new WeakMap<Element, Set<string>>();
+  readonly #formatObserver = new MutationObserver((records) =>
+    this.#recordFormat(records),
+  );
   readonly #composing = new Set<EventTarget>();
-  readonly #compositionWaiters = new Set<() => void>();
+  #finishComposition: (() => void) | undefined;
   #live: HTMLElement | null = null;
   #window: (Window & typeof globalThis) | null = null;
   #pairs: ControlPair[] = [];
@@ -73,63 +83,74 @@ export class AdoptionState {
     edited: boolean;
   }> = [];
   #targets = new WeakMap<Element, Element>();
+  readonly #initialChildren = new Map<Element | ShadowRoot, Element[]>();
 
   constructor(preview: HTMLElement, root: ShadowRoot) {
     this.#preview = preview;
     this.#root = root;
-    const sourceControl = (event: Event): Control | undefined => {
+    // The realm starts asynchronously. Pair its copy with the same elements
+    // that were serialized, even if pressing Enter has split a paragraph since.
+    visitPreview(preview, (parent) => {
+      if (parent === preview || parent.nodeType === 11)
+        this.#formatObserver.observe(parent, {
+          subtree: true,
+          attributeFilter: [
+            "style",
+            "align",
+            "dir",
+            "color",
+            "face",
+            "size",
+            "href",
+            "class",
+          ],
+        });
+      if (parent.firstElementChild)
+        this.#initialChildren.set(parent, Array.from(parent.children));
+    });
+    const onEdit = (event: Event): void => {
       const path = event.composedPath();
-      if (!this.#preview || !path.includes(this.#preview)) return;
-      return path.find(
+      if (!path.includes(preview)) return;
+      const source = path.find(
         (target) =>
-          "nodeType" in target &&
-          target.nodeType === 1 &&
-          (target as Element).matches(CONTROL_SELECTOR),
-      ) as Control | undefined;
+          (target as Node).nodeType === 1 &&
+          ((target as Element).matches(CONTROL_SELECTOR) ||
+            isEditingHost(target as Element)),
+      ) as HTMLElement | undefined;
+      if (!source) return;
+      if (event.type === "compositionend") {
+        this.#composing.delete(source);
+        if (!this.#composing.size) this.#finishComposition?.();
+        return;
+      }
+      if (event.type === "compositionstart" || (event as InputEvent).isComposing) {
+        this.#composing.add(source);
+      }
+      if (event.type !== "compositionstart") {
+        this.#edited.add(source);
+        this.sync();
+      }
     };
-    for (const type of ["input", "change"]) {
-      root.addEventListener(
-        type,
-        (event) => {
-          const source = sourceControl(event);
-          if (!source) return;
-          this.#edited.add(source);
-          if ("isComposing" in event && event.isComposing) this.#composing.add(source);
-          this.sync();
-        },
-        { capture: true, signal: this.#lifetime.signal },
-      );
+    for (const type of ["input", "change", "compositionstart", "compositionend"]) {
+      root.addEventListener(type, onEdit, {
+        capture: true,
+        signal: this.#lifetime.signal,
+      });
     }
-    root.addEventListener(
-      "compositionstart",
-      (event) => {
-        const source = sourceControl(event);
-        if (source) this.#composing.add(source);
-      },
-      { capture: true, signal: this.#lifetime.signal },
-    );
-    root.addEventListener(
-      "compositionend",
-      (event) => {
-        const source = sourceControl(event);
-        if (source) this.#composing.delete(source);
-        if (!this.#composing.size) {
-          for (const resolve of this.#compositionWaiters) resolve();
-          this.#compositionWaiters.clear();
-        }
-      },
-      { capture: true, signal: this.#lifetime.signal },
-    );
+  }
+
+  #recordFormat(records: MutationRecord[]): void {
+    for (const { target, attributeName } of records) {
+      const element = target as HTMLElement;
+      if (!element.isContentEditable) continue;
+      const names = this.#formatting.get(element) ?? new Set<string>();
+      names.add(attributeName!);
+      this.#formatting.set(element, names);
+    }
   }
 
   #contains(root: Element, node: Node): boolean {
-    const native = this.#root.ownerDocument.defaultView!.Node.prototype;
-    while (!native.contains.call(root, node)) {
-      const tree = native.getRootNode.call(node);
-      if (!("host" in tree)) return false;
-      node = (tree as ShadowRoot).host;
-    }
-    return true;
+    return renderedBy(root, node, this.#root.ownerDocument.defaultView!);
   }
 
   #target(
@@ -137,9 +158,11 @@ export class AdoptionState {
     pair = this.#pairs.find((pair) => pair.source === source),
   ): Element | null {
     if (!this.#live) return null;
+    const editing = isEditingHost(source);
     const compatible = (candidate: Element) =>
       candidate.localName === source.localName &&
       candidate.namespaceURI === source.namespaceURI &&
+      (!editing || isEditingHost(candidate)) &&
       (!pair || (candidate as Control).type === pair.source.type);
     const original = this.#targets.get(source);
     if (original && this.#contains(this.#live, original) && compatible(original))
@@ -148,11 +171,13 @@ export class AdoptionState {
     // field must never hand its draft to an unrelated component with the same ID.
     const native = this.#root.ownerDocument.defaultView!.Node.prototype;
     const sourceTree = native.getRootNode.call(source);
+    let sourceScope: ParentNode = this.#preview!;
     let scope: ParentNode = this.#live;
     if (sourceTree !== this.#root && sourceTree !== this.#preview) {
       if (!("host" in sourceTree)) return null;
       const host = this.#target((sourceTree as ShadowRoot).host);
       if (!host?.shadowRoot) return null;
+      sourceScope = sourceTree as ShadowRoot;
       scope = host.shadowRoot;
     }
     let form: Element | null = null;
@@ -166,7 +191,19 @@ export class AdoptionState {
     );
     if (source.id) {
       const matches = candidates.filter((candidate) => candidate.id === source.id);
-      if (matches.length) return matches.length === 1 ? matches[0]! : null;
+      if (matches.length) return unique(matches);
+    }
+    if (source.localName === "form") {
+      const name = source.getAttribute("name");
+      if (!name) return null;
+      // A removed form may share its name with a surviving sibling.
+      const named = (candidate: Element) =>
+        candidate.namespaceURI === source.namespaceURI &&
+        candidate.getAttribute("name") === name;
+      if (Array.from(sourceScope.querySelectorAll("form")).filter(named).length !== 1)
+        return null;
+      const matches = candidates.filter(named);
+      return unique(matches);
     }
     if (pair) {
       if (!pair.source.name) return null;
@@ -176,7 +213,7 @@ export class AdoptionState {
           (pair.source.type !== "radio" ||
             (candidate as Control).value === pair.source.value),
       );
-      return matches.length === 1 ? matches[0]! : null;
+      return unique(matches);
     }
     return null;
   }
@@ -185,9 +222,15 @@ export class AdoptionState {
     if (!this.#preview) return;
     this.#live = live;
     this.#window = window;
-    const visit = (source: Element | ShadowRoot, target: Element | ShadowRoot) => {
+    this.#targets.set(this.#preview, live);
+    for (const [source, children] of this.#initialChildren) {
+      let target: Element | ShadowRoot | null | undefined;
+      if (source.nodeType === 11)
+        target = this.#targets.get((source as ShadowRoot).host)?.shadowRoot;
+      else target = this.#targets.get(source as Element);
+      if (!target) continue;
       const targets = target.children;
-      Array.from(source.children).forEach((element, index) => {
+      children.forEach((element, index) => {
         const next = targets[index];
         if (
           !next ||
@@ -209,14 +252,20 @@ export class AdoptionState {
             initial: read(next as Control),
           });
         }
-        visit(element, next);
-        if (element.shadowRoot && next.shadowRoot)
-          visit(element.shadowRoot, next.shadowRoot);
       });
-    };
-    this.#targets.set(this.#preview, live);
-    visit(this.#preview, live);
+    }
+    this.#initialChildren.clear();
     this.sync();
+  }
+
+  #notifyInput(target: Element): void {
+    target.dispatchEvent(
+      new this.#window!.InputEvent("input", {
+        bubbles: true,
+        composed: true,
+        inputType: "insertReplacementText",
+      }),
+    );
   }
 
   #write(target: Control, source: Control, value: Value, replay: boolean): void {
@@ -226,7 +275,7 @@ export class AdoptionState {
       const options = new Set(select.options);
       select.selectedIndex = -1;
       for (const option of (source as HTMLSelectElement).selectedOptions) {
-        let next = this.#targets.get(option) as HTMLOptionElement | undefined;
+        let next = this.#targets.get(option) as HTMLOptionElement | null | undefined;
         if (!next || !options.has(next)) {
           const candidates = Array.from(options);
           let matches = candidates.filter(
@@ -234,7 +283,7 @@ export class AdoptionState {
           );
           if (!matches.length)
             matches = candidates.filter((candidate) => candidate.value === option.value);
-          next = matches.length === 1 ? matches[0] : undefined;
+          next = unique(matches);
         }
         if (next) next.selected = true;
       }
@@ -255,36 +304,36 @@ export class AdoptionState {
       }
       Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(target, value.value);
     }
-    let clicked = false;
     if (value.checked !== undefined) {
       const input = target as HTMLInputElement;
+      // Native radio groups notify only the newly selected control.
+      if (input.type === "radio" && !value.checked) {
+        input.checked = false;
+        return;
+      }
       if (
         replay &&
         !input.disabled &&
-        (input.type === "checkbox" || (input.type === "radio" && value.checked))
+        (input.type === "checkbox" || input.type === "radio")
       ) {
         input.checked = !value.checked;
         input.click();
-        clicked = true;
         // An application may cancel the click's default action. The preview
         // value still wins, but the click already delivered its notifications.
         input.checked = value.checked;
-      } else input.checked = value.checked;
+        return;
+      }
+      input.checked = value.checked;
     }
-    if (replay && !clicked) {
-      target.dispatchEvent(
-        new window.InputEvent("input", {
-          bubbles: true,
-          composed: true,
-          inputType: "insertReplacementText",
-        }),
-      );
+    if (replay) {
+      this.#notifyInput(target);
       target.dispatchEvent(new window.Event("change", { bubbles: true, composed: true }));
     }
   }
 
   sync(replay = false): void {
     if (!this.#live) return;
+    this.#recordFormat(this.#formatObserver.takeRecords());
     for (const disclosure of this.#disclosures) {
       const { source } = disclosure;
       if (source.open !== disclosure.previous) disclosure.edited = true;
@@ -299,6 +348,14 @@ export class AdoptionState {
       if (!this.#edited.has(pair.source) && equal(value, pair.initial)) continue;
       const target = this.#target(pair.source, pair) as Control | null;
       if (target) this.#write(target, pair.source, value, replay);
+    }
+    for (const source of this.#edited) {
+      if (this.#lifetime.signal.aborted) break;
+      if (!isEditingHost(source)) continue;
+      const target = this.#target(source);
+      if (!target) continue;
+      syncEditable(source, target, this.#targets, this.#formatting);
+      if (replay) this.#notifyInput(target);
     }
   }
 
@@ -357,19 +414,15 @@ export class AdoptionState {
       this.#root.ownerDocument.fonts.ready,
     ];
     try {
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve) => {
         const timer = setTimeout(done, ASSET_SETTLE_TIMEOUT_MS);
-        const aborted = () => {
-          clearTimeout(timer);
-          reject(abortError());
-        };
         function done() {
           clearTimeout(timer);
-          signal.removeEventListener("abort", aborted);
+          signal.removeEventListener("abort", done);
           resolve();
         }
-        signal.addEventListener("abort", aborted, { once: true });
-        if (signal.aborted) aborted();
+        signal.addEventListener("abort", done, { once: true });
+        if (signal.aborted) done();
         void Promise.allSettled(assets).then(done);
       });
     } finally {
@@ -378,20 +431,18 @@ export class AdoptionState {
           image.setAttribute("loading", loading);
       }
     }
+    if (!signal.aborted && this.#composing.size) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          signal.removeEventListener("abort", done);
+          this.#finishComposition = undefined;
+          resolve();
+        };
+        this.#finishComposition = done;
+        signal.addEventListener("abort", done, { once: true });
+      });
+    }
     if (signal.aborted) throw abortError();
-    if (!this.#composing.size) return;
-    await new Promise<void>((resolve, reject) => {
-      const done = () => {
-        signal.removeEventListener("abort", aborted);
-        resolve();
-      };
-      const aborted = () => {
-        this.#compositionWaiters.delete(done);
-        reject(abortError());
-      };
-      this.#compositionWaiters.add(done);
-      signal.addEventListener("abort", aborted, { once: true });
-    });
   }
 
   reveal(reveal: () => void): void {
@@ -412,23 +463,25 @@ export class AdoptionState {
           }
         : null;
     const scroll = [this.#root.host.scrollLeft, this.#root.host.scrollTop];
-    const scrolled = [preview, ...descendants(preview)]
-      .filter((element) => element.scrollLeft || element.scrollTop)
-      .map((element) => ({
-        source: element,
-        left: element.scrollLeft,
-        top: element.scrollTop,
-      }));
+    const scrolled: Array<{ source: Element; left: number; top: number }> = [];
+    visitPreview(preview, (source) => {
+      if ("scrollTop" in source && (source.scrollTop || source.scrollLeft))
+        scrolled.push({ source, left: source.scrollLeft, top: source.scrollTop });
+    });
     this.sync(true);
     if (this.#lifetime.signal.aborted) return;
     // External form ownership is lost as soon as the preview is detached.
     const next = active ? (this.#target(active) as HTMLElement | null) : null;
+    const restoreSelection =
+      active && next && isEditingHost(active)
+        ? editableSelection(active, next, this.#targets)
+        : undefined;
     reveal();
     if (next && this.#live && this.#contains(this.#live, next)) {
       next.focus({ preventScroll: true });
+      restoreSelection?.();
       if (
-        selection?.start !== null &&
-        selection?.start !== undefined &&
+        selection?.start != null &&
         selection.end !== null &&
         "selectionStart" in next &&
         (next as HTMLInputElement).selectionStart !== null
@@ -454,6 +507,8 @@ export class AdoptionState {
 
   dispose(): void {
     this.#lifetime.abort();
+    this.#formatObserver.disconnect();
+    this.#initialChildren.clear();
     this.#pairs = [];
     this.#disclosures = [];
     this.#targets = new WeakMap();
@@ -462,7 +517,6 @@ export class AdoptionState {
     this.#live = null;
     this.#window = null;
     this.#preview = null;
-    for (const resolve of this.#compositionWaiters) resolve();
-    this.#compositionWaiters.clear();
+    this.#finishComposition?.();
   }
 }

@@ -61,7 +61,7 @@ test.beforeAll(async () => {
       ),
       "/activate": { type: "text/plain", body: "activated" },
       "/staged-focus-parts": htmlDocument(
-        `<button id="initial-part" part="initial">Initial part</button><input id="requested-focus">
+        `<button id="initial-part" part="initial">Initial part</button><input id="requested-focus"><input id="later-focus">
         <output id="part-colors"></output><script type="module">
           const initial = document.querySelector('#initial-part');
           const dynamic = document.createElement('button');
@@ -71,10 +71,28 @@ test.beforeAll(async () => {
             getComputedStyle(initial).color,
             getComputedStyle(dynamic).color
           ]);
-          document.querySelector('#requested-focus').focus({ preventScroll: true });
+          const requested = document.querySelector('#requested-focus');
+          requested.addEventListener('focus', () => requested.dataset.focused = 'yes');
+          requested.focus({ preventScroll: true });
           await fetch('/activate');
+          if (location.search === '?focus-again') {
+            document.querySelector('#later-focus').focus();
+            await fetch('/finish-focus');
+          }
         </script>`,
       ),
+      "/finish-focus": { type: "text/plain", body: "focused" },
+      "/ssr-focus": htmlDocument(`<v-frame adopt src="/original">
+        <template shadowrootmode="open" shadowrootserializable>
+          <v-html><v-head></v-head><v-body>
+            <input id="preview-focus"><input id="requested-focus">
+            <script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+              document.querySelector('#requested-focus').focus();
+              await fetch('/activate');
+            </script>
+          </v-body></v-html>
+        </template>
+      </v-frame>`),
       "/staged-interactions": htmlDocument(
         `<main><output id="staged-state"></output><button id="new-button">Replacement</button>
         <dialog id="deferred-dialog">Deferred modal</dialog><dialog id="closed-dialog">Closed before activation</dialog>
@@ -562,4 +580,144 @@ test("forwards parts before startup and applies requested focus at reveal", asyn
       ),
     )
     .toBe("dynamic");
+});
+
+for (const scenario of [
+  "new shell focus",
+  "existing shell focus",
+  "superseded guest",
+  "nested shell focus",
+] as const) {
+  test(`keeps typing in the shell through staged focus (${scenario})`, async ({
+    page,
+  }) => {
+    const frame = await mount(page);
+    await page.evaluate((nested) => {
+      const input = document.createElement("input");
+      input.setAttribute("aria-label", "Shell input");
+      const host = document.querySelector("#host")!;
+      if (nested) {
+        const view = document.createElement("div");
+        host.append(view);
+        view.attachShadow({ mode: "open" }).append(input, host.querySelector("v-frame")!);
+      } else host.before(input);
+    }, scenario === "nested shell focus");
+    await expect
+      .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+      .toBe("ready");
+    const shell = page.getByRole("textbox", { name: "Shell input" });
+    const reload = scenario === "existing shell focus";
+    if (reload) {
+      await frame.evaluate(
+        (element: VFrameElement) => (element.src = "/staged-focus-parts"),
+      );
+      await expect(frame.locator("#requested-focus")).toBeFocused();
+    }
+    let release: (() => Promise<void>) | undefined;
+    await page.route("**/activate", (route) => {
+      release = () => route.continue();
+    });
+
+    if (reload) await shell.click();
+    else await frame.locator("#field").focus();
+    await frame.evaluate((element: VFrameElement, reload) => {
+      if (reload) void element.reload();
+      else element.src = "/staged-focus-parts";
+    }, reload);
+    await expect.poll(() => release !== undefined).toBe(true);
+    if (scenario === "nested shell focus") await shell.focus();
+    else if (!reload) await shell.click();
+    await expect(shell).toBeFocused();
+    let before = "";
+    if (scenario === "existing shell focus" || scenario === "superseded guest") {
+      before = "before ";
+      await page.keyboard.type(before);
+      await expect(shell).toHaveValue(before);
+    }
+
+    if (scenario === "superseded guest") {
+      await frame.evaluate((element: VFrameElement) => (element.src = "/missing"));
+      await expect.poll(() => frameFailures(frame)).toHaveLength(1);
+      await expect(frame.locator("#requested-focus")).toHaveCount(0);
+    } else await release!();
+    await expect
+      .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+      .toBe("ready");
+    await page.keyboard.type("after");
+    await expect(shell).toHaveValue(`${before}after`);
+    await expect(shell).toBeFocused();
+
+    if (scenario === "superseded guest") {
+      // Ready can accept a new focus request once this failed handoff is gone.
+      await page.unroute("**/activate");
+      await frame.locator("#field").click();
+      await frame.evaluate(
+        (element: VFrameElement) => (element.src = "/staged-focus-parts"),
+      );
+      await expect(frame.locator("#requested-focus")).toBeFocused();
+      await page.keyboard.type("guest");
+      await expect(frame.locator("#requested-focus")).toHaveValue("guest");
+    } else {
+      await expect(frame.locator("#requested-focus")).toHaveValue("");
+    }
+  });
+}
+
+test("a newer focus request can follow typing in the shell", async ({ page }) => {
+  const frame = await mount(page);
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.setAttribute("aria-label", "Shell input");
+    document.querySelector("#host")!.before(input);
+  });
+  const shell = page.getByRole("textbox", { name: "Shell input" });
+  let releaseFirst: (() => Promise<void>) | undefined;
+  let releaseSecond: (() => Promise<void>) | undefined;
+  await page.route("**/activate", (route) => {
+    releaseFirst = () => route.continue();
+  });
+  await page.route("**/finish-focus", (route) => {
+    releaseSecond = () => route.continue();
+  });
+  await frame.evaluate(
+    (element: VFrameElement) => (element.src = "/staged-focus-parts?focus-again"),
+  );
+  await expect.poll(() => releaseFirst !== undefined).toBe(true);
+  await shell.click();
+  await page.keyboard.type("shell");
+  await releaseFirst!();
+  await expect.poll(() => releaseSecond !== undefined).toBe(true);
+  await expect(shell).toBeFocused();
+  await releaseSecond!();
+  await expect(frame.locator("#later-focus")).toBeFocused();
+  await expect(frame.locator("#requested-focus")).not.toHaveAttribute("data-focused");
+  await page.keyboard.type("guest");
+  await expect(frame.locator("#later-focus")).toHaveValue("guest");
+  await expect(shell).toHaveValue("shell");
+});
+
+test("restores focus chosen in the SSR preview before the guest is revealed", async ({
+  page,
+}) => {
+  let release: (() => Promise<void>) | undefined;
+  await page.route("**/activate", (route) => {
+    release = () => route.continue();
+  });
+  await page.goto(`${fixture.origin}/ssr-focus`);
+  await page.evaluate(async (bundleURL) => {
+    const bundle = await import(bundleURL);
+    bundle.defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  const frame = page.locator("v-frame");
+  await expect.poll(() => release !== undefined).toBe(true);
+  await frame.locator("#preview-focus").first().click();
+  await page.keyboard.type("preview ");
+  await release!();
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("ready");
+  await page.keyboard.type("guest");
+  await expect(frame.locator("#preview-focus")).toHaveValue("preview guest");
+  await expect(frame.locator("#preview-focus")).toBeFocused();
+  await expect(frame.locator("#requested-focus")).toHaveValue("");
 });
