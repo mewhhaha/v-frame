@@ -162,7 +162,8 @@ test("insertRule and addRule install only the rule they add", async ({ page }) =
       length: rules.length,
       first: rules[0]?.selectorText,
       last: rules.at(-1)?.selectorText,
-      ownCssText: rules.filter((rule) => Object.hasOwn(rule, "cssText")).length,
+      installedSelectors: rules.filter((rule) => Object.hasOwn(rule, "selectorText"))
+        .length,
       typeReads,
       probeColor: view.getComputedStyle(view.document.querySelector("#probe")!).color,
     };
@@ -173,6 +174,6 @@ test("insertRule and addRule install only the rule they add", async ({ page }) =
   expect(result.last).toBe(".added");
   expect(result.probeColor).toBe("rgb(1, 2, 183)");
   // Every rule, the seed included, went through the installer exactly once.
-  expect(result.ownCssText).toBe(3002);
+  expect(result.installedSelectors).toBe(3002);
   expect(result.typeReads).toBeLessThan(3001 * 3);
 });

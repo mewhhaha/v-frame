@@ -122,6 +122,17 @@ Readonly:
 | `canGoBack`     | Whether the guest session has an earlier entry. In host mode, the shell's. `false` when idle. |
 | `canGoForward`  | Whether the guest session has a later entry. In host mode, the shell's. `false` when idle.    |
 
+The frame’s `shadowRoot` returns the rendered document’s root. During a
+replacement it still points at the outgoing document. Read it again after
+`v-frame-load` if you inspect the new content. Each staged document owns a
+native shadow tree, so its root’s `host` can be an internal element. Attach
+persistent lifecycle listeners to the frame itself.
+
+The host can style guest elements with `v-frame::part(name)`. Names on elements
+inserted by the guest are forwarded during insertion. Changing the `part`
+tokens on an already connected element updates forwarding at the next
+mutation observer callback, before the next paint.
+
 `VFrameStatus` is exported as both a value and a type, so a host can compare
 against `VFrameStatus.Ready` rather than a string literal.
 

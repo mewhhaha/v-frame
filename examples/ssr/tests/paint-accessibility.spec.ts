@@ -226,12 +226,11 @@ for (const viewport of [
           .poll(() =>
             frame.evaluate(
               (element) =>
-                Array.from(element.shadowRoot?.children ?? []).filter(
-                  (child) => child.localName === "v-html",
-                ).length,
+                !!(element as HTMLElement & { contentWindow?: Window }).contentWindow &&
+                element.matches(":state(loading)"),
             ),
           )
-          .toBe(2);
+          .toBe(true);
         await expect(
           frame.getByRole("heading", { name: scenario.heading, exact: true }),
         ).toBeVisible();

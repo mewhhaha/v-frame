@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { VFrameElement } from "../src/index";
 import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
 
 let fixture: FixtureServer;
@@ -95,13 +96,14 @@ test("preserves nested adopted frames without fetching either entry document", a
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const outer = document.querySelector("#outer-frame");
-        const nestedFrames = Array.from(
-          outer?.shadowRoot?.querySelectorAll("#inner-frame") ?? [],
-        ) as Array<HTMLElement & { status: string }>;
+        const outer = document.querySelector<VFrameElement>("#outer-frame");
+        const nestedFrames = [
+          outer?.shadowRoot?.querySelector<VFrameElement>("#inner-frame"),
+          outer?.contentWindow?.document.querySelector<VFrameElement>("#inner-frame"),
+        ].filter((frame): frame is VFrameElement => !!frame);
         return {
           outerStatus: (outer as (HTMLElement & { status: string }) | null)?.status,
-          nestedFrames: nestedFrames.length,
+          nestedFrames: new Set(nestedFrames).size,
           nestedStatuses: nestedFrames.map((frame) => frame.status),
           nestedText: nestedFrames.map(
             (frame) => frame.shadowRoot?.querySelector("#nested-copy")?.textContent,
@@ -187,6 +189,10 @@ test("keeps adopted preview visible until its initial module completes", async (
             data-v-frame-type="module"
           >
             document.querySelector('#adopted-copy').textContent = 'Prepared by initial module';
+            const sheet = document.querySelector("style").sheet;
+            const index = sheet.insertRule("#adopted-copy { letter-spacing: 1px }", sheet.cssRules.length);
+            const rule = sheet.cssRules[index];
+            window.ownsLiveRule = () => sheet === document.querySelector("style").sheet && sheet.cssRules[index] === rule;
             top.__adoptedModuleStarted = true;
             await top.__adoptedModuleGate;
             top.__adoptedModuleFinished = true;
@@ -211,48 +217,42 @@ test("keeps adopted preview visible until its initial module completes", async (
     .toBe(true);
   const frame = page.locator("v-frame");
   const staged = await frame.evaluate((element) => {
-    const frameElement = element as HTMLElement & { status: string };
-    const markup = Array.from(frameElement.shadowRoot?.querySelectorAll("v-html") ?? []);
+    const frameElement = element as VFrameElement;
+    const markup = [
+      frameElement.shadowRoot!.querySelector("v-html")!,
+      frameElement.contentWindow!.document.documentElement,
+    ];
     const frameRect = frameElement.getBoundingClientRect();
     const physicalRect = (html: Element) =>
       Element.prototype.getBoundingClientRect.call(html);
     return {
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
-      // The staging armor only overlays the two trees if its `display: grid`
-      // rule matches the host, which needs the functional `:host(...)` form —
-      // a bare `:host:not(...)` never matches the featureless shadow host.
-      hostDisplay: getComputedStyle(frameElement).display,
       liveOverlaysPreview: physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
-      frameHeightMatchesPreview: frameRect.height === physicalRect(markup[0]!).height,
-      copyPointerEvents: markup.map(
-        (html) => getComputedStyle(html.querySelector("#adopted-copy")!).pointerEvents,
-      ),
-      copyVisibilities: markup.map(
-        (html) => getComputedStyle(html.querySelector("#adopted-copy")!).visibility,
-      ),
+      frameHeight: frameRect.height,
+      hitPreview: (() => {
+        const copy = markup[0]!.querySelector("#adopted-copy")!;
+        const box = physicalRect(copy);
+        return frameElement.shadowRoot!.elementFromPoint(box.x + 1, box.y + 1) === copy;
+      })(),
       liveHeight: physicalRect(markup[1]!).height,
       markupText: markup.map((html) => html.querySelector("#adopted-copy")?.textContent),
       status: frameElement.status,
-      styleSheets: frameElement.shadowRoot?.adoptedStyleSheets.length,
-      opacities: markup.map((html) => getComputedStyle(html).opacity),
-      visibilities: markup.map((html) => getComputedStyle(html).visibility),
+      separateTrees:
+        Node.prototype.getRootNode.call(markup[0]) !==
+        Node.prototype.getRootNode.call(markup[1]),
     };
   });
   expect(staged).toEqual({
     connected: [true, true],
-    copyPointerEvents: ["auto", "none"],
-    copyVisibilities: ["visible", "hidden"],
+    hitPreview: true,
     displays: ["block", "block"],
-    hostDisplay: "grid",
     liveOverlaysPreview: true,
-    frameHeightMatchesPreview: true,
+    frameHeight: expect.any(Number),
     liveHeight: expect.any(Number),
     markupText: ["Server-rendered before activation", "Prepared by initial module"],
     status: "loading",
-    styleSheets: 2,
-    opacities: ["1", "0"],
-    visibilities: ["visible", "hidden"],
+    separateTrees: true,
   });
   expect(staged.liveHeight).toBeGreaterThan(0);
 
@@ -273,17 +273,21 @@ test("keeps adopted preview visible until its initial module completes", async (
         __adoptedModuleFinished: boolean;
       };
     return {
+      height: frameElement.getBoundingClientRect().height,
       moduleFinished: hostWindow.__adoptedModuleFinished,
       markupCount: frameElement.shadowRoot?.querySelectorAll("v-html").length,
       text: frameElement.shadowRoot?.querySelector("#adopted-copy")?.textContent,
-      styleSheets: frameElement.shadowRoot?.adoptedStyleSheets.length,
+      retainedRule: (
+        (element as VFrameElement).contentWindow as Window & { ownsLiveRule(): boolean }
+      ).ownsLiveRule(),
     };
   });
   expect(revealed).toEqual({
+    height: staged.frameHeight,
     moduleFinished: true,
     markupCount: 1,
     text: "Prepared by initial module",
-    styleSheets: 1,
+    retainedRule: true,
   });
 });
 
@@ -397,7 +401,7 @@ test("reveals simultaneous adopted handoffs independently", async ({ page }) => 
     await frames.evaluateAll((elements) =>
       elements.map((element) => element.shadowRoot?.querySelectorAll("v-html").length),
     ),
-  ).toEqual([2, 1]);
+  ).toEqual([1, 1]);
 
   await page.evaluate(() => {
     (
@@ -581,4 +585,52 @@ test("keeps native disclosure groups independent while the adopted copy is stage
   await expect(ready.locator("details[open] summary")).toHaveText("Launch");
   await expect(ready.locator('details[name="flight"]')).toHaveCount(2);
   await expect(ready.locator("summary").last()).toHaveCSS("color", "rgb(4, 75, 90)");
+});
+
+test("restores the original scroll panel and the latest preview edits after a guest reorder", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(async (url) => {
+    const frame = document.createElement("v-frame");
+    frame.setAttribute("adopt", "");
+    frame.setAttribute("src", "/panels/");
+    frame.attachShadow({ mode: "open" }).innerHTML = `<v-html><v-head><style>
+      section { display:block; overflow:auto; height:40px } section p { height:300px }
+    </style></v-head><v-body>
+      <section id="notes"><p>Notes</p></section><section id="archive"><p>Archive</p></section>
+      <details open><summary>Instructions</summary>Read me</details>
+      <label><input type="checkbox">Reviewed</label>
+      <script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+        document.querySelector("#notes").before(document.querySelector("#archive"));
+        await new Promise(resolve => { top.finishPanels = resolve; });
+      </script></v-body></v-html>`;
+    document.body.append(frame);
+    (await import(url)).defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  await page.waitForFunction(() => typeof (window as any).finishPanels === "function");
+  const preview = page.locator("v-frame v-html").first();
+  await preview.locator("#notes").evaluate((element) => {
+    element.scrollTop = 75;
+  });
+  // The checkbox edit synchronizes the closed disclosure before the user reopens it.
+  await preview.locator("summary").click();
+  await preview.getByRole("checkbox").check();
+  await preview.locator("summary").click();
+  await page.evaluate(() => (window as any).finishPanels());
+  const ready = page.locator("v-frame:state(ready)");
+  await expect(ready).toHaveCount(1);
+  expect(
+    await ready
+      .locator("section")
+      .evaluateAll((elements) =>
+        elements.map((element) => [element.id, element.scrollTop]),
+      ),
+  ).toEqual([
+    ["archive", 0],
+    ["notes", 75],
+  ]);
+  await expect(ready.locator("details")).toHaveAttribute("open", "");
+  await expect(ready.getByRole("checkbox")).toBeChecked();
+  await expect(ready.getByRole("checkbox")).not.toHaveAttribute("value", /.*/);
 });

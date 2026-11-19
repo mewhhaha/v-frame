@@ -154,7 +154,7 @@ export class VFrameElement extends HTMLElementBase {
     super();
     this.#internals = this.attachInternals();
     this.#internals.states.add(this.#status);
-    const declarativeRoot = this.shadowRoot;
+    const declarativeRoot = super.shadowRoot;
     this.#root = declarativeRoot ?? this.attachShadow({ mode: "open" });
     this.#adoptionAvailable = declarativeRoot !== null;
     // A nonce assigned before upgrade lands in the native [[CryptographicNonce]]
@@ -275,6 +275,10 @@ export class VFrameElement extends HTMLElementBase {
 
   get contentWindow(): Window | null {
     return this.#realm?.window ?? this.#loadingRealm?.window ?? null;
+  }
+
+  get shadowRoot(): ShadowRoot {
+    return this.#realm?.shadowRoot ?? this.#root;
   }
 
   get canGoBack(): boolean {

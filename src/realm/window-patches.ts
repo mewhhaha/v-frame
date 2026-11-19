@@ -1,6 +1,6 @@
 // The patches that make the hidden realm's `window` behave like the top-level
 // window of the host page — viewport metrics, scrolling, the event bridge —
-// plus the two constructed stylesheets v-frame owns on the host shadow root.
+// plus the constructed stylesheets v-frame owns for the host and guest.
 
 import {
   ListenerRegistry,
@@ -11,7 +11,7 @@ import {
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 
-const INTERNAL_CSS = `
+const HOST_CSS = `
 :host {
   contain: layout;
   display: block;
@@ -21,6 +21,8 @@ const INTERNAL_CSS = `
 :host([hidden]:not([hidden="until-found" i])) {
   display: none !important;
 }
+`;
+const GUEST_CSS = `
 v-html,
 v-body {
   display: block;
@@ -29,15 +31,6 @@ v-head {
   display: none !important;
 }
 `;
-
-// Initial markup can contain rewritten inline !important rules; staging must
-// outrank them without exposing a private marker attribute to the child app.
-// The shadow host is featureless, so on :host the armor only matches as the
-// functional argument, :host(:not(...)) — a bare :host:not(...) never does.
-const STAGING_SELECTOR_SPECIFICITY = `:not(${Array.from(
-  { length: 64 },
-  (_value, index) => `#v-frame-staging-${index}`,
-).join("")})`;
 
 interface WindowEventHandler {
   listener: EventListener;
@@ -85,78 +78,48 @@ interface InternalStyles {
   dispose(): void;
 }
 
-export function installInternalStyles(shadowRoot: ShadowRoot): InternalStyles {
+export function installInternalStyles(
+  frameRoot: ShadowRoot,
+  renderRoot: ShadowRoot,
+): InternalStyles {
   // Without these rules v-html/v-body are inline and v-head is visible, so a
   // guest would render wrongly with no error. Constructable stylesheets are a
-  // documented requirement; fail like installStagingStyles does.
-  const view = shadowRoot.ownerDocument.defaultView;
+  // documented requirement.
+  const view = frameRoot.ownerDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
     throw new Error("v-frame requires constructable stylesheet support");
   }
 
+  let guestCSS = GUEST_CSS;
+  let hostSheet: CSSStyleSheet | null = null;
+  if (frameRoot === renderRoot) {
+    guestCSS = HOST_CSS + GUEST_CSS;
+  } else {
+    hostSheet = new view.CSSStyleSheet();
+    hostSheet.replaceSync(HOST_CSS);
+    frameRoot.adoptedStyleSheets = [...frameRoot.adoptedStyleSheets, hostSheet];
+  }
   const sheet = new view.CSSStyleSheet();
-  sheet.replaceSync(INTERNAL_CSS);
-  shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
+  sheet.replaceSync(guestCSS);
+  renderRoot.adoptedStyleSheets = [...renderRoot.adoptedStyleSheets, sheet];
   return {
     updateTopLayerViewport(x, y) {
-      sheet.replaceSync(`${INTERNAL_CSS}
+      sheet.replaceSync(`${guestCSS}
 :where([popover]:popover-open) {
   translate: ${x}px ${y}px !important;
 }
 `);
     },
     dispose() {
-      shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
+      renderRoot.adoptedStyleSheets = renderRoot.adoptedStyleSheets.filter(
         (candidate) => candidate !== sheet,
       );
+      if (hostSheet) {
+        frameRoot.adoptedStyleSheets = frameRoot.adoptedStyleSheets.filter(
+          (candidate) => candidate !== hostSheet,
+        );
+      }
     },
-  };
-}
-
-export function installStagingStyles(shadowRoot: ShadowRoot): () => void {
-  const view = shadowRoot.ownerDocument.defaultView;
-  if (view === null || typeof view.CSSStyleSheet !== "function") {
-    throw new Error("Cannot stage v-frame markup without constructed stylesheet support");
-  }
-
-  const liveMarkupPosition =
-    Array.from(shadowRoot.children).filter((element) => element.localName === "v-html")
-      .length + 1;
-  const liveMarkupSelector = `:host > v-html:nth-of-type(${liveMarkupPosition})${STAGING_SELECTOR_SPECIFICITY}`;
-  const sheet = new view.CSSStyleSheet();
-  sheet.replaceSync(`
-:host(${STAGING_SELECTOR_SPECIFICITY}:not([hidden]:not([hidden="until-found" i]))) {
-  display: grid !important;
-  overflow-anchor: none !important;
-}
-:host > v-html${STAGING_SELECTOR_SPECIFICITY} {
-  grid-area: 1 / 1 !important;
-  min-width: 0 !important;
-}
-${liveMarkupSelector},
-${liveMarkupSelector} * {
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-${liveMarkupSelector} {
-  opacity: 0 !important;
-}
-`);
-  const host = shadowRoot.host;
-  const left = host.scrollLeft;
-  const top = host.scrollTop;
-  shadowRoot.adoptedStyleSheets = [...shadowRoot.adoptedStyleSheets, sheet];
-  // Changing the scroll container to grid can adjust its existing offset in
-  // WebKit. Preserve the offset synchronously; overflow-anchor above prevents
-  // a later anchor adjustment from moving the already-painted preview.
-  host.scrollTo({ left, top, behavior: "instant" });
-  return () => {
-    const left = host.scrollLeft;
-    const top = host.scrollTop;
-    shadowRoot.adoptedStyleSheets = shadowRoot.adoptedStyleSheets.filter(
-      (candidate) => candidate !== sheet,
-    );
-    host.scrollTo({ left, top, behavior: "instant" });
   };
 }
 
@@ -169,6 +132,76 @@ function renderedBy(guestRoot: Element, target: Node, hostWindow: VFrameWindow):
     node = (root as ShadowRoot).host;
   }
   return true;
+}
+
+export function installStagedFocus(
+  window: VFrameWindow,
+  hostWindow: VFrameWindow,
+  root: HTMLElement,
+  isStaged: () => boolean,
+  isActive: () => boolean,
+) {
+  const requests: Array<() => void> = [];
+  const restores: Array<() => void> = [];
+  let staged = true;
+  for (const prototype of [window.HTMLElement.prototype, window.SVGElement.prototype]) {
+    for (const name of ["focus", "blur"] as const) {
+      const native = prototype[name];
+      if (typeof native !== "function") continue;
+      const wrapper = function (this: HTMLElement | SVGElement, options?: FocusOptions) {
+        if (
+          !staged ||
+          !isStaged() ||
+          !this.isConnected ||
+          !renderedBy(root, this, hostWindow)
+        ) {
+          Reflect.apply(native, this, arguments);
+          return;
+        }
+        let request: FocusOptions | undefined;
+        if (name === "focus" && options != null) {
+          if (typeof options !== "object" && typeof options !== "function") {
+            throw new window.TypeError("Focus options must be an object");
+          }
+          request = { preventScroll: Boolean(options.preventScroll) };
+        }
+        requests.push(() => {
+          if (this.isConnected && renderedBy(root, this, hostWindow)) {
+            native.call(this, request);
+          }
+        });
+      };
+      const previous = Object.getOwnPropertyDescriptor(prototype, name);
+      Object.defineProperty(prototype, name, {
+        value: wrapper,
+        configurable: true,
+        writable: true,
+        enumerable: previous?.enumerable ?? false,
+      });
+      restores.push(() => {
+        if (Object.getOwnPropertyDescriptor(prototype, name)?.value !== wrapper) return;
+        if (previous) Object.defineProperty(prototype, name, previous);
+        else Reflect.deleteProperty(prototype, name);
+      });
+    }
+  }
+  const dispose = () => {
+    if (!staged) return;
+    staged = false;
+    requests.length = 0;
+    for (const restore of restores) restore();
+  };
+  return {
+    dispose,
+    reveal() {
+      const pending = requests.slice();
+      dispose();
+      for (const request of pending) {
+        if (!isActive()) break;
+        request();
+      }
+    },
+  };
 }
 
 export function installStagedTopLayer(
@@ -796,8 +829,8 @@ export function installViewportPatches(
         const left = host.scrollLeft;
         const top = host.scrollTop;
         if (left || top) {
-          // After the staging grid is removed WebKit can treat zero as already
-          // applied. Change the scroll position, then reset it in the same task.
+          // During handoff WebKit can report the old offset after a reset.
+          // Nudge the position and reset it again in the same task.
           host.scrollTo({
             left: Math.sign(left),
             top: Math.sign(top),

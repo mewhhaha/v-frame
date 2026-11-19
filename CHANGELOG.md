@@ -11,7 +11,18 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   through its existing public route handler. Nested applications can compose their
   own guests, and an unavailable service leaves healthy siblings interactive.
 
+### Changed
+
+- `frame.shadowRoot` follows the visible guest document. Read it again after
+  `v-frame-load` when inspecting content across navigation.
+
 ### Fixed
+
+- During adoption and reload, native form ownership, labels, datalists, radios,
+  popover targets and named disclosures resolve within each guest, including
+  during framework layout effects.
+- SSR handoff preserves scroll on reordered panels and restores edits and focus
+  only to the matching field in its original form and shadow tree.
 
 - Replacing a guest keeps input, scrolling, and modal interactions with the visible
   document until the new one takes over. Cleanup can remove or navigate the frame.

@@ -10,32 +10,10 @@ import {
   rewriteStylesheet,
   type StylesheetImportFailure,
   translateShellSelector,
-  unScopeCSSOMRuleText,
 } from "../../src/css.js";
 
 const BASE = "https://host.test/app/page.css";
 const ROOT_SELECTOR = ":where(v-html):nth-child(n)";
-
-test("temporary CSS scope removal preserves serialization and declaration strings", () => {
-  const scope = ":host > v-html:nth-of-type(2)";
-  const guard = `:where(${scope},${scope} *)`;
-  assert.equal(
-    unScopeCSSOMRuleText(
-      `p${guard}::before { content: ${JSON.stringify(guard)}; }`,
-      scope,
-    ),
-    `p::before { content: ${JSON.stringify(guard)}; }`,
-  );
-});
-
-test("temporary CSS scopes are removed from nested selectors without changing nested declarations", () => {
-  const scope = ":host > v-html:nth-of-type(2)";
-  const guard = `:where(${scope},${scope} *)`;
-  assert.equal(
-    unScopeCSSOMRuleText(`p${guard} { color: red; & b${guard} { color: blue; } }`, scope),
-    "p { color: red; & b { color: blue; } }",
-  );
-});
 
 interface SelectorCase {
   selector: string;

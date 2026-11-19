@@ -1,4 +1,3 @@
-import { previewDisclosureSelector } from "../css.js";
 import { abortError } from "./connect.js";
 
 const CONTROL_SELECTOR = "input,textarea,select";
@@ -6,7 +5,6 @@ const CONTROL_SELECTOR = "input,textarea,select";
 const ASSET_SETTLE_TIMEOUT_MS = 10_000;
 
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-type Path = Array<number | "shadow">;
 
 interface Value {
   value: string;
@@ -20,11 +18,11 @@ interface ControlPair {
   initial: Value;
 }
 
-function controls(root: Element): Control[] {
-  const result: Control[] = [];
+function descendants(root: Element): Element[] {
+  const result: Element[] = [];
   const visit = (scope: Element | ShadowRoot) => {
     for (const element of scope.querySelectorAll("*")) {
-      if (element.matches(CONTROL_SELECTOR)) result.push(element as Control);
+      result.push(element);
       if (element.shadowRoot) visit(element.shadowRoot);
     }
   };
@@ -58,58 +56,6 @@ function equal(left: Value, right: Value): boolean {
   );
 }
 
-// Native exclusive disclosure groups use the entire shadow tree. While both
-// copies are connected, keep the preview's group separate from the guest's.
-function isolateDisclosureGroups(preview: HTMLElement, signal: AbortSignal): void {
-  const details = Array.from(
-    preview.querySelectorAll<HTMLDetailsElement>("details[name]"),
-  ).filter((item) => item.name);
-  if (!details.length) return;
-  const marker = "data-v-frame-preview-group";
-  const groups = new Set(details.map((item) => item.name));
-  let prefix = "v-frame-preview:";
-  while (Array.from(groups).some((name) => name.startsWith(prefix))) prefix += ":";
-  const restored: Array<() => void> = [];
-  const visit = (rules: CSSRuleList) => {
-    for (const rule of rules) {
-      if ("selectorText" in rule && typeof rule.selectorText === "string") {
-        const original = rule.selectorText;
-        const selector = previewDisclosureSelector(original, marker);
-        if (selector !== original) {
-          rule.selectorText = selector;
-          restored.push(() => {
-            rule.selectorText = original;
-          });
-        }
-      }
-      if ("cssRules" in rule) visit((rule as CSSGroupingRule).cssRules);
-    }
-  };
-  for (const style of preview.querySelectorAll("style")) {
-    if (style.sheet) visit(style.sheet.cssRules);
-  }
-  for (const item of details) {
-    const name = item.name;
-    item.setAttribute(marker, name);
-    item.name = prefix + name;
-    restored.push(() => {
-      item.name = name;
-      item.removeAttribute(marker);
-    });
-  }
-  signal.addEventListener(
-    "abort",
-    () => {
-      // On cancellation the staged copy may still be connected. Reclaim the
-      // visible group's selection if restoring its name met that pending copy.
-      const opened = details.filter((item) => item.open);
-      for (const restore of restored) restore();
-      for (const item of opened) if (!item.open) item.open = true;
-    },
-    { once: true },
-  );
-}
-
 /** Owns only the pending preview; disposal releases its listeners and references. */
 export class AdoptionState {
   #preview: HTMLElement | null;
@@ -121,13 +67,16 @@ export class AdoptionState {
   #live: HTMLElement | null = null;
   #window: (Window & typeof globalThis) | null = null;
   #pairs: ControlPair[] = [];
-  #disclosures: Array<{ source: HTMLDetailsElement; initial: boolean }> = [];
+  #disclosures: Array<{
+    source: HTMLDetailsElement;
+    previous: boolean;
+    edited: boolean;
+  }> = [];
   #targets = new WeakMap<Element, Element>();
 
   constructor(preview: HTMLElement, root: ShadowRoot) {
     this.#preview = preview;
     this.#root = root;
-    isolateDisclosureGroups(preview, this.#lifetime.signal);
     const sourceControl = (event: Event): Control | undefined => {
       const path = event.composedPath();
       if (!this.#preview || !path.includes(this.#preview)) return;
@@ -173,36 +122,14 @@ export class AdoptionState {
     );
   }
 
-  #path(node: Node): Path | null {
-    const path: Path = [];
-    const view = this.#root.ownerDocument.defaultView!;
-    const parent = Object.getOwnPropertyDescriptor(
-      view.Node.prototype,
-      "parentNode",
-    )!.get!;
-    while (node !== this.#preview) {
-      const next = parent.call(node) as Node | null;
-      if (next) {
-        path.unshift(Array.from(next.childNodes).indexOf(node as ChildNode));
-        node = next;
-      } else if ("host" in node) {
-        path.unshift("shadow");
-        node = (node as ShadowRoot).host;
-      } else return null;
+  #contains(root: Element, node: Node): boolean {
+    const native = this.#root.ownerDocument.defaultView!.Node.prototype;
+    while (!native.contains.call(root, node)) {
+      const tree = native.getRootNode.call(node);
+      if (!("host" in tree)) return false;
+      node = (tree as ShadowRoot).host;
     }
-    return path;
-  }
-
-  #resolve(path: Path): Node | null {
-    let node: Node | null = this.#live;
-    for (const step of path) {
-      node =
-        step === "shadow"
-          ? ((node as Element)?.shadowRoot ?? null)
-          : (node?.childNodes[step] ?? null);
-      if (!node) break;
-    }
-    return node;
+    return true;
   }
 
   #target(
@@ -210,19 +137,35 @@ export class AdoptionState {
     pair = this.#pairs.find((pair) => pair.source === source),
   ): Element | null {
     if (!this.#live) return null;
-    const original = this.#targets.get(source);
-    if (original?.isConnected) return original;
-    const candidates = pair
-      ? controls(this.#live)
-      : Array.from(this.#live.querySelectorAll("[id]"));
     const compatible = (candidate: Element) =>
       candidate.localName === source.localName &&
       candidate.namespaceURI === source.namespaceURI &&
       (!pair || (candidate as Control).type === pair.source.type);
+    const original = this.#targets.get(source);
+    if (original && this.#contains(this.#live, original) && compatible(original))
+      return original;
+    // IDs and form-control names are local to their original tree. A removed
+    // field must never hand its draft to an unrelated component with the same ID.
+    const native = this.#root.ownerDocument.defaultView!.Node.prototype;
+    const sourceTree = native.getRootNode.call(source);
+    let scope: ParentNode = this.#live;
+    if (sourceTree !== this.#root && sourceTree !== this.#preview) {
+      if (!("host" in sourceTree)) return null;
+      const host = this.#target((sourceTree as ShadowRoot).host);
+      if (!host?.shadowRoot) return null;
+      scope = host.shadowRoot;
+    }
+    let form: Element | null = null;
+    if (pair && pair.source.form) {
+      form = this.#target(pair.source.form);
+      if (!form) return null;
+    }
+    const candidates = Array.from(scope.querySelectorAll("*")).filter(
+      (candidate) =>
+        compatible(candidate) && (!pair || (candidate as Control).form === form),
+    );
     if (source.id) {
-      const matches = candidates.filter(
-        (candidate) => candidate.id === source.id && compatible(candidate),
-      );
+      const matches = candidates.filter((candidate) => candidate.id === source.id);
       if (matches.length) return matches.length === 1 ? matches[0]! : null;
     }
     if (pair) {
@@ -230,7 +173,6 @@ export class AdoptionState {
       const matches = candidates.filter(
         (candidate) =>
           (candidate as Control).name === pair.source.name &&
-          compatible(candidate) &&
           (pair.source.type !== "radio" ||
             (candidate as Control).value === pair.source.value),
       );
@@ -257,7 +199,8 @@ export class AdoptionState {
         if (element.localName === "details") {
           this.#disclosures.push({
             source: element as HTMLDetailsElement,
-            initial: (next as HTMLDetailsElement).open,
+            previous: (next as HTMLDetailsElement).open,
+            edited: false,
           });
         }
         if (element.matches(CONTROL_SELECTOR)) {
@@ -300,7 +243,7 @@ export class AdoptionState {
       (target as HTMLInputElement).type === "file"
     ) {
       (target as HTMLInputElement).files = value.files ?? null;
-    } else {
+    } else if (target.type !== "checkbox" && target.type !== "radio") {
       const prototype =
         target.localName === "input"
           ? window.HTMLInputElement.prototype
@@ -342,8 +285,11 @@ export class AdoptionState {
 
   sync(replay = false): void {
     if (!this.#live) return;
-    for (const { source, initial } of this.#disclosures) {
-      if (source.open === initial) continue;
+    for (const disclosure of this.#disclosures) {
+      const { source } = disclosure;
+      if (source.open !== disclosure.previous) disclosure.edited = true;
+      disclosure.previous = source.open;
+      if (!disclosure.edited) continue;
       const target = this.#target(source) as HTMLDetailsElement | null;
       if (target && target.open !== source.open) target.open = source.open;
     }
@@ -456,7 +402,7 @@ export class AdoptionState {
     }
     let active = this.#root.activeElement;
     while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-    const activePath = active ? this.#path(active) : null;
+    if (active && !this.#contains(preview, active)) active = null;
     const selection =
       active && "selectionStart" in active
         ? {
@@ -466,19 +412,19 @@ export class AdoptionState {
           }
         : null;
     const scroll = [this.#root.host.scrollLeft, this.#root.host.scrollTop];
-    const scrolled = [preview, ...Array.from(preview.querySelectorAll<HTMLElement>("*"))]
+    const scrolled = [preview, ...descendants(preview)]
       .filter((element) => element.scrollLeft || element.scrollTop)
       .map((element) => ({
-        path: this.#path(element),
+        source: element,
         left: element.scrollLeft,
         top: element.scrollTop,
       }));
     this.sync(true);
     if (this.#lifetime.signal.aborted) return;
+    // External form ownership is lost as soon as the preview is detached.
+    const next = active ? (this.#target(active) as HTMLElement | null) : null;
     reveal();
-    const next =
-      active && activePath ? (this.#target(active) as HTMLElement | null) : null;
-    if (next && activePath) {
+    if (next && this.#live && this.#contains(this.#live, next)) {
       next.focus({ preventScroll: true });
       if (
         selection?.start !== null &&
@@ -495,8 +441,7 @@ export class AdoptionState {
       }
     }
     for (const entry of scrolled) {
-      if (!entry.path) continue;
-      const element = this.#resolve(entry.path) as HTMLElement | null;
+      const element = this.#target(entry.source);
       if (element) {
         element.scrollLeft = entry.left;
         element.scrollTop = entry.top;

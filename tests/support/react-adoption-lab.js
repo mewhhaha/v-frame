@@ -1,4 +1,4 @@
-import { createElement as h, useState } from "react";
+import { createElement as h, useLayoutEffect, useRef, useState } from "react";
 import { hydrateRoot } from "react-dom/client";
 
 function App() {
@@ -6,9 +6,14 @@ function App() {
   const [note, setNote] = useState("server-note");
   const [checked, setChecked] = useState(true);
   const [tick, setTick] = useState(0);
+  const [initialSubject, setInitialSubject] = useState("");
+  const form = useRef(null);
+  useLayoutEffect(() => {
+    setInitialSubject(new FormData(form.current).get("subject") ?? "Missing");
+  }, []);
   return h(
     "form",
-    null,
+    { id: "survey", ref: form },
     h(
       "label",
       null,
@@ -37,6 +42,7 @@ function App() {
       }),
     ),
     h("output", { id: "model" }, `${name}|${note}|${checked}`),
+    h("output", { id: "layout-model" }, initialSubject),
     h(
       "button",
       { type: "button", id: "rerender", onClick: () => setTick(tick + 1) },

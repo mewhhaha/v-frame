@@ -25,9 +25,11 @@ import {
 import { installNetworkPatches } from "../network.js";
 import type { AdoptionState } from "./adoption-state.js";
 import { createDocumentBase } from "./base-url.js";
+import { removeRenderedNode } from "./native-dom.js";
 import { createFragmentTargets, scrollToFragment } from "./fragment-scroll.js";
 import { observeRealmMutations } from "./mutation-observer.js";
 import { ScriptRunner } from "../scripts.js";
+import { createStagedRoot } from "./staging.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
 import { createDynamicStyles } from "./dynamic-styles.js";
 import {
@@ -36,8 +38,8 @@ import {
 } from "./navigation.js";
 import {
   installInternalStyles,
+  installStagedFocus,
   installStagedTopLayer,
-  installStagingStyles,
   installViewportPatches,
   installWindowEventBridge,
 } from "./window-patches.js";
@@ -99,6 +101,7 @@ export interface CreateRealmOptions {
 export interface VFrameRealm {
   readonly window: VFrameWindow;
   readonly navigation: NavigationControls;
+  readonly shadowRoot: ShadowRoot;
   executeInitialScripts(): Promise<void>;
   reveal(): void;
   dispose(): void;
@@ -125,15 +128,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     }
   };
   const adoptionState = options.markup.kind === "adopted" ? options.markup.state : null;
-  let restoreStagingStyles: () => void = () => undefined;
   let markup: PreparedMarkup | null = null;
 
   try {
-    const internalStyles = installInternalStyles(options.shadowRoot);
-    disposers.push(() => internalStyles.dispose());
     if (adoptionState) disposers.push(() => adoptionState.dispose());
     disposers.push(() => options.iframe.remove());
-    disposers.push(() => restoreStagingStyles());
     const iframe = options.iframe;
     const window = iframe.contentWindow as VFrameWindow | null;
     const document = iframe.contentDocument;
@@ -178,10 +177,18 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     // that built these options, so it must not keep a second copy of an SSR payload.
     options.markup.source = "";
     const preparedMarkup = markup;
-    const remove = options.host.ownerDocument.defaultView!.Element.prototype.remove;
+    const hostView = options.host.ownerDocument.defaultView!;
+    const staged =
+      options.stageMarkup || adoptionState !== null
+        ? createStagedRoot(options.shadowRoot)
+        : null;
+    if (staged) disposers.push(staged.dispose);
+    const renderRoot = staged?.root ?? options.shadowRoot;
+    const internalStyles = installInternalStyles(options.shadowRoot, renderRoot);
+    disposers.push(internalStyles.dispose);
     disposers.push(() => {
-      remove.call(preparedMarkup.html);
-      remove.call(preparedMarkup.inlineStyleSheet);
+      removeRenderedNode(preparedMarkup.html, hostView);
+      hostView.Element.prototype.remove.call(preparedMarkup.inlineStyleSheet);
     });
 
     const privateHead = document.head;
@@ -196,7 +203,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     let disposed = false;
     let scriptRunner: ScriptRunner | null = null;
     let facade: DocumentFacade | null = null;
-    let markupRevealed = !options.stageMarkup && options.markup.kind !== "adopted";
+    let markupRevealed = staged === null;
     const fragmentTargets = createFragmentTargets({
       window,
       getRoot: () => markup?.html ?? null,
@@ -282,15 +289,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       signal: options.signal,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
-      // Nested shadow sheets are already isolated. The staged document stays
-      // last even as the old tree is removed, so its layout never collapses
-      // between disposal and reveal (including manual scroll restoration).
-      getScopeSelector: (sheet) =>
-        markupRevealed ||
-        (sheet.ownerNode !== markup?.inlineStyleSheet &&
-          !markup?.html.contains(sheet.ownerNode))
-          ? null
-          : ":host > v-html:last-of-type",
       getInlineStyleSheet: () => markup?.inlineStyleSheet ?? null,
       getFacade: () => facade,
       isConnectedToRealm,
@@ -308,20 +306,29 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
 
     const liveMarkup = markup.html;
     let topLayer: ReturnType<typeof installStagedTopLayer> | undefined;
+    let focus: ReturnType<typeof installStagedFocus> | undefined;
     if (!markupRevealed) {
+      const isActive = () => !disposed && !options.signal.aborted;
+      focus = installStagedFocus(
+        window,
+        renderRoot.ownerDocument.defaultView!,
+        liveMarkup,
+        () => !markupRevealed,
+        isActive,
+      );
+      disposers.push(focus.dispose);
       topLayer = installStagedTopLayer(
         window,
         liveMarkup,
-        options.shadowRoot,
-        () => !disposed && !options.signal.aborted,
+        renderRoot,
+        isActive,
         () => facade,
       );
       disposers.push(topLayer.dispose);
-      restoreStagingStyles = installStagingStyles(options.shadowRoot);
     }
     facade = installDocumentFacade({
       host: options.host,
-      shadowRoot: options.shadowRoot,
+      shadowRoot: renderRoot,
       scroll: viewport.scroll,
       window,
       document,
@@ -369,13 +376,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         fragmentTargets.clearClones(nodes);
         styles.installCSSOMStyleSheets(nodes);
         styles.observeConnectedNodes(nodes);
+        staged?.partsConnected(nodes);
       },
       ...(topLayer && { onShadowRoot: topLayer.observe }),
     });
     disposers.push(() => facade?.dispose());
     if (!markupRevealed) styles.installCSSOMStyleSheet(markup.inlineStyleSheet);
     if (!options.signal.aborted) {
-      options.shadowRoot.append(liveMarkup);
+      renderRoot.append(liveMarkup);
       for (const [style, source] of initialStyleSources) {
         styles.applyNonce(style);
         style.textContent = source;
@@ -426,7 +434,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
     const windowEventDispose = installWindowEventBridge(
       window,
-      options.shadowRoot,
+      renderRoot,
       liveMarkup,
       facade.eventForListener,
       facade.finishEventListener,
@@ -448,7 +456,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const navigation = installRealmNavigation({
       window,
       host: options.host,
-      shadowRoot: options.shadowRoot,
+      shadowRoot: renderRoot,
       boundNavigation: options.boundNavigation,
       history,
       hostListenerSignal: hostListenerLifetime.signal,
@@ -550,21 +558,24 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         return;
       }
       markupRevealed = true;
-      styles.restoreScopedSelectors();
+      staged?.reveal();
       for (const node of options.markup.kind === "adopted"
         ? options.markup.previewNodes.splice(0)
         : []) {
-        node.parentNode?.removeChild(node);
+        removeRenderedNode(node, hostView);
       }
-      restoreStagingStyles();
-      restoreStagingStyles = () => undefined;
     };
 
     const runtime: VFrameRealm = {
       window,
       navigation: history,
+      get shadowRoot() {
+        if (markupRevealed) return renderRoot;
+        return options.shadowRoot;
+      },
       async executeInitialScripts() {
         navigation.install();
+        staged?.refreshParts();
         await scriptRunner?.executeInitial();
         await adoptionState?.settle(options.signal);
       },
@@ -585,6 +596,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         } else if (options.stageMarkup && !adoptionState && new URL(currentURL).hash) {
           scrollFragment(currentURL);
         }
+        if (renderRoot.activeElement) focus?.dispose();
+        else focus?.reveal();
         topLayer?.reveal();
       },
       dispose() {

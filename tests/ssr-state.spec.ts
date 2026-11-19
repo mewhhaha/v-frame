@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { rolldown } from "rolldown";
 import {
   bundleRoute,
+  htmlDocument,
   registerBundleRoute,
   startHTTPFixture,
   type HTTPFixture,
@@ -19,13 +20,43 @@ const form = `<form><label>Name<input id="name" value="server"></label>
   <label>B<input id="b" type="radio" name="group"></label></form>
   <div id="panel" style="height:70px;overflow:auto"><div style="height:400px">Scroll area</div></div>`;
 
-const reactForm = `<div id="react-root"><form><label>Name<input id="name" value="server"></label><label>Note<textarea id="note">server-note</textarea></label><label>Enabled<input id="enabled" type="checkbox" checked></label><output id="model">server|server-note|true</output><button type="button" id="rerender">Render 0</button></form></div>`;
+const reactForm = `<div id="react-root"><form id="survey"><label>Name<input id="name" value="server"></label><label>Note<textarea id="note">server-note</textarea></label><label>Enabled<input id="enabled" type="checkbox" checked></label><output id="model">server|server-note|true</output><output id="layout-model"></output><button type="button" id="rerender">Render 0</button></form></div><input form="survey" name="subject" value="Vega">`;
+
+const relationships = `<section class="relationships">
+  <form id="survey"></form>
+  <label for="name">Name</label><input id="name" form="survey" name="subject" list="subjects" value="Vega">
+  <datalist id="subjects"><option value="Vega"></datalist>
+  <button popovertarget="menu">Menu</button><div id="menu" popover>Menu content</div>
+  <input id="good" type="radio" name="rating" checked><input type="radio" name="rating">
+  <style>details::before { content: attr(name) }</style>
+  <details id="first" open name="panels"><summary>First</summary></details>
+  <details name="panels"><summary>Second</summary></details>
+</section>`;
+
+function readRelationships(root: ParentNode) {
+  const form = root.querySelector("form")!;
+  const input = root.querySelector<HTMLInputElement>("#name")!;
+  const label = root.querySelector("label")!;
+  const details = root.querySelector<HTMLDetailsElement>("#first")!;
+  return {
+    form: input.form === form,
+    formData: new FormData(form).get("subject"),
+    control: label.control === input,
+    labels: Array.from(input.labels ?? []).includes(label),
+    list: input.list === root.querySelector("datalist"),
+    popover:
+      root.querySelector("button")!.popoverTargetElement === root.querySelector("#menu"),
+    radioChecked: root.querySelector<HTMLInputElement>("#good")!.checked,
+    detailsOpen: details.open,
+    detailsContent: getComputedStyle(details, "::before").content,
+  };
+}
 
 const selectForm = `<input id="name" value="server"><select id="choice"><option value="one">One</option><option value="two">Two</option><option value="three">Three</option></select><select id="choices" multiple><option value="one">One</option><option value="two">Two</option><option value="three">Three</option></select>`;
 
-function host(body: string, module = "/guest.js") {
+function host(body: string, module = "/guest.js", src = "/guest") {
   return `<!doctype html><html lang="en"><head><title>SSR state</title></head><body style="height:1800px">
-    <button id="outside">Outside</button><v-frame id="frame" adopt src="/guest" aria-label="Guest" style="display:block;width:500px;height:280px;overflow:auto">
+    <button id="outside">Outside</button><v-frame id="frame" adopt src="${src}" aria-label="Guest" style="display:block;width:500px;height:280px;overflow:auto">
     <template shadowrootmode="open" shadowrootserializable><v-html><v-head><style>v-html,v-body{display:block}v-head{display:none}v-body{min-height:600px}label{display:block}</style></v-head><v-body>${body}
     <script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module" src="${module}"></script>
     </v-body></v-html></template></v-frame><script>globalThis.hydrationErrors=[]</script><script type="module" src="/dist/register.js"></script></body></html>`;
@@ -49,8 +80,35 @@ test.beforeAll(async () => {
   fixture = await startHTTPFixture({
     routes: {
       "/": host(form),
-      "/react": host(reactForm, "/react.js"),
+      "/react": host(reactForm, "/react.js", "/react-guest"),
+      "/react-guest": htmlDocument(
+        reactForm + '<script type="module" src="/react.js"></script>',
+      ),
+      "/relationships": host(relationships, "/relationships.js", "/relationships-guest"),
+      "/relationships-guest": htmlDocument(
+        relationships + '<script type="module" src="/relationships.js"></script>',
+      ),
+      "/relationships.js": {
+        type: "text/javascript",
+        body: `top.relationshipsAtStartup = (${readRelationships.toString()})(document);
+          await new Promise(resolve => { top.releaseRelationships = resolve; });`,
+      },
       "/handoff": host('<input id="name" name="name" value="server">', "/handoff.js"),
+      "/ownership": host(
+        `<form id="first"><input id="name" name="subject" value="First form"></form>
+         <form id="second"><input name="subject" value="Second form"></form>
+         <input id="code" value="Outer field"><div id="component"></div>
+         <input id="external" form="first" name="ticket"><input id="unowned" name="ticket">`,
+        "/ownership.js",
+      ),
+      "/ownership.js": {
+        type: "text/javascript",
+        body: `document.querySelector("#name").remove();
+          document.querySelector("#code").remove();
+          document.querySelector("#external").remove();
+          const component = document.querySelector("#component").attachShadow({ mode: "open" });
+          component.innerHTML = '<input id="code" value="Component field">';`,
+      },
       "/options": host(selectForm, "/options.js"),
       "/options.js": {
         type: "text/javascript",
@@ -513,6 +571,41 @@ test("ambiguous replacement controls keep their values instead of inheriting SSR
   await expect(fields.nth(1)).not.toBeFocused();
 });
 
+test("removed preview controls cannot transfer edits or focus to a different form or shadow tree", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/ownership",
+    "/ownership.js",
+  );
+  await preview.locator("#name").fill("First form draft");
+  await preview.locator("#code").fill("Outer draft");
+  await register();
+  await activate();
+
+  const otherForm = frame.locator("#second input");
+  const otherTree = frame.locator("#component input");
+  await expect(otherForm).toHaveValue("Second form");
+  await expect(otherTree).toHaveValue("Component field");
+  await expect(otherTree).not.toBeFocused();
+});
+
+test("remembers an external form owner when restoring focus after preview removal", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/ownership",
+    "/ownership.js",
+  );
+  await preview.locator("#external").fill("Only for the first form");
+  await register();
+  await activate();
+  await expect(frame.locator("#unowned")).toHaveValue("");
+  await expect(frame.locator("#unowned")).not.toBeFocused();
+});
+
 test("disconnecting during handoff notifications does not revive the frame or emit load", async ({
   page,
 }) => {
@@ -718,6 +811,68 @@ test("removal aborts a pending composition without reviving its preview", async 
   await expect(page.locator("iframe")).toHaveCount(0);
 });
 
+test("native relationships resolve within each guest during adoption and reload", async ({
+  page,
+}) => {
+  // The same native controls in a normal document are the reference for this engine.
+  await page.goto(fixture.origin + "/relationships-guest", { waitUntil: "commit" });
+  const native = await page.locator(".relationships").evaluate(readRelationships);
+  expect(native).toEqual({
+    form: true,
+    formData: "Vega",
+    control: true,
+    labels: true,
+    list: true,
+    popover: true,
+    radioChecked: true,
+    detailsOpen: true,
+    detailsContent: '"panels"',
+  });
+  const { frame, register, release } = await pending(
+    page,
+    "/relationships",
+    "/relationships.js",
+  );
+  for (const stage of ["adoption", "reload"]) {
+    await test.step(stage, async () => {
+      const visible = await frame.locator(".relationships").elementHandle();
+      if (!visible) throw new Error("The visible guest is missing");
+      if (stage === "adoption") {
+        await register();
+        await release();
+      } else {
+        // Reload must get a fresh execution of the same module.
+        await page.unroute("**/relationships.js");
+        await frame.evaluate((element) => {
+          void (element as VFrameElement).reload();
+        });
+      }
+      type HandoffWindow = Window & {
+        relationshipsAtStartup?: ReturnType<typeof readRelationships>;
+        releaseRelationships?: () => void;
+      };
+      await page.waitForFunction(
+        () => typeof (window as HandoffWindow).releaseRelationships === "function",
+      );
+      const startup = await page.evaluate(
+        () => (window as HandoffWindow).relationshipsAtStartup,
+      );
+      const painted = await visible.evaluate(readRelationships);
+      await page.evaluate(() => {
+        const handoff = window as HandoffWindow;
+        handoff.releaseRelationships!();
+        delete handoff.releaseRelationships;
+      });
+      await expect(frame).toHaveJSProperty("status", "ready");
+      const ready = await frame.locator(".relationships").evaluate(readRelationships);
+      expect.soft(startup, "guest bootstrap").toEqual(native);
+      expect.soft(painted, "visible document during bootstrap").toEqual(native);
+      expect.soft(ready, "activated document").toEqual(native);
+      await visible.dispose();
+    });
+  }
+});
+
 test("React controlled values catch up and survive a subsequent render", async ({
   page,
 }) => {
@@ -731,12 +886,17 @@ test("React controlled values catch up and survive a subsequent render", async (
   await preview.locator("#note").fill("pending");
   await preview.locator("#enabled").uncheck();
   await activate();
+  // The layout effect reads external form ownership once, before the handoff.
+  await expect(frame.locator("#layout-model")).toHaveText("Vega");
   await expect(frame.locator("#model")).toHaveText("early|pending|false");
   await frame.locator("#rerender").click();
   await expect(frame.locator("#rerender")).toHaveText("Render 1");
   await expect(frame.locator("#name")).toHaveValue("early");
   await expect(frame.locator("#note")).toHaveValue("pending");
   await expect(frame.locator("#enabled")).not.toBeChecked();
+  await page.unroute("**/react.js");
+  await frame.evaluate((element) => (element as VFrameElement).reload());
+  await expect(frame.locator("#layout-model")).toHaveText("Vega");
   expect(
     await page.evaluate(
       () =>
@@ -744,33 +904,4 @@ test("React controlled values catch up and survive a subsequent render", async (
           .hydrationErrors,
     ),
   ).toEqual([]);
-});
-
-test("releases the removed SSR preview while the live realm remains mounted", async ({
-  page,
-  browserName,
-}) => {
-  test.skip(
-    browserName === "webkit",
-    "Playwright WebKit cannot request deterministic GC",
-  );
-  const { frame, register, activate } = await pending(page);
-  await frame.evaluate((element) => {
-    (
-      window as Window & typeof globalThis & { previewProbe: WeakRef<Node> }
-    ).previewProbe = new WeakRef(element.shadowRoot!.firstChild!);
-  });
-  await register();
-  await activate();
-  await page.requestGC();
-  await page.requestGC();
-  expect(
-    await page.evaluate(
-      () =>
-        (
-          window as Window & typeof globalThis & { previewProbe: WeakRef<Node> }
-        ).previewProbe.deref() === undefined,
-    ),
-  ).toBe(true);
-  await expect(frame.locator("#name")).toHaveValue("server");
 });

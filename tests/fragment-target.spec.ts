@@ -19,7 +19,7 @@ test.beforeAll(async () => {
         "<style>html,body{margin:0}.part{color:rgb(200,0,0)}.part:target{color:rgb(0,200,0)}.part:ta\\72 get{background-color:rgb(10,20,30)}</style>",
       ),
       "/pending-fragment": htmlDocument(
-        '<div id="replacement">Replacement</div><div style="height:1000px"></div><div id="two">Two</div><div style="height:1500px"></div><script type="module">location.hash="two";await fetch("/fragment-release");function record(){if(getComputedStyle(document.body).visibility==="hidden")requestAnimationFrame(record);else window.firstPaintScroll=scrollY}requestAnimationFrame(record)</script>',
+        '<div id="replacement">Replacement</div><div style="height:1000px"></div><div id="two">Two</div><div style="height:1500px"></div><script type="module">location.hash="two";top.stagedTarget=()=>document.querySelector(":target")?.id;await fetch("/fragment-release");function record(){if(getComputedStyle(document.body).visibility==="hidden")requestAnimationFrame(record);else window.firstPaintScroll=scrollY}requestAnimationFrame(record)</script>',
         "<style>html,body{margin:0}</style>",
       ),
       "/fragment-release": { type: "text/plain", body: "released" },
@@ -46,11 +46,8 @@ test("a staged document's initial hash change leaves the old viewport alone unti
   await expect.poll(() => !!release).toBe(true);
   await expect
     .poll(() =>
-      frame.evaluate(
-        (element) =>
-          [...element.shadowRoot!.querySelectorAll("v-html")]
-            .at(-1)!
-            .querySelector(":target")?.id,
+      frame.evaluate(() =>
+        (window as Window & { stagedTarget?: () => string }).stagedTarget?.(),
       ),
     )
     .toBe("two");

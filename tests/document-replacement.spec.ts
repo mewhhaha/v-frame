@@ -60,6 +60,21 @@ test.beforeAll(async () => {
         '<style>html,body{margin:0}main{height:2000px;background:rgb(250,230,210)}@media(min-width:1px){main::before{content:"Replacement pseudo";color:rgb(50,60,70)}}</style>',
       ),
       "/activate": { type: "text/plain", body: "activated" },
+      "/staged-focus-parts": htmlDocument(
+        `<button id="initial-part" part="initial">Initial part</button><input id="requested-focus">
+        <output id="part-colors"></output><script type="module">
+          const initial = document.querySelector('#initial-part');
+          const dynamic = document.createElement('button');
+          dynamic.setAttribute('part', 'dynamic');
+          document.body.append(dynamic);
+          document.querySelector('#part-colors').textContent = JSON.stringify([
+            getComputedStyle(initial).color,
+            getComputedStyle(dynamic).color
+          ]);
+          document.querySelector('#requested-focus').focus({ preventScroll: true });
+          await fetch('/activate');
+        </script>`,
+      ),
       "/staged-interactions": htmlDocument(
         `<main><output id="staged-state"></output><button id="new-button">Replacement</button>
         <dialog id="deferred-dialog">Deferred modal</dialog><dialog id="closed-dialog">Closed before activation</dialog>
@@ -506,4 +521,45 @@ test("stages declarative top-layer actions in a nested shadow tree", async ({ pa
     blocked: false,
     programmatic: true,
   });
+});
+
+test("forwards parts before startup and applies requested focus at reveal", async ({
+  page,
+}) => {
+  const frame = await mount(page);
+  await page.addStyleTag({
+    content: `
+      v-frame::part(initial) { color: rgb(10, 30, 50); }
+      v-frame::part(dynamic) { color: rgb(20, 40, 60); }
+    `,
+  });
+  let release: (() => Promise<void>) | undefined;
+  await page.route("**/activate", (route) => {
+    release = () => route.continue();
+  });
+  await frame.locator("#field").focus();
+  await frame.evaluate((element: VFrameElement) => (element.src = "/staged-focus-parts"));
+  await expect.poll(() => release !== undefined).toBe(true);
+  await expect(frame.locator("#field")).toBeFocused();
+  expect(JSON.parse((await frame.locator("#part-colors").textContent())!)).toEqual([
+    "rgb(10, 30, 50)",
+    "rgb(20, 40, 60)",
+  ]);
+
+  await release!();
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("ready");
+  await expect(frame.locator("#requested-focus")).toBeFocused();
+  await expect(frame.locator("#initial-part")).toHaveCSS("color", "rgb(10, 30, 50)");
+  await frame
+    .locator("#initial-part")
+    .evaluate((element) => element.removeAttribute("part"));
+  await expect
+    .poll(() =>
+      frame.evaluate((element: VFrameElement) =>
+        element.shadowRoot.host.getAttribute("exportparts"),
+      ),
+    )
+    .toBe("dynamic");
 });
