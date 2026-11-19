@@ -482,6 +482,36 @@ export function rewriteCSSOMSelectorText(source: string): string {
   return generateCSS(ast);
 }
 
+/** Match authored names while a visible SSR disclosure uses a private native group. */
+export function previewDisclosureSelector(source: string, marker: string): string {
+  if (!source.includes("[")) return source;
+  const ast = parseCSS(source, { context: "selectorList" });
+  let changed = false;
+  walkCSS(ast, {
+    enter(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
+      if (
+        node.type !== "AttributeSelector" ||
+        ident.decode(node.name.name).toLowerCase() !== "name"
+      )
+        return;
+      const authored = generateCSS(node);
+      const alias = clone(node) as typeof node;
+      alias.name.name = marker;
+      const selector = parseCSS(
+        `:is(:where(:not([${marker}]))${authored},${generateCSS(alias)})`,
+        {
+          context: "selector",
+        },
+      ) as Selector;
+      list.replace(item, selector.children);
+      changed = true;
+      return walkCSS.skip;
+    },
+  });
+  if (changed) return generateCSS(ast);
+  return source;
+}
+
 /** Restrict only the subject of each selector, without changing specificity. */
 export function scopeCSSOMSelectorText(source: string, scope: string): string {
   const selectors = parseCSS(source, { context: "selectorList" });

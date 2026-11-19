@@ -544,3 +544,41 @@ test("host page reload leaves active adopted frames intact until teardown", asyn
     .poll(() => fixture.teardownReports.slice(reportStart))
     .toEqual(["v-frame-teardown: pagehide copyIntact=true"]);
 });
+
+test("keeps native disclosure groups independent while the adopted copy is staged", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await page.evaluate(async (url) => {
+    const frame = document.createElement("v-frame");
+    frame.setAttribute("adopt", "");
+    frame.setAttribute("src", "/flight/");
+    frame.attachShadow({ mode: "open" }).innerHTML = `
+      <v-html><v-head><style>[name="flight"] summary { color: rgb(4, 75, 90) }</style></v-head>
+      <v-body>
+        <details name="flight" open><summary>Landing</summary>Touchdown</details>
+        <details name="flight"><summary>Launch</summary>Liftoff</details>
+        <script type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">
+          top.initialOpen = document.querySelector('details[name="flight"]').open;
+          await new Promise(resolve => { top.finishDisclosure = resolve; });
+        </script>
+      </v-body></v-html>`;
+    document.body.append(frame);
+    (await import(url)).defineVFrame();
+  }, `${fixture.origin}/dist/index.js`);
+  await page.waitForFunction(
+    () => typeof (window as any).finishDisclosure === "function",
+  );
+  const trees = page.locator("v-frame v-html");
+  const visible = trees.first();
+  await expect(visible.locator("details[open] summary")).toHaveText("Landing");
+  await expect(visible.locator("summary").first()).toHaveCSS("color", "rgb(4, 75, 90)");
+  expect(await page.evaluate(() => (window as any).initialOpen)).toBe(true);
+  await visible.getByText("Launch").click();
+  await expect(visible.locator("details[open] summary")).toHaveText("Launch");
+  await page.evaluate(() => (window as any).finishDisclosure());
+  const ready = page.locator("v-frame:state(ready)");
+  await expect(ready.locator("details[open] summary")).toHaveText("Launch");
+  await expect(ready.locator('details[name="flight"]')).toHaveCount(2);
+  await expect(ready.locator("summary").last()).toHaveCSS("color", "rgb(4, 75, 90)");
+});

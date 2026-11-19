@@ -1,3 +1,4 @@
+import { previewDisclosureSelector } from "../css.js";
 import { abortError } from "./connect.js";
 
 const CONTROL_SELECTOR = "input,textarea,select";
@@ -57,6 +58,58 @@ function equal(left: Value, right: Value): boolean {
   );
 }
 
+// Native exclusive disclosure groups use the entire shadow tree. While both
+// copies are connected, keep the preview's group separate from the guest's.
+function isolateDisclosureGroups(preview: HTMLElement, signal: AbortSignal): void {
+  const details = Array.from(
+    preview.querySelectorAll<HTMLDetailsElement>("details[name]"),
+  ).filter((item) => item.name);
+  if (!details.length) return;
+  const marker = "data-v-frame-preview-group";
+  const groups = new Set(details.map((item) => item.name));
+  let prefix = "v-frame-preview:";
+  while (Array.from(groups).some((name) => name.startsWith(prefix))) prefix += ":";
+  const restored: Array<() => void> = [];
+  const visit = (rules: CSSRuleList) => {
+    for (const rule of rules) {
+      if ("selectorText" in rule && typeof rule.selectorText === "string") {
+        const original = rule.selectorText;
+        const selector = previewDisclosureSelector(original, marker);
+        if (selector !== original) {
+          rule.selectorText = selector;
+          restored.push(() => {
+            rule.selectorText = original;
+          });
+        }
+      }
+      if ("cssRules" in rule) visit((rule as CSSGroupingRule).cssRules);
+    }
+  };
+  for (const style of preview.querySelectorAll("style")) {
+    if (style.sheet) visit(style.sheet.cssRules);
+  }
+  for (const item of details) {
+    const name = item.name;
+    item.setAttribute(marker, name);
+    item.name = prefix + name;
+    restored.push(() => {
+      item.name = name;
+      item.removeAttribute(marker);
+    });
+  }
+  signal.addEventListener(
+    "abort",
+    () => {
+      // On cancellation the staged copy may still be connected. Reclaim the
+      // visible group's selection if restoring its name met that pending copy.
+      const opened = details.filter((item) => item.open);
+      for (const restore of restored) restore();
+      for (const item of opened) if (!item.open) item.open = true;
+    },
+    { once: true },
+  );
+}
+
 /** Owns only the pending preview; disposal releases its listeners and references. */
 export class AdoptionState {
   #preview: HTMLElement | null;
@@ -68,11 +121,13 @@ export class AdoptionState {
   #live: HTMLElement | null = null;
   #window: (Window & typeof globalThis) | null = null;
   #pairs: ControlPair[] = [];
+  #disclosures: Array<{ source: HTMLDetailsElement; initial: boolean }> = [];
   #targets = new WeakMap<Element, Element>();
 
   constructor(preview: HTMLElement, root: ShadowRoot) {
     this.#preview = preview;
     this.#root = root;
+    isolateDisclosureGroups(preview, this.#lifetime.signal);
     const sourceControl = (event: Event): Control | undefined => {
       const path = event.composedPath();
       if (!this.#preview || !path.includes(this.#preview)) return;
@@ -199,6 +254,12 @@ export class AdoptionState {
         )
           return;
         this.#targets.set(element, next);
+        if (element.localName === "details") {
+          this.#disclosures.push({
+            source: element as HTMLDetailsElement,
+            initial: (next as HTMLDetailsElement).open,
+          });
+        }
         if (element.matches(CONTROL_SELECTOR)) {
           this.#pairs.push({
             source: element as Control,
@@ -281,6 +342,11 @@ export class AdoptionState {
 
   sync(replay = false): void {
     if (!this.#live) return;
+    for (const { source, initial } of this.#disclosures) {
+      if (source.open === initial) continue;
+      const target = this.#target(source) as HTMLDetailsElement | null;
+      if (target && target.open !== source.open) target.open = source.open;
+    }
     for (const pair of this.#pairs) {
       if (this.#lifetime.signal.aborted) break;
       const value = read(pair.source);
@@ -444,6 +510,7 @@ export class AdoptionState {
   dispose(): void {
     this.#lifetime.abort();
     this.#pairs = [];
+    this.#disclosures = [];
     this.#targets = new WeakMap();
     this.#edited.clear();
     this.#composing.clear();

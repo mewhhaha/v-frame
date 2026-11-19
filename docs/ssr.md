@@ -28,6 +28,9 @@ replacing an unkeyed element never transfers focus to an unrelated sibling.
 Selected options follow their original elements, or an unambiguous matching
 ID/value after replacement. Reordered options keep their selections, while
 removed or ambiguous choices are not assigned to neighbouring options.
+Named disclosure groups stay independent while both trees are connected. An
+open disclosure remains open through activation, including a selection the
+visitor changes in the preview.
 A handoff waits for an observed IME composition to finish rather than replacing
 its focused control mid-edit.
 Preview links have a disabled link role, and forms retain their editable
