@@ -60,6 +60,94 @@ test.beforeAll(async () => {
         '<style>html,body{margin:0}main{height:2000px;background:rgb(250,230,210)}@media(min-width:1px){main::before{content:"Replacement pseudo";color:rgb(50,60,70)}}</style>',
       ),
       "/activate": { type: "text/plain", body: "activated" },
+      "/staged-interactions": htmlDocument(
+        `<main><output id="staged-state"></output><button id="new-button">Replacement</button>
+        <dialog id="deferred-dialog">Deferred modal</dialog><dialog id="closed-dialog">Closed before activation</dialog>
+        <span id="below">Below the fold</span></main>
+        <script type="module">
+          const modal = document.querySelector('#deferred-dialog');
+          const closed = document.querySelector('#closed-dialog');
+          window.addEventListener('click', event => { window.firstClick = event.target.id }, { once: true });
+          const focused = document.activeElement === document.body;
+          const hasFocus = document.hasFocus();
+          const hits = document.elementsFromPoint(10, 10).length;
+          window.scrollTo(0, 600);
+          document.scrollingElement.scrollTop += 50;
+          window.scrollBy({ top: 25 });
+          const below = document.querySelector('#below');
+          let invalidScroll;
+          try { below.scrollIntoView({ block: "invalid" }); }
+          catch (error) { invalidScroll = error.name; }
+          const stagedScroll = scrollY;
+          below.scrollIntoView({ behavior: "instant" });
+          window.scrollBy(0, -25);
+          modal.showModal();
+          closed.showModal();
+          closed.close();
+          window.showLater = closed.showModal.bind(closed);
+          const show = HTMLDialogElement.prototype.showModal;
+          HTMLDialogElement.prototype.showModal = function () {
+            window.calledGuestWrapper = true;
+            show.call(this);
+          };
+          document.querySelector('output').textContent = JSON.stringify({
+            focused, hasFocus, hits, stagedScroll, invalidScroll, open: modal.open, modal: modal.matches(':modal')
+          });
+          await fetch("/activate");
+        </script>`,
+        "<style>html,body{margin:0}main{height:2000px;position:relative}#below{position:absolute;top:1500px}</style>",
+      ),
+      "/staged-top-layer":
+        htmlDocument(`<main id="nested"></main><output id="layer-state"></output>
+        <script type="module">
+          const nested = document.querySelector('#nested').attachShadow({ mode: 'closed' });
+          nested.innerHTML = '<dialog id="modal">Dialog</dialog><button id="invoker" commandfor="modal" command="show-modal">Open</button><div id="menu" popover>Menu</div><button id="popover-invoker" popovertarget="menu">Open menu</button><div id="blocked-menu" popover="manual">Canceled menu</div><button id="blocked-invoker" popovertarget="blocked-menu">Open canceled menu</button>';
+          const dialog = nested.querySelector('dialog');
+          const button = nested.querySelector('#invoker');
+          const menu = nested.querySelector('#menu');
+          const blocked = nested.querySelector('#blocked-menu');
+          const programmatic = document.createElement('div');
+          programmatic.popover = 'manual';
+          document.body.append(programmatic);
+          const toggledOn = programmatic.togglePopover();
+          const toggledOff = programmatic.togglePopover();
+          let invalidPopoverOptions = [];
+          for (const method of ['showPopover', 'togglePopover']) {
+            try { programmatic[method]({ source: {} }); }
+            catch (error) { invalidPopoverOptions.push(error.name); }
+          }
+          programmatic.showPopover();
+          window.getLayerState = () => ({
+            modal: dialog.matches(':modal'),
+            open: dialog.open,
+            popover: menu.matches(':popover-open'),
+            blocked: blocked.matches(':popover-open'),
+            programmatic: programmatic.matches(':popover-open'),
+          });
+          const declarative = 'commandForElement' in button;
+          let prevented = true;
+          let syntheticIgnored = true;
+          if (declarative) {
+            dialog.addEventListener('command', event => event.preventDefault(), { once: true });
+            button.click();
+            await Promise.resolve();
+            prevented = !dialog.open;
+            dialog.dispatchEvent(new CommandEvent('command', { command: 'show-modal', source: button, cancelable: true }));
+            await Promise.resolve();
+            syntheticIgnored = !dialog.open;
+            button.click();
+          } else {
+            dialog.showModal();
+          }
+          blocked.addEventListener('beforetoggle', event => event.preventDefault(), { once: true });
+          nested.querySelector('#blocked-invoker').click();
+          nested.querySelector('#popover-invoker').click();
+          await Promise.resolve();
+          document.querySelector('output').textContent = JSON.stringify({
+            prevented, syntheticIgnored, toggledOn, toggledOff, invalidPopoverOptions, ...window.getLayerState()
+          });
+          await fetch('/activate');
+        </script>`),
       "/increment": { type: "text/plain", body: "1" },
     },
   });
@@ -278,3 +366,144 @@ for (const failure of ["entry", "bootstrap", "invalid-url"] as const) {
     expect(page.url()).toBe(fixture.origin + "/");
   });
 }
+
+for (const outcome of ["reveal", "rollback"] as const) {
+  test(`isolates focus, events, modals and scroll during staged interaction (${outcome})`, async ({
+    page,
+  }) => {
+    const frame = await mount(page);
+    let release: (() => Promise<void>) | undefined;
+    await page.route("**/activate", (route) => {
+      release = () => route.continue();
+    });
+    await frame.locator("#field").focus();
+    await frame.evaluate(
+      (element: VFrameElement) => (element.src = "/staged-interactions"),
+    );
+    await expect.poll(() => release !== undefined).toBe(true);
+    expect(JSON.parse((await frame.locator("#staged-state").textContent())!)).toEqual({
+      focused: true,
+      hasFocus: false,
+      hits: 0,
+      stagedScroll: 675,
+      invalidScroll: "TypeError",
+      open: true,
+      modal: false,
+    });
+    expect(await frame.evaluate((element) => element.scrollTop)).toBe(0);
+    await frame.locator("#button").click();
+    await expect(frame.locator("#count")).toHaveText("1");
+
+    // Staging uses its own display rule, so exercise hidden here as well as
+    // after the previous guest is revealed again.
+    await frame.evaluate((element: VFrameElement) => (element.hidden = true));
+    await expect(frame).toBeHidden();
+    await frame.evaluate((element: VFrameElement) => (element.hidden = false));
+
+    if (outcome === "rollback") {
+      await frame.evaluate((element: VFrameElement) => (element.src = "/missing"));
+      await expect.poll(() => frameFailures(frame)).toHaveLength(1);
+      expect((await frameFailures(frame))[0]?.fatal).toBe(false);
+      await expect(frame.locator("#staged-state")).toHaveCount(0);
+      expect(await frame.evaluate((element) => element.scrollTop)).toBe(0);
+      await frame.locator("#button").click();
+      await expect(frame.locator("#count")).toHaveText("2");
+      return;
+    }
+
+    await release!();
+    await expect
+      .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+      .toBe("ready");
+    const committed = await frame.evaluate((element: VFrameElement) => {
+      const child = element.contentWindow as Window & {
+        firstClick?: string;
+        showLater(): void;
+        calledGuestWrapper?: boolean;
+      };
+      const primary =
+        child.document.querySelector<HTMLDialogElement>("#deferred-dialog")!;
+      const closed = child.document.querySelector<HTMLDialogElement>("#closed-dialog")!;
+      const state = {
+        modal: primary.matches(":modal"),
+        closed: !closed.open,
+        scroll: child.scrollY,
+        firstClick: child.firstClick ?? null,
+      };
+      primary.close();
+      child.document.querySelector<HTMLButtonElement>("#new-button")!.click();
+      child.showLater();
+      const retainedMethodWorks = closed.matches(":modal");
+      closed.close();
+      closed.showModal();
+      return {
+        ...state,
+        nextClick: child.firstClick,
+        retainedMethodWorks,
+        wrapperWorks: child.calledGuestWrapper && closed.matches(":modal"),
+      };
+    });
+    expect(committed).toEqual({
+      modal: true,
+      closed: true,
+      scroll: 1475,
+      firstClick: null,
+      nextClick: "new-button",
+      retainedMethodWorks: true,
+      wrapperWorks: true,
+    });
+    await frame.evaluate((element: VFrameElement) => (element.hidden = true));
+    await expect(frame).toBeHidden();
+  });
+}
+
+test("stages declarative top-layer actions in a nested shadow tree", async ({ page }) => {
+  const frame = await mount(page);
+  await frame.evaluate((element: VFrameElement) => {
+    const doc = element.contentWindow!.document;
+    const popover = doc.createElement("div");
+    popover.id = "old-menu";
+    popover.popover = "auto";
+    doc.body.append(popover);
+    popover.showPopover();
+  });
+  let release: (() => Promise<void>) | undefined;
+  await page.route("**/activate", (route) => {
+    release = () => route.continue();
+  });
+  await frame.evaluate((element: VFrameElement) => (element.src = "/staged-top-layer"));
+  await expect.poll(() => release !== undefined).toBe(true);
+  expect(JSON.parse((await frame.locator("#layer-state").textContent())!)).toEqual({
+    prevented: true,
+    syntheticIgnored: true,
+    toggledOn: true,
+    toggledOff: false,
+    invalidPopoverOptions: ["TypeError", "TypeError"],
+    modal: false,
+    open: true,
+    popover: false,
+    blocked: false,
+    programmatic: false,
+  });
+  expect(
+    await frame
+      .locator("#old-menu")
+      .evaluate((element) => element.matches(":popover-open")),
+  ).toBe(true);
+  await release!();
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("ready");
+  expect(
+    await frame.evaluate((element: VFrameElement) => {
+      const child = element.contentWindow as Window & { getLayerState(): object };
+      return child.getLayerState();
+    }),
+  ).toEqual({
+    modal: true,
+    open: true,
+    popover: true,
+    blocked: false,
+    programmatic: true,
+  });
+});

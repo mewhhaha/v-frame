@@ -299,6 +299,7 @@ test("restores cross-document back and forward before the first visible animatio
   await expect
     .poll(() => frame.evaluate((element: VFrameElement) => element.status))
     .toBe("ready");
+  expect(await position(frame)).toEqual([0, 0]);
   await scroll(frame, 240, 1000);
   await frame.evaluate((element: VFrameElement) => element.back());
   expect(await position(frame)).toEqual([120, 300]);

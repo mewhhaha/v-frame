@@ -2,6 +2,12 @@ import { ListenerRegistry, captureAbortSignalMethods } from "./listener-registry
 import { EnumerableWeakMap } from "./enumerable-weak.js";
 import type { VFrameCredentials, VFrameWindow } from "./types.js";
 
+// A detached WebKit XHR can still accept send(). The retired realm's prototype
+// must guard previously opened requests without retaining the frame's closures.
+function detachedXHRSend(): never {
+  throw new DOMException("The guest document was detached", "InvalidStateError");
+}
+
 export interface NetworkPatchOptions {
   window: VFrameWindow;
   signal: AbortSignal;
@@ -500,17 +506,14 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
   NativeXMLHttpRequest.prototype.send = function send(
     body?: Document | XMLHttpRequestBodyInit | null,
   ): void {
+    if (disposed || options.signal.aborted || options.isActive?.() === false)
+      detachedXHRSend();
     if (
       options.credentials === "include" &&
       nativeXHRWithCredentialsSetter !== undefined &&
       !nativeXHRCredentialsAssigned.has(this)
     ) {
       Reflect.apply(nativeXHRWithCredentialsSetter, this, [true]);
-    }
-    if (disposed) {
-      // Teardown already aborted every request; an XHR opened before it and sent
-      // afterwards must fail the way a natively aborted one does, not go out.
-      disposeNativeXHR(this);
     }
     nativeXHRUploads.set(this.upload, this);
     const inFlightRequest = activeXHRSends.get(this);
@@ -746,7 +749,7 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
       );
     }
     NativeXMLHttpRequest.prototype.open = nativeXHROpen;
-    NativeXMLHttpRequest.prototype.send = nativeXHRSend;
+    NativeXMLHttpRequest.prototype.send = detachedXHRSend;
     NativeXMLHttpRequest.prototype.abort = nativeXHRAbort;
     NativeXMLHttpRequest.prototype.addEventListener = nativeXHRAddEventListener;
     NativeXMLHttpRequest.prototype.removeEventListener = nativeXHRRemoveEventListener;

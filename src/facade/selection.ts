@@ -244,6 +244,7 @@ export function installSelectionFacade(
     window,
     hostDocument,
     root: options.html,
+    shadowRoots: context.guestShadowRoots,
     document,
     adoptRange: virtualizeRange,
     onSelectionChange: dispatchSelectionChange,

@@ -72,6 +72,8 @@ assigning `credentials` or `navigation` a value outside the ones listed throws a
 `TypeError`, as does assigning an empty `trustedTypesPolicy` string or a policy
 object that lacks a name or one of its three methods.
 
+Network loads require a complete HTTP 200 response with a `text/html` body. The client and SSR materializer decode a byte order mark, a response charset, or an early HTML charset declaration, in that order, and default to UTF-8. A same-origin redirect can select a new document URL.
+
 ### When `adopt` is read
 
 `adopt` is a reflecting property, but no attribute observer watches it. It is
@@ -241,9 +243,11 @@ way.
 ## CSP and Trusted Types
 
 Guest execution inherits the host page's Content Security Policy. The fetched
-guest document's own CSP and framing headers are not applied as a separate
-policy — the guest is not in a separate browsing context, so there is nothing
-for them to apply to.
+guest's CSP and framing headers do not supply a second policy. Client stylesheet
+requests use the host's `connect-src` policy. Rewritten styles and compiled inline
+event handlers run through generated style and script elements, which use the
+frame's nonce when one is provided. A stylesheet link's `integrity` is checked
+against its original bytes before rewriting.
 
 Set `nonce` when the host requires one:
 

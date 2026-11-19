@@ -4,7 +4,7 @@
 // native handles, the predicates and geometry every part needs, the state more
 // than one module reads, and the patch bookkeeping that dispose() unwinds.
 
-import type { EnumerableWeakMap } from "../enumerable-weak.js";
+import { EnumerableWeakSet, type EnumerableWeakMap } from "../enumerable-weak.js";
 import type { VFrameWindow } from "../types.js";
 import type { LinkedStyle } from "../linked-styles.js";
 import { liveIndexedCollection } from "./indexed-collection.js";
@@ -14,6 +14,7 @@ export { HTML_NAMESPACE, SVG_NAMESPACE } from "../asset-urls.js";
 export interface DocumentFacadeOptions {
   host: HTMLElement;
   shadowRoot: ShadowRoot;
+  scroll: Pick<HTMLElement, "scrollLeft" | "scrollTop" | "scrollTo" | "scrollBy">;
   window: VFrameWindow;
   document: Document;
   html: HTMLElement;
@@ -40,6 +41,7 @@ export interface DocumentFacadeOptions {
   onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
   onConnectedNodes(nodes: readonly Node[]): void;
   onDisconnectedNodes(nodes: readonly Node[]): void;
+  onShadowRoot?(root: ShadowRoot): void;
 }
 
 export interface PatchRegistry {
@@ -446,6 +448,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     isBaseElement,
     subtreeHasBaseElement,
     connectedBaseElementChanged,
+    guestShadowRoots: new EnumerableWeakSet<ShadowRoot>(),
     virtualNodes,
     createdScripts,
     protectedScriptAttributes,

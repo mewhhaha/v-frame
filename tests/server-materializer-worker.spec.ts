@@ -49,10 +49,22 @@ async function run<T>(name: string): Promise<T> {
 }
 
 test("transforms only a 200 text/html response and returns anything else untouched", async () => {
-  const result =
-    await run<Record<string, { same: boolean; status: number; body: string }>>("gate");
+  const result = await run<
+    Record<
+      string,
+      {
+        same: boolean;
+        status: number;
+        body: string;
+        composable: boolean;
+        rejected: boolean;
+      }
+    >
+  >("gate");
   for (const name of ["ok", "ok-uppercase"]) {
     expect(result[name]!.same).toBe(false);
+    expect(result[name]!.composable).toBe(true);
+    expect(result[name]!.rejected).toBe(false);
     expect(result[name]!.body).toContain("<v-body>");
     expect(result[name]!.body).toContain('data-v-frame-script=""');
   }
@@ -66,6 +78,8 @@ test("transforms only a 200 text/html response and returns anything else untouch
     "redirect",
   ]) {
     expect(result[name]!.same, name).toBe(true);
+    expect(result[name]!.composable, name).toBe(false);
+    expect(result[name]!.rejected, name).toBe(true);
   }
   expect(result.partial!.body).toContain("<body>");
   expect(result.json!.body).toContain("<body>");
@@ -186,6 +200,28 @@ test("cancelling reports no failures and aborts a custom fetchText through its s
   expect(signals.length).toBeGreaterThan(0);
   expect(signals.every((entry) => entry.hasSignal)).toBe(true);
   expect(failures).toEqual([]);
+});
+
+test("aborts stylesheet work and the output body when the caller aborts", async () => {
+  const { received, failures, readFailed } = await run<{
+    received: string[];
+    failures: string[];
+    readFailed: boolean;
+  }>("callerCancel");
+  expect(received).toEqual(["https://guest.test/apps/orders/theme.css"]);
+  expect(failures).toEqual([]);
+  expect(readFailed).toBe(true);
+});
+
+test("checks the strongest stylesheet integrity against original bytes", async () => {
+  const { body, failures } = await run<{ body: string; failures: string[] }>("integrity");
+  expect(body.match(/data-v-frame-linked=/g)).toHaveLength(3);
+  expect(body).toContain("#test{color:rebeccapurple}");
+  expect(failures).toEqual([
+    "v-frame SSR stylesheet https://guest.test/apps/orders/pinned.css failed its integrity check",
+    "v-frame SSR stylesheet https://guest.test/apps/orders/malformed.css failed its integrity check",
+    "v-frame SSR stylesheet https://guest.test/apps/orders/text-only.css needs original bytes to verify integrity",
+  ]);
 });
 
 test("fetches linked stylesheets and sibling imports concurrently", async () => {

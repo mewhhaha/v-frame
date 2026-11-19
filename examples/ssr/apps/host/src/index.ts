@@ -7,7 +7,12 @@ import {
   type HostSectionKey,
   type PageFrameId,
 } from "./host-config.js";
-import { materializeVFrameDocument } from "@mewhhaha/v-frame/server";
+import {
+  isVFrameDocumentResponse,
+  materializeVFrameDocument,
+  type MaterializeDocumentOptions,
+  type ServerStylesheetFetch,
+} from "@mewhhaha/v-frame/server";
 
 const qwikRoutes = new Set(["/inventory", "/catalog"]);
 const widgetDocumentRoutes = new Map([
@@ -251,9 +256,43 @@ function serviceRequest(service: string, path: string): Request {
   });
 }
 
+function widgetStylesheetFetch(origin: string, env: Env): ServerStylesheetFetch {
+  const services = [
+    { id: "react-router", binding: env.REACT_ROUTER_WIDGET },
+    { id: "qwik", binding: env.QWIK_WIDGET },
+    { id: "angular", binding: env.ANGULAR_WIDGET },
+    { id: "solid", binding: env.SOLID_WIDGET },
+  ];
+  return async (href, { signal } = {}) => {
+    const url = new URL(href);
+    if (url.origin !== origin || url.username !== "" || url.password !== "") {
+      throw new TypeError(`Unexpected stylesheet origin: ${url.origin}`);
+    }
+    const service = services.find(({ id }) => url.pathname.startsWith(`/widgets/${id}/`));
+    if (!service)
+      throw new TypeError(`Unexpected widget stylesheet path: ${url.pathname}`);
+
+    let path = url.pathname;
+    if (service.id === "qwik") path = path.slice("/widgets/qwik".length);
+    const response = await service.binding.fetch(
+      `https://${service.id}-widget.internal${path}${url.search}`,
+      { headers: { Accept: "text/css" }, redirect: "manual", signal },
+    );
+    // The same bindings serve the public URLs in development and production.
+    // Reject redirects so a guest asset cannot move the request to another service.
+    if (!response.ok) {
+      throw new TypeError(
+        `Widget stylesheet ${url.pathname} returned ${response.status}`,
+      );
+    }
+    return { bytes: await response.arrayBuffer(), url: url.href };
+  };
+}
+
 function widgetContent(
   response: Response,
   definition: WidgetDefinition,
+  options: MaterializeDocumentOptions,
 ): HTMLRewriterElementContentHandlers {
   return {
     async element(element) {
@@ -262,6 +301,7 @@ function widgetContent(
         response,
         definition.documentURL,
         {
+          ...options,
           onFontFace(css) {
             fonts.add(css);
           },
@@ -284,7 +324,8 @@ function failedWidget(
   name: string,
   response: Response,
 ): { name: string; response: Response } | null {
-  return response.ok ? null : { name, response };
+  if (isVFrameDocumentResponse(response)) return null;
+  return { name, response };
 }
 
 export default {
@@ -349,6 +390,11 @@ export default {
     }
 
     const sectionRoutes = hostSectionRoutes[hostSection];
+    const materializeOptions: MaterializeDocumentOptions = {
+      requireDocument: true,
+      fetchText: widgetStylesheetFetch(url.origin, env),
+      signal: request.signal,
+    };
     const pageWidgetsPromise: Promise<PageWidget[]> = Promise.all(
       (Object.entries(sectionRoutes) as [PageFrameId, string][]).map(
         async ([frameId, route]) => {
@@ -374,7 +420,11 @@ export default {
               ),
             );
           }
-          if (!response.ok || frameId !== "react-router" || route === "/plugins") {
+          if (
+            !isVFrameDocumentResponse(response) ||
+            frameId !== "react-router" ||
+            route === "/plugins"
+          ) {
             return { failureName: frameId, frameId, response, source };
           }
 
@@ -391,7 +441,7 @@ export default {
               `/document?route=%2Finventory&base=%2Fwidgets%2Fqwik%2Fbuild%2F&surface=definition&article=${article}`,
             ),
           );
-          if (!nestedResponse.ok) {
+          if (!isVFrameDocumentResponse(nestedResponse)) {
             return {
               failureName: "nested-qwik",
               frameId,
@@ -404,6 +454,7 @@ export default {
             await materializeVFrameDocument(
               nestedResponse,
               new URL(nestedSource, url).href,
+              materializeOptions,
             )
           ).text();
           response = new HTMLRewriter()
@@ -447,7 +498,7 @@ export default {
         }),
       );
       return new Response(
-        `SSR widget ${failure.name} returned status ${failure.response.status}`,
+        `SSR widget ${failure.name} returned an unexpected document response (${failure.response.status})`,
         { status: 502 },
       );
     }
@@ -462,22 +513,30 @@ export default {
     for (const { frameId, response, source } of pageWidgets) {
       rewriter.on(
         `#${frameId}-widget`,
-        widgetContent(response, {
-          documentURL: new URL(source, url).href,
-          frameId,
-          label: pageFrameLabel(frameId, hostSection),
-          source,
-        }),
+        widgetContent(
+          response,
+          {
+            documentURL: new URL(source, url).href,
+            frameId,
+            label: pageFrameLabel(frameId, hostSection),
+            source,
+          },
+          materializeOptions,
+        ),
       );
     }
     rewriter.on(
       "#account-widget",
-      widgetContent(account, {
-        documentURL: new URL("/widgets/qwik/inventory?surface=profile", url).href,
-        frameId: "account",
-        label: "Qwik account frontend",
-        source: "/widgets/qwik/inventory?surface=profile",
-      }),
+      widgetContent(
+        account,
+        {
+          documentURL: new URL("/widgets/qwik/inventory?surface=profile", url).href,
+          frameId: "account",
+          label: "Qwik account frontend",
+          source: "/widgets/qwik/inventory?surface=profile",
+        },
+        materializeOptions,
+      ),
     );
     return rewriter.transform(shellResponse);
   },

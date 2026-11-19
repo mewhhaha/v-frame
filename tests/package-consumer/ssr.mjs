@@ -74,7 +74,7 @@ assert.ok(
 // Without a global HTMLRewriter (Node) the entry imports, and fails by name.
 await assert.rejects(
   materializeVFrameDocument(
-    new Response("<html></html>"),
+    new Response("<html></html>", { headers: { "content-type": "text/html" } }),
     "https://consumer.test/guest/",
   ),
   { name: "TypeError", message: /options\.HTMLRewriter/ },

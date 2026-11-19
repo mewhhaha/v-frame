@@ -122,6 +122,92 @@ async function screenshot(page: Page, frame: Locator) {
   return page.screenshot({ clip });
 }
 
+test("defers preview navigation and inline handlers while preserving editable controls", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?preview-actions");
+  const link = frame.locator("#preview-link");
+  const form = frame.locator("#preview-form");
+  const field = frame.locator("#preview-field");
+  const submit = frame.locator("#preview-submit");
+  await expect(link).toHaveAttribute("aria-disabled", "true");
+  await link.evaluate((element: HTMLElement) => element.click());
+  await field.fill("before activation");
+  await submit.click();
+  await expect(page).toHaveURL(origin + "/?preview-actions");
+  await expect(link).not.toHaveAttribute("data-clicked");
+  await expect(form).not.toHaveAttribute("data-submitted");
+
+  await activate();
+  await ready(frame);
+  await expect(field).toHaveValue("before activation");
+  await expect(link).not.toHaveAttribute("aria-disabled");
+  await link.click();
+  await expect(link).toHaveAttribute("data-clicked", "yes");
+  await submit.click();
+  await expect(form).toHaveAttribute("data-submitted", "yes");
+  await frame.evaluate((element: VFrameElement) => {
+    const document = element.contentWindow!.document;
+    const template = document.querySelector<HTMLTemplateElement>("#preview-template")!;
+    document.body.append(template.content.cloneNode(true));
+  });
+  const clonedLink = frame.locator("#cloned-link");
+  await expect(clonedLink).toHaveAttribute("href", /#copy$/);
+  await clonedLink.click();
+  await expect(clonedLink).toHaveAttribute("data-clicked", "yes");
+  await expect(page).toHaveURL(origin + "/?preview-actions");
+});
+
+test("ignores a cached stylesheet companion whose verified integrity differs", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?stale-integrity");
+  await activate();
+  await ready(frame);
+  expect(
+    await frame.evaluate((element: VFrameElement) => {
+      const link =
+        element.contentWindow!.document.querySelector<HTMLLinkElement>("#stale-sheet")!;
+      return link.sheet;
+    }),
+  ).toBeNull();
+  await expect(frame.locator("#result")).not.toHaveCSS("color", "rgb(98, 1, 2)");
+});
+
+test("restores quoted and entity-bearing attributes and reads legacy provenance", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?provenance");
+  const expectEncoded = 'Encoded & " &quot;';
+  const buttons = [
+    [frame.locator("#encoded-handler"), expectEncoded],
+    [frame.locator("#literal-handler"), "Literal & numeric &"],
+    [frame.locator("#legacy-handler"), "Legacy"],
+  ] as const;
+  for (const [button] of buttons) await expect(button).not.toHaveAttribute("onclick");
+  await activate();
+  await ready(frame);
+  const attributes = await frame.evaluate((element: VFrameElement) => {
+    const document = element.contentWindow!.document;
+    return {
+      encoded: document.querySelector("#encoded-handler")!.getAttribute("onclick"),
+      link: document.querySelector("#quoted-link")!.getAttribute("href"),
+      image: document.querySelector("#quoted-image")!.getAttribute("src"),
+      legacyImage: document.querySelector("#legacy-image")!.getAttribute("src"),
+    };
+  });
+  expect(attributes).toEqual({
+    encoded: `this.dataset.result = "${expectEncoded.replace('"', '\\"')}"`,
+    link: 'next.html?quote="yes"&n="&entity=&quot;',
+    image: 'images/tile.svg?quote="yes"&n="&entity=&quot;',
+    legacyImage: "images/tile.svg?legacy=1",
+  });
+  for (const [button, value] of buttons) {
+    await button.click();
+    await expect(button).toHaveAttribute("data-result", value);
+  }
+});
+
 test("cold relative images, SVG, linked CSS, imports, redirects and webfonts paint identically at activation", async ({
   page,
 }) => {

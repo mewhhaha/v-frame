@@ -9,6 +9,7 @@ import {
 } from "./realm/index.js";
 import { type DocumentHistoryMode, VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
+import { isHTMLDocumentResponse, readHTMLDocument } from "./html-response.js";
 import { AdoptionState } from "./realm/adoption-state.js";
 import { VFrameStatus } from "./types.js";
 import type {
@@ -34,12 +35,6 @@ const nativeNonceDescriptor = Object.getOwnPropertyDescriptor(
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
-}
-
-function entryFetchError(url: string, response: Response): TypeError {
-  return new TypeError(
-    `v-frame entry ${url} returned ${response.status} ${response.statusText || "without a successful status"}`,
-  );
 }
 
 function idleNavigationError(method: string): DOMException {
@@ -88,6 +83,7 @@ interface FrameLoad {
   adoptedMarkup: AdoptedMarkup | null;
   historySession: VirtualHistorySession | null;
   stageMarkup: boolean;
+  preserveScroll: boolean;
   boundNavigation: boolean;
   /** The navigation that asked for this document, or null when the host set `src`. */
   navigationKind: VFrameNavigationKind | null;
@@ -391,6 +387,7 @@ export class VFrameElement extends HTMLElementBase {
         adoptedMarkup,
         historySession: null,
         stageMarkup: adoptedMarkup !== null,
+        preserveScroll: false,
         boundNavigation: this.navigation === "host",
         navigationKind: null,
       }),
@@ -497,6 +494,7 @@ export class VFrameElement extends HTMLElementBase {
       this.#frameLoad({
         source: this.#currentURL ?? source,
         historySession: this.#historySession?.clone() ?? null,
+        preserveScroll: true,
         boundNavigation: this.navigation === "host",
       }),
     ).then((committed) => {
@@ -523,8 +521,8 @@ export class VFrameElement extends HTMLElementBase {
   #resetToIdle(): void {
     this.#generation += 1;
     this.#pendingGuestLoad = null;
-    this.#releaseGuest(true);
     this.#setStatus(VFrameStatus.Idle);
+    this.#releaseGuest(true);
   }
 
   addEventListener<K extends keyof VFrameEventMap>(
@@ -578,12 +576,14 @@ export class VFrameElement extends HTMLElementBase {
     navigationKind?: VFrameNavigationKind | null;
     boundNavigation?: boolean;
     stage?: boolean;
+    preserveScroll?: boolean;
   }): FrameLoad {
     return {
       source: options.source,
       adoptedMarkup: null,
       historySession: options.historySession ?? null,
       stageMarkup: (options.stage ?? true) && this.#realm !== null,
+      preserveScroll: options.preserveScroll ?? false,
       boundNavigation: options.boundNavigation ?? false,
       navigationKind: options.navigationKind ?? null,
     };
@@ -628,8 +628,6 @@ export class VFrameElement extends HTMLElementBase {
     if (this.#loadController !== null && this.#loadController === this.#realmController) {
       load = { ...load, stageMarkup: false };
     }
-    this.#loadController?.abort();
-    this.#loadingRealm = null;
     this.#pendingGuestLoad = null;
     const generation = this.#generation + 1;
     this.#generation = generation;
@@ -641,8 +639,18 @@ export class VFrameElement extends HTMLElementBase {
           url: this.#currentURL,
         }
       : { realm: null, realmController: null, historySession: null, url: null };
-    if (!load.stageMarkup) {
+    if (load.stageMarkup) {
+      const superseded = this.#loadController;
+      this.#loadingRealm = null;
+      this.#loadController = null;
+      superseded?.abort();
+    } else {
       this.#releaseGuest(true);
+    }
+    // Removing a superseded tree can run custom-element callbacks that start a load.
+    if (this.#generation !== generation) {
+      load.adoptedMarkup?.state.dispose();
+      return Promise.resolve(false);
     }
     const controller = new AbortController();
     const adoptedState = load.adoptedMarkup?.state;
@@ -720,6 +728,7 @@ export class VFrameElement extends HTMLElementBase {
       let connection: ConnectedRealmIframe;
       if (load.adoptedMarkup === null) {
         const entryResponse = fetch(requestedURL, {
+          mode: "same-origin",
           credentials: this.credentials,
           signal: controller.signal,
         });
@@ -728,10 +737,16 @@ export class VFrameElement extends HTMLElementBase {
           connectRealm(requestedURL.href),
         ]);
         connection = connectedRealm;
-        if (!response.ok || response.type === "opaque") {
-          throw entryFetchError(requestedURL.href, response);
+        if (!isHTMLDocumentResponse(response)) {
+          void response.body?.cancel().catch(() => {});
+          const status = response.statusText || "without a successful status";
+          let message = `v-frame entry ${requestedURL.href} returned ${response.status} ${status}`;
+          if (response.ok) {
+            message += ` (${response.headers.get("content-type") ?? "no content type"}); expected a 200 text/html document`;
+          }
+          throw new TypeError(message);
         }
-        source = await response.text();
+        source = await readHTMLDocument(response);
         this.#assertCurrentGeneration(generation, controller.signal);
         const responseURL = parseEntryURL(
           response.url || requestedURL.href,
@@ -793,11 +808,13 @@ export class VFrameElement extends HTMLElementBase {
         historySession,
         boundNavigation: load.boundNavigation,
         stageMarkup: load.stageMarkup,
+        preserveScroll: load.preserveScroll,
         restoreScroll: load.navigationKind === "traverse",
         credentials: this.credentials,
         signal: controller.signal,
         getNonce: () => this.nonce,
-        fetchStylesheet: (url) => this.#fetchStylesheet(url, controller.signal),
+        fetchStylesheet: (url, options) =>
+          this.#fetchStylesheet(url, controller.signal, options?.integrity),
         ...this.#realmCallbacks(
           load.boundNavigation,
           historySession,
@@ -818,12 +835,18 @@ export class VFrameElement extends HTMLElementBase {
 
       await realm.executeInitialScripts();
       this.#assertCurrentGeneration(generation, controller.signal);
-      previous.realm?.dispose();
-      previous.realmController?.abort();
-      // `previous.realm === null` is what tells the catch path a throw from
-      // `realm.reveal()` below fails this generation instead of rolling back to a
-      // guest that was just disposed.
-      previous.realm = null;
+      if (previous.realm !== null) {
+        const retired = previous.realm;
+        // Teardown can run custom-element callbacks. Detach the outgoing realm
+        // before invoking them so a reentrant load cannot roll back to it.
+        previous.realm = null;
+        this.#realm = null;
+        this.#realmController = null;
+        this.#historySession = null;
+        retired.dispose();
+        previous.realmController?.abort();
+        this.#assertCurrentGeneration(generation, controller.signal);
+      }
       this.#realm = realm;
       this.#loadingRealm = null;
       this.#realmController = controller;
@@ -877,8 +900,13 @@ export class VFrameElement extends HTMLElementBase {
   async #fetchStylesheet(
     url: string,
     signal: AbortSignal,
+    integrity = "",
   ): Promise<{ text: string; url: string }> {
-    const response = await fetch(url, { credentials: this.credentials, signal });
+    const response = await fetch(url, {
+      credentials: this.credentials,
+      signal,
+      integrity,
+    });
     if (!response.ok || response.type === "opaque") {
       throw new TypeError(
         `v-frame stylesheet ${url} returned ${response.status} ${response.statusText}`,
@@ -987,6 +1015,7 @@ export class VFrameElement extends HTMLElementBase {
               source: nextSession.currentURL,
               historySession: nextSession,
               navigationKind: detail.kind,
+              preserveScroll: mode === "reload",
             }),
           ),
         );
@@ -1011,8 +1040,8 @@ export class VFrameElement extends HTMLElementBase {
 
     this.#loadController = null;
     this.#loadingRealm = null;
-    controller.abort();
     if (previous.realm === null) {
+      controller.abort();
       this.#failGeneration(generation, failure);
       return;
     }
@@ -1026,7 +1055,10 @@ export class VFrameElement extends HTMLElementBase {
     this.#historySession = previous.historySession;
     this.#currentURL = previous.url;
     this.#setStatus(VFrameStatus.Ready);
-    this.#dispatchError({ ...failure, fatal: false });
+    controller.abort();
+    if (this.#generation === generation) {
+      this.#dispatchError({ ...failure, fatal: false });
+    }
   }
 
   #assertCurrentGeneration(generation: number, signal: AbortSignal): void {
@@ -1043,30 +1075,34 @@ export class VFrameElement extends HTMLElementBase {
     this.#generation = generation + 1;
     // A failed first load leaves whatever the shadow root holds, such as adopted
     // preview markup, for the host to keep showing.
-    this.#releaseGuest(false);
     this.#setStatus(VFrameStatus.Error);
-    this.#dispatchError({ ...failure, fatal: true });
+    this.#releaseGuest(false);
+    if (this.#generation === generation + 1) {
+      this.#dispatchError({ ...failure, fatal: true });
+    }
   }
 
   // The one way a guest is released: every realm, controller and session goes, along
   // with the URL and, unless the caller needs the shadow root's contents, its children.
   #releaseGuest(clearRoot: boolean): void {
     const realm = this.#realm;
+    const loadingRealm = this.#loadingRealm;
+    const realmController = this.#realmController;
+    const loadController = this.#loadController;
+    const children = clearRoot ? Array.from(this.#root.children) : [];
     this.#realm = null;
-    realm?.dispose();
-    this.#loadingRealm?.dispose();
     this.#loadingRealm = null;
-    this.#realmController?.abort();
     this.#realmController = null;
-    this.#loadController?.abort();
     this.#loadController = null;
     this.#historySession = null;
     this.#currentURL = null;
     this.#currentPosition = null;
-    if (clearRoot) {
-      for (const child of Array.from(this.#root.children)) {
-        child.remove();
-      }
+    realm?.dispose();
+    loadingRealm?.dispose();
+    realmController?.abort();
+    loadController?.abort();
+    for (const child of children) {
+      if (this.#root.contains(child)) Element.prototype.remove.call(child);
     }
   }
 

@@ -242,6 +242,15 @@ load that was still in flight. `v-frame-navigated` and `v-frame-load` fire only
 after the new guest is revealed and `status` is `"ready"`, so a listener can start
 the next navigation from inside them.
 
+A new document starts at the top unless it has a fragment target or its script
+sets the scroll position. While the replacement is preparing, its scroll
+requests belong to the incoming document and take effect when it becomes
+visible. Reloads preserve the live scroll position by default. Calling
+`showModal()` while preparing a replacement sets the dialog's `open` state.
+The browser makes it modal when the replacement becomes visible, provided the
+dialog is still connected and open. Opening a popover also waits for the
+replacement to become visible.
+
 Moving the element in the DOM with `Element.prototype.moveBefore` keeps the guest
 and its history; removing and re-inserting it reloads the guest from `src`.
 

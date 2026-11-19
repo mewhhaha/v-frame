@@ -27,11 +27,24 @@ export default {
     const foreignBase = url.searchParams.has("foreign-base");
     const target = url.searchParams.has("target");
     const deepTarget = url.searchParams.get("target") === "deep";
+    const previewActions = url.searchParams.has("preview-actions");
+    const staleIntegrity = url.searchParams.has("stale-integrity");
+    let provenance = "";
+    if (url.searchParams.has("provenance")) {
+      provenance = `
+        <button id="encoded-handler" onclick="this.dataset.result = &quot;Encoded&#32;&amp; &#92;&#x22; &amp;quot;&quot;">Encoded</button>
+        <button id="literal-handler" onclick='this.dataset.result = "Literal &amp; numeric &#38;"'>Literal</button>
+        <a id="quoted-link" href='next.html?quote="yes"&amp;n=&#34;&amp;entity=&amp;quot;'>Next</a>
+        <img id="quoted-image" alt="Quoted URL" src='images/tile.svg?quote="yes"&amp;n=&#x22;&amp;entity=&amp;quot;'>
+        <button id="legacy-handler" data-v-frame-preview-attributes='{"onclick":"this.dataset.result = \\"Legacy\\""}'>Legacy</button>
+        <img id="legacy-image" alt="Legacy URL" src="images/tile.svg" data-v-frame-attributes='{"src":"images/tile.svg?legacy=1"}'>`;
+    }
     const lazy = url.searchParams.has("lazy")
       ? `<img id="lazy" loading="lazy" src="images/lazy.svg" alt="Lazy tile" width="120" height="40" style="display:block;margin-top:${url.searchParams.get("lazy") === "visible" ? "0" : "10000"}px">`
       : "";
     const guest = `<!doctype html><html lang="en"><head><title>Assets</title>
       <link id="sheet" rel="stylesheet" href="css/${css}" media="screen">
+      ${staleIntegrity ? '<link id="stale-sheet" rel="v-frame-stylesheet" data-v-frame-rel="stylesheet" href="css/site.css" integrity="sha384-v6TUuizt5gALVcaaErpVPHTv53VKcTna5T9r0+fpnIyGJAcqyfogAHke3t31qGJa"><style data-v-frame-linked data-v-frame-integrity="sha384-old">#result{color:rgb(98,1,2)}</style>' : ""}
       ${foreignBase ? "" : '<base href="../public/">'}
       <style>html,body{margin:0;background:#fff;color:#172c3a}.inline{border:2px solid #172c3a}label{display:block}</style></head><body>
       ${target ? '<template><h1 id="copy">Inert duplicate</h1></template>' : ""}
@@ -42,6 +55,14 @@ export default {
       <div id="decoration" class="inline" style="width:120px;height:24px;background-image:url(images/tile.svg)"></div>
       <label>Label<input id="field" value="server"></label>
       <button id="interactive">Activate</button><output id="result">Idle</output>
+      ${provenance}
+      ${
+        previewActions
+          ? `<a id="preview-link" href="#copy" onclick="this.dataset.clicked='yes'">Jump</a>
+        <form id="preview-form" action="/submitted" onsubmit="this.dataset.submitted='yes';return false"><input id="preview-field" name="query" value="initial"><button id="preview-submit" formmethod="get">Submit</button></form>
+        <template id="preview-template"><a id="cloned-link" href="#copy" onclick="this.dataset.clicked='yes'">From template</a></template>`
+          : ""
+      }
       ${deepTarget ? '<div style="height:1000px"></div><h2 id="deep" class="copy">Deep target</h2><div style="height:1500px"></div>' : ""}
       ${lazy}
       <script type="module" src="main.js"></script></body></html>`;

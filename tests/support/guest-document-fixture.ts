@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 import type { VFrameElement } from "../../src/index.js";
 import {
   bundleRoute,
@@ -7,6 +8,10 @@ import {
   type HTTPFixture,
 } from "./http-fixture";
 import { installBundle, mountFrame } from "./mount-frame";
+
+const pinnedCSS = "#target { color: rgb(44, 55, 66); }";
+export const stylesheetIntegrity = `sha384-${createHash("sha384").update(pinnedCSS).digest("base64")}`;
+export const differentStylesheetIntegrity = `sha384-${createHash("sha384").update("#target { color: black; }").digest("base64")}`;
 
 /** A host page, two linked guest documents and a redirected stylesheet chain. */
 export function startGuestDocumentFixture(): Promise<HTTPFixture> {
@@ -22,6 +27,10 @@ export function startGuestDocumentFixture(): Promise<HTTPFixture> {
         '<p id="target">Styled</p>',
         '<link id="theme" rel="stylesheet" href="/old/theme.css">',
       ),
+      "/linked-integrity": htmlDocument(
+        '<p id="target">Styled</p>',
+        `<link id="rejected" rel="stylesheet" href="/blue.css" integrity="${differentStylesheetIntegrity}"><link id="pinned" rel="stylesheet" href="/blue.css" integrity="${stylesheetIntegrity}">`,
+      ),
       "/old/theme.css": { status: 302, headers: { location: "/new/theme.css" } },
       "/new/theme.css": {
         type: "text/css",
@@ -31,7 +40,7 @@ export function startGuestDocumentFixture(): Promise<HTTPFixture> {
         type: "text/css",
         body: "#target { color: rgb(11, 22, 33); }",
       },
-      "/blue.css": { type: "text/css", body: "#target { color: rgb(44, 55, 66); }" },
+      "/blue.css": { type: "text/css", body: pinnedCSS },
       "/new/asset.svg": {
         type: "image/svg+xml",
         body: '<svg xmlns="http://www.w3.org/2000/svg"/>',

@@ -33,6 +33,8 @@ export interface StylesheetSource {
 export interface StylesheetFetchOptions {
   /** Aborted when the result is no longer wanted; a fetch should stop and reject. */
   signal?: AbortSignal;
+  /** Authored link integrity to verify on the original bytes before rewriting. */
+  integrity?: string;
 }
 
 export interface StylesheetFetch {
@@ -264,27 +266,32 @@ function wrapImportedStylesheet(source: string, parts: ImportParts): string {
 export function fetchStylesheet(
   url: string,
   context: StylesheetContext,
+  integrity = "",
 ): Promise<StylesheetSource> {
-  const existing = context.requests.get(url);
+  let key = url;
+  if (integrity !== "") key = JSON.stringify([url, integrity]);
+  const existing = context.requests.get(key);
   if (existing !== undefined) {
     return existing;
   }
 
-  const request = (
-    context.signal === undefined
-      ? context.fetchText(url)
-      : context.fetchText(url, { signal: context.signal })
-  ).then((source) =>
+  const options: StylesheetFetchOptions = {};
+  if (context.signal !== undefined) options.signal = context.signal;
+  if (integrity !== "") options.integrity = integrity;
+  let fetched: ReturnType<StylesheetFetch>;
+  if (context.signal === undefined && integrity === "") fetched = context.fetchText(url);
+  else fetched = context.fetchText(url, options);
+  const request = fetched.then((source) =>
     typeof source === "string"
       ? { text: source, url }
       : { text: source.text, url: new URL(source.url, url).href },
   );
-  context.requests.set(url, request);
+  context.requests.set(key, request);
   // A rejected fetch is evicted so a later insertion can retry the network
   // instead of replaying the cached failure for the realm's lifetime.
   request.catch(() => {
-    if (context.requests.get(url) === request) {
-      context.requests.delete(url);
+    if (context.requests.get(key) === request) {
+      context.requests.delete(key);
     }
   });
   return request;

@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
 import { childValue } from "./support/guest-frames";
+import { bundleRoute, startHTTPFixture } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: FixtureServer;
@@ -93,6 +94,62 @@ test("loads a document into a semantic shadow DOM and exposes readonly state", a
   });
   expect(state.currentURL).toBe(`${fixture.origin}/documents/first.html`);
   expect(state.hasContentWindow).toBe(true);
+});
+
+test("decodes the guest charset and rejects non-document responses", async ({ page }) => {
+  const host = await startHTTPFixture({
+    routes: {
+      "/": '<div id="host"></div>',
+      "/dist/index.js": bundleRoute,
+      "/encoded": {
+        type: "text/html; charset=windows-1252",
+        body: Buffer.from("<p>café</p>", "latin1"),
+      },
+      "/json": { type: "application/json", body: "{}" },
+      "/partial": { status: 206, body: "<p>incomplete</p>" },
+    },
+  });
+  try {
+    await installBundle(page, host.origin);
+    const frame = await mountFrame(page, { src: host.origin + "/encoded" });
+    await expect(frame.locator("p")).toHaveText("café");
+    await frame.evaluate((element) => element.remove());
+    for (const path of ["/json", "/partial"]) {
+      const invalid = await mountFrame(page, { src: host.origin + path, settle: "none" });
+      await expect
+        .poll(() => invalid.evaluate((element) => Reflect.get(element, "status")))
+        .toBe("error");
+      await invalid.evaluate((element) => element.remove());
+    }
+  } finally {
+    await host.close();
+  }
+});
+
+test("stops an entry redirect before requesting another origin", async ({ page }) => {
+  const destination = "/documents/first.html";
+  const host = await startHTTPFixture({
+    routes: {
+      "/": '<div id="host"></div>',
+      "/dist/index.js": bundleRoute,
+      "/redirect": { status: 302, headers: { location: fixture.origin + destination } },
+    },
+  });
+  try {
+    await installBundle(page, host.origin);
+    const previousRequests = fixture.requests.length;
+    const frame = await mountFrame(page, {
+      src: host.origin + "/redirect",
+      settle: "none",
+    });
+    await expect
+      .poll(() => frame.evaluate((element) => Reflect.get(element, "status")))
+      .toBe("error");
+    expect(host.requests).toContain("/redirect");
+    expect(fixture.requests.slice(previousRequests)).not.toContain(destination);
+  } finally {
+    await host.close();
+  }
 });
 
 test("resolves bare module specifiers through a document import map", async ({

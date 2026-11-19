@@ -147,6 +147,7 @@ export function observeRealmMutations(options: RealmMutationObserverOptions): ()
       "disabled",
       "formaction",
       "href",
+      "integrity",
       "media",
       "poster",
       "rel",

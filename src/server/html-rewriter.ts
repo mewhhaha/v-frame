@@ -1,16 +1,20 @@
+import { isHTMLDocumentResponse, readHTMLDocument } from "../html-response.js";
 import {
   materializeStylesheet,
   rewriteScriptElement,
   rewriteShellElement,
   rewriteAssetAttributes,
+  rewritePreviewAttributes,
+  readStylesheetSource,
   fetchStylesheetSource,
 } from "./core.js";
 import type { MaterializeStylesheetOptions } from "./core.js";
 import { HTML_NAMESPACE, rewriteAssetAttribute } from "../asset-urls.js";
-import type { StylesheetFetch, StylesheetSource } from "../css.js";
+import type { StylesheetFetchOptions, StylesheetSource } from "../css.js";
 import {
   NEUTRALIZED_STYLESHEET_REL,
   SSR_LINK_REL,
+  SSR_LINK_INTEGRITY,
   SSR_LINK_SOURCE,
   SSR_LINK_STYLE,
   SSR_STYLE,
@@ -65,6 +69,8 @@ export type HTMLRewriterConstructor = new () => Rewriter;
 export interface MaterializeDocumentOptions extends MaterializeStylesheetOptions {
   /** The rewriter to drive. Defaults to the runtime's global `HTMLRewriter`. */
   HTMLRewriter?: HTMLRewriterConstructor;
+  /** Reject responses that cannot be transformed before embedding them as HTML. */
+  requireDocument?: boolean;
 }
 
 // Validators and range metadata describe the guest's bytes, which this
@@ -84,85 +90,6 @@ const STALE_HEADERS = [
   "etag",
   "last-modified",
 ];
-
-const HTML_CONTENT_TYPE = /^\s*text\/html\s*(?:;|$)/i;
-
-const CHARSET_LABEL = /^[\w.:-]+$/;
-
-/** A `TextDecoder` for a charset label, or null when the label names no known encoding. */
-function decoderFor(label: string | null | undefined): TextDecoder | null {
-  if (!label || !CHARSET_LABEL.test(label.trim())) return null;
-  try {
-    return new TextDecoder(label.trim());
-  } catch {
-    return null;
-  }
-}
-
-const META_TAG = /<meta(?=[\s/>])([^>]*)>/gi;
-const META_ATTRIBUTE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/g;
-const CONTENT_CHARSET = /charset\s*=\s*["']?\s*([^\s"';]+)/i;
-
-/**
- * The `<meta>` charset declaration in the first 1024 bytes, per the HTML
- * prescan: a `charset` attribute, or `http-equiv=content-type` with a charset
- * in its `content`. The bytes are read as Latin-1 because only ASCII markup
- * matters here.
- */
-function prescanCharset(bytes: Uint8Array): string | null {
-  const head = new TextDecoder("latin1").decode(bytes.subarray(0, 1024));
-  for (const tag of head.matchAll(META_TAG)) {
-    let charset: string | null = null;
-    let httpEquiv: string | null = null;
-    let content: string | null = null;
-    for (const attribute of tag[1]!.matchAll(META_ATTRIBUTE)) {
-      const value = attribute[2] ?? attribute[3] ?? attribute[4] ?? "";
-      switch (attribute[1]!.toLowerCase()) {
-        case "charset":
-          charset ??= value;
-          break;
-        case "http-equiv":
-          httpEquiv ??= value;
-          break;
-        case "content":
-          content ??= value;
-          break;
-      }
-    }
-    if (charset !== null) return charset;
-    if (httpEquiv?.toLowerCase() === "content-type" && content !== null) {
-      const declared = CONTENT_CHARSET.exec(content)?.[1];
-      if (declared) return declared;
-    }
-  }
-  return null;
-}
-
-/**
- * Decodes the guest's bytes by the HTML encoding sniffing rules this adapter
- * can honour: a byte order mark, then the `Content-Type` charset, then the
- * `<meta>` prescan, then UTF-8. The runtime's rewriter re-encodes in whatever
- * charset the response declares, so decoding once here keeps every later pass
- * on UTF-8.
- */
-function decodeGuest(bytes: Uint8Array, contentType: string): string {
-  let decoder: TextDecoder | null = null;
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-    decoder = new TextDecoder("utf-8");
-  } else if (bytes[0] === 0xff && bytes[1] === 0xfe) {
-    decoder = new TextDecoder("utf-16le");
-  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
-    decoder = new TextDecoder("utf-16be");
-  }
-  decoder ??= decoderFor(CONTENT_CHARSET.exec(contentType)?.[1]);
-  if (decoder === null) {
-    const declared = decoderFor(prescanCharset(bytes));
-    // A document that declares UTF-16 in an ASCII-compatible prefix is not
-    // UTF-16 at all; the HTML standard reads such a declaration as UTF-8.
-    decoder = declared?.encoding.startsWith("utf-16") ? null : declared;
-  }
-  return (decoder ?? new TextDecoder("utf-8")).decode(bytes);
-}
 
 const UTF8_HTML = { "content-type": "text/html; charset=utf-8" };
 
@@ -240,6 +167,14 @@ export async function materializeVFrameDocument(
   documentURL: string,
   options: MaterializeDocumentOptions = {},
 ): Promise<Response> {
+  if (!isHTMLDocumentResponse(response)) {
+    if (options.requireDocument) {
+      throw new TypeError(
+        `v-frame expected a 200 text/html response from ${documentURL}, received ${response.status} ${response.headers.get("content-type") ?? "without a Content-Type"}`,
+      );
+    }
+    return response;
+  }
   const Rewriter =
     options.HTMLRewriter ??
     (globalThis as { HTMLRewriter?: HTMLRewriterConstructor }).HTMLRewriter;
@@ -247,13 +182,6 @@ export async function materializeVFrameDocument(
     throw new TypeError(
       "materializeVFrameDocument needs an HTMLRewriter: this runtime has no global one, so pass one as options.HTMLRewriter",
     );
-  }
-  if (
-    !response.body ||
-    response.status !== 200 ||
-    !HTML_CONTENT_TYPE.test(response.headers.get("content-type") ?? "")
-  ) {
-    return response;
   }
 
   let baseURL = documentURL;
@@ -273,15 +201,12 @@ export async function materializeVFrameDocument(
   // Decoded once: the runtime re-encodes rewriter output in the charset the
   // response declares, so feeding it the guest's own bytes would hand `.text()`
   // Latin-1 (or worse) to misread as UTF-8.
-  const guest = decodeGuest(
-    new Uint8Array(await response.arrayBuffer()),
-    response.headers.get("content-type") ?? "",
-  );
+  const guest = await readHTMLDocument(response, options.signal);
   // Stylesheets are known only after the whole document has been read, since a
   // late `<base>` re-bases them all. The first parse gathers their sources so
   // the fetches can start together before the second parse reaches them.
   const styleSources: string[] = [];
-  const linkHrefs: Array<{ href: string; stylesheet: boolean }> = [];
+  const linkHrefs: Array<{ href: string; stylesheet: boolean; integrity: string }> = [];
   // A base applies to the entire document, even to resources preceding it. The
   // first parse is deliberately side-effect free.
   const source = await new Rewriter()
@@ -344,28 +269,35 @@ export async function materializeVFrameDocument(
         linkHrefs.push({
           href: element.getAttribute("href")!,
           stylesheet: isStylesheetRel(element.getAttribute("rel") ?? ""),
+          integrity: element.getAttribute("integrity")?.trim() ?? "",
         });
       },
     })
     .transform(new Response(guest, { headers: UTF8_HTML }))
     .text();
   const abort = new AbortController();
-  const requests = new Map<string, Promise<string | StylesheetSource>>();
+  let signal = abort.signal;
+  if (options.signal !== undefined) signal = AbortSignal.any([signal, options.signal]);
+  signal.throwIfAborted();
+  const requests = new Map<string, Promise<StylesheetSource>>();
   elementIndex = 0;
   templateDepth = 0;
   // An aborted materialization is discarded, so the fetches it cancelled
   // failing is the cancellation working; reporting them would make a client
   // disconnect look like a broken stylesheet.
   const onImportFailure: MaterializeStylesheetOptions["onImportFailure"] = (failure) => {
-    if (!abort.signal.aborted) options.onImportFailure?.(failure);
+    if (!signal.aborted) options.onImportFailure?.(failure);
   };
-  const fetchText: StylesheetFetch = (url) => {
-    let result = requests.get(url);
+  const fetchText = (url: string, { integrity = "" }: StylesheetFetchOptions = {}) => {
+    let key = url;
+    if (integrity !== "") key = JSON.stringify([url, integrity]);
+    let result = requests.get(key);
     if (!result) {
       result = (options.fetchText ?? fetchStylesheetSource)(url, {
-        signal: abort.signal,
-      });
-      requests.set(url, result);
+        signal,
+        integrity,
+      }).then((source) => readStylesheetSource(source, url, integrity));
+      requests.set(key, result);
     }
     return result;
   };
@@ -373,7 +305,7 @@ export async function materializeVFrameDocument(
     ...options,
     fetchText,
     onImportFailure,
-    signal: abort.signal,
+    signal,
   };
   // Font declarations are collected per sheet and handed over in document
   // order when the rewriter reaches the sheet, whatever order the fetches
@@ -383,6 +315,7 @@ export async function materializeVFrameDocument(
       ? { ...settings, onFontFace: (css) => fonts.push(css) }
       : { ...settings };
   const flushFonts = (fonts: string[]) => {
+    if (signal.aborted) return;
     for (const css of fonts) options.onFontFace!(css);
   };
   const styleJobs = styleSources.map(async (css): Promise<StyleResult | null> => {
@@ -395,7 +328,7 @@ export async function materializeVFrameDocument(
     }
   });
   const linkJobs = linkHrefs.map(
-    async ({ href, stylesheet }): Promise<LinkResult | null> => {
+    async ({ href, stylesheet, integrity }): Promise<LinkResult | null> => {
       if (!stylesheet) return null;
       const url =
         rewriteAssetAttribute(
@@ -406,8 +339,7 @@ export async function materializeVFrameDocument(
           baseURL,
         ) ?? href;
       try {
-        const result = await fetchText(url);
-        const sheet = typeof result === "string" ? { text: result, url } : result;
+        const sheet = await fetchText(url, { integrity });
         const fonts: string[] = [];
         const css = await materializeStylesheet(sheet.text, sheet.url, collecting(fonts));
         return { ok: true, sheet, css, fonts };
@@ -442,6 +374,7 @@ export async function materializeVFrameDocument(
           if (index === targetIndex) element.setAttribute(FRAGMENT_TARGET_ATTRIBUTE, "");
         }
         enterTemplate(element);
+        const preview = rewritePreviewAttributes(element);
         for (const assignment of rewriteAssetAttributes(
           element,
           element.namespaceURI === HTML_NAMESPACE && element.tagName === "base"
@@ -450,6 +383,9 @@ export async function materializeVFrameDocument(
         )) {
           element.setAttribute(assignment.name, assignment.value);
         }
+        for (const name of preview.removeAttributes) element.removeAttribute(name);
+        for (const { name, value } of preview.setAttributes)
+          element.setAttribute(name, value);
       },
     })
     .on("html", shellHandlers)
@@ -503,6 +439,10 @@ export async function materializeVFrameDocument(
             `${SSR_LINK_STYLE}=""`,
             `media="${disabled ? "not all" : escapeAttribute(element.getAttribute("media") ?? "")}"`,
           ];
+          const integrity = element.getAttribute("integrity")?.trim();
+          if (integrity) {
+            attrs.push(`${SSR_LINK_INTEGRITY}="${escapeAttribute(integrity)}"`);
+          }
           for (const name of ["nonce", "title"]) {
             const value = element.getAttribute(name);
             if (value !== null) attrs.push(`${name}="${escapeAttribute(value)}"`);
@@ -521,7 +461,9 @@ export async function materializeVFrameDocument(
   const headers = new Headers(response.headers);
   for (const name of STALE_HEADERS) headers.delete(name);
   headers.set("content-type", "text/html; charset=utf-8");
-  const reader = transformed.body!.getReader();
+  const reader = transformed
+    .body!.pipeThrough(new TransformStream(), { signal })
+    .getReader();
   // Pulling one chunk per demand carries the client's backpressure to the
   // rewriter, and `cancel` reaches it and the stylesheet fetches it started.
   const body = new ReadableStream<Uint8Array>({

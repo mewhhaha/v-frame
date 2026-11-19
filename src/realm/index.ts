@@ -36,6 +36,7 @@ import {
 } from "./navigation.js";
 import {
   installInternalStyles,
+  installStagedTopLayer,
   installStagingStyles,
   installViewportPatches,
   installWindowEventBridge,
@@ -71,6 +72,7 @@ export interface CreateRealmOptions {
   historySession: VirtualHistorySession;
   boundNavigation: boolean;
   stageMarkup: boolean;
+  preserveScroll: boolean;
   restoreScroll: boolean;
   credentials: VFrameCredentials;
   signal: AbortSignal;
@@ -108,7 +110,19 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
   // teardown is its reverse and no resource has to be listed a second time.
   const disposers: Array<() => void> = [];
   const teardown = (): void => {
-    for (const dispose of disposers.splice(0).reverse()) dispose();
+    const failures: unknown[] = [];
+    let dispose = disposers.pop();
+    while (dispose !== undefined) {
+      try {
+        dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      dispose = disposers.pop();
+    }
+    for (const error of failures) {
+      options.onError({ phase: "runtime", url: options.pageURL, error });
+    }
   };
   const adoptionState = options.markup.kind === "adopted" ? options.markup.state : null;
   let restoreStagingStyles: () => void = () => undefined;
@@ -164,9 +178,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     // that built these options, so it must not keep a second copy of an SSR payload.
     options.markup.source = "";
     const preparedMarkup = markup;
+    const remove = options.host.ownerDocument.defaultView!.Element.prototype.remove;
     disposers.push(() => {
-      preparedMarkup.html.remove();
-      preparedMarkup.inlineStyleSheet.remove();
+      remove.call(preparedMarkup.html);
+      remove.call(preparedMarkup.inlineStyleSheet);
     });
 
     const privateHead = document.head;
@@ -251,13 +266,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const viewport = installViewportPatches(
       options.host,
       window,
+      markup.html,
+      () => !markupRevealed,
+      options.preserveScroll || options.restoreScroll || adoptionState !== null,
       () => facade?.getSelection() ?? null,
-      () => {
-        facade?.dispatchDocumentEvent("scroll", { bubbles: true });
-      },
+      () => facade?.dispatchDocumentEvent("scroll", { bubbles: true }),
     );
     disposers.push(() => viewport.dispose());
-
+    if (history instanceof VirtualHistory) history.setScrollHost(viewport.scroll);
     const styles = createDynamicStyles({
       window,
       document,
@@ -290,9 +306,23 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       style.textContent = "";
     }
 
+    const liveMarkup = markup.html;
+    let topLayer: ReturnType<typeof installStagedTopLayer> | undefined;
+    if (!markupRevealed) {
+      topLayer = installStagedTopLayer(
+        window,
+        liveMarkup,
+        options.shadowRoot,
+        () => !disposed && !options.signal.aborted,
+        () => facade,
+      );
+      disposers.push(topLayer.dispose);
+      restoreStagingStyles = installStagingStyles(options.shadowRoot);
+    }
     facade = installDocumentFacade({
       host: options.host,
       shadowRoot: options.shadowRoot,
+      scroll: viewport.scroll,
       window,
       document,
       html: markup.html,
@@ -340,13 +370,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.installCSSOMStyleSheets(nodes);
         styles.observeConnectedNodes(nodes);
       },
+      ...(topLayer && { onShadowRoot: topLayer.observe }),
     });
     disposers.push(() => facade?.dispose());
     if (!markupRevealed) styles.installCSSOMStyleSheet(markup.inlineStyleSheet);
-    const liveMarkup = markup.html;
-    if (options.markup.kind === "adopted" || options.stageMarkup) {
-      restoreStagingStyles = installStagingStyles(options.shadowRoot);
-    }
     if (!options.signal.aborted) {
       options.shadowRoot.append(liveMarkup);
       for (const [style, source] of initialStyleSources) {
@@ -400,6 +427,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const windowEventDispose = installWindowEventBridge(
       window,
       options.shadowRoot,
+      liveMarkup,
       facade.eventForListener,
       facade.finishEventListener,
     );
@@ -529,6 +557,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         node.parentNode?.removeChild(node);
       }
       restoreStagingStyles();
+      restoreStagingStyles = () => undefined;
     };
 
     const runtime: VFrameRealm = {
@@ -549,11 +578,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         // snapshots, visibly shifting fractionally positioned frames.
         if (adoptionState) adoptionState.reveal(revealStagedMarkup);
         else revealStagedMarkup();
+        if (disposed || options.signal.aborted) return;
+        if (options.stageMarkup || adoptionState) viewport.revealScroll();
         if (options.restoreScroll && history instanceof VirtualHistory) {
           history.restoreScroll();
         } else if (options.stageMarkup && !adoptionState && new URL(currentURL).hash) {
           scrollFragment(currentURL);
         }
+        topLayer?.reveal();
       },
       dispose() {
         if (disposed) {

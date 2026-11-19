@@ -118,6 +118,9 @@ export function installDocumentProperties(
 
   const documentChildNodes = staticNodeList([virtualDoctype, options.html]);
   const documentChildren = staticCollection([options.html]);
+  const guestElement = (element: Element | null): Element | null =>
+    options.html.contains(element) ? element : null;
+  const activeElement = () => guestElement(options.shadowRoot.activeElement);
   // The first HTML title in the document, wherever it sits, not only in head.
   const documentTitleElement = (): Element | null => {
     for (const candidate of Array.from(options.html.querySelectorAll("title"))) {
@@ -144,7 +147,7 @@ export function installDocumentProperties(
     scrollingElement: { configurable: true, get: () => options.html },
     activeElement: {
       configurable: true,
-      get: () => options.shadowRoot.activeElement ?? options.body,
+      get: () => activeElement() ?? options.body,
     },
     currentScript: {
       configurable: true,
@@ -471,7 +474,7 @@ export function installDocumentProperties(
       configurable: true,
       writable: true,
       value() {
-        return hostDocument.hasFocus() && options.shadowRoot.activeElement !== null;
+        return hostDocument.hasFocus() && activeElement() !== null;
       },
     },
     elementFromPoint: {
@@ -479,7 +482,9 @@ export function installDocumentProperties(
       writable: true,
       value(x: number, y: number) {
         const point = toHostViewportPoint(x, y);
-        return options.shadowRoot.elementFromPoint?.(point.x, point.y) ?? null;
+        return guestElement(
+          options.shadowRoot.elementFromPoint?.(point.x, point.y) ?? null,
+        );
       },
     },
     elementsFromPoint: {
@@ -487,7 +492,9 @@ export function installDocumentProperties(
       writable: true,
       value(x: number, y: number) {
         const point = toHostViewportPoint(x, y);
-        return options.shadowRoot.elementsFromPoint?.(point.x, point.y) ?? [];
+        return (options.shadowRoot.elementsFromPoint?.(point.x, point.y) ?? []).filter(
+          (element) => options.html.contains(element),
+        );
       },
     },
     appendChild: {

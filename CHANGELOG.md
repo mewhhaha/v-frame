@@ -7,6 +7,13 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Replacing a guest keeps input, scrolling, and modal interactions with the visible
+  document until the new one takes over. Cleanup can remove or navigate the frame.
+- Server previews defer guest navigation and inline handlers, and stylesheet
+  rewriting honors integrity metadata. Hosts can require a complete HTML
+  response for composition and cancel outstanding work.
+- Client navigation now validates and decodes HTML consistently with SSR.
+  Nested guest text selection and sending an XHR after teardown are covered in WebKit.
 - JSR publication no longer fails on the ambient `css-tree` subpath declarations;
   a module-scoped adapter preserves their types and lightweight runtime imports.
 

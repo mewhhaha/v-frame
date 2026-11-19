@@ -28,6 +28,75 @@ test.afterAll(async () => {
   await fixture.close();
 });
 
+test("a disconnected form cannot navigate the guest", async ({ page }) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, { src: fixture.origin + "/form.html" });
+  const navigations = await frame.evaluate((element: VFrameElement) => {
+    const doc = element.contentWindow!.document;
+    const attempts: string[] = [];
+    element.addEventListener("v-frame-navigate", (event) =>
+      attempts.push(event.detail.to),
+    );
+    const detached = doc.createElement("form");
+    detached.action = "/submitted";
+    detached.submit();
+    const connected = doc.querySelector("form")!;
+    connected.addEventListener("formdata", () => connected.remove(), { once: true });
+    connected.submit();
+    return attempts;
+  });
+  expect(navigations).toEqual([]);
+  expect(await frame.evaluate((element: VFrameElement) => element.currentURL)).toBe(
+    fixture.origin + "/form.html",
+  );
+  expect(await frameFailures(frame)).toEqual([]);
+});
+
+test("reports non-HTTP links and forms with popup targets without opening a window", async ({
+  page,
+  context,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, { src: fixture.origin + "/form.html" });
+  const results = await frame.evaluate(async (element: VFrameElement) => {
+    const win = element.contentWindow! as Window & typeof globalThis;
+    const details: Array<{ to: string; kind: string }> = [];
+    const reported = new Promise<void>((resolve) => {
+      element.addEventListener("v-frame-navigate", (event) => {
+        details.push({ to: event.detail.to, kind: event.detail.kind });
+        if (details.length === 3) resolve();
+      });
+    });
+    const link = win.document.createElement("a");
+    link.href = "about:blank";
+    link.target = "_blank";
+    const modifiedLink = link.cloneNode() as HTMLAnchorElement;
+    modifiedLink.removeAttribute("target");
+    win.document.body.append(link, modifiedLink);
+    link.click();
+    modifiedLink.dispatchEvent(
+      new win.MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        ctrlKey: true,
+      }),
+    );
+    const form = win.document.querySelector("form")!;
+    form.action = "about:blank";
+    form.target = "_blank";
+    form.submit();
+    await reported;
+    // Wait for browser popup creation tasks without depending on a fixed delay.
+    await fetch("/submitted");
+    return details;
+  });
+  expect(results.map((detail) => detail.kind).sort()).toEqual(["form", "link", "link"]);
+  expect(results.every((detail) => detail.to.startsWith("about:blank"))).toBe(true);
+  expect(context.pages()).toEqual([page]);
+  expect(await frameFailures(frame)).toEqual([]);
+});
+
 async function configureForm(page: Page, guest: boolean): Promise<void> {
   await page.evaluate((guest) => {
     const realm = guest

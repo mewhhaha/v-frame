@@ -173,6 +173,13 @@ export function installNodeMarking(
       if (!nodeIdentityIsPrototypeWide || !(node instanceof window.Node)) {
         installForeignNodeFacade(node);
       }
+      if (options.onShadowRoot) {
+        if (node.nodeType === 11 && "host" in node) {
+          options.onShadowRoot(node as ShadowRoot);
+        } else if (isElementNode(node) && node.shadowRoot) {
+          options.onShadowRoot(node.shadowRoot);
+        }
+      }
     }
 
     if (isElementNode(node)) {
@@ -243,8 +250,8 @@ export function installNodeMarking(
 
   const installScrollFacade = (element: HTMLElement) => {
     const scrollProperties: Record<string, () => number> = {
-      scrollTop: () => options.host.scrollTop,
-      scrollLeft: () => options.host.scrollLeft,
+      scrollTop: () => options.scroll.scrollTop,
+      scrollLeft: () => options.scroll.scrollLeft,
       scrollHeight: () => options.host.scrollHeight,
       scrollWidth: () => options.host.scrollWidth,
       clientHeight: () => options.host.clientHeight,
@@ -259,11 +266,11 @@ export function installNodeMarking(
         };
         if (name === "scrollTop") {
           descriptor.set = (value: number) => {
-            options.host.scrollTop = value;
+            options.scroll.scrollTop = value;
           };
         } else if (name === "scrollLeft") {
           descriptor.set = (value: number) => {
-            options.host.scrollLeft = value;
+            options.scroll.scrollLeft = value;
           };
         }
         defineNodeFacade(element, { [name]: descriptor });
@@ -271,6 +278,11 @@ export function installNodeMarking(
         continue;
       }
     }
+    defineNodeFacade(element, {
+      scroll: { value: options.scroll.scrollTo, writable: true, configurable: true },
+      scrollTo: { value: options.scroll.scrollTo, writable: true, configurable: true },
+      scrollBy: { value: options.scroll.scrollBy, writable: true, configurable: true },
+    });
   };
 
   const adoptAndMark = <T extends Node>(node: T): T => {

@@ -45,6 +45,7 @@ interface DynamicStyleUpdate {
 
 interface DynamicLinkSnapshot {
   href: string;
+  integrity: string;
   media: string;
   disabled: boolean;
   authoredRel: string;
@@ -626,6 +627,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     second: DynamicLinkSnapshot,
   ): boolean =>
     first.href === second.href &&
+    first.integrity === second.integrity &&
     first.media === second.media &&
     first.disabled === second.disabled &&
     first.authoredRel === second.authoredRel;
@@ -651,6 +653,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     options.getFacade()?.native.getAttribute(link, "rel") ===
       NEUTRALIZED_STYLESHEET_REL &&
     link.href === snapshot.href &&
+    link.integrity.trim() === snapshot.integrity &&
     link.media === snapshot.media &&
     linkDisabled(link, snapshot.authoredRel) === snapshot.disabled;
   const scheduleDynamicLink = (
@@ -687,6 +690,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
 
     const snapshot: DynamicLinkSnapshot = {
       href: link.href,
+      integrity: link.integrity.trim(),
       media: link.media,
       disabled: linkDisabled(link, authoredRelValue),
       authoredRel: authoredRelValue,
@@ -705,7 +709,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     const revision = update.revision;
 
     const previous = options.linkedStyles.get(link);
-    if (previous !== undefined && previous.href === snapshot.href) {
+    if (previous?.href === snapshot.href && previous.integrity === snapshot.integrity) {
       const style = previous.style;
       linkedStyleOwners.set(style, link);
       style.media = snapshot.media;
@@ -724,7 +728,11 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     void (async () => {
       const importFailures: StylesheetImportFailure[] = [];
       try {
-        const source = await fetchStylesheet(snapshot.href, options.stylesheetContext);
+        const source = await fetchStylesheet(
+          snapshot.href,
+          options.stylesheetContext,
+          snapshot.integrity,
+        );
         const rewritten = await rewriteStylesheet(
           source.text,
           source.url,
@@ -744,6 +752,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         options.linkedStyles.set(link, {
           style,
           href: snapshot.href,
+          integrity: snapshot.integrity,
           url: source.url,
           disabled: snapshot.disabled,
         });

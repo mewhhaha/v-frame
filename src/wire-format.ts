@@ -16,6 +16,9 @@ export const SCRIPT_TYPE_ATTRIBUTE = "data-v-frame-type";
 /** Authored asset values retained while the server preview uses absolute URLs. */
 export const SSR_ATTRIBUTES = "data-v-frame-attributes";
 
+/** Attributes suppressed or changed until the preview activates. */
+export const SSR_PREVIEW_ATTRIBUTES = "data-v-frame-preview-attributes";
+
 /** The authored `rel` of a stylesheet link the server neutralized. */
 export const SSR_LINK_REL = "data-v-frame-rel";
 
@@ -24,6 +27,9 @@ export const SSR_LINK_STYLE = "data-v-frame-linked";
 
 /** Where the server preview records the URL a materialized stylesheet came from. */
 export const SSR_LINK_SOURCE = "data-v-frame-source";
+
+/** Integrity metadata verified on a materialized linked stylesheet. */
+export const SSR_LINK_INTEGRITY = "data-v-frame-integrity";
 
 /** Marks the element a guest URL's fragment targets, for `:target` to match. */
 export const FRAGMENT_TARGET_ATTRIBUTE = "data-v-frame-target";

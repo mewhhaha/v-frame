@@ -51,6 +51,7 @@ export function createNodePatches(
       value(this: Element, init: ShadowRootInit): ShadowRoot {
         const shadowRoot = nativeAttachShadow.call(this, init);
         if (virtualNodes.has(this)) {
+          context.guestShadowRoots.add(shadowRoot);
           markVirtualNode(shadowRoot);
         }
         return shadowRoot;

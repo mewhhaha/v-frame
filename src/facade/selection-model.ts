@@ -8,6 +8,7 @@ export interface SelectionModelOptions {
   window: Window & typeof globalThis;
   hostDocument: Document;
   root: HTMLElement;
+  shadowRoots: Iterable<ShadowRoot>;
   // The guest's document, which stands for the root in selection endpoints.
   document: Document;
   // Gives a range handed to the guest the behavior of a guest range.
@@ -98,7 +99,9 @@ export function createSelectionModel(options: SelectionModelOptions): SelectionM
     const root = hostDocument.defaultView!.Node.prototype.getRootNode.call(
       virtualRoot,
     ) as ShadowRoot;
-    const composed = selection.getComposedRanges?.({ shadowRoots: [root] }) ?? [];
+    const composed =
+      selection.getComposedRanges?.({ shadowRoots: [root, ...options.shadowRoots] }) ??
+      [];
     return composed.flatMap((range) => {
       if (
         !containsVirtualNode(range.startContainer) ||

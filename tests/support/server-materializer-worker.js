@@ -1,4 +1,7 @@
-import { materializeVFrameDocument } from "../../dist/server/index.js";
+import {
+  isVFrameDocumentResponse,
+  materializeVFrameDocument,
+} from "../../dist/server/index.js";
 
 const html = (body, init = {}) =>
   new Response(body, {
@@ -27,8 +30,22 @@ const cases = {
     };
     const result = {};
     for (const [name, response] of Object.entries(variants)) {
+      let rejected = false;
+      try {
+        await (
+          await materializeVFrameDocument(response.clone(), guestURL, {
+            requireDocument: true,
+          })
+        ).text();
+      } catch (error) {
+        if (!(error instanceof TypeError) || !error.message.includes("200 text/html"))
+          throw error;
+        rejected = true;
+      }
       const materialized = await materializeVFrameDocument(response, guestURL);
       result[name] = {
+        rejected,
+        composable: isVFrameDocumentResponse(response),
         same: materialized === response,
         status: materialized.status,
         body: await materialized.text(),
@@ -192,6 +209,71 @@ const cases = {
     await sleep(50);
     await pending;
     return { signals, failures };
+  },
+  async callerCancel() {
+    const controller = new AbortController();
+    const failures = [];
+    const received = [];
+    const response = await materializeVFrameDocument(
+      html('<html><head><style>@import "theme.css";</style></head><body>x</body></html>'),
+      guestURL,
+      {
+        signal: controller.signal,
+        fetchText(url, { signal } = {}) {
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => {
+              received.push(url);
+              reject(signal.reason);
+            });
+          });
+        },
+        onImportFailure: (failure) => failures.push(failure.url),
+      },
+    );
+    const read = response.text();
+    controller.abort();
+    let readFailed = false;
+    try {
+      await read;
+    } catch {
+      readFailed = true;
+    }
+    return { received, failures, readFailed };
+  },
+  async integrity() {
+    const css = "#test { color: rebeccapurple; }";
+    const bytes = new TextEncoder().encode(css).buffer;
+    const hash = async (algorithm, value) =>
+      btoa(
+        String.fromCharCode(
+          ...new Uint8Array(
+            await crypto.subtle.digest(algorithm, new TextEncoder().encode(value)),
+          ),
+        ),
+      );
+    const sha256 = `sha256-${await hash("SHA-256", css)}`;
+    const sha384 = `sha384-${await hash("SHA-384", css)}`;
+    const sha256url = sha256.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    const differentSHA384 = `sha384-${await hash("SHA-384", "other")}`;
+    const failures = [];
+    const input = `<html><head>
+      <link rel="stylesheet" href="pinned.css" integrity="${sha256} ${differentSHA384}">
+      <link rel="stylesheet" href="pinned.css" integrity="${sha384}">
+      <link rel="stylesheet" href="urlsafe.css" integrity="${sha256url}">
+      <link rel="stylesheet" href="malformed.css" integrity="${sha384} sha512-!">
+      <link rel="stylesheet" href="unknown.css" integrity="future-digest">
+      <link rel="stylesheet" href="text-only.css" integrity="${sha384}">
+      </head><body><p id="test">Preview</p></body></html>`;
+    const response = await materializeVFrameDocument(html(input), guestURL, {
+      async fetchText(url) {
+        if (url.endsWith("text-only.css") || url.endsWith("unknown.css")) return css;
+        return { bytes, url };
+      },
+      onImportFailure(failure) {
+        failures.push(failure.error.message);
+      },
+    });
+    return { body: await response.text(), failures };
   },
   async concurrency() {
     let active = 0;

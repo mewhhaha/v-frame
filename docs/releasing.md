@@ -2,7 +2,9 @@
 
 CI runs on pull requests and on pushes to `main`, and a newer push to a pull
 request cancels the run in flight; it never publishes. A published GitHub release
-triggers JSR publication. npm publication is not configured.
+triggers JSR publication. After publication, the workflow runs `pnpm test:registry`
+to install the exact manifest version from the JSR npm registry in a clean consumer
+and check its public imports, types, and browser behavior.
 
 Publication requires these checks for the exact tagged commit:
 

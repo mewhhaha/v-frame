@@ -30,8 +30,9 @@ ID/value after replacement. Reordered options keep their selections, while
 removed or ambiguous choices are not assigned to neighbouring options.
 A handoff waits for an observed IME composition to finish rather than replacing
 its focused control mid-edit.
-These notifications preserve the latest edit; they do not replay arbitrary
-button clicks, submissions, or trusted user activation.
+Preview links have a disabled link role, and forms retain their editable
+controls. Navigation and inline handlers become available on the activated
+tree. The handoff preserves edits without replaying clicks or submissions.
 
 ## 1. Return a normal guest document
 
@@ -81,6 +82,9 @@ trusted document:
   Fragment-only SVG resource references such as `<use href="#icon">` stay local
   to the rendered shadow tree, including after attribute changes and navigation.
 - Scripts become parser-inert while preserving their original type.
+- Inline event handlers and link destinations are deferred. Preview forms use
+  the non-navigating `dialog` method, keeping their editable controls and form
+  ownership. Activation restores authored attributes.
 - The initial fragment target is marked so `:target` styling is present in the
   preview and remains unchanged at activation. The guest's public document URL
   must include the intended fragment; HTTP requests do not carry browser fragments.
@@ -102,20 +106,34 @@ to a `Response`. Where the runtime has no global `HTMLRewriter`, pass one as
 ```ts
 import { materializeVFrameDocument } from "@mewhhaha/v-frame/server";
 
-const guestURL = new URL("/applications/orders/", request.url);
+const guestURL = new URL("/applications/orders/", "https://example.com");
 const guestResponse = await ordersService.fetch(
   new Request("https://orders.internal/document"),
 );
-
-if (!guestResponse.ok) {
-  throw new Error(`orders SSR returned ${guestResponse.status} for ${guestURL.href}`);
-}
 
 const fonts = new Set<string>();
 const materializedResponse = await materializeVFrameDocument(
   guestResponse,
   guestURL.href,
   {
+    requireDocument: true,
+    signal: request.signal,
+    async fetchText(href, { signal } = {}) {
+      const url = new URL(href);
+      if (
+        url.origin !== guestURL.origin ||
+        !url.pathname.startsWith("/applications/orders/")
+      ) {
+        throw new TypeError(`Unexpected orders stylesheet URL ${url.href}`);
+      }
+      const assetURL = new URL(url.pathname + url.search, "https://orders.internal");
+      const response = await ordersService.fetch(assetURL, {
+        redirect: "manual",
+        signal,
+      });
+      if (!response.ok) throw new Error(`Stylesheet returned ${response.status}`);
+      return { bytes: await response.arrayBuffer(), url: url.href };
+    },
     onFontFace: (css) => {
       fonts.add(css);
     },
@@ -129,7 +147,9 @@ const fontStyle = fonts.size ? `<style>${[...fonts].join("\n")}</style>` : "";
 
 Only a `200` response whose `content-type` is `text/html` is transformed. Any
 other response (a redirect, `204`, `206`, `304`, an error page, JSON) is returned
-as it came, so check `response.ok` first as above rather than embedding it. A
+as it came by default. Pass `requireDocument: true` when embedding the output as
+HTML so the transform rejects these responses. To branch on the response before
+materializing it, use `isVFrameDocumentResponse(response)`. A
 transformed response keeps its status and headers except those that describe the
 guest's bytes: `content-length`, `content-encoding`, `content-range`,
 `accept-ranges`, `etag`, `last-modified`, `content-md5`, `digest`,
@@ -155,17 +175,21 @@ materialized concurrently, and so are the `@import`s of one sheet. The output
 then waits on each sheet only where it reaches it, so the slowest sheet, not the
 sum of all of them, delays the bytes after it. Duplicate URLs are fetched once.
 
-Cancelling the response aborts the work in flight. The default `fetch` is
+Cancelling the response or aborting the caller's `signal` stops the work in flight. The default `fetch` is
 aborted, and a custom `fetchText` receives the same signal as its second
 argument, `fetchText(url, { signal })`; honour it to stop your own request. An
 aborted materialization reports nothing to `onImportFailure`, since the failures
 are the cancellation itself.
 
-A third argument configures the stylesheet stage: `fetchText` overrides how a
-linked stylesheet or `@import` target is fetched (useful when the sheet lives behind an
-internal service binding). It can return CSS text, or `{ text, url }` to retain
-the final response URL after redirects so nested imports and assets resolve
-relative to that stylesheet. `onFontFace(css)` receives rewritten, HTML-safe font
+A third argument configures the stylesheet stage. By default, the adapter uses
+the server's `fetch` for the stylesheet URLs specified by the guest markup and
+CSS, including nested imports and redirects. Use a `fetchText` resolver such as
+the one above to limit where the server sends those requests. If your resolver
+supports redirects, check every destination before following it. Supply the
+final **public** URL so nested imports and assets resolve relative to that
+stylesheet. A resolver can return CSS text, `{ text, url }`, or the original
+`{ bytes, url }`. A link with a supported integrity hash requires the original
+bytes, which are verified before any CSS is applied. `onFontFace(css)` receives rewritten, HTML-safe font
 declarations. Put the collected CSS in a host `<style>` before the frame: browsers
 do not consistently register `@font-face` rules inside shadow trees. Use
 application-specific font-family names to avoid conflicts between guests. This
@@ -200,6 +224,7 @@ runtime-neutral decisions exported from the same entry:
 | `rewriteShellElement(tagName)`                         | Every element's tag name                                   | `{ tagName, prependHTML }`, or `null` for elements that are not `html`/`head`/`body`. `prependHTML` is the display-rule `<style>` that must go first inside `v-head`. |
 | `rewriteScriptElement(script)`                         | Every `<script>`, given `getAttribute`/`hasAttribute`      | `{ removeAttributes, setAttributes }`, or `null` if the script is already materialized.                                                                               |
 | `rewriteAssetAttributes(element, baseURL)`             | Every element, with its namespace, tag name and attributes | URL/style/srcset assignments plus provenance preserving the authored values. Apply assignments through the HTML parser's attribute API.                               |
+| `rewritePreviewAttributes(element)`                    | Every element, before changing any authored attributes     | `{ removeAttributes, setAttributes }` to defer navigation and handlers. Apply the removals and assignments after asset rebasing.                                      |
 | `materializeStylesheet(source, documentURL, options?)` | The full text of every `<style>`                           | The rewritten, `</style`-escaped text to write back.                                                                                                                  |
 
 `rewriteScriptElement` returning `null` for an already-materialized script
@@ -210,15 +235,23 @@ restore.
 The complete export list, which [the API reference](./api.md#server-entry) defers
 to, is:
 
-| Export                                                                                                                                                                                                                                                                                                                                                        | Kind      | Purpose                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------- |
-| `materializeVFrameDocument(response, documentURL, options?)`                                                                                                                                                                                                                                                                                                  | adapter   | The `HTMLRewriter` transform above. Options: the stylesheet options plus `HTMLRewriter`. |
-| `fragmentIdentifiers(documentURL)`, `fragmentTargetRank(element, identifiers)`                                                                                                                                                                                                                                                                                | fragment  | Select the initial `:target` element for a custom materializer.                          |
-| `FRAGMENT_TARGET_ATTRIBUTE`                                                                                                                                                                                                                                                                                                                                   | constant  | The reserved marker set on that element.                                                 |
-| `escapeStylesheetText(source)`                                                                                                                                                                                                                                                                                                                                | core      | The `</style` escape on its own.                                                         |
-| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SSR_LINK_REL`, `SSR_LINK_STYLE`, `SSR_LINK_SOURCE`, `SSR_STYLE`, `NEUTRALIZED_STYLESHEET_REL`, `SHELL_DISPLAY_STYLE`                                                                                                                                                                | constants | The wire format between materializer and runtime.                                        |
-| `createStylesheetContext(fetchText, onImportFailure?, signal?)`, `rewriteStylesheet(source, url, ctx)`                                                                                                                                                                                                                                                        | CSS       | The pure stylesheet rewriter the browser runtime also uses.                              |
-| Types: `HTMLRewriterConstructor`, `MaterializeDocumentOptions`, `MaterializeStylesheetOptions`, `AttributeAssignment`, `AssetElementAttributes`, `ScriptElementAttributes`, `ScriptElementRewrite`, `ShellElementRewrite`, `FragmentElement`, `StylesheetContext`, `StylesheetFetch`, `StylesheetFetchOptions`, `StylesheetImportFailure`, `StylesheetSource` | types     | Shapes of the above.                                                                     |
+| Export                                                                                                                                                                                                                                                                                                                                                                                                    | Kind      | Purpose                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `materializeVFrameDocument(response, documentURL, options?)`                                                                                                                                                                                                                                                                                                                                              | adapter   | The `HTMLRewriter` transform above. Adds `HTMLRewriter` and `requireDocument` to the stylesheet options.                                                   |
+| `isVFrameDocumentResponse(response)`                                                                                                                                                                                                                                                                                                                                                                      | predicate | Checks whether the adapter can transform the response. Use the adapter's `requireDocument` option when the output is going directly into an HTML response. |
+| `fragmentIdentifiers(documentURL)`, `fragmentTargetRank(element, identifiers)`                                                                                                                                                                                                                                                                                                                            | fragment  | Select the initial `:target` element for a custom materializer.                                                                                            |
+| `FRAGMENT_TARGET_ATTRIBUTE`                                                                                                                                                                                                                                                                                                                                                                               | constant  | The reserved marker set on that element.                                                                                                                   |
+| `escapeStylesheetText(source)`                                                                                                                                                                                                                                                                                                                                                                            | core      | The `</style` escape on its own.                                                                                                                           |
+| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SSR_LINK_REL`, `SSR_LINK_STYLE`, `SSR_LINK_SOURCE`, `SSR_LINK_INTEGRITY`, `SSR_PREVIEW_ATTRIBUTES`, `SSR_STYLE`, `NEUTRALIZED_STYLESHEET_REL`, `SHELL_DISPLAY_STYLE`                                                                                                                                                            | constants | The wire format between materializer and runtime.                                                                                                          |
+| `createStylesheetContext(fetchText, onImportFailure?, signal?)`, `rewriteStylesheet(source, url, ctx)`                                                                                                                                                                                                                                                                                                    | CSS       | The pure stylesheet rewriter the browser runtime also uses.                                                                                                |
+| Types: `HTMLRewriterConstructor`, `MaterializeDocumentOptions`, `MaterializeStylesheetOptions`, `AttributeAssignment`, `AssetElementAttributes`, `ScriptElementAttributes`, `ScriptElementRewrite`, `ShellElementRewrite`, `FragmentElement`, `StylesheetContext`, `StylesheetFetch`, `ServerStylesheetFetch`, `StylesheetBytes`, `StylesheetFetchOptions`, `StylesheetImportFailure`, `StylesheetSource` | types     | Shapes of the above.                                                                                                                                       |
+
+The preview and asset helpers put a JSON array of authored attribute names in
+`data-v-frame-preview-attributes` or `data-v-frame-attributes`. Numbered
+attributes with the same prefix carry the corresponding values, starting at
+`-0`. An omitted value represents an originally absent attribute. Keep the
+markers and numbered values intact when composing nested frames. The browser
+decodes HTML entities in the values before activation restores the attributes.
 
 #### Linked stylesheets on the wire
 
@@ -226,19 +259,23 @@ A host with its own parser must produce the same markup the adapter does for a
 `<link rel~=stylesheet href>`, or the runtime cannot adopt it. For each such link,
 after rebasing its `href` and fetching and materializing the sheet:
 
-1. Set `SSR_LINK_REL` (`data-v-frame-rel`) on the link to its authored `rel`, then
+1. Verify the original stylesheet bytes when its link supplies `integrity`. On
+   failure, leave the link inert and report the stylesheet failure.
+2. Set `SSR_LINK_REL` (`data-v-frame-rel`) on the link to its authored `rel`, then
    set `rel` to `NEUTRALIZED_STYLESHEET_REL` (`v-frame-stylesheet`). Do this even
    when the fetch fails: a live link would load against the host page. The
    runtime restores `rel`, and fetches the sheet itself if no preview follows.
-2. On success, insert immediately after the link a
+3. On success, insert immediately after the link a
    `<style data-v-frame-source="FINAL_URL" data-v-frame-linked="" media="MEDIA">CSS</style>`:
    `SSR_LINK_SOURCE` carries the response URL after redirects (nested URLs
    already resolve against it), `SSR_LINK_STYLE` marks the preview, `media` is the
    link's (use `not all` when the link has `disabled` or is an alternate sheet),
-   and `nonce` and `title` are copied across. The CSS is `materializeStylesheet`
+   and `nonce` and `title` are copied across. For verified integrity, set
+   `SSR_LINK_INTEGRITY` (`data-v-frame-integrity`) on the preview style to the
+   trimmed integrity metadata from the link. The CSS is `materializeStylesheet`
    output, which is already `</style`-escaped. Attribute values must be
    HTML-escaped.
-3. Every other `<style>` the host materialized gets the `SSR_STYLE`
+4. Every other `<style>` the host materialized gets the `SSR_STYLE`
    (`data-v-frame-materialized`) attribute, including the `SHELL_DISPLAY_STYLE`
    element, which already carries it. A `<style>` that failed to materialize is
    left unmarked, and a guest-authored marker must be removed first, so the
@@ -314,6 +351,12 @@ the browser has this shape:
 The host owns this wrapper; the guest does not produce it. Treat the transformed
 document as executable application content and only compose responses from a
 trusted guest service.
+
+Version the browser bundle with the host HTML that loads it. Deploy a browser
+runtime that understands the new markers before emitting them from the server,
+then refresh cached host HTML and guest previews together. Older runtimes cannot
+activate the new attribute markers. The browser can paint cached markup before
+the runtime validates stylesheet metadata during activation.
 
 If the host uses a nonce-based `style-src` policy, apply its nonce to every
 materialized `<style>` before sending the response, including the injected shell

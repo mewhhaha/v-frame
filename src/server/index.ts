@@ -1,4 +1,5 @@
 export { materializeVFrameDocument } from "./html-rewriter.js";
+export { isHTMLDocumentResponse as isVFrameDocumentResponse } from "../html-response.js";
 export type {
   HTMLRewriterConstructor,
   MaterializeDocumentOptions,
@@ -9,6 +10,7 @@ export {
   escapeStylesheetText,
   materializeStylesheet,
   rewriteAssetAttributes,
+  rewritePreviewAttributes,
   rewriteScriptElement,
   rewriteShellElement,
   SHELL_DISPLAY_STYLE,
@@ -20,14 +22,18 @@ export {
   SCRIPT_TYPE_ATTRIBUTE,
   NEUTRALIZED_STYLESHEET_REL,
   SSR_LINK_REL,
+  SSR_LINK_INTEGRITY,
   SSR_LINK_SOURCE,
   SSR_LINK_STYLE,
+  SSR_PREVIEW_ATTRIBUTES,
   SSR_STYLE,
 } from "../wire-format.js";
 export type {
   AttributeAssignment,
   AssetElementAttributes,
   MaterializeStylesheetOptions,
+  ServerStylesheetFetch,
+  StylesheetBytes,
   ScriptElementAttributes,
   ScriptElementRewrite,
   ShellElementRewrite,

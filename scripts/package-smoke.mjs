@@ -3,28 +3,35 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { rolldown } from "rolldown";
 import { chromium, firefox, webkit } from "@playwright/test";
 
 const consumer = await mkdtemp(join(tmpdir(), "v-frame-package-smoke-"));
 let server;
 try {
   await cp(resolve("tests/package-consumer"), consumer, { recursive: true });
-  const packed = JSON.parse(
-    execFileSync(
-      "npm",
-      [
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--cache",
-        join(consumer, "cache"),
-        "--pack-destination",
-        consumer,
-      ],
-      { encoding: "utf8", maxBuffer: 4_000_000 },
-    ),
-  );
-  const artifact = join(consumer, packed[0].filename);
+  let artifact;
+  if (process.argv.includes("--registry")) {
+    const { version } = JSON.parse(await readFile("jsr.json", "utf8"));
+    artifact = "@mewhhaha/v-frame@npm:@jsr/mewhhaha__v-frame@" + version;
+  } else {
+    const packed = JSON.parse(
+      execFileSync(
+        "npm",
+        [
+          "pack",
+          "--ignore-scripts",
+          "--json",
+          "--cache",
+          join(consumer, "cache"),
+          "--pack-destination",
+          consumer,
+        ],
+        { encoding: "utf8", maxBuffer: 4_000_000 },
+      ),
+    );
+    artifact = join(consumer, packed[0].filename);
+  }
   execFileSync(
     "npm",
     [
@@ -34,6 +41,7 @@ try {
       "--cache",
       join(consumer, "cache"),
       "--ignore-scripts",
+      "--@jsr:registry=https://npm.jsr.io",
       "--no-audit",
       "--no-fund",
       artifact,
@@ -46,13 +54,21 @@ try {
     ["-p", join(consumer, "tsconfig.json")],
     { cwd: consumer, stdio: "inherit" },
   );
-  const dist = join(consumer, "node_modules/@mewhhaha/v-frame/dist");
-  const index = await readFile(join(dist, "index.js"));
-  const register = await readFile(join(dist, "register.js"));
+  const bundle = await rolldown({
+    input: join(consumer, "browser.js"),
+    platform: "browser",
+  });
+  let register;
+  try {
+    const { output } = await bundle.generate({ format: "es" });
+    register = output[0].code;
+  } finally {
+    await bundle.close();
+  }
   server = createServer((request, response) => {
-    if (request.url === "/index.js" || request.url === "/register.js") {
+    if (request.url === "/register.js") {
       response.writeHead(200, { "content-type": "text/javascript" });
-      response.end(request.url === "/index.js" ? index : register);
+      response.end(register);
       return;
     }
     response.writeHead(200, { "content-type": "text/html" });

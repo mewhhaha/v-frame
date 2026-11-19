@@ -40,6 +40,7 @@
     "size": "node scripts/bundle-size.mjs",
     "test:unit": "node --import ./scripts/resolve-ts-sources.mjs --test \"tests/unit/**/*.test.ts\"",
     "test:package": "node scripts/package-smoke.mjs",
+    "test:registry": "node scripts/package-smoke.mjs --registry",
     "test:e2e": "playwright test",
     "test:e2e:chromium": "pnpm run build && playwright test --project=chromium",
     "release:check": "node scripts/release-check.ts",

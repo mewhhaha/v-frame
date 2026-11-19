@@ -2,6 +2,7 @@
 export interface LinkedStyle {
   style: HTMLStyleElement;
   href: string;
+  integrity: string;
   url: string;
   disabled: boolean;
 }

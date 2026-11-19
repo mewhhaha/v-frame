@@ -15,6 +15,7 @@ import {
   isSrcsetAttribute,
   isURLAttribute,
   rewriteAssetAttribute,
+  XLINK_NAMESPACE,
 } from "./asset-urls.js";
 import {
   INERT_SCRIPT_TYPE,
@@ -22,7 +23,9 @@ import {
   SCRIPT_TYPE_ATTRIBUTE,
   SSR_ATTRIBUTES,
   SSR_LINK_REL,
+  SSR_LINK_INTEGRITY,
   SSR_LINK_STYLE,
+  SSR_PREVIEW_ATTRIBUTES,
   SSR_STYLE,
 } from "./wire-format.js";
 
@@ -554,6 +557,7 @@ async function prepareLinkedStyle(
   onError: PrepareMarkupOptions["onError"],
 ): Promise<void> {
   const href = link.href;
+  const integrity = link.integrity.trim();
   // An alternate sheet is not applied until the guest selects it.
   const disabled = link.disabled || link.relList.contains("alternate");
 
@@ -564,20 +568,25 @@ async function prepareLinkedStyle(
       materialized.hasAttribute(SSR_LINK_STYLE)
     ) {
       const style = materialized as HTMLStyleElement;
-      style.removeAttribute(SSR_LINK_STYLE);
-      style.media = link.media;
-      style.disabled = disabled;
-      if (nonce) style.nonce = nonce;
-      else style.removeAttribute("nonce");
-      linkedStyles.set(link, {
-        style,
-        href,
-        url: style.dataset.vFrameSource ?? href,
-        disabled,
-      });
-      return;
+      if (integrity === "" || style.getAttribute(SSR_LINK_INTEGRITY) === integrity) {
+        style.removeAttribute(SSR_LINK_STYLE);
+        style.removeAttribute(SSR_LINK_INTEGRITY);
+        style.media = link.media;
+        style.disabled = disabled;
+        if (nonce) style.nonce = nonce;
+        else style.removeAttribute("nonce");
+        linkedStyles.set(link, {
+          style,
+          href,
+          integrity,
+          url: style.dataset.vFrameSource ?? href,
+          disabled,
+        });
+        return;
+      }
+      style.remove();
     }
-    const source = await fetchStylesheet(href, context);
+    const source = await fetchStylesheet(href, context, integrity);
     const rewritten = await rewriteStylesheet(source.text, source.url, context);
     const style = createGeneratedStyle(document, rewritten, nonce, source.url);
     style.media = link.media;
@@ -585,7 +594,7 @@ async function prepareLinkedStyle(
     if (link.hasAttribute("title")) {
       style.title = link.title;
     }
-    linkedStyles.set(link, { style, href, url: source.url, disabled });
+    linkedStyles.set(link, { style, href, integrity, url: source.url, disabled });
     link.after(style);
   } catch (error) {
     onError({ phase: "stylesheet", url: href, error });
@@ -762,6 +771,34 @@ export async function prepareMarkup(
   });
 }
 
+function restoreAuthoredAttributes(element: Element, marker: string): void {
+  const provenance = element.getAttribute(marker);
+  if (provenance === null) return;
+  const authored = JSON.parse(provenance) as string[] | Record<string, string | null>;
+  // Older materializers put values in the JSON marker itself. New ones let the
+  // HTML parser decode the values as ordinary attributes before restoring them.
+  let attributes: [string, string | null][];
+  if (Array.isArray(authored)) {
+    attributes = authored.map((name, index) => {
+      const valueAttribute = `${marker}-${index}`;
+      const value = element.getAttribute(valueAttribute);
+      element.removeAttribute(valueAttribute);
+      return [name, value];
+    });
+  } else {
+    attributes = Object.entries(authored);
+  }
+  for (const [name, value] of attributes) {
+    if (value === null) element.removeAttribute(name);
+    else if (typeof value !== "string")
+      throw new TypeError("Invalid v-frame SSR attribute provenance");
+    else if (name.startsWith("xlink:"))
+      element.setAttributeNS(XLINK_NAMESPACE, name, value);
+    else element.setAttribute(name, value);
+  }
+  element.removeAttribute(marker);
+}
+
 export async function prepareAdoptedMarkup(
   options: PrepareMarkupOptions,
 ): Promise<PreparedMarkup> {
@@ -777,16 +814,7 @@ export async function prepareAdoptedMarkup(
   }
   html.remove();
   for (const element of [html, ...html.querySelectorAll("*")]) {
-    const provenance = element.getAttribute(SSR_ATTRIBUTES);
-    if (provenance !== null) {
-      const authored = JSON.parse(provenance) as Record<string, string>;
-      for (const [name, value] of Object.entries(authored)) {
-        if (typeof value !== "string")
-          throw new TypeError("Invalid v-frame SSR attribute provenance");
-        element.setAttribute(name, value);
-      }
-      element.removeAttribute(SSR_ATTRIBUTES);
-    }
+    restoreAuthoredAttributes(element, SSR_ATTRIBUTES);
     const rel = element.getAttribute(SSR_LINK_REL);
     if (element.localName === "link" && rel !== null) {
       element.setAttribute("rel", rel);
@@ -821,6 +849,12 @@ export async function prepareAdoptedMarkup(
     shadowHosts.add(host);
     shadowRoot.append(template.content);
     template.remove();
+  }
+
+  // Nested adopting shadows have already been moved out of this traversal.
+  // Ordinary templates are owned by this guest even though their contents are inert.
+  for (const element of collectParsedElements(html)) {
+    restoreAuthoredAttributes(element, SSR_PREVIEW_ATTRIBUTES);
   }
 
   for (const script of html.querySelectorAll<HTMLScriptElement>(

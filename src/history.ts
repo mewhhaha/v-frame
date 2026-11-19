@@ -227,7 +227,7 @@ export interface HistoryControllerOptions {
 }
 
 export interface VirtualHistoryOptions extends HistoryControllerOptions {
-  host: HTMLElement;
+  host: Pick<HTMLElement, "scrollLeft" | "scrollTop" | "scrollTo">;
   session: VirtualHistorySession;
   getBaseURL(): string;
   onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
@@ -736,7 +736,7 @@ export class BoundHistory extends HistoryController {
 }
 
 export class VirtualHistory extends HistoryController {
-  #host: HTMLElement | null;
+  #host: VirtualHistoryOptions["host"] | null;
   readonly #nativeLengthGetter: (() => number) | null;
   #onDocumentTraversal: VirtualHistoryOptions["onDocumentTraversal"];
   #getBaseURL: VirtualHistoryOptions["getBaseURL"];
@@ -776,6 +776,10 @@ export class VirtualHistory extends HistoryController {
 
   get state(): unknown {
     return this.#activeState;
+  }
+
+  setScrollHost(host: VirtualHistoryOptions["host"]): void {
+    this.#host = host;
   }
 
   restoreScroll(

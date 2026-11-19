@@ -45,5 +45,10 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
 
       - uses: ./.github/actions/setup
+        with:
+          browsers: chromium firefox webkit
 
       - run: pnpm exec jsr publish --provenance
+
+      - name: Verify the published version from the JSR registry
+        run: pnpm test:registry

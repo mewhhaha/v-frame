@@ -34,6 +34,10 @@ function normalizeFormLineEndings(value: string): string {
   return value.replace(/\r\n|\r|\n/g, "\r\n");
 }
 
+function isHTTPURL(url: URL): boolean {
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
 interface RealmNavigationOptions {
   window: VFrameWindow;
   host: HTMLElement;
@@ -94,6 +98,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
   )!.get!;
   let restoreIntercept: () => void = () => undefined;
   const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
+    if (!form.isConnected || options.isDisposed()) return;
     const action =
       submitter !== null &&
       "formAction" in submitter &&
@@ -120,6 +125,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     if (method === "get") {
       const parameters = new window.URLSearchParams();
       const entries = new window.FormData(form, submitter as HTMLButtonElement | null);
+      if (!form.isConnected || options.isDisposed()) return;
       for (const [name, value] of entries) {
         parameters.append(
           normalizeFormLineEndings(name),
@@ -135,6 +141,10 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       kind: "form",
       state: null,
     };
+    if (!isHTTPURL(targetURL)) {
+      options.onNavigate(detail);
+      return;
+    }
     if (target === "_blank") {
       const allowed = options.onNavigate(detail);
       if (allowed && method === "get") {
@@ -152,10 +162,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       return;
     }
 
-    if (
-      (target !== "" && target !== "_self") ||
-      (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
-    ) {
+    if (target !== "" && target !== "_self") {
       options.onNavigate(detail);
       return;
     }
@@ -181,17 +188,6 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     }
   };
 
-  const anchorFromEvent = (event: Event) =>
-    event
-      .composedPath()
-      .find(
-        (candidate): candidate is HTMLAnchorElement | HTMLAreaElement | SVGAElement =>
-          candidate instanceof window.Element &&
-          (candidate.localName === "a" || candidate.localName === "area") &&
-          (candidate.hasAttribute("href") ||
-            candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
-      );
-
   const navigateFromLink = (
     event: MouseEvent,
     anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement,
@@ -214,7 +210,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       !opensNewContext &&
       !(anchor instanceof window.SVGAElement) &&
       nativeDOM.hasAttribute(anchor, "download") &&
-      (targetURL.protocol === "http:" || targetURL.protocol === "https:") &&
+      isHTTPURL(targetURL) &&
       targetURL.origin === window.location.origin
     ) {
       const download = options.host.ownerDocument.createElement("a");
@@ -234,17 +230,15 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
           to: targetURL.href,
           kind: "link",
           state: null,
-        })
+        }) &&
+        isHTTPURL(targetURL)
       ) {
         options.nativeWindowOpen(targetURL.href, "_blank", "noopener");
       }
       return;
     }
 
-    if (
-      (target !== "" && target !== "_self") ||
-      (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
-    ) {
+    if ((target !== "" && target !== "_self") || !isHTTPURL(targetURL)) {
       options.onNavigate({
         from: options.getCurrentURL(),
         to: targetURL.href,
@@ -274,7 +268,15 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
 
   const scheduledNavigationEvents = new WeakSet<Event>();
   const suppressLinkDefault = (event: Event) => {
-    const anchor = anchorFromEvent(event);
+    const path = event.composedPath();
+    if (!path.includes(options.guestRoot)) return;
+    const anchor = path.find(
+      (candidate): candidate is HTMLAnchorElement | HTMLAreaElement | SVGAElement =>
+        candidate instanceof window.Element &&
+        (candidate.localName === "a" || candidate.localName === "area") &&
+        (candidate.hasAttribute("href") ||
+          candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
+    );
     if (anchor === undefined) return;
     let button: number;
     try {
@@ -310,6 +312,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     }, 0);
   };
   const suppressSubmitDefault = (event: Event) => {
+    if (!event.composedPath().includes(options.guestRoot)) return;
     const form = event.target;
     if (!(form instanceof window.HTMLFormElement)) {
       return;
@@ -520,7 +523,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       }
       if (
         (normalizedTarget !== "" && normalizedTarget !== "_self") ||
-        (targetURL.protocol !== "http:" && targetURL.protocol !== "https:")
+        !isHTTPURL(targetURL)
       ) {
         options.onNavigate(detail);
         return null;

@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { rolldown } from "rolldown";
+import { bundleEntry } from "./bundle-entry.mjs";
 
 // The budget exists so payload regressions surface in CI rather than in a
 // consumer's network tab. Ratchet it down whenever the bundle genuinely shrinks.
@@ -14,11 +14,7 @@ async function measureGzippedBundle() {
   // Building in memory keeps the budget runnable without a prior `pnpm build`,
   // and drops the sourcemap and legal comments that dist/index.js carries but
   // no consumer downloads on the critical path.
-  const bundle = await rolldown({
-    input: "src/index.ts",
-    platform: "browser",
-    transform: { target: "es2022" },
-  });
+  const bundle = await bundleEntry("src/index.ts", "browser");
   try {
     const generated = await bundle.generate({
       format: "es",

@@ -4,6 +4,8 @@ import { type HTTPFixture } from "./support/http-fixture";
 import {
   mountGuestDocument,
   startGuestDocumentFixture,
+  differentStylesheetIntegrity,
+  stylesheetIntegrity,
 } from "./support/guest-document-fixture";
 
 let fixture: HTTPFixture;
@@ -15,6 +17,43 @@ test.beforeAll(async () => {
 test.afterAll(async () => fixture.close());
 
 const mounted = (page: Page, route?: string) => mountGuestDocument(page, fixture, route);
+
+test("verifies initial and changing stylesheet integrity for the same URL", async ({
+  page,
+}) => {
+  const frame = await mounted(page, "/linked-integrity");
+  await expect(frame.locator("#target")).toHaveCSS("color", "rgb(44, 55, 66)");
+  const result = await frame.evaluate(
+    async (element: VFrameElement, { valid, different }) => {
+      const document = element.contentWindow!.document;
+      const rejected = document.querySelector<HTMLLinkElement>("#rejected")!;
+      const pinned = document.querySelector<HTMLLinkElement>("#pinned")!;
+      const initial = {
+        rejected: rejected.sheet === null,
+        applied: pinned.sheet !== null,
+      };
+      const rejectedChange = new Promise<void>((resolve) =>
+        pinned.addEventListener("error", () => resolve(), { once: true }),
+      );
+      pinned.integrity = different;
+      await rejectedChange;
+      const rejectedRevision = pinned.sheet === null;
+      const restored = new Promise<void>((resolve) =>
+        pinned.addEventListener("load", () => resolve(), { once: true }),
+      );
+      pinned.integrity = valid;
+      await restored;
+      return { ...initial, rejectedRevision, restored: pinned.sheet !== null };
+    },
+    { valid: stylesheetIntegrity, different: differentStylesheetIntegrity },
+  );
+  expect(result).toEqual({
+    rejected: true,
+    applied: true,
+    rejectedRevision: true,
+    restored: true,
+  });
+});
 
 test("stylesheet redirects preserve asset and import bases and live link identity", async ({
   page,

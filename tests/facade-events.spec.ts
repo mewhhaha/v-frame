@@ -291,7 +291,13 @@ test("window and body handler properties are one slot and keep their listener po
     }
     return { host: run(window as Window & typeof globalThis), guest: run(child) };
   });
-  expect(result.guest).toEqual(result.host);
+  // The HTML window error-handler contract also applies to a body content
+  // attribute. WebKit's native inline attribute currently receives one argument.
+  expect(result.guest).toEqual({
+    ...result.host,
+    attributeArguments: 5,
+    attributeCancelled: true,
+  });
   expect(result.host.order).toEqual(["first", "handler-2", "last"]);
   expect(result.host.errorArgs).toEqual(["m", "s.js", 1, 2, "Error"]);
 });

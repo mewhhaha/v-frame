@@ -1,9 +1,15 @@
 import { createStylesheetContext, extractFontFaces, rewriteStylesheet } from "../css.js";
-import { rewriteAssetAttribute, XLINK_NAMESPACE } from "../asset-urls.js";
+import {
+  HTML_NAMESPACE,
+  rewriteAssetAttribute,
+  SVG_NAMESPACE,
+  XLINK_NAMESPACE,
+} from "../asset-urls.js";
 import type {
   StylesheetFetch,
   StylesheetFetchOptions,
   StylesheetImportFailure,
+  StylesheetSource,
 } from "../css.js";
 import {
   INERT_SCRIPT_TYPE,
@@ -11,6 +17,7 @@ import {
   SCRIPT_TYPE_ATTRIBUTE,
   SHELL_ELEMENT_NAMES,
   SSR_ATTRIBUTES,
+  SSR_PREVIEW_ATTRIBUTES,
   SSR_STYLE,
 } from "../wire-format.js";
 
@@ -25,7 +32,7 @@ import {
  * The shell elements are unknown to the user agent, so the materialized
  * document has to carry their display rules itself.
  */
-export const SHELL_DISPLAY_STYLE: string = `<style ${SSR_STYLE}>:host{contain:layout;display:block;position:relative;overflow:auto}v-html,v-body{display:block}v-head{display:none!important}</style>`;
+export const SHELL_DISPLAY_STYLE: string = `<style ${SSR_STYLE}>:host{contain:layout;display:block;position:relative;overflow:auto}:host([hidden]:not([hidden="until-found" i])){display:none!important}v-html,v-body{display:block}v-head{display:none!important}</style>`;
 
 export interface ShellElementRewrite {
   /** The custom element name that replaces the shell tag. */
@@ -69,6 +76,75 @@ export interface AssetElementAttributes extends ScriptElementAttributes {
   readonly attributes: Iterable<[string, string]>;
 }
 
+function recordAuthoredAttributes(
+  assignments: AttributeAssignment[],
+  marker: string,
+  authored: Map<string, string | null>,
+): void {
+  // The parser decodes entity references in each value attribute once. Keeping
+  // those values out of JSON prevents a decoded quote from changing the JSON.
+  const names = Array.from(authored.keys());
+  assignments.push({
+    name: marker,
+    value: JSON.stringify(names).replaceAll("&", "\\u0026"),
+  });
+  for (const [index, name] of names.entries()) {
+    const value = authored.get(name);
+    if (value != null) assignments.push({ name: `${marker}-${index}`, value });
+  }
+}
+
+/** Keeps preview controls editable while deferring executable and navigation attributes. */
+export function rewritePreviewAttributes(element: AssetElementAttributes): {
+  removeAttributes: string[];
+  setAttributes: AttributeAssignment[];
+} {
+  const removeAttributes: string[] = [];
+  const setAttributes: AttributeAssignment[] = [];
+  const authored = new Map<string, string | null>();
+  const remember = (name: string) => {
+    if (!authored.has(name)) authored.set(name, element.getAttribute(name));
+  };
+  const html = element.namespaceURI === HTML_NAMESPACE;
+  const anchor =
+    (html && (element.tagName === "a" || element.tagName === "area")) ||
+    (element.namespaceURI === SVG_NAMESPACE && element.tagName === "a");
+  for (const [name] of element.attributes) {
+    if (name.startsWith("on") || (anchor && (name === "href" || name === "xlink:href"))) {
+      remember(name);
+      removeAttributes.push(name);
+    }
+  }
+  if (anchor && (authored.has("href") || authored.has("xlink:href"))) {
+    remember("aria-disabled");
+    setAttributes.push({ name: "aria-disabled", value: "true" });
+    if (!element.hasAttribute("role")) {
+      remember("role");
+      setAttributes.push({ name: "role", value: "link" });
+    }
+  }
+  // The dialog method never submits to a URL, and keeps the existing form
+  // ownership for input state, radio groups and focus in the preview.
+  if (html && element.tagName === "form") {
+    remember("method");
+    setAttributes.push({ name: "method", value: "dialog" });
+  }
+  if (
+    html &&
+    (element.tagName === "button" || element.tagName === "input") &&
+    element.hasAttribute("formmethod")
+  ) {
+    remember("formmethod");
+    setAttributes.push({ name: "formmethod", value: "dialog" });
+  }
+  // The HTMLRewriter can expose nested provenance with entities still escaped.
+  // Leave the already-materialized guest's marker for the browser to decode.
+  if (authored.size !== 0 && !element.hasAttribute(SSR_PREVIEW_ATTRIBUTES)) {
+    recordAuthoredAttributes(setAttributes, SSR_PREVIEW_ATTRIBUTES, authored);
+  }
+  return { removeAttributes, setAttributes };
+}
+
 /** Rebase preview resources while retaining authored values for hydration. */
 export function rewriteAssetAttributes(
   element: AssetElementAttributes,
@@ -79,7 +155,7 @@ export function rewriteAssetAttributes(
     namespaceURI: element.namespaceURI,
   };
   const assignments: AttributeAssignment[] = [];
-  const authored: Record<string, string> = {};
+  const authored = new Map<string, string | null>();
   for (const [name, value] of element.attributes) {
     const prefixed = name.startsWith("xlink:");
     const rewritten = rewriteAssetAttribute(
@@ -90,18 +166,14 @@ export function rewriteAssetAttributes(
       baseURL,
     );
     if (rewritten !== null) {
-      authored[name] = value;
+      authored.set(name, value);
       assignments.push({ name, value: rewritten });
     }
   }
-  if (assignments.length) {
+  if (authored.size !== 0 && !element.hasAttribute(SSR_ATTRIBUTES)) {
     // Materializing nested, already-materialized markup must not discard its
     // original attributes. Existing provenance belongs to that inner guest.
-    const existing = element.getAttribute(SSR_ATTRIBUTES);
-    assignments.push({
-      name: SSR_ATTRIBUTES,
-      value: existing ?? JSON.stringify(authored),
-    });
+    recordAuthoredAttributes(assignments, SSR_ATTRIBUTES, authored);
   }
   return assignments;
 }
@@ -146,8 +218,8 @@ export function rewriteScriptElement(
 }
 
 export interface MaterializeStylesheetOptions {
-  /** Fetches a linked stylesheet or `@import`. Defaults to platform `fetch`. */
-  fetchText?: StylesheetFetch;
+  /** Fetches a stylesheet. Return original bytes for links with integrity metadata. */
+  fetchText?: ServerStylesheetFetch;
   /** Called when an `@import` cannot be inlined (the rule is dropped), or when a linked or inline stylesheet cannot be materialized at all (the runtime handles it at activation). Not called once `signal` is aborted. */
   onImportFailure?(failure: StylesheetImportFailure): void;
   /** HTML-safe font declarations to put in a host style before the SSR frame. */
@@ -156,17 +228,80 @@ export interface MaterializeStylesheetOptions {
   signal?: AbortSignal;
 }
 
+export interface StylesheetBytes {
+  bytes: ArrayBuffer;
+  /** Final public URL, including redirects. */
+  url: string;
+}
+
+export interface ServerStylesheetFetch {
+  (
+    url: string,
+    options?: StylesheetFetchOptions,
+  ): Promise<string | StylesheetSource | StylesheetBytes>;
+}
+
 export async function fetchStylesheetSource(
   url: string,
   { signal }: StylesheetFetchOptions = {},
-) {
+): Promise<StylesheetBytes> {
   const response = await fetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     throw new TypeError(
       `v-frame SSR stylesheet ${url} returned ${response.status} ${response.statusText}`,
     );
   }
-  return { text: await response.text(), url: response.url || url };
+  return { bytes: await response.arrayBuffer(), url: response.url || url };
+}
+
+const INTEGRITY_ALGORITHMS = ["SHA-256", "SHA-384", "SHA-512"];
+
+/** Verify before decoding: the authored digest covers the response's original bytes. */
+export async function readStylesheetSource(
+  source: string | StylesheetSource | StylesheetBytes,
+  url: string,
+  integrity = "",
+): Promise<StylesheetSource> {
+  if (integrity.trim() !== "") {
+    let strength = -1;
+    const expected = new Set<string>();
+    for (const token of integrity.trim().split(/[\t\n\f\r ]+/)) {
+      const expression = token.split("?", 1)[0]!;
+      const match = /^sha(256|384|512)(?:-|$)/.exec(expression);
+      if (!match) continue;
+      const candidate = INTEGRITY_ALGORITHMS.indexOf(`SHA-${match[1]}`);
+      if (candidate < strength) continue;
+      if (candidate > strength) {
+        expected.clear();
+        strength = candidate;
+      }
+      expected.add(
+        expression
+          .slice(match[0].length)
+          .replaceAll("-", "+")
+          .replaceAll("_", "/")
+          .replace(/={1,2}$/, ""),
+      );
+    }
+    if (strength !== -1) {
+      if (typeof source === "string" || !("bytes" in source)) {
+        throw new TypeError(
+          `v-frame SSR stylesheet ${url} needs original bytes to verify integrity`,
+        );
+      }
+      const digest = new Uint8Array(
+        await crypto.subtle.digest(INTEGRITY_ALGORITHMS[strength]!, source.bytes),
+      );
+      const actual = btoa(String.fromCharCode(...digest)).replace(/=+$/, "");
+      if (!expected.has(actual)) {
+        throw new TypeError(`v-frame SSR stylesheet ${url} failed its integrity check`);
+      }
+    }
+  }
+  if (typeof source === "string") return { text: source, url };
+  if ("bytes" in source)
+    return { text: new TextDecoder().decode(source.bytes), url: source.url };
+  return source;
 }
 
 /**
@@ -188,11 +323,10 @@ export async function materializeStylesheet(
   documentURL: string,
   options: MaterializeStylesheetOptions = {},
 ): Promise<string> {
-  const context = createStylesheetContext(
-    options.fetchText ?? fetchStylesheetSource,
-    options.onImportFailure,
-    options.signal,
-  );
+  const fetchText = options.fetchText ?? fetchStylesheetSource;
+  const load: StylesheetFetch = async (url, request) =>
+    readStylesheetSource(await fetchText(url, request), url, request?.integrity);
+  const context = createStylesheetContext(load, options.onImportFailure, options.signal);
   const rewritten = await rewriteStylesheet(source, documentURL, context);
   const fonts = options.onFontFace ? extractFontFaces(rewritten, documentURL) : "";
   if (fonts) options.onFontFace?.(escapeStylesheetText(fonts));

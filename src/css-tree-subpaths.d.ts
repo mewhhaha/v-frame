@@ -1,2 +1,4 @@
 // Scope the upstream types to our adapter; JSR rejects ambient module declarations.
-export { clone, generate, ident, parse, walk } from "css-tree";
+import type { CssNode } from "css-tree";
+export { clone, ident, parse, walk } from "css-tree";
+export function generate(node: CssNode): string;

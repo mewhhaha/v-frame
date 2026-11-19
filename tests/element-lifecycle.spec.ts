@@ -16,6 +16,12 @@ test.beforeAll(async () => {
       "/guest": htmlDocument(
         '<h1 id="title">Guest</h1><a id="next" href="/guest?id=linked">Linked</a><a id="again" href="/guest?id=again">Again</a>',
       ),
+      "/cleanup": htmlDocument(`<script>
+        customElements.define("on-cleanup", class extends HTMLElement {
+          disconnectedCallback() { this.cleanup?.(); }
+        });
+        document.body.append(document.createElement("on-cleanup"));
+      </script>`),
       "/counted": () => {
         counted += 1;
         return { body: htmlDocument('<h1 id="title">Counted</h1>') };
@@ -29,6 +35,67 @@ const status = (frame: import("@playwright/test").Locator) =>
   frame.evaluate((element) => (element as VFrameElement).status);
 const currentURL = (frame: import("@playwright/test").Locator) =>
   frame.evaluate((element) => (element as VFrameElement).currentURL);
+
+test("a failing disposer still releases the realm and its rendered tree", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, { src: fixture.origin + "/guest" });
+  const after = await frame.evaluate((element: VFrameElement) => {
+    const document = element.contentWindow!.document;
+    // Simulate a guest making one of the facade's removable properties permanent.
+    Object.defineProperty(document.documentElement, "scrollTop", { configurable: false });
+    element.remove();
+    return {
+      status: element.status,
+      hasWindow: element.contentWindow !== null,
+      nodes: element.shadowRoot!.children.length,
+      sheets: element.shadowRoot!.adoptedStyleSheets.length,
+    };
+  });
+  expect(after).toEqual({ status: "idle", hasWindow: false, nodes: 0, sheets: 0 });
+});
+
+for (const action of ["remove", "navigate"] as const) {
+  test(`outgoing guest cleanup can ${action} without leaving a dead guest`, async ({
+    page,
+  }) => {
+    await installBundle(page, fixture.origin);
+    const frame = await mountFrame(page, { src: fixture.origin + "/cleanup" });
+    const handle = (await frame.elementHandle())!;
+    await frame.evaluate((element: VFrameElement, action) => {
+      const cleanupNode = element.contentWindow!.document.querySelector(
+        "on-cleanup",
+      ) as HTMLElement & { cleanup: () => void };
+      cleanupNode.cleanup = () => {
+        if (action === "remove") element.remove();
+        else element.src = "/missing";
+      };
+      element.src = "/guest";
+    }, action);
+
+    if (action === "remove") await expect(frame).toHaveCount(0);
+    else {
+      await expect.poll(() => status(frame)).toBe("error");
+      expect(await frame.evaluate((element: VFrameElement) => element.src)).toBe(
+        "/missing",
+      );
+    }
+    expect(
+      await handle.evaluate((element: VFrameElement) => ({
+        status: element.status,
+        currentURL: element.currentURL,
+        hasWindow: element.contentWindow !== null,
+        roots: element.shadowRoot!.querySelectorAll("v-html").length,
+      })),
+    ).toEqual({
+      status: action === "remove" ? "idle" : "error",
+      currentURL: null,
+      hasWindow: false,
+      roots: 0,
+    });
+  });
+}
 
 test("a failed reload that superseded a slow load restores ready, not loading", async ({
   page,

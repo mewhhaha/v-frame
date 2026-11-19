@@ -1,15 +1,10 @@
 import { rm } from "node:fs/promises";
-import { rolldown } from "rolldown";
+import { bundleEntry } from "./scripts/bundle-entry.mjs";
 
 await rm("dist", { recursive: true, force: true });
 
 async function buildEntry(input, file, platform, external = []) {
-  const bundle = await rolldown({
-    input,
-    external,
-    platform,
-    transform: { target: "es2022" },
-  });
+  const bundle = await bundleEntry(input, platform, external);
   try {
     await bundle.write({
       file,
