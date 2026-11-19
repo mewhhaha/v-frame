@@ -140,7 +140,11 @@ An app that embeds another team's app can compose its own response the same way.
 
 ## Examples
 
-Both examples run from a fresh `pnpm install` at the repository root.
+[Contact Sheet](https://contact-sheet.jactor.dev/) is a live Apollo 11 photo desk
+that composes three independently deployed websites into one page. Turn on
+**Show site boundaries** to see the photo archive, flight log, and notebook.
+
+Both local examples run from a fresh `pnpm install` at the repository root.
 
 - [`examples/ssr`](./examples/ssr) — the flagship. A Cloudflare Workers host
   composes four independently built guests (React Router, Qwik, Angular,
