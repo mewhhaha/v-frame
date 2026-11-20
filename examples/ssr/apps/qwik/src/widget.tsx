@@ -46,8 +46,55 @@ export interface WorkspaceWidgetProps {
   surface: "definition" | "page" | "profile";
 }
 
-export const WorkspaceWidget = component$(
-  ({ articleKey, initialRoute, surface }: WorkspaceWidgetProps) => {
+export function WorkspaceWidget({
+  articleKey,
+  initialRoute,
+  surface,
+}: WorkspaceWidgetProps) {
+  if (surface === "definition") {
+    const article = wikipediaArticles[articleKey];
+    return (
+      <article class="wikipedia-preview">
+        <span class="widget-kicker">Wikipedia</span>
+        <h2>{article.title}</h2>
+        <p>{article.extract}</p>
+        <a href={article.href} target="_blank" rel="noreferrer">
+          Read the article
+        </a>
+      </article>
+    );
+  }
+
+  if (surface === "profile") {
+    return (
+      <section class="profile-widget" aria-label="Account">
+        <button type="button" class="profile-trigger" popovertarget="profile-menu">
+          <span class="profile-avatar" aria-hidden="true">
+            AM
+          </span>
+          <span class="profile-copy">
+            <strong>Avery Morgan</strong>
+            <small>Team workspace</small>
+          </span>
+          <span class="profile-more" aria-hidden="true">
+            ···
+          </span>
+        </button>
+        <div id="profile-menu" class="profile-menu" popover="auto">
+          <p>Avery Morgan</p>
+          <button type="button">Settings</button>
+          <button type="button">Keyboard shortcuts</button>
+          <button type="button">Sign out</button>
+        </div>
+      </section>
+    );
+  }
+
+  return <WorkspacePage initialRoute={initialRoute} />;
+}
+
+const WorkspacePage = component$(
+  ({ initialRoute }: Pick<WorkspaceWidgetProps, "initialRoute">) => {
     const currentRoute = useSignal<WidgetRoute>(initialRoute);
     const draftMessage = useSignal("");
     const messageStatus = useSignal("Relay can make mistakes. Check important details.");
@@ -71,45 +118,6 @@ export const WorkspaceWidget = component$(
       },
       { strategy: "document-ready" },
     );
-
-    if (surface === "definition") {
-      const article = wikipediaArticles[articleKey];
-      return (
-        <article class="wikipedia-preview">
-          <span class="widget-kicker">Wikipedia</span>
-          <h2>{article.title}</h2>
-          <p>{article.extract}</p>
-          <a href={article.href} target="_blank" rel="noreferrer">
-            Read the article
-          </a>
-        </article>
-      );
-    }
-
-    if (surface === "profile") {
-      return (
-        <section class="profile-widget" aria-label="Account">
-          <button type="button" class="profile-trigger" popovertarget="profile-menu">
-            <span class="profile-avatar" aria-hidden="true">
-              AM
-            </span>
-            <span class="profile-copy">
-              <strong>Avery Morgan</strong>
-              <small>Team workspace</small>
-            </span>
-            <span class="profile-more" aria-hidden="true">
-              ···
-            </span>
-          </button>
-          <div id="profile-menu" class="profile-menu" popover="auto">
-            <p>Avery Morgan</p>
-            <button type="button">Settings</button>
-            <button type="button">Keyboard shortcuts</button>
-            <button type="button">Sign out</button>
-          </div>
-        </section>
-      );
-    }
 
     if (currentRoute.value === "/catalog") {
       return (

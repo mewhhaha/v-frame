@@ -243,10 +243,7 @@ for (const viewport of [
             "data-qwik-router-ready",
           );
         if (viewport.name === "desktop")
-          await ready(
-            page.locator('v-frame[data-frame-id="account"]'),
-            "data-qwik-router-ready",
-          );
+          await ready(page.locator('v-frame[data-frame-id="account"]'), null);
         await paints(page, 5);
         const after = await frameScreenshot(page, frame);
         const probe = await page.evaluate(() => (window as ProbeWindow).stopPaintProbe());

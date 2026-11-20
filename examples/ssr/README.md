@@ -120,10 +120,11 @@ Only the React app chooses its location and article. Visiting React directly
 includes the same Qwik preview as visiting it inside the shell. Qwik serves
 its own mounted routes and bundles.
 
-When `@mewhhaha/v-frame/register` loads, the element activates the preserved scripts in
-the guest realm. React Router hydrates, Qwik resumes, Angular hydrates with
-event replay, and SolidStart hydrates its signals through their normal client
-entries.
+When `@mewhhaha/v-frame/register` loads, the element activates the preserved
+scripts in the guest realm. React Router hydrates, the Qwik composer and usage
+page resume, Angular hydrates with event replay, and SolidStart hydrates its
+signals. Qwik renders the account popover and article link as HTML. Both work
+without fetching a client bundle.
 
 The example keeps critical guest CSS inline so the server-rendered shadow tree
 is styled before activation. Browser bundles use explicit mounted bases so

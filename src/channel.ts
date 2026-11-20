@@ -9,7 +9,11 @@ export interface FragmentChannel<T> {
 }
 
 const hubKey = Symbol.for("@mewhhaha/v-frame/channel-hub/1");
-type Hub = EventTarget & { retained: Map<string, unknown> };
+type Publication = { value: unknown; retain: boolean };
+type Hub = EventTarget & {
+  retained: Map<string, unknown>;
+  pending?: Map<string, Publication[]>;
+};
 
 function pageChannel() {
   const context = (window as ChannelWindow)[channelContext];
@@ -17,7 +21,7 @@ function pageChannel() {
   const page = context?.page ?? window;
   const doc = page.document as Document & { [hubKey]?: Hub };
   // Allocate the long-lived objects in the host, even when a guest connects first.
-  const hub = (doc[hubKey] ??= Object.assign(new page.EventTarget(), {
+  const hub: Hub = (doc[hubKey] ??= Object.assign(new page.EventTarget(), {
     retained: new page.Map<string, unknown>(),
   }));
   return { page, hub, context };
@@ -32,10 +36,26 @@ export function channel<T = unknown>(name: string): FragmentChannel<T> {
       if (!connection) return;
       const { page, hub, context } = connection;
       const data = page.structuredClone(value);
+      const message = { value: data, retain: Boolean(options?.retain) };
       if (context?.signal.aborted) return;
-      if (options?.retain) hub.retained.set(name, data);
-      else hub.retained.delete(name);
-      hub.dispatchEvent(new page.CustomEvent(name, { detail: { value: data } }));
+      // Independently bundled publishers must agree which update is delivered next.
+      const pending = (hub.pending ??= new page.Map<string, Publication[]>());
+      const active = pending.get(name);
+      if (active) {
+        active.push(message);
+        return;
+      }
+      const queue = [message];
+      pending.set(name, queue);
+      try {
+        for (const { value, retain } of queue) {
+          if (retain) hub.retained.set(name, value);
+          else hub.retained.delete(name);
+          hub.dispatchEvent(new page.CustomEvent(name, { detail: { value } }));
+        }
+      } finally {
+        pending.delete(name);
+      }
     },
     subscribe(listener) {
       const connection = pageChannel();

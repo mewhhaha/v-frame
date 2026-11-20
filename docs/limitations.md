@@ -318,6 +318,16 @@ therefore delays the scripts after it by its own fetch time rather than overlapp
 with them. Put heavy dependencies behind external module scripts to keep the fetch
 parallel.
 
+## WebKit can cancel a module shared by two frames
+
+When two same-origin frames import the same JavaScript module concurrently,
+removing the frame that started the request can make the other frame's import
+reject. This also occurs with native iframes. During a swap, keep the outgoing
+frame connected until the incoming application signals that its startup imports
+have completed. A framework can start these imports after `v-frame-load`.
+Preloading a shared chunk from the host can protect that request while other
+dependencies are still vulnerable to cancellation.
+
 ## `history.go(0)` never reloads
 
 `history.go()`, `go(0)`, and any delta that coerces to zero (`NaN`, a non-numeric

@@ -7,13 +7,14 @@ export type ChannelWindow = VFrameWindow & {
   [channelContext]?: { page: ChannelWindow; signal: AbortSignal } | null;
 };
 
-export function connectChannels(
-  guest: ChannelWindow,
-  host: ChannelWindow,
-  signal: AbortSignal,
-): () => void {
-  guest[channelContext] = { page: host[channelContext]?.page ?? host, signal };
+export function connectChannels(guest: ChannelWindow, host: ChannelWindow): () => void {
+  const lifetime = new AbortController();
+  guest[channelContext] = {
+    page: host[channelContext]?.page ?? host,
+    signal: lifetime.signal,
+  };
   return () => {
+    lifetime.abort();
     // A detached guest must release the host and stay disconnected when an
     // application still holds one of its callbacks.
     guest[channelContext] = null;

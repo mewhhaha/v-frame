@@ -736,9 +736,11 @@ export async function prepareMarkup(
 
   restoreNestedFrames(parsedRoot, parsedStyleAttributes);
   const baseURL = resolveMarkupBaseURL(parsedRoot, options.pageURL);
-  const html = options.document.createElement("v-html") as HTMLElement;
-  const head = options.document.createElement("v-head") as HTMLElement;
-  const body = options.document.createElement("v-body") as HTMLElement;
+  // Moving images into the iframe document can start fetching even while
+  // detached. Keep the tree inert until finishMarkup rebases the URLs.
+  const html = parsed.createElement("v-html");
+  const head = parsed.createElement("v-head");
+  const body = parsed.createElement("v-body");
 
   copyAttributes(parsedRoot, html);
   copyAttributes(parsedHead, head);

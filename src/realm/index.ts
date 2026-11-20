@@ -109,13 +109,14 @@ export interface VFrameRealm {
 }
 
 export async function createRealm(options: CreateRealmOptions): Promise<VFrameRealm> {
-  // One stack unwinds the realm, whether bootstrap fails halfway or dispose()
-  // runs on a finished one. Each resource registers as it comes into being, so
-  // teardown is its reverse and no resource has to be listed a second time.
+  // Unwind resources in reverse order on both bootstrap failure and disposal.
   const disposers: Array<() => void> = [];
+  let disconnectChannels: (() => void) | undefined;
   const teardown = (): void => {
     const failures: unknown[] = [];
-    let dispose = disposers.pop();
+    // Removing the rendered DOM can synchronously call guest disconnectedCallback.
+    let dispose = disconnectChannels ?? disposers.pop();
+    disconnectChannels = undefined;
     while (dispose !== undefined) {
       try {
         dispose();
@@ -179,7 +180,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     options.markup.source = "";
     const preparedMarkup = markup;
     const hostView = options.host.ownerDocument.defaultView!;
-    disposers.push(connectChannels(window, hostView, hostListenerLifetime.signal));
+    disconnectChannels = connectChannels(window, hostView);
     const staged =
       options.stageMarkup || adoptionState !== null
         ? createStagedRoot(options.shadowRoot)

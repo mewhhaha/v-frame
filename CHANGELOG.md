@@ -21,6 +21,13 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Subscribers see same-topic updates in publication order, including when a
+  listener publishes the next update before returning. A retiring guest's
+  cleanup callbacks can no longer change the page's retained selection.
+- Fetched guest images resolve against the guest's base URL before the browser
+  starts loading them, including during reloads.
+- The Qwik example's account menu and article link work from server-rendered
+  HTML. Removing either surface during startup leaves the composer's imports alone.
 - GET forms accept controls named `method`, `action`, or `target`.
 - SSR handoff keeps deleted mentions out of rich-text drafts, preserves fields
   alongside controls named `children`, and avoids copying drafts between

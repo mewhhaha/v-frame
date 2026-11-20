@@ -46,18 +46,27 @@ function requestedArticle(url: URL): WikipediaArticleKey {
 
 async function renderWidget(url: URL, pathname: WidgetEndpoint): Promise<string> {
   const chunks: string[] = [];
+  const surface = requestedSurface(url);
+  let qwikLoader: "module" | "never" = "module";
+  let clientManifest = manifest;
+  if (surface !== "page") {
+    // Only the routed page resumes. Qwik also preloads its core when the
+    // manifest contains it, independently of the optional preloader.
+    qwikLoader = "never";
+    clientManifest = { ...manifest, core: undefined };
+  }
   await renderToStream(
     <WorkspaceWidget
       articleKey={requestedArticle(url)}
       initialRoute={requestedRoute(url, pathname)}
-      surface={requestedSurface(url)}
+      surface={surface}
     />,
     {
       base: widgetBuildBase(url),
       containerTagName: "div",
-      manifest,
+      manifest: clientManifest,
       preloader: false,
-      qwikLoader: "module",
+      qwikLoader,
       snapshot: true,
       stream: {
         write(chunk) {

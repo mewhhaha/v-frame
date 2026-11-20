@@ -58,6 +58,11 @@ including the publisher’s own subscriptions. Each subscriber receives a
 structured clone. Use data such as IDs or dates. Functions and DOM nodes
 raise `DataCloneError`.
 
+If a listener publishes on the same topic, all current listeners finish
+receiving the first value before the next value is delivered. The outermost
+`publish()` call delivers both before returning. Other topics remain immediate.
+The helper ships with each application, so deploy ordering updates to each publisher.
+
 `publish(value)` delivers a one-time event. Pass `{ retain: true }` for state
 such as the current selection. A late or reloaded subscriber immediately
 receives the latest retained value. The next publication replaces it or,
@@ -66,10 +71,10 @@ Choose stable topic names and version incompatible payload changes. All trusted
 participants can publish. The TypeScript type checks each build locally, so a
 receiver can validate the payload when deployed versions may differ.
 
-Call `unsubscribe()` when a component unmounts. The runtime also releases
-subscriptions when it disposes the guest on removal or navigation. Guest
-scripts can subscribe or publish during startup, including during staged
-activation. During a staged replacement, both guest instances can briefly be
+Call `unsubscribe()` when a component unmounts. On removal or navigation,
+the runtime disconnects the retiring guest's channels before its DOM cleanup
+callbacks run. Guest scripts can subscribe or publish during staged startup.
+During a staged replacement, both guest instances can briefly be
 subscribed. Declaring a channel at module scope is safe during SSR. Call its
 methods in the browser. For intentional cross-tab communication use the
 browser’s `BroadcastChannel`.

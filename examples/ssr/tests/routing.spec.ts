@@ -892,6 +892,27 @@ test("moves a frontend to another route without reloading it", async ({ page }) 
   expect(documentRequests).toEqual([]);
 });
 
+test("the Qwik account and article work without starting the page router", async ({
+  page,
+}) => {
+  const scripts: string[] = [];
+  page.on("request", (request) => {
+    const { pathname } = new URL(request.url());
+    if (pathname.startsWith("/build/")) scripts.push(pathname);
+  });
+
+  await page.goto("http://127.0.0.1:44502/inventory?surface=profile");
+  await page.getByRole("button", { name: /Avery Morgan/ }).click();
+  await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
+
+  await page.goto("http://127.0.0.1:44502/inventory?surface=definition");
+  await expect(page.getByRole("link", { name: "Read the article" })).toHaveAttribute(
+    "href",
+    "https://en.wikipedia.org/wiki/Blue%E2%80%93green_deployment",
+  );
+  expect(scripts).toEqual([]);
+});
+
 test("renders framework routes directly outside the host shell", async ({ page }) => {
   await page.goto("http://127.0.0.1:44502/catalog");
   await expect(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();

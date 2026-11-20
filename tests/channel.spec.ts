@@ -165,3 +165,45 @@ test("standalone contracts support transient events, unsubscribe and atomic reta
     errorName: "DataCloneError",
   });
 });
+
+test("a listener can republish without leaving other teams on an older selection", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  const result = await page.evaluate(async (url) => {
+    const first = (await import(url + "?archive")) as typeof import("../src/channel");
+    const second = (await import(url + "?flight")) as typeof first;
+    const archive = first.channel<{ id: number }>("photo");
+    const flight = second.channel<{ id: number }>("photo");
+    const unrelated = second.channel<string>("status");
+    const order: string[] = [];
+    const joined: number[] = [];
+    unrelated.subscribe((value) => order.push(value));
+    archive.subscribe(({ id }) => {
+      order.push(`archive ${id}`);
+      if (id !== 1) return;
+      const next = { id: 2 };
+      flight.publish(next, { retain: true });
+      next.id = 99;
+      flight.subscribe((value) => joined.push(value.id));
+      unrelated.publish("status");
+    });
+    flight.subscribe(({ id }) => order.push(`flight ${id}`));
+    archive.publish({ id: 1 }, { retain: true });
+    order.push("returned");
+    flight.subscribe(({ id }) => order.push(`late ${id}`));
+    return { order, joined };
+  }, fixture.origin + "/channel.js");
+  expect(result).toEqual({
+    order: [
+      "archive 1",
+      "status",
+      "flight 1",
+      "archive 2",
+      "flight 2",
+      "returned",
+      "late 2",
+    ],
+    joined: [1, 2],
+  });
+});
