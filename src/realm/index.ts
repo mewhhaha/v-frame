@@ -1,3 +1,4 @@
+import { connectChannels } from "../channel-context.js";
 // createRealm composes the modules in this directory around one closure. The
 // closure is the design: markup, the facade, the script runner and the history
 // all become available at different points during bootstrap, so the modules
@@ -178,6 +179,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     options.markup.source = "";
     const preparedMarkup = markup;
     const hostView = options.host.ownerDocument.defaultView!;
+    connectChannels(window, hostView, hostListenerLifetime.signal);
     const staged =
       options.stageMarkup || adoptionState !== null
         ? createStagedRoot(options.shadowRoot)

@@ -1,3 +1,4 @@
+import { channel } from "@mewhhaha/v-frame/channel";
 import assert from "node:assert/strict";
 import { defineVFrame, VFrameElement } from "@mewhhaha/v-frame";
 import "@mewhhaha/v-frame/register";
@@ -18,6 +19,7 @@ import {
   rewriteStylesheet,
 } from "@mewhhaha/v-frame/server";
 
+assert.equal(typeof channel("orders.selection.v1").subscribe, "function");
 assert.equal(typeof defineVFrame, "function");
 assert.equal(typeof VFrameElement, "function");
 assert.deepEqual(

@@ -10,6 +10,7 @@ materializer, see [SSR](./ssr.md).
 | ---------------------------- | -------------------------------------------------------------------------------------------- |
 | `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.             |
 | `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.           |
+| `@mewhhaha/v-frame/channel`  | `channel<T>(name)` for communication within one composed page.                               |
 | `@mewhhaha/v-frame/server`   | `composeFrames()` for shells, plus the materializer and stylesheet APIs for custom adapters. |
 
 ```ts
@@ -30,6 +31,48 @@ host needs the concrete element API:
 const frame = document.querySelector<VFrameElement>("v-frame");
 frame?.addEventListener("v-frame-load", (event) => console.log(event.detail.url));
 ```
+
+## Communicate between fragments
+
+Use a host runtime with channel support, then deploy the participating guests.
+Teams agree on a topic name and a structured-cloneable payload. They can put
+this declaration in a shared contract package or declare it in each repo.
+
+```ts
+import { channel } from "@mewhhaha/v-frame/channel";
+
+export const orderSelected = channel<{ id: string }>("orders.selected.v1");
+```
+
+```ts
+// Order list
+orderSelected.publish({ id: "A42" }, { retain: true });
+
+// Order details
+const unsubscribe = orderSelected.subscribe(({ id }) => showOrder(id));
+```
+
+The host and nested fragments on one page share the topic. Each standalone
+page and browser tab has its own scope. Subscriptions run synchronously,
+including the publisher’s own subscriptions. Each subscriber receives a
+structured clone. Use data such as IDs or dates. Functions and DOM nodes
+raise `DataCloneError`.
+
+`publish(value)` delivers a one-time event. Pass `{ retain: true }` for state
+such as the current selection. A late or reloaded subscriber immediately
+receives the latest retained value. The next publication replaces it or,
+for a one-time event, clears it. Retained values live until the page unloads.
+Choose stable topic names and version incompatible payload changes. All trusted
+participants can publish. The TypeScript type checks each build locally, so a
+receiver can validate the payload when deployed versions may differ.
+
+Call `unsubscribe()` when a component unmounts. The runtime also releases
+subscriptions when it disposes the guest on removal or navigation. Guest
+scripts can subscribe or publish during startup, including during staged
+activation. During a staged replacement, both guest instances can briefly be
+subscribed. Declaring a channel at module scope is safe during SSR. Call its
+methods in the browser. For intentional cross-tab communication use the
+browser’s `BroadcastChannel`.
 
 ## Guest geometry and outside interactions
 

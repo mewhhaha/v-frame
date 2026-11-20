@@ -1,3 +1,4 @@
+import { channel, type FragmentChannel } from "@mewhhaha/v-frame/channel";
 import {
   defineVFrame,
   VFrameElement,
@@ -21,6 +22,11 @@ import {
   type HTMLRewriterConstructor,
   type MaterializeStylesheetOptions,
 } from "@mewhhaha/v-frame/server";
+
+const order: FragmentChannel<{ id: string }> = channel("orders.selection.v1");
+const unsubscribe = order.subscribe(({ id }) => id.toUpperCase());
+order.publish({ id: "42" }, { retain: true });
+unsubscribe();
 
 defineVFrame();
 const signal: AbortSignal = new AbortController().signal;

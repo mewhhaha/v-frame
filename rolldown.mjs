@@ -19,6 +19,7 @@ async function buildEntry(input, file, platform, external = []) {
 }
 
 await buildEntry("src/index.ts", "dist/index.js", "browser");
+await buildEntry("src/channel.ts", "dist/channel.js", "browser");
 await buildEntry("src/register.ts", "dist/register.js", "browser", ["./index.js"]);
 
 // The server entry runs on whatever runtime a host uses, so it stays neutral and

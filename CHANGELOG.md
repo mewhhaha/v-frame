@@ -7,6 +7,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `@mewhhaha/v-frame/channel` lets separately bundled guests and the host
+  exchange typed messages on one page and replay a selected value at startup.
+
 - `composeFrames(shell, { request, fetchGuest })` renders a host's frame declarations
   through its existing public route handler. Nested applications can compose their
   own guests, and an unavailable service leaves healthy siblings interactive.

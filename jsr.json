@@ -4,6 +4,7 @@
   "version": "0.2.0",
   "exports": {
     ".": "./src/index.ts",
+    "./channel": "./src/channel.ts",
     "./register": "./src/register.ts",
     "./server": "./src/server/index.ts"
   },

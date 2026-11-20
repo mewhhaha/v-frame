@@ -128,6 +128,25 @@ The shell team owns where that mount appears and which service handles its reque
 An app that embeds another team's app can compose its own response the same way.
 [Server composition and request routing](./docs/ssr.md#compose-the-shell-response)
 
+## Connect two fragments
+
+Both teams use the same topic name and payload. The host already provides
+the page scope when it registers `v-frame`.
+
+```ts
+import { channel } from "@mewhhaha/v-frame/channel";
+
+const selected = channel<{ id: string }>("orders.selected.v1");
+
+// Orders app, when someone selects an order
+selected.publish({ id: "A42" }, { retain: true });
+
+// Details app, including when it starts after the selection
+const unsubscribe = selected.subscribe(({ id }) => showOrder(id));
+```
+
+For one-time events, use `publish(value)`. See [fragment communication](./docs/api.md#communicate-between-fragments).
+
 ## Documentation
 
 | Page                                         | Contents                                                                       |
