@@ -97,35 +97,37 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     "submitter",
   )!.get!;
   let restoreIntercept: () => void = () => undefined;
+  const submissionAttribute = (
+    form: HTMLFormElement,
+    submitter: HTMLElement | null,
+    name: string,
+  ): string | null => {
+    if (submitter) {
+      const override = nativeDOM.getAttribute(submitter, `form${name}`);
+      if (override !== null) return override;
+    }
+    return nativeDOM.getAttribute(form, name);
+  };
+  const submissionMethod = (form: HTMLFormElement, submitter: HTMLElement | null) =>
+    (submissionAttribute(form, submitter, "method") ?? "get").toLowerCase();
+  const connected = Object.getOwnPropertyDescriptor(
+    window.Node.prototype,
+    "isConnected",
+  )!.get!;
   const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
-    if (!form.isConnected || options.isDisposed()) return;
-    const action =
-      submitter !== null &&
-      "formAction" in submitter &&
-      submitter.hasAttribute("formaction")
-        ? String(submitter.formAction)
-        : form.action;
-    const method = (
-      submitter !== null &&
-      "formMethod" in submitter &&
-      submitter.hasAttribute("formmethod")
-        ? String(submitter.formMethod)
-        : form.method
-    ).toLowerCase();
+    if (!connected.call(form) || options.isDisposed()) return;
+    const action = submissionAttribute(form, submitter, "action");
+    const method = submissionMethod(form, submitter);
     const target = (
-      submitter !== null &&
-      "formTarget" in submitter &&
-      submitter.hasAttribute("formtarget")
-        ? String(submitter.formTarget)
-        : form.hasAttribute("target")
-          ? form.target
-          : options.getBaseTarget()
+      submissionAttribute(form, submitter, "target") ?? options.getBaseTarget()
     ).toLowerCase();
-    const targetURL = new URL(action || options.getCurrentURL(), options.getCurrentURL());
-    if (method === "get") {
+    const targetURL = new URL(action || options.getCurrentURL(), options.getBaseURL());
+    // HTML defaults missing and invalid methods to GET.
+    const isGet = method !== "post" && method !== "dialog";
+    if (isGet) {
       const parameters = new window.URLSearchParams();
       const entries = new window.FormData(form, submitter as HTMLButtonElement | null);
-      if (!form.isConnected || options.isDisposed()) return;
+      if (!connected.call(form) || options.isDisposed()) return;
       for (const [name, value] of entries) {
         parameters.append(
           normalizeFormLineEndings(name),
@@ -147,7 +149,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     }
     if (target === "_blank") {
       const allowed = options.onNavigate(detail);
-      if (allowed && method === "get") {
+      if (allowed && isGet) {
         options.nativeWindowOpen(targetURL.href, "_blank", "noopener");
       } else if (allowed) {
         options.onError({
@@ -167,7 +169,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       return;
     }
 
-    if (method === "get") {
+    if (isGet) {
       if (options.boundNavigation) {
         options.onShellNavigation(detail);
       } else {
@@ -325,14 +327,9 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       // from another realm has no readable submitter.
       submitter = null;
     }
-    const method = (
-      (submitter ? nativeDOM.getAttribute(submitter, "formmethod") : null) ??
-      nativeDOM.getAttribute(form, "method") ??
-      ""
-    ).toLowerCase();
     // A dialog submission navigates nowhere; its default action (closing
     // the dialog) must stay native.
-    if (method === "dialog") {
+    if (submissionMethod(form, submitter) === "dialog") {
       return;
     }
 
@@ -405,7 +402,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       navigationListenerOptions,
     );
     window.HTMLFormElement.prototype.submit = function submit(): void {
-      if (this.method === "dialog") {
+      if (submissionMethod(this, null) === "dialog") {
         nativeFormSubmit.call(this);
         return;
       }

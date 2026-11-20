@@ -158,6 +158,30 @@ test("defers preview navigation and inline handlers while preserving editable co
   await expect(page).toHaveURL(origin + "/?preview-actions");
 });
 
+test("number inputs wait for activation before accepting partial numeric edits", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?preview-actions");
+  const quantity = frame.locator("#quantity");
+  const locked = frame.locator("#locked");
+  const unavailable = frame.locator("#unavailable");
+  await expect(quantity).toHaveAttribute("readonly", "");
+  await quantity.focus();
+  await page.keyboard.press("End");
+  await page.keyboard.type("e");
+  await expect(quantity).toHaveValue("12");
+  await expect(locked).toHaveAttribute("readonly", "readonly");
+  await activate();
+  await ready(frame);
+  await expect(quantity).toBeEditable();
+  await expect(locked).toHaveAttribute("readonly", "readonly");
+  await expect(unavailable).toBeDisabled();
+  await expect(unavailable).not.toHaveAttribute("readonly");
+  await quantity.fill("");
+  await quantity.pressSequentially("12e2");
+  expect(await quantity.evaluate((el: HTMLInputElement) => el.valueAsNumber)).toBe(1200);
+});
+
 test("ignores a cached stylesheet companion whose verified integrity differs", async ({
   page,
 }) => {

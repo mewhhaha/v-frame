@@ -60,6 +60,7 @@ export default {
         previewActions
           ? `<a id="preview-link" href="#copy" onclick="this.dataset.clicked='yes'">Jump</a>
         <form id="preview-form" action="/submitted" onsubmit="this.dataset.submitted='yes';return false"><input id="preview-field" name="query" value="initial"><button id="preview-submit" formmethod="get">Submit</button></form>
+        <input id="quantity" type="NUMBER" value="12"><input id="locked" type="number" readonly="readonly"><input id="unavailable" type="number" disabled>
         <template id="preview-template"><a id="cloned-link" href="#copy" onclick="this.dataset.clicked='yes'">From template</a></template>`
           : ""
       }

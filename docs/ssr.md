@@ -21,11 +21,17 @@ again at handoff, including changes made while those scripts are delayed.
 Edited controls receive input and change notifications so client-side form
 state can catch up. A radio group sends them only to the newly checked radio.
 Edits made in a `contenteditable` host during activation carry over with their
-markup and selection. The live editor receives one input event at handoff.
+markup and selection, including deletion of an embedded read-only mention. If
+the framework replaces the editor and changes a mention’s markup, give the
+mention a stable ID so the handoff can recognize it. The live editor receives
+one input event at handoff. Browser undo history starts again on the live
+control or editor.
+
 Focus, text selection, and scroll positions are restored without scrolling the
-host page. Control restoration follows the original connected control, or an
-unambiguous matching ID or name in its original form and shadow tree. If the
-framework replaces a form, its ID or a unique form name identifies the owner.
+host page. A draft follows its original control while it stays connected. If
+the framework replaces it, a matching ID or name must be unique in both trees
+within the same form and shadow scope. If the framework replaces a form, its ID or a unique form name
+identifies the owner.
 Buttons and other focusable elements follow the same original-element identity;
 replacing an unkeyed element never transfers focus to an unrelated sibling.
 Selected options follow their original elements, or an unambiguous matching
@@ -36,10 +42,15 @@ open disclosure remains open through activation, including a selection the
 visitor changes in the preview.
 A handoff waits for an observed IME composition to finish rather than replacing
 its focused control mid-edit.
-Preview links have a disabled link role, and forms retain their editable
-controls. Navigation and inline handlers become available on the activated
-tree. The handoff does not submit forms. It uses native checkbox and radio
-activation to deliver changes to guest frameworks.
+Number inputs become editable at activation. Browsers keep partial numeric
+entries such as `12e` private, so the materializer emits `readonly` for the
+preview and restores the authored setting before guest scripts run.
+For first-paint protection, custom materializers should apply
+`rewritePreviewAttributes` before sending the HTML.
+Preview links have a disabled link role, and other form controls keep their
+authored editability. Navigation and inline handlers become available at activation.
+The handoff uses native checkbox and radio activation to deliver changes to
+guest frameworks without submitting the form.
 
 ## Compose the shell response
 
@@ -150,8 +161,8 @@ trusted document:
   to the rendered shadow tree, including after attribute changes and navigation.
 - Scripts become parser-inert while preserving their original type.
 - Inline event handlers and link destinations are deferred. Preview forms use
-  the non-navigating `dialog` method, keeping their editable controls and form
-  ownership. Activation restores authored attributes.
+  the non-navigating `dialog` method, preserving form ownership. Number inputs
+  are read-only in the preview. Activation restores authored attributes.
 - The initial fragment target is marked so `:target` styling is present in the
   preview and remains unchanged at activation. The guest's public document URL
   must include the intended fragment; HTTP requests do not carry browser fragments.

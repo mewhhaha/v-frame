@@ -18,6 +18,15 @@ test.beforeAll(async () => {
       "/form.html": htmlDocument(
         '<form action="/submitted?discard=1#result"><textarea name="message"></textarea><input id="named"><button id="send">Submit</button></form>',
       ),
+      "/named.html": htmlDocument(
+        `<form action="done" method="invalid" target="_self">
+          <input name="method" value="delivery"><input name="action" value="confirm">
+          <input name="target" value="order"><button id="override" formmethod="GET" formaction="override" formtarget="_self">Submit</button>
+        </form>`,
+        '<base href="/orders/">',
+      ),
+      "/orders/done": htmlDocument('<main id="submitted">Submitted</main>'),
+      "/orders/override": htmlDocument('<main id="submitted">Submitted</main>'),
       "/submitted": htmlDocument('<main id="submitted">Submitted</main>'),
     },
     record: (request) => request.url ?? "/",
@@ -51,6 +60,30 @@ test("a disconnected form cannot navigate the guest", async ({ page }) => {
   );
   expect(await frameFailures(frame)).toEqual([]);
 });
+
+for (const invocation of ["click", "submit"] as const) {
+  test(`submits controls named method, action and target (${invocation})`, async ({
+    page,
+  }) => {
+    await installBundle(page, fixture.origin);
+    const frame = await mountFrame(page, { src: fixture.origin + "/named.html" });
+    let destination = "done";
+    if (invocation === "click") {
+      destination = "override";
+      await frame.locator("#override").click();
+    } else {
+      await frame.evaluate((element: VFrameElement) => {
+        element.contentWindow!.document.querySelector("form")!.submit();
+      });
+    }
+    await expect(frame.locator("#submitted")).toBeVisible();
+    expect(await frame.evaluate((element: VFrameElement) => element.currentURL)).toBe(
+      fixture.origin +
+        `/orders/${destination}?method=delivery&action=confirm&target=order`,
+    );
+    expect(await frameFailures(frame)).toEqual([]);
+  });
+}
 
 test("reports non-HTTP links and forms with popup targets without opening a window", async ({
   page,
@@ -176,7 +209,8 @@ for (const mode of ["modal", "non-modal", "outside-dialog"] as const) {
         const input = realm.document.createElement("input");
         input.required = true;
         form.append(input);
-        form.method = "DIALOG";
+        input.name = "method";
+        form.setAttribute("method", "DIALOG");
         form.action = "http://[";
         form.target = "_blank";
         dialog.returnValue = "unchanged";

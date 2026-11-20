@@ -125,6 +125,40 @@ test.beforeAll(async () => {
             '<form name="expanded"><input name="subject" value="First"></form>' +
             '<form name="expanded"><input name="subject" value="Second"></form>';`,
       },
+      "/passengers": host(
+        `<form id="booking"><input id="name" name="passenger" value="First passenger">
+          <input id="remaining" name="passenger" value="Second passenger">
+          <input id="duplicate" data-removed value="First duplicate">
+          <input id="duplicate" value="Second duplicate">
+          <input id="confirmation" name="confirmation" value="First confirmation"></form>
+         <form id="other-booking"><input name="confirmation" value="Other confirmation"></form>`,
+        "/passengers.js",
+      ),
+      "/passengers.js": {
+        type: "text/javascript",
+        body: `document.querySelector("#name").remove();
+          document.querySelector("[data-removed]").remove();
+          document.querySelector("#confirmation").outerHTML =
+            '<input id="new-confirmation" name="confirmation" value="Client default">';`,
+      },
+      "/form-members": host(
+        `<form name="booking"><label>Children<input id="name" name="children" value="Server"></label>
+          <input name="isContentEditable" value="An ordinary field">
+          <input name="reference" value="ref"></form><output id="form-model"></output>`,
+        "/form-members.js",
+      ),
+      "/form-members.js": {
+        type: "text/javascript",
+        body: `const original = document.querySelector("form");
+          const output = document.querySelector("#form-model");
+          output.dataset.initial = new FormData(original).get("children");
+          original.outerHTML = '<form name="booking"><label>Children<input id="client-children" name="children" value="Client default"></label><input name="reference" value="ref"></form>';
+          const live = document.querySelector("form");
+          live.addEventListener("input", () => {
+            const values = new FormData(live);
+            output.textContent = values.get("children") + " / " + values.get("reference");
+          });`,
+      },
       "/options": host(selectForm, "/options.js"),
       "/options.js": {
         type: "text/javascript",
@@ -647,6 +681,49 @@ test("restores an edit and focus only when the replacement form name is unique i
   await expect(expanded.nth(1)).toHaveValue("Second");
   await expect(frame.locator("#replacement")).toHaveValue("Draft for the survey");
   await expect(frame.locator("#replacement")).toBeFocused();
+});
+
+test("matches repeated passenger fields only when the source key is unique in the form", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/passengers",
+    "/passengers.js",
+  );
+  await preview.locator("#confirmation").fill("Confirmation draft");
+  await preview.locator("#name").fill("Removed passenger draft");
+  await preview.locator("#duplicate").first().fill("Removed duplicate draft");
+  await register();
+  await activate();
+
+  await expect(frame.locator("#new-confirmation")).toHaveValue("Confirmation draft");
+  await expect(frame.locator("#other-booking input")).toHaveValue("Other confirmation");
+  await expect(frame.locator("#remaining")).toHaveValue("Second passenger");
+  await expect(frame.locator("#remaining")).not.toBeFocused();
+  await expect(frame.locator("#duplicate")).toHaveValue("Second duplicate");
+  await expect(frame.locator("#duplicate")).not.toBeFocused();
+});
+
+test("hydrates a form with a field named children and keeps the draft in its replacement", async ({
+  page,
+}) => {
+  const { frame, preview, register, activate } = await pending(
+    page,
+    "/form-members",
+    "/form-members.js",
+  );
+  await preview.locator("#name").fill("draft before registration");
+  await register();
+  await preview.locator("#name").press("End");
+  await page.keyboard.type(" plus staged");
+  await activate();
+
+  const draft = "draft before registration plus staged";
+  await expect(frame.locator("#client-children")).toHaveValue(draft);
+  await expect(frame.locator("#client-children")).toBeFocused();
+  await expect(frame.locator("#form-model")).toHaveAttribute("data-initial", draft);
+  await expect(frame.locator("#form-model")).toHaveText(`${draft} / ref`);
 });
 
 test("disconnecting during handoff notifications does not revive the frame or emit load", async ({

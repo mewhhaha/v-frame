@@ -19,6 +19,12 @@ test suite. Each entry says what throws, why it has to, and what to do instead.
 | [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)      | Navigation dropped                     |
 | [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                   | Navigation dropped                     |
 
+During server-rendered adoption the browser starts a fresh undo history when
+the live input, textarea, or rich-text editor takes over. The visitor can
+continue editing the transferred draft and undo subsequent edits. An editor
+that needs undo across activation can keep its own action history.
+See [Server-rendered adoption](./ssr.md).
+
 Beyond the list, three whole-runtime constraints apply: the browser must support
 the Navigation API, Declarative Shadow DOM, and custom elements; every guest URL
 must be same-origin `http:` or `https:`; and the guest is trusted code, not

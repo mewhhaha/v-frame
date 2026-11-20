@@ -18,6 +18,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- GET forms accept controls named `method`, `action`, or `target`.
+- SSR handoff keeps deleted mentions out of rich-text drafts, preserves fields
+  alongside controls named `children`, and avoids copying drafts between
+  repeated names. Numeric editing starts when the live input is ready.
+
 - During adoption and reload, native form ownership, labels, datalists, radios,
   popover targets and named disclosures resolve within each guest, including
   during framework layout effects.

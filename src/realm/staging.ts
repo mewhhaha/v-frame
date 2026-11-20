@@ -10,6 +10,12 @@ export function renderedBy(
   while (!contains.call(guestRoot, node)) {
     const root = getRootNode.call(node);
     if (!("host" in root)) return false;
+    // A detached form can expose a named control as its `host` property.
+    const nodeType = Object.getOwnPropertyDescriptor(
+      hostWindow.Node.prototype,
+      "nodeType",
+    )!.get!;
+    if (nodeType.call(root) !== 11) return false;
     node = (root as ShadowRoot).host;
   }
   return true;

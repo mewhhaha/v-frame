@@ -1,12 +1,18 @@
 import { renderedBy } from "./staging.js";
 import { abortError } from "./connect.js";
-import { editableSelection, isEditingHost, syncEditable } from "./editable.js";
+import {
+  EditableWidgets,
+  editableSelection,
+  isEditingHost,
+  syncEditable,
+} from "./editable.js";
 
 const CONTROL_SELECTOR = "input,textarea,select";
 // Decoding is best-effort: a slow image or font must not hold the reveal forever.
 const ASSET_SETTLE_TIMEOUT_MS = 10_000;
 
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+type Scope = Element | ShadowRoot;
 
 interface Value {
   value: string;
@@ -20,14 +26,52 @@ interface ControlPair {
   initial: Value;
 }
 
+function getter<T>(prototype: object, name: string): (target: object) => T {
+  const read = Object.getOwnPropertyDescriptor(prototype, name)!.get!;
+  return (target) => read.call(target) as T;
+}
+
+// Form controls can shadow inherited DOM members on their form.
+function adoptionDOM(view: Window & typeof globalThis) {
+  const node = view.Node.prototype;
+  const element = view.Element.prototype;
+  const fragment = view.DocumentFragment.prototype;
+  const nodeType = getter<number>(node, "nodeType");
+  const elementChildren = getter<HTMLCollection>(element, "children");
+  const shadowChildren = getter<HTMLCollection>(fragment, "children");
+  return {
+    nodeType,
+    getRootNode: node.getRootNode,
+    localName: getter<string>(element, "localName"),
+    namespaceURI: getter<string | null>(element, "namespaceURI"),
+    shadowRoot: getter<ShadowRoot | null>(element, "shadowRoot"),
+    getAttribute: element.getAttribute,
+    matches: element.matches,
+    children(scope: Scope) {
+      if (nodeType(scope) === 11) return shadowChildren(scope);
+      return elementChildren(scope);
+    },
+    query(scope: Scope, selector: string): Element[] {
+      if (nodeType(scope) === 11) {
+        return Array.from(fragment.querySelectorAll.call(scope, selector));
+      }
+      return Array.from(element.querySelectorAll.call(scope, selector));
+    },
+  };
+}
+
+type AdoptionDOM = ReturnType<typeof adoptionDOM>;
+
 function visitPreview(
-  scope: Element | ShadowRoot,
-  visit: (node: Element | ShadowRoot) => void,
+  dom: AdoptionDOM,
+  scope: Scope,
+  visit: (node: Scope) => void,
 ): void {
   visit(scope);
-  for (const element of scope.querySelectorAll("*")) {
+  for (const element of dom.query(scope, "*")) {
     visit(element);
-    if (element.shadowRoot) visitPreview(element.shadowRoot, visit);
+    const shadow = dom.shadowRoot(element);
+    if (shadow) visitPreview(dom, shadow, visit);
   }
 }
 
@@ -66,9 +110,11 @@ function equal(left: Value, right: Value): boolean {
 export class AdoptionState {
   #preview: HTMLElement | null;
   readonly #root: ShadowRoot;
+  readonly #dom: AdoptionDOM;
   readonly #lifetime = new AbortController();
   readonly #edited = new Set<HTMLElement>();
   readonly #formatting = new WeakMap<Element, Set<string>>();
+  readonly #editableWidgets = new EditableWidgets();
   readonly #formatObserver = new MutationObserver((records) =>
     this.#recordFormat(records),
   );
@@ -88,10 +134,15 @@ export class AdoptionState {
   constructor(preview: HTMLElement, root: ShadowRoot) {
     this.#preview = preview;
     this.#root = root;
+    this.#dom = adoptionDOM(root.ownerDocument.defaultView!);
     // The realm starts asynchronously. Pair its copy with the same elements
     // that were serialized, even if pressing Enter has split a paragraph since.
-    visitPreview(preview, (parent) => {
-      if (parent === preview || parent.nodeType === 11)
+    const Input = preview.ownerDocument.defaultView!.HTMLInputElement;
+    visitPreview(this.#dom, preview, (parent) => {
+      // Hand-authored previews may predate the server's readonly safeguard.
+      if (parent instanceof Input && parent.type === "number" && !parent.readOnly)
+        parent.readOnly = true;
+      if (parent === preview || this.#dom.nodeType(parent) === 11)
         this.#formatObserver.observe(parent, {
           subtree: true,
           attributeFilter: [
@@ -105,16 +156,17 @@ export class AdoptionState {
             "class",
           ],
         });
-      if (parent.firstElementChild)
-        this.#initialChildren.set(parent, Array.from(parent.children));
+      const children = this.#dom.children(parent);
+      if (children.length) this.#initialChildren.set(parent, Array.from(children));
     });
     const onEdit = (event: Event): void => {
       const path = event.composedPath();
       if (!path.includes(preview)) return;
       const source = path.find(
         (target) =>
-          (target as Node).nodeType === 1 &&
-          ((target as Element).matches(CONTROL_SELECTOR) ||
+          "nodeType" in target &&
+          this.#dom.nodeType(target) === 1 &&
+          (this.#dom.matches.call(target, CONTROL_SELECTOR) ||
             isEditingHost(target as Element)),
       ) as HTMLElement | undefined;
       if (!source) return;
@@ -158,10 +210,13 @@ export class AdoptionState {
     pair = this.#pairs.find((pair) => pair.source === source),
   ): Element | null {
     if (!this.#live) return null;
+    const dom = this.#dom;
+    const tag = dom.localName(source);
+    const namespace = dom.namespaceURI(source);
     const editing = isEditingHost(source);
     const compatible = (candidate: Element) =>
-      candidate.localName === source.localName &&
-      candidate.namespaceURI === source.namespaceURI &&
+      dom.localName(candidate) === tag &&
+      dom.namespaceURI(candidate) === namespace &&
       (!editing || isEditingHost(candidate)) &&
       (!pair || (candidate as Control).type === pair.source.type);
     const original = this.#targets.get(source);
@@ -169,51 +224,63 @@ export class AdoptionState {
       return original;
     // IDs and form-control names are local to their original tree. A removed
     // field must never hand its draft to an unrelated component with the same ID.
-    const native = this.#root.ownerDocument.defaultView!.Node.prototype;
-    const sourceTree = native.getRootNode.call(source);
-    let sourceScope: ParentNode = this.#preview!;
-    let scope: ParentNode = this.#live;
+    const sourceTree = dom.getRootNode.call(source);
+    let sourceScope: Scope = this.#preview!;
+    let scope: Scope = this.#live;
     if (sourceTree !== this.#root && sourceTree !== this.#preview) {
-      if (!("host" in sourceTree)) return null;
+      if (dom.nodeType(sourceTree) !== 11 || !("host" in sourceTree)) return null;
       const host = this.#target((sourceTree as ShadowRoot).host);
-      if (!host?.shadowRoot) return null;
+      const shadow = host && dom.shadowRoot(host);
+      if (!shadow) return null;
       sourceScope = sourceTree as ShadowRoot;
-      scope = host.shadowRoot;
+      scope = shadow;
     }
+    const sourceForm = pair?.source.form ?? null;
     let form: Element | null = null;
-    if (pair && pair.source.form) {
-      form = this.#target(pair.source.form);
+    if (sourceForm) {
+      form = this.#target(sourceForm);
       if (!form) return null;
     }
-    const candidates = Array.from(scope.querySelectorAll("*")).filter(
-      (candidate) =>
-        compatible(candidate) && (!pair || (candidate as Control).form === form),
-    );
-    if (source.id) {
-      const matches = candidates.filter((candidate) => candidate.id === source.id);
-      if (matches.length) return unique(matches);
+    const candidates = dom
+      .query(scope, "*")
+      .filter(
+        (candidate) =>
+          compatible(candidate) && (!pair || (candidate as Control).form === form),
+      );
+    const match = (matches: Element[], key: (candidate: Element) => boolean) => {
+      const target = unique(matches);
+      if (!target) return null;
+      const originals = dom
+        .query(sourceScope, "*")
+        .filter(
+          (candidate) =>
+            compatible(candidate) &&
+            (!pair || (candidate as Control).form === sourceForm) &&
+            key(candidate),
+        );
+      if (unique(originals) === source) return target;
+      return null;
+    };
+    const id = dom.getAttribute.call(source, "id");
+    if (id) {
+      const keyed = (candidate: Element) => dom.getAttribute.call(candidate, "id") === id;
+      const matches = candidates.filter(keyed);
+      if (matches.length) return match(matches, keyed);
     }
-    if (source.localName === "form") {
-      const name = source.getAttribute("name");
+    if (tag === "form") {
+      const name = dom.getAttribute.call(source, "name");
       if (!name) return null;
-      // A removed form may share its name with a surviving sibling.
       const named = (candidate: Element) =>
-        candidate.namespaceURI === source.namespaceURI &&
-        candidate.getAttribute("name") === name;
-      if (Array.from(sourceScope.querySelectorAll("form")).filter(named).length !== 1)
-        return null;
-      const matches = candidates.filter(named);
-      return unique(matches);
+        dom.getAttribute.call(candidate, "name") === name;
+      return match(candidates.filter(named), named);
     }
     if (pair) {
       if (!pair.source.name) return null;
-      const matches = candidates.filter(
-        (candidate) =>
-          (candidate as Control).name === pair.source.name &&
-          (pair.source.type !== "radio" ||
-            (candidate as Control).value === pair.source.value),
-      );
-      return unique(matches);
+      const named = (candidate: Element) =>
+        (candidate as Control).name === pair.source.name &&
+        (pair.source.type !== "radio" ||
+          (candidate as Control).value === pair.source.value);
+      return match(candidates.filter(named), named);
     }
     return null;
   }
@@ -223,30 +290,34 @@ export class AdoptionState {
     this.#live = live;
     this.#window = window;
     this.#targets.set(this.#preview, live);
+    const dom = this.#dom;
     for (const [source, children] of this.#initialChildren) {
+      this.#editableWidgets.capture(source, children);
       let target: Element | ShadowRoot | null | undefined;
-      if (source.nodeType === 11)
-        target = this.#targets.get((source as ShadowRoot).host)?.shadowRoot;
-      else target = this.#targets.get(source as Element);
+      if (dom.nodeType(source) === 11) {
+        const host = this.#targets.get((source as ShadowRoot).host);
+        target = host && dom.shadowRoot(host);
+      } else target = this.#targets.get(source as Element);
       if (!target) continue;
-      const targets = target.children;
+      const targets = dom.children(target);
       children.forEach((element, index) => {
         const next = targets[index];
+        const tag = dom.localName(element);
         if (
           !next ||
-          next.localName !== element.localName ||
-          next.namespaceURI !== element.namespaceURI
+          dom.localName(next) !== tag ||
+          dom.namespaceURI(next) !== dom.namespaceURI(element)
         )
           return;
         this.#targets.set(element, next);
-        if (element.localName === "details") {
+        if (tag === "details") {
           this.#disclosures.push({
             source: element as HTMLDetailsElement,
             previous: (next as HTMLDetailsElement).open,
             edited: false,
           });
         }
-        if (element.matches(CONTROL_SELECTOR)) {
+        if (dom.matches.call(element, CONTROL_SELECTOR)) {
           this.#pairs.push({
             source: element as Control,
             initial: read(next as Control),
@@ -354,7 +425,13 @@ export class AdoptionState {
       if (!isEditingHost(source)) continue;
       const target = this.#target(source);
       if (!target) continue;
-      syncEditable(source, target, this.#targets, this.#formatting);
+      syncEditable(
+        source,
+        target,
+        this.#targets,
+        this.#formatting,
+        this.#editableWidgets,
+      );
       if (replay) this.#notifyInput(target);
     }
   }
@@ -452,7 +529,11 @@ export class AdoptionState {
       return;
     }
     let active = this.#root.activeElement;
-    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    while (active) {
+      const deeper = this.#dom.shadowRoot(active)?.activeElement;
+      if (!deeper) break;
+      active = deeper;
+    }
     if (active && !this.#contains(preview, active)) active = null;
     const selection =
       active && "selectionStart" in active
@@ -463,10 +544,21 @@ export class AdoptionState {
           }
         : null;
     const scroll = [this.#root.host.scrollLeft, this.#root.host.scrollTop];
+    const view = this.#root.ownerDocument.defaultView!;
+    const scrollLeft = Object.getOwnPropertyDescriptor(
+      view.Element.prototype,
+      "scrollLeft",
+    )!;
+    const scrollTop = Object.getOwnPropertyDescriptor(
+      view.Element.prototype,
+      "scrollTop",
+    )!;
     const scrolled: Array<{ source: Element; left: number; top: number }> = [];
-    visitPreview(preview, (source) => {
-      if ("scrollTop" in source && (source.scrollTop || source.scrollLeft))
-        scrolled.push({ source, left: source.scrollLeft, top: source.scrollTop });
+    visitPreview(this.#dom, preview, (source) => {
+      if (this.#dom.nodeType(source) !== 1) return;
+      const left: number = scrollLeft.get!.call(source);
+      const top: number = scrollTop.get!.call(source);
+      if (left || top) scrolled.push({ source: source as Element, left, top });
     });
     this.sync(true);
     if (this.#lifetime.signal.aborted) return;
@@ -478,7 +570,12 @@ export class AdoptionState {
         : undefined;
     reveal();
     if (next && this.#live && this.#contains(this.#live, next)) {
-      next.focus({ preventScroll: true });
+      if (
+        this.#dom.localName(next) === "form" &&
+        this.#dom.namespaceURI(next) === "http://www.w3.org/1999/xhtml"
+      )
+        view.HTMLElement.prototype.focus.call(next, { preventScroll: true });
+      else next.focus({ preventScroll: true });
       restoreSelection?.();
       if (
         selection?.start != null &&
@@ -496,8 +593,8 @@ export class AdoptionState {
     for (const entry of scrolled) {
       const element = this.#target(entry.source);
       if (element) {
-        element.scrollLeft = entry.left;
-        element.scrollTop = entry.top;
+        scrollLeft.set!.call(element, entry.left);
+        scrollTop.set!.call(element, entry.top);
       }
     }
     this.#root.host.scrollLeft = scroll[0]!;

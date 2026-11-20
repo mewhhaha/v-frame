@@ -94,7 +94,7 @@ function recordAuthoredAttributes(
   }
 }
 
-/** Keeps preview controls editable while deferring executable and navigation attributes. */
+/** Defer interactions that cannot survive the handoff to the guest. */
 export function rewritePreviewAttributes(element: AssetElementAttributes): {
   removeAttributes: string[];
   setAttributes: AttributeAssignment[];
@@ -122,6 +122,15 @@ export function rewritePreviewAttributes(element: AssetElementAttributes): {
       remember("role");
       setAttributes.push({ name: "role", value: "link" });
     }
+  }
+  if (
+    html &&
+    element.tagName === "input" &&
+    element.getAttribute("type")?.toLowerCase() === "number" &&
+    !element.hasAttribute("readonly")
+  ) {
+    remember("readonly");
+    setAttributes.push({ name: "readonly", value: "" });
   }
   // The dialog method never submits to a URL, and keeps the existing form
   // ownership for input state, radio groups and focus in the preview.

@@ -182,6 +182,7 @@ test("keeps adopted preview visible until its initial module completes", async (
       <v-html style="visibility: visible !important; opacity: 1 !important">
         <v-head><style>v-html, v-body { display: block; } v-head { display: none; }</style></v-head>
         <v-body>
+          <input id="quantity" type="number">
           <p id="adopted-copy" style="visibility: visible !important; pointer-events: auto !important">Server-rendered before activation</p>
           <script
             type="application/vnd.v-frame"
@@ -226,6 +227,9 @@ test("keeps adopted preview visible until its initial module completes", async (
     const physicalRect = (html: Element) =>
       Element.prototype.getBoundingClientRect.call(html);
     return {
+      numberReadOnly: markup.map(
+        (html) => html.querySelector<HTMLInputElement>("#quantity")!.readOnly,
+      ),
       connected: markup.map((html) => html.isConnected),
       displays: markup.map((html) => getComputedStyle(html).display),
       liveOverlaysPreview: physicalRect(markup[1]!).top === physicalRect(markup[0]!).top,
@@ -244,6 +248,7 @@ test("keeps adopted preview visible until its initial module completes", async (
     };
   });
   expect(staged).toEqual({
+    numberReadOnly: [true, false],
     connected: [true, true],
     hitPreview: true,
     displays: ["block", "block"],
