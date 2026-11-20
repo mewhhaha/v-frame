@@ -13,6 +13,7 @@ type Hub = EventTarget & { retained: Map<string, unknown> };
 
 function pageChannel() {
   const context = (window as ChannelWindow)[channelContext];
+  if (context === null || context?.signal.aborted) return;
   const page = context?.page ?? window;
   const doc = page.document as Document & { [hubKey]?: Hub };
   // Allocate the long-lived objects in the host, even when a guest connects first.
@@ -27,8 +28,9 @@ export function channel<T = unknown>(name: string): FragmentChannel<T> {
   // Resolve the page at use time so contracts can also be imported during SSR.
   return {
     publish(value, options) {
-      const { page, hub, context } = pageChannel();
-      if (context?.signal.aborted) return;
+      const connection = pageChannel();
+      if (!connection) return;
+      const { page, hub, context } = connection;
       const data = page.structuredClone(value);
       if (context?.signal.aborted) return;
       if (options?.retain) hub.retained.set(name, data);
@@ -36,11 +38,12 @@ export function channel<T = unknown>(name: string): FragmentChannel<T> {
       hub.dispatchEvent(new page.CustomEvent(name, { detail: { value: data } }));
     },
     subscribe(listener) {
-      const { hub, context } = pageChannel();
+      const connection = pageChannel();
+      if (!connection) return () => {};
+      const { hub, context } = connection;
       const receive = (event: Event) =>
         listener(structuredClone((event as CustomEvent<{ value: T }>).detail.value));
       const unsubscribe = () => hub.removeEventListener(name, receive);
-      if (context?.signal.aborted) return unsubscribe;
       hub.addEventListener(name, receive, context);
       if (hub.retained.has(name)) {
         try {

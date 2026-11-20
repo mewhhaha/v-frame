@@ -179,7 +179,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     options.markup.source = "";
     const preparedMarkup = markup;
     const hostView = options.host.ownerDocument.defaultView!;
-    connectChannels(window, hostView, hostListenerLifetime.signal);
+    disposers.push(connectChannels(window, hostView, hostListenerLifetime.signal));
     const staged =
       options.stageMarkup || adoptionState !== null
         ? createStagedRoot(options.shadowRoot)
