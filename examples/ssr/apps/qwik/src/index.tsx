@@ -2,6 +2,8 @@
 import { renderToStream } from "@builder.io/qwik/server";
 import { manifest } from "./manifest.generated.js";
 import {
+  type ExplainerTermKey,
+  isExplainerTerm,
   isWidgetRoute,
   type WikipediaArticleKey,
   type WidgetRoute,
@@ -9,10 +11,10 @@ import {
   WorkspaceWidget,
 } from "./widget";
 
-type WidgetEndpoint = WidgetRoute | "/document";
+type WidgetEndpoint = WidgetRoute | "/document" | "/explainer";
 
 function isWidgetEndpoint(pathname: string): pathname is WidgetEndpoint {
-  return isWidgetRoute(pathname) || pathname === "/document";
+  return isWidgetRoute(pathname) || pathname === "/document" || pathname === "/explainer";
 }
 
 function widgetBuildBase(url: URL): string {
@@ -32,9 +34,15 @@ function requestedRoute(url: URL, pathname: WidgetEndpoint): WidgetRoute {
   return route !== null && isWidgetRoute(route) ? route : "/inventory";
 }
 
-function requestedSurface(url: URL): "definition" | "page" | "profile" {
+function requestedSurface(
+  url: URL,
+  pathname: WidgetEndpoint,
+): "definition" | "explainer" | "page" | "profile" {
+  if (pathname === "/explainer") return "explainer";
   const surface = url.searchParams.get("surface");
-  if (surface === "definition" || surface === "profile") return surface;
+  if (surface === "definition" || surface === "explainer" || surface === "profile") {
+    return surface;
+  }
   return "page";
 }
 
@@ -44,9 +52,14 @@ function requestedArticle(url: URL): WikipediaArticleKey {
   return "migration";
 }
 
+function requestedTerm(url: URL): ExplainerTermKey {
+  const term = url.searchParams.get("term");
+  return term !== null && isExplainerTerm(term) ? term : "compatibility-layer";
+}
+
 async function renderWidget(url: URL, pathname: WidgetEndpoint): Promise<string> {
   const chunks: string[] = [];
-  const surface = requestedSurface(url);
+  const surface = requestedSurface(url, pathname);
   let qwikLoader: "module" | "never" = "module";
   let clientManifest = manifest;
   if (surface !== "page") {
@@ -60,6 +73,7 @@ async function renderWidget(url: URL, pathname: WidgetEndpoint): Promise<string>
       articleKey={requestedArticle(url)}
       initialRoute={requestedRoute(url, pathname)}
       surface={surface}
+      termKey={requestedTerm(url)}
     />,
     {
       base: widgetBuildBase(url),

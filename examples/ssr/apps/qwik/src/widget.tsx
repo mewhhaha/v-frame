@@ -3,6 +3,13 @@ import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
 export type WidgetRoute = "/inventory" | "/catalog";
 export type WikipediaArticleKey = "brief" | "migration" | "research";
+export type ExplainerTermKey =
+  | "compatibility-layer"
+  | "shadow-reads"
+  | "rollback-window"
+  | "evidence-coding"
+  | "customer-segments"
+  | "mitigation-plan";
 
 /** Where the host mounts this application; standalone visits have no prefix. */
 const widgetBasePath = "/widgets/qwik";
@@ -28,6 +35,81 @@ const wikipediaArticles = {
   },
 } as const;
 
+export const explainerTerms: Record<
+  ExplainerTermKey,
+  {
+    title: string;
+    summary: string;
+    points: readonly string[];
+    related: readonly ExplainerTermKey[];
+  }
+> = {
+  "compatibility-layer": {
+    title: "Compatibility layer",
+    summary:
+      "A thin adapter that translates legacy requests into the new contract so existing callers keep working while teams migrate on their own schedules.",
+    points: [
+      "Preserves existing response shapes during incremental cutovers.",
+      "Emits per-caller usage metrics so you know when legacy traffic reaches zero.",
+    ],
+    related: ["shadow-reads", "rollback-window"],
+  },
+  "shadow-reads": {
+    title: "Shadow reads",
+    summary:
+      "Duplicating live read traffic asynchronously to the new path and diffing responses against production without adding latency to users.",
+    points: [
+      "Surfaces payload and edge-case mismatches before writes move.",
+      "Keeps live responses pinned to the proven implementation.",
+    ],
+    related: ["compatibility-layer", "rollback-window"],
+  },
+  "rollback-window": {
+    title: "Rollback window",
+    summary:
+      "A bounded period after each cutover where the previous implementation stays warm and ready to take traffic back if error rates rise.",
+    points: [
+      "Limits blast radius while moving one owner at a time.",
+      "Requires reversible writes until the window closes.",
+    ],
+    related: ["compatibility-layer", "shadow-reads"],
+  },
+  "evidence-coding": {
+    title: "Evidence coding",
+    summary:
+      "Tagging verbatim customer statements with consistent labels before proposing features so roadmap trade-offs trace back to raw observations.",
+    points: [
+      "Separates observed friction from premature solution ideas.",
+      "Makes recurring pain points countable across interviews.",
+    ],
+    related: ["customer-segments"],
+  },
+  "customer-segments": {
+    title: "Customer segments",
+    summary:
+      "Groups of users who share workflows, scale constraints, or adoption stage, preventing one loud cohort from skewing priorities.",
+    points: [
+      "Distinguishes universal needs from tier-specific requests.",
+      "Clarifies which users benefit first from a change.",
+    ],
+    related: ["evidence-coding"],
+  },
+  "mitigation-plan": {
+    title: "Mitigation plan",
+    summary:
+      "A named fallback, accountable owner, and trigger threshold paired with a risk before launch so response is automatic rather than ad hoc.",
+    points: [
+      "Assigns one clear owner to monitor each exposure.",
+      "Defines the signal that triggers the fallback path.",
+    ],
+    related: ["rollback-window"],
+  },
+};
+
+export function isExplainerTerm(value: string): value is ExplainerTermKey {
+  return Object.hasOwn(explainerTerms, value);
+}
+
 export function isWidgetRoute(value: string): value is WidgetRoute {
   return value === "/inventory" || value === "/catalog";
 }
@@ -43,14 +125,40 @@ export function routeFromPathname(pathname: string): WidgetRoute | null {
 export interface WorkspaceWidgetProps {
   articleKey: WikipediaArticleKey;
   initialRoute: WidgetRoute;
-  surface: "definition" | "page" | "profile";
+  surface: "definition" | "explainer" | "page" | "profile";
+  termKey?: ExplainerTermKey;
 }
 
 export function WorkspaceWidget({
   articleKey,
   initialRoute,
   surface,
+  termKey = "compatibility-layer",
 }: WorkspaceWidgetProps) {
+  if (surface === "explainer") {
+    const entry = explainerTerms[termKey];
+    return (
+      <article class="explainer-card" aria-labelledby="explainer-title">
+        <span class="widget-kicker">Explainer · Qwik fragment</span>
+        <h3 id="explainer-title">{entry.title}</h3>
+        <p class="explainer-summary">{entry.summary}</p>
+        <ul class="explainer-points">
+          {entry.points.map((point) => (
+            <li key={point}>{point}</li>
+          ))}
+        </ul>
+        <nav class="explainer-related" aria-label="Related concepts">
+          <span>Related:</span>
+          {entry.related.map((slug) => (
+            <a key={slug} href={`?term=${slug}`}>
+              {explainerTerms[slug].title}
+            </a>
+          ))}
+        </nav>
+      </article>
+    );
+  }
+
   if (surface === "definition") {
     const article = wikipediaArticles[articleKey];
     return (
@@ -286,6 +394,17 @@ export const widgetStyle = `
   .wikipedia-preview .widget-kicker { color: #a0a0a0; font-family: inherit; text-transform: uppercase; }
   .wikipedia-preview p { color: #d4d4d4; }
   .wikipedia-preview a { color: #ececec; text-decoration: underline; text-underline-offset: 0.18rem; }
+  .explainer-card { min-height: 100%; padding: 0.95rem 1rem 1rem; background: #1c1c20; color: #f5f5f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  .explainer-card .widget-kicker { color: #93c5fd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .explainer-card h3 { margin: 0.35rem 0 0; color: #f5f5f5; font-size: 1.05rem; font-weight: 600; letter-spacing: -0.015em; }
+  .explainer-summary { margin: 0.5rem 0 0; color: #e4e4e7; font-size: 0.8125rem; line-height: 1.55; }
+  .explainer-points { margin: 0.65rem 0 0; padding-left: 1.1rem; color: #d4d4d8; font-size: 0.78rem; line-height: 1.5; }
+  .explainer-points li + li { margin-top: 0.25rem; }
+  .explainer-related { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.75rem; padding-top: 0.65rem; border-top: 1px solid rgba(255, 255, 255, 0.1); font-size: 0.75rem; }
+  .explainer-related > span { color: #a1a1aa; }
+  .explainer-related a { padding: 0.18rem 0.5rem; border: 1px solid rgba(147, 197, 253, 0.38); border-radius: 999px; background: rgba(147, 197, 253, 0.12); color: #bfdbfe; text-decoration: none; }
+  .explainer-related a:hover { background: rgba(147, 197, 253, 0.22); color: #ffffff; }
+  .explainer-related a:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
   .profile-widget { background: #0d0d0d; color: #f5f5f5; }
   .profile-trigger { display: flex; height: 3.4rem; min-height: 0; gap: 0.65rem; padding: 0.45rem 0.55rem; }
   .profile-avatar { width: 2rem; height: 2rem; flex: none; background: #7c3aed; font-size: 0.6875rem; }

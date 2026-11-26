@@ -2,8 +2,15 @@ import { Button } from "@comp0/react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 
+interface ExplainerTermRef {
+  key: string;
+  label: string;
+}
+
 interface TranscriptStep {
+  after?: string;
   detail: string;
+  term?: ExplainerTermRef;
   title: string;
 }
 
@@ -28,15 +35,21 @@ const threadTranscripts = {
     steps: [
       {
         title: "Stabilize the boundary.",
-        detail: "Wrap the current API in a measured compatibility layer.",
+        detail: "Wrap the current API in a measured ",
+        term: { key: "compatibility-layer", label: "compatibility layer" },
+        after: ".",
       },
       {
         title: "Mirror read traffic.",
-        detail: "Compare both paths before moving any writes.",
+        detail: "Compare both paths with ",
+        term: { key: "shadow-reads", label: "shadow reads" },
+        after: " before moving any writes.",
       },
       {
         title: "Move one owner at a time.",
-        detail: "Keep a short rollback window after every cutover.",
+        detail: "Keep a short ",
+        term: { key: "rollback-window", label: "rollback window" },
+        after: " after every cutover.",
       },
     ],
   },
@@ -51,12 +64,16 @@ const threadTranscripts = {
     steps: [
       {
         title: "Code the evidence.",
-        detail: "Tag concrete statements before translating them into feature requests.",
+        detail: "Use ",
+        term: { key: "evidence-coding", label: "evidence coding" },
+        after:
+          " to tag concrete statements before translating them into feature requests.",
       },
       {
         title: "Group repeated needs.",
-        detail:
-          "Cluster observations and note which customer segments share each pattern.",
+        detail: "Cluster observations across ",
+        term: { key: "customer-segments", label: "customer segments" },
+        after: " that share each pattern.",
       },
       {
         title: "Choose the next question.",
@@ -76,7 +93,9 @@ const threadTranscripts = {
       { title: "State the movement.", detail: "Open with what changed since last week." },
       {
         title: "Name the exposure.",
-        detail: "Give each risk an impact, owner, and mitigation.",
+        detail: "Give each risk an impact, owner, and ",
+        term: { key: "mitigation-plan", label: "mitigation plan" },
+        after: ".",
       },
       {
         title: "Request decisions.",
@@ -86,10 +105,26 @@ const threadTranscripts = {
   },
 } as const satisfies Record<string, ThreadTranscript>;
 
+const explainerTitles: Record<string, string> = {
+  "compatibility-layer": "Compatibility layer",
+  "shadow-reads": "Shadow reads",
+  "rollback-window": "Rollback window",
+  "evidence-coding": "Evidence coding",
+  "customer-segments": "Customer segments",
+  "mitigation-plan": "Mitigation plan",
+};
+
 function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
   const [responseSaved, setResponseSaved] = useState(false);
+  const [activeTerm, setActiveTerm] = useState<ExplainerTermRef | null>(null);
+  const [explainerHeading, setExplainerHeading] = useState("");
+  const [explainerLoading, setExplainerLoading] = useState(false);
   const previewTriggerRef = useRef<HTMLButtonElement>(null);
   const previewPopoverRef = useRef<HTMLDivElement>(null);
+  const explainerPopoverRef = useRef<HTMLDivElement>(null);
+  const explainerFrameRef = useRef<HTMLElement>(null);
+  const explainerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const closingTermKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const previewTrigger = previewTriggerRef.current;
@@ -173,6 +208,111 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
     };
   }, []);
 
+  useEffect(() => {
+    const popover = explainerPopoverRef.current;
+    if (popover === null) return;
+
+    const positionExplainer = () => {
+      const trigger = explainerTriggerRef.current;
+      if (trigger === null || !popover.matches(":popover-open")) return;
+      const anchor = trigger.getBoundingClientRect();
+      const horizontalMargin = 16;
+      const anchorGap = 8;
+      const popoverWidth = Math.min(368, window.innerWidth - horizontalMargin * 2);
+      const left = Math.min(
+        Math.max(horizontalMargin, anchor.left - 8),
+        window.innerWidth - popoverWidth - horizontalMargin,
+      );
+      const popoverHeight = popover.offsetHeight || 260;
+      const fitsBelow =
+        anchor.bottom + anchorGap + popoverHeight <=
+        window.innerHeight - horizontalMargin;
+      const top = fitsBelow
+        ? anchor.bottom + anchorGap
+        : Math.max(horizontalMargin, anchor.top - anchorGap - popoverHeight);
+      popover.style.setProperty("--explainer-left", `${left}px`);
+      popover.style.setProperty("--explainer-top", `${top}px`);
+    };
+
+    const handleToggle: EventListener = (event) => {
+      const newState = (event as Event & { newState?: string }).newState;
+      if (newState === "open") {
+        positionExplainer();
+        return;
+      }
+      if (newState === "closed") {
+        const trigger = explainerTriggerRef.current;
+        setActiveTerm(null);
+        setExplainerLoading(false);
+        if (
+          trigger !== null &&
+          trigger.isConnected &&
+          (popover.contains(document.activeElement) ||
+            document.activeElement === document.body)
+        ) {
+          trigger.focus();
+        }
+      }
+    };
+
+    popover.addEventListener("toggle", handleToggle);
+    window.addEventListener("resize", positionExplainer);
+    window.addEventListener("scroll", positionExplainer);
+
+    if (activeTerm !== null) {
+      if (!popover.matches(":popover-open")) popover.showPopover();
+      positionExplainer();
+    } else if (popover.matches(":popover-open")) {
+      popover.hidePopover();
+    }
+
+    return () => {
+      popover.removeEventListener("toggle", handleToggle);
+      window.removeEventListener("resize", positionExplainer);
+      window.removeEventListener("scroll", positionExplainer);
+    };
+  }, [activeTerm]);
+
+  useEffect(() => {
+    const frame = explainerFrameRef.current;
+    if (frame === null || activeTerm === null) return;
+
+    const handleLoad: EventListener = (event) => {
+      setExplainerLoading(false);
+      const url = (event as CustomEvent<{ url?: string }>).detail?.url;
+      if (typeof url === "string") {
+        try {
+          const slug = new URL(url).searchParams.get("term");
+          if (slug !== null && Object.hasOwn(explainerTitles, slug)) {
+            setExplainerHeading(explainerTitles[slug]!);
+          }
+        } catch {
+          // Keep the trigger label if the frame URL cannot be parsed.
+        }
+      }
+    };
+
+    frame.addEventListener("v-frame-load", handleLoad);
+    return () => frame.removeEventListener("v-frame-load", handleLoad);
+  }, [activeTerm]);
+
+  const handleTermClick = (term: ExplainerTermRef, trigger: HTMLButtonElement) => {
+    const popover = explainerPopoverRef.current;
+    if (closingTermKeyRef.current === term.key) {
+      closingTermKeyRef.current = null;
+      return;
+    }
+    closingTermKeyRef.current = null;
+    if (activeTerm?.key === term.key && popover?.matches(":popover-open")) {
+      popover.hidePopover();
+      return;
+    }
+    explainerTriggerRef.current = trigger;
+    setExplainerHeading(explainerTitles[term.key] ?? term.label);
+    setExplainerLoading(true);
+    setActiveTerm(term);
+  };
+
   return (
     <section id="transcript" aria-labelledby="transcript-title">
       <h2 id="transcript-title" className="sr-only">
@@ -188,13 +328,80 @@ function TranscriptPage({ transcript }: { transcript: ThreadTranscript }) {
           <div className="message-content">
             <p>{transcript.response}</p>
             <ol className="activity-list">
-              {transcript.steps.map((step) => (
-                <li key={step.title}>
-                  <strong>{step.title}</strong>
-                  <span>{step.detail}</span>
-                </li>
-              ))}
+              {transcript.steps.map((step) => {
+                const stepTerm = step.term;
+                return (
+                  <li key={step.title}>
+                    <strong>{step.title}</strong>
+                    <span>
+                      {step.detail}
+                      {stepTerm !== undefined && (
+                        <button
+                          type="button"
+                          className="explainer-term"
+                          aria-haspopup="dialog"
+                          aria-expanded={activeTerm?.key === stepTerm.key}
+                          aria-controls="term-explainer-popover"
+                          onPointerDown={() => {
+                            if (
+                              activeTerm?.key === stepTerm.key &&
+                              explainerPopoverRef.current?.matches(":popover-open")
+                            ) {
+                              closingTermKeyRef.current = stepTerm.key;
+                            }
+                          }}
+                          onClick={(event) =>
+                            handleTermClick(stepTerm, event.currentTarget)
+                          }
+                        >
+                          {stepTerm.label}
+                        </button>
+                      )}
+                      {step.after}
+                    </span>
+                  </li>
+                );
+              })}
             </ol>
+            <div
+              ref={explainerPopoverRef}
+              id="term-explainer-popover"
+              className="explainer-popover"
+              popover="auto"
+              role="dialog"
+              aria-label={
+                explainerHeading !== ""
+                  ? `${explainerHeading} explanation`
+                  : "Term explanation"
+              }
+            >
+              <div className="explainer-popover-header">
+                <span>{explainerHeading || "Explanation"}</span>
+                <button
+                  type="button"
+                  className="explainer-close"
+                  aria-label="Close explanation"
+                  onClick={() => explainerPopoverRef.current?.hidePopover()}
+                >
+                  ×
+                </button>
+              </div>
+              <div
+                className="explainer-widget-surface"
+                data-composition-label="Qwik explainer frontend"
+                aria-busy={explainerLoading}
+              >
+                {activeTerm !== null && (
+                  <v-frame
+                    ref={explainerFrameRef}
+                    key={activeTerm.key}
+                    className="explainer-frame"
+                    src={`/widgets/qwik/explainer?term=${activeTerm.key}`}
+                    aria-label={`${explainerHeading || activeTerm.label} explanation from the Qwik explainer fragment`}
+                  />
+                )}
+              </div>
+            </div>
             <p className="reference-copy">
               A useful reference is{" "}
               <button
@@ -413,6 +620,19 @@ export const widgetStyle = `
   .activity-list li { color: #ececec; font-size: 0.9375rem; }
   .activity-list span { color: #b4b4b4; }
   .wikipedia-term { border-bottom-color: #b4b4b4; color: #f5f5f5; }
+  .explainer-term { padding: 0 0.08rem; border: 0; border-bottom: 1.5px dashed #93c5fd; border-radius: 0.15rem; background: transparent; color: #f5f5f5; cursor: pointer; font: inherit; }
+  .explainer-term:hover, .explainer-term[aria-expanded="true"] { background: rgba(147, 197, 253, 0.16); border-bottom-color: #bfdbfe; }
+  .explainer-term:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+  .explainer-popover { position: fixed; inset: var(--explainer-top, 1rem) auto auto var(--explainer-left, 1rem); width: min(23rem, calc(100vw - 1.5rem)); margin: 0; padding: 0; overflow: hidden; border: 1px solid #3f3f46; border-radius: 0.85rem; background: #1c1c20; color: #f5f5f5; box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.55); }
+  .explainer-popover:not(:popover-open) { display: none; }
+  .explainer-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.65rem 0.5rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.1); background: #151518; color: #d4d4d8; font-size: 0.75rem; font-weight: 500; }
+  .explainer-close { display: grid; width: 1.75rem; height: 1.75rem; padding: 0; place-items: center; border: 0; border-radius: 0.4rem; background: transparent; color: #d4d4d8; cursor: pointer; font: inherit; font-size: 1.1rem; line-height: 1; }
+  .explainer-close:hover { background: #27272a; color: #ffffff; }
+  .explainer-close:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+  .explainer-widget-surface { position: relative; min-height: 12.5rem; }
+  .explainer-frame { display: block; width: 100%; min-height: 12.5rem; border: 0; background: #1c1c20; }
+  .explainer-widget-surface::before { display: var(--composition-overlay-display, none); position: absolute; z-index: 4; border: 2px solid #a78bfa; border-radius: 0 0 0.85rem 0.85rem; background: color-mix(in srgb, #a78bfa 7%, transparent); content: ""; inset: 0; pointer-events: none; }
+  .explainer-widget-surface::after { display: var(--composition-overlay-display, none); position: absolute; z-index: 5; top: 0.45rem; right: 0.45rem; padding: 0.22rem 0.42rem; border-radius: 999px; background: #a78bfa; color: white; content: attr(data-composition-label); font-size: 0.625rem; font-weight: 600; pointer-events: none; }
   .preview-popover { width: min(22.5rem, calc(100vw - 1.5rem)); height: 12.5rem; padding: 0; border-color: #444; border-radius: 0.85rem; background: #212121; color: #f5f5f5; }
   .nested-widget-surface, .nested-workspace-widget { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: inherit; }
   .activity-actions { gap: 0.35rem; margin-top: 0.8rem; }

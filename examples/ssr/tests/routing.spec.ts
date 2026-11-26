@@ -1,3 +1,4 @@
+import { auditAccessibility } from "../../../tests/support/accessibility";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const widgetEntryPaths = new Set([
@@ -993,4 +994,96 @@ test("composes ordinary framework documents into adopted shadow markup", async (
   expect(composedMarkup).toContain("<v-head");
   expect(composedMarkup).toContain("<v-body");
   expect(composedMarkup).toContain('type="application/vnd.v-frame"');
+});
+
+test("clicking a dashed-underline term lazily loads an explainer fragment inside a popover", async ({
+  page,
+}) => {
+  const explainerRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/widgets/qwik/explainer") {
+      explainerRequests.push(url.pathname + url.search);
+    }
+  });
+
+  await page.goto("/");
+  await expectHydrated(reactFrame(page));
+
+  // Lazy by default: no explainer fragment is fetched before a reader clicks a term.
+  expect(explainerRequests).toEqual([]);
+
+  const popover = reactFrame(page).locator("#term-explainer-popover");
+  const explainerFrame = popover.locator("v-frame.explainer-frame");
+  await expect(popover).toBeHidden();
+  await expect(explainerFrame).toHaveCount(0);
+
+  // Clicking a dashed-underline term opens the top-layer popover and loads the Qwik fragment.
+  const compatibilityTrigger = reactFrame(page).getByRole("button", {
+    name: "compatibility layer",
+  });
+  await expect(compatibilityTrigger).toHaveCSS("border-bottom-style", "dashed");
+  await compatibilityTrigger.click();
+
+  await expect(popover).toBeVisible();
+  await expect(
+    popover.evaluate((element) => element.matches(":popover-open")),
+  ).resolves.toBe(true);
+  await expectLoadedWithoutRouting(explainerFrame);
+  await expect(
+    explainerFrame.getByRole("heading", { name: "Compatibility layer" }),
+  ).toBeVisible();
+  expect(explainerRequests).toEqual(["/widgets/qwik/explainer?term=compatibility-layer"]);
+
+  // WCAG audit passes while the popover and its nested explainer fragment are open.
+  const a11y = await auditAccessibility(page);
+  expect(
+    a11y.violations.map(({ id, nodes }) => ({
+      id,
+      targets: nodes.map((node) => node.target),
+    })),
+  ).toEqual([]);
+
+  // Following a related concept link inside the fragment navigates the popover in place
+  // without changing the host URL.
+  await explainerFrame.getByRole("link", { name: "Shadow reads" }).click();
+  await expect(
+    explainerFrame.getByRole("heading", { name: "Shadow reads" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL("/");
+
+  // Clicking a different dashed-underline term switches the popover to that term's fragment.
+  const rollbackTrigger = reactFrame(page).getByRole("button", {
+    name: "rollback window",
+  });
+  await rollbackTrigger.click();
+  await expect(popover).toBeVisible();
+  await expect(
+    explainerFrame.getByRole("heading", { name: "Rollback window" }),
+  ).toBeVisible();
+
+  // Clicking the active term again toggles the popover closed cleanly.
+  await rollbackTrigger.click();
+  await expect(popover).toBeHidden();
+  await expect(rollbackTrigger).toHaveAttribute("aria-expanded", "false");
+
+  // Re-opening and pressing Escape dismisses the popover and restores focus to the term.
+  await compatibilityTrigger.click();
+  await expect(popover).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(popover).toBeHidden();
+  await expect(compatibilityTrigger).toBeFocused();
+});
+
+test("serves the Qwik explainer fragment as a standalone HTML document", async ({
+  request,
+}) => {
+  const response = await request.get(
+    "http://127.0.0.1:44502/explainer?term=rollback-window",
+  );
+  expect(response.ok()).toBe(true);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  const markup = await response.text();
+  expect(markup).toContain("Rollback window");
+  expect(markup).toContain("?term=compatibility-layer");
 });

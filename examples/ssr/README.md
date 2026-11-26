@@ -33,6 +33,7 @@ The host exposes standalone guest documents at these same-origin paths:
 ```text
 /widgets/react-router/activity
 /widgets/qwik/inventory
+/widgets/qwik/explainer?term=compatibility-layer
 /widgets/angular/dashboard
 /widgets/solid/signals
 ```
@@ -118,7 +119,9 @@ return composeFrames(shellResponse, {
 The React Worker uses the same API to render the Qwik slot in its transcript.
 Only the React app chooses its location and article. Visiting React directly
 includes the same Qwik preview as visiting it inside the shell. Qwik serves
-its own mounted routes and bundles.
+its own mounted routes and bundles, including an on-demand term explainer
+fragment at `/widgets/qwik/explainer?term=<slug>` loaded lazily inside a native
+popover when a reader clicks a dashed-underline term in a transcript step.
 
 When `@mewhhaha/v-frame/register` loads, the element activates the preserved
 scripts in the guest realm. React Router hydrates, the Qwik composer and usage

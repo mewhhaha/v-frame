@@ -100,6 +100,15 @@ test.beforeAll(async () => {
         `<a id="bad-link" href="http://[">Bad link</a>
          <form id="bad-form" action="http://["><button id="bad-submit" type="submit">Go</button></form>`,
       ),
+      "/nested-outer.html": htmlDocument(
+        `<h1 id="outer-heading">Outer document</h1>
+         <v-frame id="inner-nav" src="/nested-inner-a.html"></v-frame>`,
+      ),
+      "/nested-inner-a.html": htmlDocument(
+        `<h2 id="inner-heading">Inner A</h2>
+         <a id="inner-next" href="/nested-inner-b.html">Go to Inner B</a>`,
+      ),
+      "/nested-inner-b.html": htmlDocument(`<h2 id="inner-heading">Inner B</h2>`),
     },
   });
 });
@@ -277,4 +286,29 @@ test("ignores malformed link href and form action URLs without throwing uncaught
   await frame.locator("#bad-submit").click();
   await page.waitForTimeout(50);
   expect(pageErrors).toEqual([]);
+});
+
+test("clicking a link inside a nested v-frame navigates only the inner frame without hijacking the outer frame", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  const outer = await mountFrame(page, {
+    id: "outer-nav",
+    src: `${fixture.origin}/nested-outer.html`,
+  });
+  const inner = outer.locator("v-frame#inner-nav");
+  await expect(inner.locator("#inner-heading")).toHaveText("Inner A");
+
+  await inner.locator("#inner-next").click();
+  await expect(inner.locator("#inner-heading")).toHaveText("Inner B");
+  await expect(outer.locator("#outer-heading")).toHaveText("Outer document");
+  expect(
+    await outer.evaluate((el: VFrameElement) => ({
+      outerURL: el.currentURL,
+      innerURL: el.shadowRoot.querySelector<VFrameElement>("#inner-nav")?.currentURL,
+    })),
+  ).toEqual({
+    outerURL: `${fixture.origin}/nested-outer.html`,
+    innerURL: `${fixture.origin}/nested-inner-b.html`,
+  });
 });

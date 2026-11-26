@@ -294,17 +294,45 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     options.history.navigateFragment(targetURL.href);
   };
 
+  const ownedGuestRootIndex = (path: readonly EventTarget[]): number => {
+    const ownerIndex = path.indexOf(options.guestRoot);
+    if (ownerIndex === -1) return -1;
+    for (let index = 0; index < ownerIndex; index += 1) {
+      const node = path[index];
+      if (node !== undefined && guestMarkupRoots.has(node as Node)) {
+        return -1;
+      }
+      if (
+        index > 0 &&
+        isElementNode(node) &&
+        node.localName === "v-frame" &&
+        (path[index - 1] as Node | undefined)?.nodeType === 11 &&
+        (path[index - 1] as ShadowRoot).host === node
+      ) {
+        return -1;
+      }
+    }
+    return ownerIndex;
+  };
+
   const scheduledNavigationEvents = new WeakSet<Event>();
   const suppressLinkDefault = (event: Event) => {
     const path = event.composedPath();
-    if (!path.includes(options.guestRoot)) return;
-    const anchor = path.find(
-      (candidate): candidate is HTMLAnchorElement | HTMLAreaElement | SVGAElement =>
+    const ownerIndex = ownedGuestRootIndex(path);
+    if (ownerIndex === -1) return;
+    let anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement | undefined;
+    for (let index = 0; index < ownerIndex; index += 1) {
+      const candidate = path[index];
+      if (
         isElementNode(candidate) &&
         (candidate.localName === "a" || candidate.localName === "area") &&
         (candidate.hasAttribute("href") ||
-          candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
-    );
+          candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href"))
+      ) {
+        anchor = candidate as HTMLAnchorElement | HTMLAreaElement | SVGAElement;
+        break;
+      }
+    }
     if (anchor === undefined) return;
     let button: number;
     try {
@@ -340,7 +368,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     }, 0);
   };
   const suppressSubmitDefault = (event: Event) => {
-    if (!event.composedPath().includes(options.guestRoot)) return;
+    if (ownedGuestRootIndex(event.composedPath()) === -1) return;
     const form = event.target;
     if (!isHTMLFormElement(form)) {
       return;
