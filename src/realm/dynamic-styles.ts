@@ -20,9 +20,10 @@ import {
   type StylesheetImportFailure,
 } from "../css.js";
 import type { DocumentFacade } from "../facade/index.js";
+import type { SubtreeScan } from "../facade/context.js";
 import type { VFrameWindow } from "../types.js";
 import type { RealmFailure } from "./connect.js";
-import { captureNativeDOM } from "./native-dom.js";
+import { captureNativeDOM, type NativeDOM } from "./native-dom.js";
 import type { LinkedStyle } from "../linked-styles.js";
 import { NEUTRALIZED_STYLESHEET_REL } from "../wire-format.js";
 
@@ -79,6 +80,7 @@ function inheritedPropertyDescriptor(
 interface DynamicStyleOptions {
   window: VFrameWindow;
   document: Document;
+  nativeDOM?: NativeDOM;
   stylesheetContext: StylesheetContext;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   signal: AbortSignal;
@@ -96,9 +98,9 @@ export interface DynamicStyles {
   applyNonce(style: HTMLStyleElement): void;
   virtualStylesFrom(nodes: readonly Node[]): HTMLStyleElement[];
   dynamicLinksFrom(nodes: readonly Node[]): HTMLLinkElement[];
-  installCSSOMStyleSheets(nodes: readonly Node[]): void;
+  installCSSOMStyleSheets(nodes: readonly Node[], scan?: SubtreeScan): void;
   installCSSOMStyleSheet(style: HTMLStyleElement): void;
-  observeConnectedNodes(nodes: readonly Node[]): void;
+  observeConnectedNodes(nodes: readonly Node[], scan?: SubtreeScan): void;
   scheduleDynamicStyle(
     style: HTMLStyleElement,
     source: string,
@@ -128,7 +130,11 @@ export interface DynamicStyles {
 
 export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles {
   const window = options.window;
-  const nativeDOM = captureNativeDOM(window);
+  const nativeDOM = options.nativeDOM ?? captureNativeDOM(window);
+  const nativeStyleSheetGetter = Object.getOwnPropertyDescriptor(
+    window.HTMLStyleElement.prototype,
+    "sheet",
+  )?.get;
   const document = options.document;
   const processedStyles = new WeakMap<HTMLStyleElement, string>();
   const dynamicStyleUpdates = new WeakMap<HTMLStyleElement, DynamicStyleUpdate>();
@@ -270,7 +276,9 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       processedStyles.set(style, "");
     }
 
-    const sheet = style.sheet;
+    const sheet = nativeStyleSheetGetter
+      ? (nativeStyleSheetGetter.call(style) as CSSStyleSheet | null)
+      : style.sheet;
     if (sheet === null) {
       return;
     }
@@ -354,8 +362,12 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     }
     return styles;
   };
-  const installCSSOMStyleSheets = (nodes: readonly Node[]): void => {
-    for (const style of virtualStylesFrom(nodes)) {
+  const installCSSOMStyleSheets = (nodes: readonly Node[], scan?: SubtreeScan): void => {
+    const styles =
+      scan !== undefined
+        ? scan.styles.filter((style) => style !== options.getInlineStyleSheet())
+        : virtualStylesFrom(nodes);
+    for (const style of styles) {
       if (options.isConnectedToRealm(style)) {
         installCSSOMStyleSheet(style);
       }
@@ -446,14 +458,14 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       update.status = "empty";
       setGeneratedStyleText(style, update, "");
       processedStyles.set(style, "");
-      installCSSOMStyleSheet(style);
+      applyNonce(style);
       return;
     }
 
     update.status = "pending";
     setGeneratedStyleText(style, update, "");
     processedStyles.set(style, "");
-    installCSSOMStyleSheet(style);
+    applyNonce(style);
     void (async () => {
       const importFailures: StylesheetImportFailure[] = [];
       try {
@@ -469,7 +481,6 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         setGeneratedStyleText(style, update, rewritten);
         update.status = "committed";
         processedStyles.set(style, rewritten);
-        installCSSOMStyleSheet(style);
         reportImportFailures(importFailures, () =>
           styleRevisionIsCurrent(style, update, revision, snapshot),
         );
@@ -557,7 +568,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         physicalText,
         status: physicalText === "" ? "empty" : "committed",
       });
-      installCSSOMStyleSheet(style);
+      applyNonce(style);
       return;
     }
 
@@ -569,7 +580,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       processedStyles.get(style) === physicalText
     ) {
       update.revision += 1;
-      installCSSOMStyleSheet(style);
+      applyNonce(style);
       return;
     }
     scheduleDynamicStyle(style, source, true);
@@ -683,7 +694,6 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         link.after(style);
       }
       style.disabled = snapshot.disabled;
-      installCSSOMStyleSheet(style);
       return;
     }
     previous?.style.remove();
@@ -728,7 +738,6 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
         // disabled only reaches a sheet once the style is connected; on a
         // detached element the assignment is a spec-mandated no-op.
         style.disabled = snapshot.disabled;
-        installCSSOMStyleSheet(style);
         link.dispatchEvent(new window.Event("load"));
         reportImportFailures(
           importFailures,
@@ -757,9 +766,12 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       update.snapshot = null;
     }
   };
-  const observeConnectedNodes = (nodes: readonly Node[]): void => {
-    const styles = virtualStylesFrom(nodes);
-    const links = dynamicLinksFrom(nodes);
+  const observeConnectedNodes = (nodes: readonly Node[], scan?: SubtreeScan): void => {
+    const styles =
+      scan !== undefined
+        ? scan.styles.filter((style) => style !== options.getInlineStyleSheet())
+        : virtualStylesFrom(nodes);
+    const links = scan !== undefined ? scan.links : dynamicLinksFrom(nodes);
     for (const style of styles) {
       connectedStylesAwaitingObservation.add(style);
       scheduleConnectedDynamicStyle(style);

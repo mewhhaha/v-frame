@@ -104,6 +104,9 @@ export function createNodePatches(
           const baseElementChanged =
             isInVirtualDocumentTree(this) && subtreeHasBaseElement(this);
           nativeTextContent.set?.call(this, value);
+          if (virtualNodes.has(this) && this.firstChild !== null) {
+            markVirtualNode(this.firstChild);
+          }
           if (removedNodes.length > 0) {
             options.onDisconnectedNodes(removedNodes);
           }

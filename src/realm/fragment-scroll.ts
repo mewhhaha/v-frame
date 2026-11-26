@@ -1,7 +1,7 @@
 import { findFragmentTarget, fragmentIdentifiers } from "../fragment.js";
 import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { VFrameWindow } from "../types.js";
-import { captureNativeDOM } from "./native-dom.js";
+import { captureNativeDOM, type NativeDOM } from "./native-dom.js";
 
 export interface FragmentTargets {
   readonly current: Element | null;
@@ -14,6 +14,7 @@ export interface FragmentTargets {
 
 export function createFragmentTargets(options: {
   window: VFrameWindow;
+  nativeDOM?: NativeDOM;
   getRoot(): Element | null;
   isDisposed(): boolean;
 }): FragmentTargets {
@@ -21,7 +22,7 @@ export function createFragmentTargets(options: {
   const nativeSetAttribute = options.window.Element.prototype.setAttribute;
   const nativeRemoveAttribute = options.window.Element.prototype.removeAttribute;
   const nativeQuerySelectorAll = options.window.Element.prototype.querySelectorAll;
-  const nativeDOM = captureNativeDOM(options.window);
+  const nativeDOM = options.nativeDOM ?? captureNativeDOM(options.window);
   let target: Element | null = null;
 
   return {

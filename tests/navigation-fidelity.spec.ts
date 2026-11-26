@@ -568,7 +568,7 @@ test("restores the virtual URL when the host cancels a direct hash change", asyn
   });
 });
 
-test("reports unsupported same-context POST forms without leaving the document", async ({
+test("reports unsupported _blank POST forms without leaving the document", async ({
   page,
 }) => {
   const frame = await mountNavigationFrame(page);
@@ -609,6 +609,7 @@ test("reports unsupported same-context POST forms without leaving the document",
     }
     form.id = "unsupported-post-form";
     form.method = "post";
+    form.target = "_blank";
     form.action = "/documents/second.html";
     const submit = child.document.createElement("button");
     submit.textContent = "Submit";

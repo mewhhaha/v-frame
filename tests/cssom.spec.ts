@@ -79,36 +79,66 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
         };
       }
     })();
-    const adoptedErrors = [
-      (() => {
-        try {
-          void child.document.adoptedStyleSheets;
-          return null;
-        } catch (error) {
-          return {
-            childRealm: error instanceof child.DOMException,
-            name: (error as DOMException).name,
-          };
-        }
-      })(),
-      (() => {
-        try {
-          child.document.adoptedStyleSheets = [];
-          return null;
-        } catch (error) {
-          return {
-            childRealm: error instanceof child.DOMException,
-            name: (error as DOMException).name,
-          };
-        }
-      })(),
-    ];
+    const adoptedSheet = new child.CSSStyleSheet();
+    adoptedSheet.replaceSync(
+      'body { --adopted-token: 1; } :host { outline: 9px solid red !important; } #insert-rule-target { background-image: url("./asset.png"); }',
+    );
+    child.document.adoptedStyleSheets = [adoptedSheet];
+    const adoptedColorAfterAttach = child
+      .getComputedStyle(child.document.body)
+      .getPropertyValue("--adopted-token")
+      .trim();
+    const adoptedBgAfterAttach = child.getComputedStyle(
+      child.document.querySelector("#insert-rule-target")!,
+    ).backgroundImage;
+
+    const secondAdopted = new child.CSSStyleSheet();
+    await secondAdopted.replace("#add-rule-target { letter-spacing: 3px; }");
+    child.document.adoptedStyleSheets.push(secondAdopted);
+    const pushedSpacing = child.getComputedStyle(
+      child.document.querySelector("#add-rule-target")!,
+    ).letterSpacing;
+    secondAdopted.disabled = true;
+    const disabledSpacing = child.getComputedStyle(
+      child.document.querySelector("#add-rule-target")!,
+    ).letterSpacing;
+    secondAdopted.disabled = false;
+    secondAdopted.insertRule("#selector-target { word-spacing: 5px; }", 1);
+    const insertedWordSpacing = child.getComputedStyle(
+      child.document.querySelector("#selector-target")!,
+    ).wordSpacing;
+
+    const nonConstructedError = (() => {
+      try {
+        child.document.adoptedStyleSheets = [sheet];
+        return null;
+      } catch (error) {
+        return {
+          childRealm: error instanceof child.DOMException,
+          name: (error as DOMException).name,
+        };
+      }
+    })();
+
+    const hostOutline = getComputedStyle(frame).outlineStyle;
+    const adoptedCount = child.document.adoptedStyleSheets.length;
+    child.document.adoptedStyleSheets = [];
 
     await new Promise((resolveLater) => setTimeout(resolveLater, 0));
     return {
       addRuleSelector: (sheet.cssRules[1] as CSSStyleRule).selectorText,
       importError,
-      adoptedErrors,
+      adopted: {
+        token: adoptedColorAfterAttach,
+        bg: adoptedBgAfterAttach,
+        pushedSpacing,
+        disabledSpacing,
+        insertedWordSpacing,
+        hostOutline,
+        adoptedCount,
+        nonConstructedError,
+        clearedCount: child.document.adoptedStyleSheets.length,
+      },
       insertRuleBackground: (sheet.cssRules[0] as CSSStyleRule).style.backgroundImage,
       insertRuleSelector: (sheet.cssRules[0] as CSSStyleRule).selectorText,
       selectorText: initialRule.selectorText,
@@ -123,10 +153,17 @@ test("rewrites virtual style CSSOM mutations and rejects unsupported stylesheet 
   expect(result.selectorText).toBe("v-html #selector-target");
   expect(result.cssTextBackground).toContain(assetURL);
   expect(result.importError).toEqual({ childRealm: true, name: "NotSupportedError" });
-  expect(result.adoptedErrors).toEqual([
-    { childRealm: true, name: "NotSupportedError" },
-    { childRealm: true, name: "NotSupportedError" },
-  ]);
+  expect(result.adopted).toEqual({
+    token: "1",
+    bg: `url("${assetURL}")`,
+    pushedSpacing: "3px",
+    disabledSpacing: "normal",
+    insertedWordSpacing: "5px",
+    hostOutline: "none",
+    adoptedCount: 2,
+    nonConstructedError: { childRealm: true, name: "NotAllowedError" },
+    clearedCount: 0,
+  });
 
   const frame = page.locator("v-frame");
   await expect(frame.locator("#insert-rule-target")).toHaveCSS(
@@ -178,7 +215,7 @@ test("applies, clears, and rejects shorthand values through the inline style dec
   expect(result.setPropertyPadding).toBe("4px 8px");
   expect(result.clearedColor).toBe("rgb(5, 6, 7)");
   expect(result.clearedAttribute).not.toContain("background");
-  expect(result.clearedAttribute).toContain("color:rgb(5,6,7)");
+  expect(result.clearedAttribute).toMatch(/color:\s*rgb\(5,\s*6,\s*7\)/);
 
   const frame = page.locator("v-frame");
   await expect(frame.locator("#insert-rule-target")).toHaveCSS("margin-top", "10px");

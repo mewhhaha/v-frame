@@ -9,6 +9,20 @@ import {
 import { frameFailures, installBundle, mountFrame } from "./support/mount-frame";
 
 let fixture: HTTPFixture;
+const receivedPosts: Array<{
+  path: string;
+  method: string;
+  contentType: string;
+  body: string;
+}> = [];
+
+async function readBody(request: AsyncIterable<Buffer | string>): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 test.beforeAll(async () => {
   fixture = await startHTTPFixture({
@@ -18,6 +32,41 @@ test.beforeAll(async () => {
       "/form.html": htmlDocument(
         '<form action="/submitted?discard=1#result"><textarea name="message"></textarea><input id="named"><button id="send">Submit</button></form>',
       ),
+      "/post-form.html": htmlDocument(
+        `<form id="prg" method="post" action="/post-prg">
+          <input name="item" value="apollo-11">
+          <button id="send-prg" type="submit" name="intent" value="save">Save</button>
+        </form>
+        <form id="multipart" method="post" action="/post-inline" enctype="multipart/form-data">
+          <input name="note" value="lunar dust">
+          <button id="send-multipart" type="submit">Upload</button>
+        </form>`,
+      ),
+      "/post-prg": async (request) => {
+        const body = await readBody(request);
+        receivedPosts.push({
+          path: "/post-prg",
+          method: request.method ?? "",
+          contentType: String(request.headers["content-type"] ?? ""),
+          body,
+        });
+        return {
+          status: 303,
+          headers: { location: "/post-done?saved=1" },
+          body: "",
+        };
+      },
+      "/post-done": htmlDocument('<main id="prg-done">Saved via PRG</main>'),
+      "/post-inline": async (request) => {
+        const body = await readBody(request);
+        receivedPosts.push({
+          path: "/post-inline",
+          method: request.method ?? "",
+          contentType: String(request.headers["content-type"] ?? ""),
+          body,
+        });
+        return { body: htmlDocument('<main id="inline-done">Inline POST OK</main>') };
+      },
       "/named.html": htmlDocument(
         `<form action="done" method="invalid" target="_self">
           <input name="method" value="delivery"><input name="action" value="confirm">
@@ -262,3 +311,37 @@ for (const mode of ["modal", "non-modal", "outside-dialog"] as const) {
     expect(page.url()).toBe(fixture.origin + "/");
   });
 }
+
+test("submits same-origin POST forms with urlencoded PRG redirects and multipart HTML responses", async ({
+  page,
+}) => {
+  receivedPosts.length = 0;
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, { src: fixture.origin + "/post-form.html" });
+
+  await frame.locator("#send-prg").click();
+  await expect(frame.locator("#prg-done")).toHaveText("Saved via PRG");
+  expect(await frame.evaluate((el: VFrameElement) => el.currentURL)).toBe(
+    fixture.origin + "/post-done?saved=1",
+  );
+  expect(receivedPosts[0]).toMatchObject({
+    path: "/post-prg",
+    method: "POST",
+    body: "item=apollo-11&intent=save",
+  });
+  expect(receivedPosts[0]!.contentType).toContain("application/x-www-form-urlencoded");
+
+  await frame.evaluate((el: VFrameElement) => el.back());
+  await expect(frame.locator("#send-multipart")).toBeVisible();
+  await frame.locator("#send-multipart").click();
+  await expect(frame.locator("#inline-done")).toHaveText("Inline POST OK");
+  expect(receivedPosts[1]).toMatchObject({
+    path: "/post-inline",
+    method: "POST",
+  });
+  expect(receivedPosts[1]!.contentType).toContain("multipart/form-data");
+  expect(receivedPosts[1]!.body).toContain('name="note"');
+  expect(receivedPosts[1]!.body).toContain("lunar dust");
+  expect(await frameFailures(frame)).toEqual([]);
+  expect(page.url()).toBe(fixture.origin + "/");
+});

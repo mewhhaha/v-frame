@@ -1,10 +1,12 @@
 // The document the guest sees is the realm's own Document object with every
 // tree-shaped property answered from the shell instead: documentElement, head
 // and body are the shell elements, the child list is the doctype plus the
-// shell, listeners are relayed from the shell root, and the APIs that would
-// need a real parsed document — write(), open(), adoptedStyleSheets, direct
-// child mutation — throw rather than lie.
+// shell, listeners are relayed from the shell root, constructed sheets adopted
+// onto document.adoptedStyleSheets are mirrored through the CSS rewriter into
+// the render shadow root, and the APIs that would need a real parsed document —
+// write(), open(), direct child mutation — throw rather than lie.
 
+import { rewriteConstructedStylesheet } from "../css.js";
 import type { CollectionFacade } from "./collections.js";
 import { type FacadeContext, HTML_NAMESPACE } from "./context.js";
 import { eventHandlerNames, type EventFacade } from "./events.js";
@@ -139,6 +141,217 @@ export function installDocumentProperties(
     } else context.patch(document, name, descriptor);
   };
 
+  const hostWindow = hostDocument.defaultView;
+  const HostCSSStyleSheet = hostWindow?.CSSStyleSheet;
+  const guestAdoptedSheets: CSSStyleSheet[] = [];
+  let appliedAdoptedMirrors: CSSStyleSheet[] = [];
+  const adoptedMirrors = new WeakMap<CSSStyleSheet, CSSStyleSheet>();
+  const adoptedMirrorRestores: Array<() => void> = [];
+
+  const serializeConstructedSheet = (sheet: CSSStyleSheet): string => {
+    let text = "";
+    const rules = sheet.cssRules;
+    for (let index = 0; index < rules.length; index += 1) {
+      text += `${rules[index]!.cssText}\n`;
+    }
+    return text;
+  };
+
+  const syncConstructedMirror = (sheet: CSSStyleSheet, mirror: CSSStyleSheet): void => {
+    const baseURL = options.constructedSheetBaseURLs?.get(sheet) ?? options.getBaseURL();
+    mirror.disabled = sheet.disabled;
+    const mediaText = sheet.media.mediaText;
+    if (mirror.media.mediaText !== mediaText) {
+      mirror.media.mediaText = mediaText;
+    }
+    const cssText = serializeConstructedSheet(sheet);
+    const rewritten =
+      cssText === "" ? "" : rewriteConstructedStylesheet(cssText, baseURL);
+    mirror.replaceSync(rewritten);
+  };
+
+  const hookConstructedSheet = (sheet: CSSStyleSheet, mirror: CSSStyleSheet): void => {
+    const restoreProperty = (
+      property: PropertyKey,
+      previous: PropertyDescriptor | undefined,
+    ) => {
+      adoptedMirrorRestores.push(() => {
+        if (previous === undefined) {
+          delete (sheet as unknown as Record<PropertyKey, unknown>)[property];
+        } else {
+          Object.defineProperty(sheet, property, previous);
+        }
+      });
+    };
+    const syncLater = () => {
+      try {
+        syncConstructedMirror(sheet, mirror);
+      } catch {
+        // Malformed rules are already rejected by the native sheet call.
+      }
+    };
+    for (const methodName of [
+      "replaceSync",
+      "insertRule",
+      "deleteRule",
+      "addRule",
+    ] as const) {
+      const sheetRecord = sheet as unknown as Record<
+        string,
+        ((...args: unknown[]) => unknown) | undefined
+      >;
+      const nativeMethod = sheetRecord[methodName];
+      if (typeof nativeMethod !== "function") continue;
+      const previous = Object.getOwnPropertyDescriptor(sheet, methodName);
+      Object.defineProperty(sheet, methodName, {
+        configurable: true,
+        writable: true,
+        value(...args: unknown[]) {
+          const result = Reflect.apply(nativeMethod, sheet, args);
+          syncLater();
+          return result;
+        },
+      });
+      restoreProperty(methodName, previous);
+    }
+    const nativeReplace = sheet.replace;
+    if (typeof nativeReplace === "function") {
+      const previous = Object.getOwnPropertyDescriptor(sheet, "replace");
+      Object.defineProperty(sheet, "replace", {
+        configurable: true,
+        writable: true,
+        value(text: string) {
+          return nativeReplace.call(sheet, text).then((resolved) => {
+            syncLater();
+            return resolved;
+          });
+        },
+      });
+      restoreProperty("replace", previous);
+    }
+    const disabledDescriptor =
+      Object.getOwnPropertyDescriptor(sheet, "disabled") ??
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(sheet), "disabled") ??
+      Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(Object.getPrototypeOf(sheet)),
+        "disabled",
+      );
+    if (disabledDescriptor?.get && disabledDescriptor.set) {
+      const previous = Object.getOwnPropertyDescriptor(sheet, "disabled");
+      Object.defineProperty(sheet, "disabled", {
+        configurable: true,
+        get: () => disabledDescriptor.get!.call(sheet),
+        set(value: boolean) {
+          disabledDescriptor.set!.call(sheet, value);
+          mirror.disabled = sheet.disabled;
+        },
+      });
+      restoreProperty("disabled", previous);
+    }
+  };
+
+  const ensureAdoptedMirror = (sheet: CSSStyleSheet): CSSStyleSheet => {
+    let mirror = adoptedMirrors.get(sheet);
+    if (mirror !== undefined) {
+      syncConstructedMirror(sheet, mirror);
+      return mirror;
+    }
+    if (typeof HostCSSStyleSheet !== "function") {
+      throw new window.DOMException(
+        "Constructable stylesheets are unavailable",
+        "NotSupportedError",
+      );
+    }
+    const baseURL = options.constructedSheetBaseURLs?.get(sheet) ?? options.getBaseURL();
+    mirror = new HostCSSStyleSheet({
+      baseURL,
+      media: sheet.media.mediaText,
+      disabled: sheet.disabled,
+    });
+    adoptedMirrors.set(sheet, mirror);
+    syncConstructedMirror(sheet, mirror);
+    hookConstructedSheet(sheet, mirror);
+    return mirror;
+  };
+
+  const validateConstructedSheet = (value: unknown): CSSStyleSheet => {
+    const isSheet =
+      (typeof HostCSSStyleSheet === "function" && value instanceof HostCSSStyleSheet) ||
+      value instanceof window.CSSStyleSheet;
+    if (!isSheet) {
+      throw new window.TypeError(
+        "Failed to set adoptedStyleSheets: value is not a CSSStyleSheet",
+      );
+    }
+    const sheet = value as CSSStyleSheet;
+    if (sheet.ownerNode !== null) {
+      throw new window.DOMException(
+        "Failed to set adoptedStyleSheets: stylesheet was not constructed",
+        "NotAllowedError",
+      );
+    }
+    return sheet;
+  };
+
+  const syncAdoptedStyleSheets = (): void => {
+    const previous = new Set(appliedAdoptedMirrors);
+    const nextMirrors = guestAdoptedSheets.map((sheet) => ensureAdoptedMirror(sheet));
+    const preserved = options.shadowRoot.adoptedStyleSheets.filter(
+      (candidate) => !previous.has(candidate),
+    );
+    options.shadowRoot.adoptedStyleSheets = [...preserved, ...nextMirrors];
+    appliedAdoptedMirrors = nextMirrors;
+  };
+
+  let batchingAdoptedMutation = false;
+  const MUTATING_ARRAY_METHODS = new Set<PropertyKey>([
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "splice",
+    "reverse",
+    "sort",
+    "fill",
+    "copyWithin",
+  ]);
+  const adoptedStyleSheetsProxy = new Proxy(guestAdoptedSheets, {
+    get(target, property, receiver) {
+      if (MUTATING_ARRAY_METHODS.has(property)) {
+        const method = Reflect.get(target, property, target) as (
+          ...args: unknown[]
+        ) => unknown;
+        return (...args: unknown[]) => {
+          batchingAdoptedMutation = true;
+          try {
+            return Reflect.apply(method, receiver, args);
+          } finally {
+            batchingAdoptedMutation = false;
+            syncAdoptedStyleSheets();
+          }
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+    set(target, property, value, receiver) {
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) {
+        value = validateConstructedSheet(value);
+      }
+      const updated = Reflect.set(target, property, value, receiver);
+      if (updated && !batchingAdoptedMutation) {
+        syncAdoptedStyleSheets();
+      }
+      return updated;
+    },
+    deleteProperty(target, property) {
+      const deleted = Reflect.deleteProperty(target, property);
+      if (deleted && !batchingAdoptedMutation) {
+        syncAdoptedStyleSheets();
+      }
+      return deleted;
+    },
+  });
+
   const documentProperties: PropertyDescriptorMap = {
     doctype: { configurable: true, get: () => virtualDoctype },
     documentElement: { configurable: true, get: () => options.html },
@@ -163,8 +376,25 @@ export function installDocumentProperties(
     styleSheets: { configurable: true, get: () => styleSheetCollection },
     adoptedStyleSheets: {
       configurable: true,
-      get: unsupportedAdoptedStyleSheets,
-      set: unsupportedAdoptedStyleSheets,
+      get: () => adoptedStyleSheetsProxy,
+      set(value: Iterable<CSSStyleSheet>) {
+        if (
+          value === null ||
+          value === undefined ||
+          typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function"
+        ) {
+          throw new window.TypeError(
+            "Failed to set the 'adoptedStyleSheets' property on 'Document': the value is not iterable",
+          );
+        }
+        const validated: CSSStyleSheet[] = [];
+        for (const item of value) {
+          validated.push(validateConstructedSheet(item));
+        }
+        guestAdoptedSheets.length = 0;
+        guestAdoptedSheets.push(...validated);
+        syncAdoptedStyleSheets();
+      },
     },
     fonts: { configurable: true, get: () => hostDocument.fonts },
     forms: {
@@ -555,13 +785,6 @@ export function installDocumentProperties(
     );
   }
 
-  function unsupportedAdoptedStyleSheets(): never {
-    throw new window.DOMException(
-      "document.adoptedStyleSheets is unsupported inside v-frame",
-      "NotSupportedError",
-    );
-  }
-
   // One wrapper per type reads the handler's current value at dispatch, so
   // assigning a new function keeps the handler's place in the listener order;
   // only null removes it, and setting it again registers at the end.
@@ -635,6 +858,16 @@ export function installDocumentProperties(
     dispatchDocumentEvent,
     dispose() {
       visibilityController.abort();
+      if (appliedAdoptedMirrors.length > 0) {
+        const owned = new Set(appliedAdoptedMirrors);
+        options.shadowRoot.adoptedStyleSheets =
+          options.shadowRoot.adoptedStyleSheets.filter(
+            (candidate) => !owned.has(candidate),
+          );
+        appliedAdoptedMirrors = [];
+      }
+      guestAdoptedSheets.length = 0;
+      for (const restore of adoptedMirrorRestores.splice(0).reverse()) restore();
       for (const release of releases.splice(0)) release();
       handlerValues.clear();
     },

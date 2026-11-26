@@ -24,6 +24,12 @@ import { captureNativeDOM } from "./native-dom.js";
 
 export type NativeLocationNavigationMode = "push" | "replace" | "reload";
 
+export interface DocumentNavigationRequest {
+  method: "POST";
+  body: BodyInit;
+  headers?: HeadersInit;
+}
+
 type NavigateInterceptOptions = Parameters<NavigateEvent["intercept"]>[0];
 
 // Retired markup can still be the source of a queued browser default action.
@@ -81,6 +87,7 @@ interface RealmNavigationOptions {
   onDocumentNavigation(
     detail: VFrameNavigateEventDetail,
     mode: DocumentHistoryMode,
+    request?: DocumentNavigationRequest,
   ): boolean;
   onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
   onNativeLocationNavigation(
@@ -146,6 +153,8 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     if (targetURL === null) return;
     // HTML defaults missing and invalid methods to GET.
     const isGet = method !== "post" && method !== "dialog";
+    const isPost = method === "post";
+    let postRequest: DocumentNavigationRequest | undefined;
     if (isGet) {
       const parameters = new window.URLSearchParams();
       const entries = new window.FormData(form, submitter as HTMLButtonElement | null);
@@ -157,6 +166,46 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         );
       }
       targetURL.search = parameters.toString();
+    } else if (
+      isPost &&
+      (target === "" || target === "_self") &&
+      isHTTPURL(targetURL) &&
+      !options.boundNavigation &&
+      targetURL.origin === window.location.origin
+    ) {
+      const entries = new window.FormData(form, submitter as HTMLButtonElement | null);
+      if (!connected.call(form) || options.isDisposed()) return;
+      const enctype = (
+        submissionAttribute(form, submitter, "enctype") ?? ""
+      ).toLowerCase();
+      if (enctype === "multipart/form-data") {
+        // Copy into a host-realm FormData so host fetch() accepts it without
+        // retaining the outgoing guest realm across the request.
+        const body = new FormData();
+        for (const [name, value] of entries) {
+          body.append(name, value);
+        }
+        postRequest = { method: "POST", body };
+      } else if (enctype === "text/plain") {
+        let body = "";
+        for (const [name, value] of entries) {
+          body += `${normalizeFormLineEndings(name)}=${normalizeFormLineEndings(typeof value === "string" ? value : value.name)}\r\n`;
+        }
+        postRequest = {
+          method: "POST",
+          body,
+          headers: { "Content-Type": "text/plain" },
+        };
+      } else {
+        const parameters = new URLSearchParams();
+        for (const [name, value] of entries) {
+          parameters.append(
+            normalizeFormLineEndings(name),
+            normalizeFormLineEndings(typeof value === "string" ? value : value.name),
+          );
+        }
+        postRequest = { method: "POST", body: parameters };
+      }
     }
 
     const detail: VFrameNavigateEventDetail = {
@@ -200,12 +249,17 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       return;
     }
 
+    if (postRequest !== undefined) {
+      options.onDocumentNavigation(detail, "push", postRequest);
+      return;
+    }
+
     if (options.onNavigate(detail)) {
       options.onError({
         phase: "navigation",
         url: targetURL.href,
         error: new window.DOMException(
-          `v-frame cannot submit ${method.toUpperCase()} form ${targetURL.href}; only same-context GET navigation is supported`,
+          `v-frame cannot submit ${method.toUpperCase()} form ${targetURL.href}; only same-origin guest-mode POST or GET navigation is supported`,
           "NotSupportedError",
         ),
       });

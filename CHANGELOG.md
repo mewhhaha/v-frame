@@ -3,6 +3,35 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-11-26
+
+### Added
+
+- Support for `document.adoptedStyleSheets` with observable array mutations,
+  mirrored shadow-root stylesheets with shell selector rewriting and URL
+  rebasing, and live CSSOM updates (`replaceSync`, `replace`, `insertRule`,
+  `deleteRule`, `addRule`, `disabled`).
+- Same-origin `POST` form submissions in `navigation="guest"` mode for
+  `application/x-www-form-urlencoded`, `multipart/form-data`, and `text/plain`,
+  following PRG redirects and rendering HTML responses into the frame.
+- Static URL `import` preloading (`<link rel="modulepreload">`) for inline
+  `<script type="module">` blocks.
+- Synchronous virtual node marking for `textContent`, `insertAdjacentText`, and
+  `Element.prototype.setHTMLUnsafe` / `ShadowRoot.prototype.setHTMLUnsafe`.
+
+### Changed
+
+- Replaced `css-tree` with a zero-dependency CSS Syntax Level 3 tokenizer and
+  rewriter (`src/css.ts`), reducing the browser runtime bundle (`dist/index.js`)
+  by ~11 KB gzip (`78.7 KB` → `67.7 KB`).
+- Captured native DOM walkers before facade patching, added selector translation
+  fast paths and caching, collapsed insertion bookkeeping into a single-pass
+  subtree scan, moved reflected HTML URL properties onto realm prototypes, made
+  CSSOM installation lazy on first `.sheet` / `document.styleSheets` access,
+  added an inline-style non-URL fast path, and microtask-batched inline-style
+  finalizer cleanup — cutting insertion latency ~2x and re-parenting latency
+  2–3x in Chromium benchmarks.
+
 ## 0.3.0 - 2026-11-26
 
 ### Added

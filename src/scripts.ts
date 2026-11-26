@@ -61,6 +61,77 @@ function hasExternalSource(script: HTMLScriptElement): boolean {
   return script.hasAttribute("src") && (script.getAttribute("src") ?? "") !== "";
 }
 
+const PRELOADABLE_SPECIFIER_PATTERN = /^(?:\.\.?\/|\/|https?:\/\/)/i;
+const STATIC_MODULE_SPECIFIER_PATTERN =
+  /(?:^|[;\n}])\s*(?:import(?:\s+(?:type\s+)?(?:[^"'`]*?\s+from\s+)?)?|export\s+(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s+from\s+)(["'])([^"'\r\n]+)\1/g;
+
+function stripModuleComments(source: string): string {
+  let out = "";
+  let index = 0;
+  while (index < source.length) {
+    const ch = source[index]!;
+    const next = source[index + 1];
+    if (ch === "/" && next === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      index += 2;
+      while (
+        index < source.length &&
+        !(source[index] === "*" && source[index + 1] === "/")
+      ) {
+        index += 1;
+      }
+      index += 2;
+      out += " ";
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      out += ch;
+      index += 1;
+      while (index < source.length) {
+        const cur = source[index]!;
+        out += cur;
+        index += 1;
+        if (cur === "\\" && index < source.length) {
+          out += source[index]!;
+          index += 1;
+          continue;
+        }
+        if (cur === quote) break;
+      }
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  return out;
+}
+
+function extractStaticImportSpecifiers(source: string): string[] {
+  if (!source.includes("import") && !source.includes("export")) {
+    return [];
+  }
+  const specifiers: string[] = [];
+  const seen = new Set<string>();
+  const cleaned = stripModuleComments(source);
+  for (const match of cleaned.matchAll(STATIC_MODULE_SPECIFIER_PATTERN)) {
+    const specifier = match[2];
+    if (
+      specifier !== undefined &&
+      PRELOADABLE_SPECIFIER_PATTERN.test(specifier) &&
+      !seen.has(specifier)
+    ) {
+      seen.add(specifier);
+      specifiers.push(specifier);
+    }
+  }
+  return specifiers;
+}
+
 function errorComesFromCurrentDocument(filename: string, currentURL: string): boolean {
   if (filename === "") {
     return true;
@@ -377,7 +448,7 @@ export class ScriptRunner {
     // the module graphs behind them, still overlap; only execution is chained.
     let previousExecuted: Promise<void> = Promise.resolve();
     const deferredExecutions = deferredScripts.map((script) => {
-      const preload = this.#preloadDeferred(script);
+      const preloads = this.#preloadDeferred(script);
       const gate = previousExecuted;
       let markExecuted!: () => void;
       previousExecuted = new Promise<void>((resolve) => {
@@ -386,7 +457,9 @@ export class ScriptRunner {
       return this.#executeScript(script, "ordered", { gate, markExecuted }).finally(
         () => {
           markExecuted();
-          preload?.remove();
+          for (const preload of preloads) {
+            preload.remove();
+          }
         },
       );
     });
@@ -602,41 +675,57 @@ export class ScriptRunner {
   }
 
   /**
-   * Starts fetching an external deferred script before its turn to execute. The
-   * request mode mirrors the companion's so the later fetch reuses the response.
-   * Inline modules cannot be prefetched: their imports are only discovered when
-   * their turn comes, so their graph loads after the earlier scripts ran.
+   * Starts fetching an external deferred script — or the static module imports
+   * of an inline module script — before its turn to execute, so fetches overlap
+   * while execution stays ordered.
    */
-  #preloadDeferred(pseudoScript: HTMLScriptElement): HTMLLinkElement | null {
-    if (!hasExternalSource(pseudoScript)) {
-      return null;
-    }
+  #preloadDeferred(pseudoScript: HTMLScriptElement): HTMLLinkElement[] {
     const module = scriptCategory(pseudoScript) === "module";
-    const link = this.#native.createElement("link");
-    link.rel = module ? "modulepreload" : "preload";
+    const appendPreload = (href: string, asModule: boolean): HTMLLinkElement | null => {
+      const link = this.#native.createElement("link");
+      link.rel = asModule ? "modulepreload" : "preload";
+      if (!asModule) {
+        link.as = "script";
+      }
+      const crossOrigin =
+        pseudoScript.getAttribute("crossorigin") ?? this.#crossOriginFor(pseudoScript);
+      if (crossOrigin !== null) {
+        link.crossOrigin = crossOrigin;
+      }
+      if (hasExternalSource(pseudoScript)) {
+        for (const name of ["integrity", "referrerpolicy", "fetchpriority"]) {
+          const value = pseudoScript.getAttribute(name);
+          if (value !== null) this.#native.setAttribute(link, name, value);
+        }
+      }
+      const nonce = this.#getNonce();
+      if (nonce !== "") {
+        link.nonce = nonce;
+      }
+      try {
+        link.href = this.#createScriptURL(href);
+        this.#native.appendChild(this.#native.privateHead, link);
+      } catch {
+        return null;
+      }
+      return link;
+    };
+
+    if (hasExternalSource(pseudoScript)) {
+      const link = appendPreload(pseudoScript.getAttribute("src") ?? "", module);
+      return link ? [link] : [];
+    }
     if (!module) {
-      link.as = "script";
+      return [];
     }
-    const crossOrigin =
-      pseudoScript.getAttribute("crossorigin") ?? this.#crossOriginFor(pseudoScript);
-    if (crossOrigin !== null) {
-      link.crossOrigin = crossOrigin;
+    const links: HTMLLinkElement[] = [];
+    for (const specifier of extractStaticImportSpecifiers(pseudoScript.text)) {
+      const link = appendPreload(specifier, true);
+      if (link !== null) {
+        links.push(link);
+      }
     }
-    for (const name of ["integrity", "referrerpolicy", "fetchpriority"]) {
-      const value = pseudoScript.getAttribute(name);
-      if (value !== null) this.#native.setAttribute(link, name, value);
-    }
-    const nonce = this.#getNonce();
-    if (nonce !== "") {
-      link.nonce = nonce;
-    }
-    try {
-      link.href = this.#createScriptURL(pseudoScript.getAttribute("src") ?? "");
-      this.#native.appendChild(this.#native.privateHead, link);
-    } catch {
-      return null;
-    }
-    return link;
+    return links;
   }
 
   async #executeScript(

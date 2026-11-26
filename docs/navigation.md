@@ -1,9 +1,10 @@
 # Navigation
 
 A `v-frame` guest navigates like a top-level page: its links work, its `GET`
-forms submit, its History and Navigation API calls change its own URL, and
-`location.href` and `document.URL` report that URL back. What differs is _whose_
-session the guest is moving through, and that is the `navigation` attribute.
+and same-origin `POST` forms submit, its History and Navigation API calls change
+its own URL, and `location.href` and `document.URL` report that URL back. What
+differs is _whose_ session the guest is moving through, and that is the
+`navigation` attribute.
 
 ## Guest-owned routing (the default)
 
@@ -11,10 +12,10 @@ session the guest is moving through, and that is the `navigation` attribute.
 <v-frame src="/applications/orders/"></v-frame>
 ```
 
-Links, `GET` forms, `window.open(…, "_self")`, History methods, and `location`
-changes all stay inside the frame. The guest gets its own history session,
-independent of the host page's; the host page's URL never changes. A guest SPA
-uses the Navigation API exactly as it would standalone:
+Links, `GET` forms, same-origin `POST` forms, `window.open(…, "_self")`, History
+methods, and `location` changes all stay inside the frame. The guest gets its
+own history session, independent of the host page's; the host page's URL never
+changes. A guest SPA uses the Navigation API exactly as it would standalone:
 
 ```ts
 navigation.addEventListener("navigate", (event) => {
@@ -27,9 +28,12 @@ navigation.addEventListener("navigate", (event) => {
 ```
 
 `GET` forms use native URL-encoded submission rules, including CRLF line endings
-in field names, values, and filenames. A `method="dialog"` form does not navigate:
-it retains the native dialog-closing action, including when called through
-`form.submit()`.
+in field names, values, and filenames. Same-origin `POST` forms in guest mode
+encode `application/x-www-form-urlencoded`, `multipart/form-data`, or
+`text/plain` bodies, follow Post-Redirect-Get redirects, and render the
+resulting HTML document into the frame. A `method="dialog"` form does not
+navigate: it retains the native dialog-closing action, including when called
+through `form.submit()`.
 
 Synthetic mouse clicks are routed regardless of which window constructed the
 event. Synthetic `submit` events only notify listeners; use `requestSubmit()`
@@ -262,6 +266,7 @@ and its history; removing and re-inserting it reloads the guest from `src`.
 
 Link and form targets other than `_self` and `_blank`, and any scheme that is
 not `http:` or `https:`, are reported through `v-frame-navigate` and then
-dropped; non-`GET` navigation form submission is reported as a nonfatal
-`v-frame-error`. Dialog forms close natively without navigation events or errors.
+dropped; `POST` form submissions to `_blank`, cross-origin destinations, or
+frames in `navigation="host"` mode are reported as a nonfatal `v-frame-error`.
+Dialog forms close natively without navigation events or errors.
 [Limitations](./limitations.md) explains why and what to do instead.

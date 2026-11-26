@@ -7,18 +7,16 @@ other than what the guest asked for.
 Everything on this page was read out of the current source and is covered by the
 test suite. Each entry says what throws, why it has to, and what to do instead.
 
-| API                                                                                                 | Result                                        |
-| --------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)            | `NotSupportedError`                           |
-| [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets)            | `NotSupportedError` (guest shadow roots work) |
-| [Direct child mutation of `document`](#direct-child-mutation-of-document)                           | `NotSupportedError`                           |
-| [`Selection.modify()`](#selectionmodify)                                                            | `NotSupportedError`                           |
-| [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late        |
-| [CSSOM `@import` rules](#cssom-import-rules)                                                        | `NotSupportedError`                           |
-| [Cross-origin linked stylesheets without CORS](#cross-origin-stylesheets-require-cors)              | `v-frame-error`, stylesheet dropped           |
-| [Non-`GET` form submission](#non-get-form-submission)                                               | `v-frame-error`, navigation dropped           |
-| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)      | Navigation dropped                            |
-| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                   | Navigation dropped                            |
+| API                                                                                                     | Result                              |
+| ------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)                | `NotSupportedError`                 |
+| [Direct child mutation of `document`](#direct-child-mutation-of-document)                               | `NotSupportedError`                 |
+| [`Selection.modify()`](#selectionmodify)                                                                | `NotSupportedError`                 |
+| [CSSOM `@import` rules](#cssom-import-rules)                                                            | `NotSupportedError`                 |
+| [Cross-origin linked stylesheets without CORS](#cross-origin-stylesheets-require-cors)                  | `v-frame-error`, stylesheet dropped |
+| [`POST` forms to `_blank`, cross-origin, or `navigation="host"`](#post-forms-outside-same-origin-guest) | `v-frame-error`, navigation dropped |
+| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)          | Navigation dropped                  |
+| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                       | Navigation dropped                  |
 
 During server-rendered adoption the browser starts a fresh undo history when
 the live input, textarea, or rich-text editor takes over. The visitor can
@@ -57,49 +55,6 @@ same ordering rules a real document applies.
 
 Third-party snippets that still call `document.write` (older ad and analytics
 tags) cannot run inside a guest.
-
-## `document.adoptedStyleSheets` and constructed stylesheets
-
-**Throws** a `NotSupportedError` `DOMException` on both read and write.
-
-This is the limitation most likely to bite, because constructed stylesheets are
-how a large amount of modern component code ships CSS — `new CSSStyleSheet()`
-plus `replaceSync()` is the default output of several component compilers and
-the standard pattern in hand-written web components.
-
-**Why.** `adoptedStyleSheets` is a property of a _document or shadow root_, and
-the guest has neither of the ones it appears to have. Sheets adopted onto the
-realm's `Document` would style the hidden execution realm, which renders
-nothing. Forwarding them to the host shadow root that actually renders the guest
-is not equivalent either: that shadow root is owned by `v-frame`, which uses its
-own `adoptedStyleSheets` slot for the internal top-layer and staging rules
-(`src/realm/window-patches.ts`), and — more importantly — a forwarded sheet
-would bypass the rewriting every other guest stylesheet goes through, so its
-`html`, `body`, and `:root` selectors would never match `v-html` and `v-body`,
-and its relative `url()` references would resolve against the host document
-instead of the guest's URL.
-
-Constructed stylesheets (`new CSSStyleSheet()`) **do** work on shadow roots
-that guest components create themselves (`element.attachShadow()`): the runtime
-bridges `window.CSSStyleSheet` to construct host-document stylesheets whose
-default `baseURL` is the guest's base URL, so component libraries such as Lit
-and Shoelace can assign `shadowRoot.adoptedStyleSheets` without hitting a
-cross-document `NotAllowedError`.
-
-**Instead.** For document-level guest CSS, ship `<style>` elements or
-`<link rel="stylesheet">`. Both go through the runtime's stylesheet pipeline,
-which rewrites shell selectors and rebases URLs, and both are live: mutating
-`style.textContent` or `link.href` re-runs the rewrite, while `link.media` and
-`link.disabled` update the existing sheet in place. The link stays connected,
-exposes its rewritten `sheet`, and removing it removes its rendered CSS.
-`sheet.insertRule()` / `rule.selectorText` / `style.cssText` through the CSSOM
-are rewritten in place.
-
-```ts
-const style = document.createElement("style");
-style.textContent = "body { color: rebeccapurple; }";
-document.head.append(style);
-```
 
 ## Cross-origin stylesheets require CORS
 
@@ -140,41 +95,18 @@ document.head.append(meta);
 document.body.append(root);
 ```
 
-## Node identity after an unintercepted write
+## Node identity after a host-realm write
 
-**Does not throw.** A node that one of these writes puts inside a _connected_
-guest element is marked a microtask later rather than synchronously:
+**Does not throw.** Standard guest DOM mutation APIs — including `textContent`,
+`insertAdjacentText`, `setHTMLUnsafe`, `innerHTML`, `outerHTML`,
+`insertAdjacentHTML`, `insertAdjacentElement`, and all child/parent mutation
+methods — mark newly created nodes **synchronously**.
 
-- the text node the `textContent` setter creates,
-- `insertAdjacentText`,
-- `setHTMLUnsafe`.
-
-Until the realm's `MutationObserver` callback runs — the next microtask
-checkpoint — the new node is not in the virtual-node set, so the realm's
-identity accessors do not answer for it: `ownerDocument` and `baseURI` report the
-host document's, `getRootNode()` reports the frame's shadow root rather than the
-virtual document, and any URL attribute `setHTMLUnsafe` brought with it has not
-been rebased yet. Read the identity of such a node after a microtask, or
-insert it through an API the facade does intercept — `appendChild`,
-`insertBefore`, `replaceChild`, `append`, `prepend`, `replaceChildren`, `before`,
-`after`, `replaceWith`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, or
-`insertAdjacentElement` — all of which mark synchronously.
-
-**Why.** The facade marks a node when it intercepts the write that inserts it,
-and these three are not intercepted: `insertAdjacentText` and `setHTMLUnsafe` are
-not patched at all, and the patched `textContent` setter hands the string to the
-native setter, which creates the text node itself. What finds them is the realm's
-`MutationObserver`, which watches the shell with `subtree: true` and hands every
-added node back to marking, and observer callbacks are microtasks.
-
-Marking used to also repair these nodes synchronously, as a side effect of
-re-walking any marked subtree that was re-parented. That walk is now skipped for
-a subtree that is already marked and still in the tree, which is what makes
-re-parenting about 3.8x cheaper — see [round two of the marking
-benchmark](./node-marking-benchmark.md#round-two--re-parenting) — so on a
-connected subtree the observer is the only repair left. A _detached_ subtree is
-still walked in full when it is inserted, so building a tree offline and then
-inserting it marks everything in it synchronously, before any observer runs.
+Only nodes inserted directly through an unpatched **host-realm** prototype
+(bypassing the guest realm's facade) settle a microtask later when the realm's
+`MutationObserver` callback runs. A _detached_ subtree is still walked in full
+when it is inserted, so building a tree offline and then inserting it marks
+everything in it synchronously.
 
 ## Serialized markup and attribute order
 
@@ -223,28 +155,21 @@ about inserting an `@import` rule through the CSSOM at runtime. If a sheet must
 be added dynamically, append another `<style>` or `<link rel="stylesheet">`
 element rather than importing from an existing sheet.
 
-## Non-`GET` form submission
+## `POST` forms outside same-origin guest mode
 
-This restriction applies to navigation submissions, not `method="dialog"` forms.
-Dialog forms keep their native behavior and close the dialog without navigating,
-including through `form.submit()`.
+Same-origin `method="post"` forms in `navigation="guest"` mode (with
+`application/x-www-form-urlencoded`, `multipart/form-data`, or `text/plain`)
+are submitted via `fetch()`, follow Post-Redirect-Get redirects, and render the
+resulting HTML document into the frame. `method="dialog"` forms keep their
+native dialog-closing behavior, including through `form.submit()`.
 
-**Does not throw in the guest.** The submission is dropped and the host receives
-a non-fatal `v-frame-error` whose `phase` is `"navigation"` and whose `error` is
-a `NotSupportedError` `DOMException`. The guest stays on its current document
-with `status` still `"ready"`. `v-frame-navigate` fires first, so a host that
-cancels the navigation suppresses the error too.
-
-**Why.** A guest navigation is a `v-frame` document load, and a document load is
-a `fetch()` of the target URL whose result is materialized into the shadow tree.
-Reproducing a `POST` navigation faithfully would mean reproducing the whole
-navigate algorithm — the request body, resubmission on reload and traversal, the
-`beforeunload` interaction, and the browser's own resubmission prompt — on top
-of an API that has none of that state.
-
-**Instead.** Submit with `fetch()` from the guest's own script and update the
-DOM, which is what a client-rendered application does regardless of `v-frame`.
-`GET` forms navigate normally, including through `<base target>`.
+**What stays unsupported:** `POST` submissions targeting `_blank`, cross-origin
+actions, or frames in `navigation="host"` mode (where top-level host navigation
+uses `location.assign()`). Those drop the submission and emit a non-fatal
+`v-frame-error` (`phase: "navigation"`, `NotSupportedError`) unless canceled via
+`v-frame-navigate`. Also, reloading a direct `200 text/html` `POST` response
+performs a `GET` reload rather than showing a browser resubmission prompt; use
+Post-Redirect-Get (303/302) for idempotent reloads.
 
 ## `window.open` popups have no opener
 
@@ -317,16 +242,14 @@ frame.addEventListener("v-frame-navigate", (event) => {
 });
 ```
 
-## Inline module graphs load late
+## Dynamic or bare-specifier inline module imports
 
 Initial `defer` and module scripts execute in document order, as in a real
-document. External ones are preloaded when the initial pass starts, so their
-fetches overlap and only their execution is chained. An inline module's imports
-are only discovered when it is its turn to run, so its graph starts loading after
-the scripts before it have executed. A slow import behind an early inline module
-therefore delays the scripts after it by its own fetch time rather than overlapping
-with them. Put heavy dependencies behind external module scripts to keep the fetch
-parallel.
+document. External scripts and top-level static URL imports (`./`, `../`, `/`,
+`http:`, `https:`) inside inline `<script type="module">` blocks are preloaded
+when the initial pass starts, so their fetches overlap while execution stays
+chained. Bare import-map specifiers and dynamic `import()` calls inside an
+inline module are still discovered only when that script runs.
 
 ## WebKit can cancel a module shared by two frames
 
@@ -367,44 +290,45 @@ the fetch and the parse. "Plain host DOM" is the same markup fetched,
 
 | guest elements | `v-frame` | plain host DOM | overhead |
 | -------------- | --------- | -------------- | -------- |
-| 1,000          | 37 ms     | 2.3 ms         | 16x      |
-| 5,000          | 102 ms    | 5.5 ms         | 19x      |
-| 20,000         | 359 ms    | 14.7 ms        | 24x      |
-| 50,000         | 702 ms    | 36 ms          | 20x      |
+| 1,000          | 54.5 ms   | 3.7 ms         | 14.7x    |
+| 5,000          | 125.7 ms  | 5.2 ms         | 24.2x    |
+| 20,000         | 303.6 ms  | 15.7 ms        | 19.3x    |
+| 50,000         | 559.2 ms  | 39.5 ms        | 14.2x    |
 
-Chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D, 2026-08-01. Each
+Chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D, 2026-11-26. Each
 cell is the median of three runs and run-to-run spread is about ±10%, so read the
 slope rather than a cell; the overhead column is the noisiest of the four, because
 its denominator is a few milliseconds. The stable figure is the marginal cost:
-**13.6 µs per element for `v-frame`, 0.65–0.9 µs for host DOM**. Reproduce with
-`pnpm bench`; the method, and the same measurement before and after the
-optimization below, are in
-[`node-marking-benchmark.md`](./node-marking-benchmark.md).
+**10.3 µs per element for `v-frame`, 0.73 µs for host DOM**. Reproduce with
+`pnpm bench`; the method, and the measurements across all three rounds of
+optimization, are in [`node-marking-benchmark.md`](./node-marking-benchmark.md).
 
-**Insertion into a settled guest** costs about 39 ms per 1,000 appended elements
-— 39 µs each against 1.5 µs for host DOM — and is flat in the size of the tree
-already there, because marking is per inserted subtree rather than per document.
-Two 60 Hz frames per thousand rows is the budget to plan against.
+**Insertion into a settled guest** costs about 14–18 ms per 1,000 appended
+elements — roughly 15 µs each against 1.6–2.3 µs for host DOM (6–10x) — and is
+flat in the size of the tree already there, because marking is per inserted
+subtree rather than per document. One 60 Hz frame per thousand rows is the
+budget to plan against.
 
 **Re-parenting a settled subtree** — what a list does when it reorders rows —
-runs about 3–4x cheaper than it used to, bringing 1,000 moves of a hundred-node
-subtree from roughly 50–80x the cost of plain host DOM down to roughly 12–20x.
-Marking does not run again for a subtree that is already marked and still
-connected, so this no longer scales with how big the moved subtree is. The
-absolute milliseconds move with machine load — run `pnpm bench` for a figure on
-your own hardware; the ratio is what holds across runs.
+runs at roughly 3–6x the cost of plain host DOM for 1,000 moves of a hundred-node
+subtree (down from roughly 50–80x originally and 12–20x after Round 2). Marking
+does not run again for a subtree that is already marked and still connected, and
+the insertion path uses a single-pass scan without redundant CSS selector
+parsing. The absolute milliseconds move with machine load — run `pnpm bench` for
+a figure on your own hardware; the ratio is what holds across runs.
 
-**Retained JS heap** is about 7.5 MB for a 50,000-element guest — 39 bytes per
-marked object on the 1,000→50,000 slope — against 180–490 KB for the same markup
-in the host document, which never gets JS wrappers for its nodes at all. This one
-is chromium-only; see [below](#what-firefox-costs).
+**Retained JS heap** is about 7.5–10 MB for a 50,000-element guest against
+220–490 KB for the same markup in the host document, which never gets JS wrappers
+for its nodes at all. This one is chromium-only; see
+[below](#what-firefox-costs).
 
-Two rounds of work produced the numbers above. Answering `ownerDocument` and
-`baseURI` from the realm's `Node.prototype` instead of from own accessors on every
-node cut the marginal activation cost by about 30% (19.3 µs per element to 13.6)
-and the retained heap by about 86% (52 MB to 7.5 at 50,000 elements). Skipping the
-walk for a subtree that is already marked and still connected then made
-re-parenting about 3.8x cheaper, without moving activation or insertion.
+Three rounds of work produced the numbers above: moving `ownerDocument` and
+`baseURI` onto `Node.prototype` (Round 1), skipping marking for already-marked
+connected subtrees (Round 2), and capturing native DOM walkers pre-facade,
+caching selector translations, collapsing insertion into a single-pass subtree
+scan, moving reflected URL properties onto HTML element prototypes, making
+CSSOM installation lazy, adding non-URL inline-style fast paths, and replacing
+`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3).
 
 What is left is the walk itself, and it is not going away: visiting every node
 once is irreducible for this design. No version of this runtime has activated a
@@ -412,10 +336,10 @@ large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front
-of it. At 20,000 elements activation is a third of a second, and at 50,000 it is
-about 0.7 seconds from `src` to `v-frame-load`, most of it synchronous work on
-the main thread — long enough that the choice of runtime is the dominant cost of
-the page. The [SSR path](./ssr.md) moves that cost rather than removing it: the
+of it. At 20,000 elements activation is ~0.3 seconds, and at 50,000 it is ~0.56
+seconds from `src` to `v-frame-load`, most of it synchronous work on the main
+thread — long enough that the choice of runtime is the dominant cost of the
+page. The [SSR path](./ssr.md) moves that cost rather than removing it: the
 server markup paints immediately, so the delay is before the guest is live rather
 than before anything is visible, but the realm still re-parses and marks the same
 tree.
@@ -490,9 +414,21 @@ password)` forwards all five arguments to the native implementation. Synchronous
   above is refused.
 - **`<link rel="stylesheet">`.** Supported, including `media`, `disabled`, and
   `href` changes at runtime.
-- **Guest-created shadow roots.** `attachShadow()` works, the shadow tree is
-  tracked by the facade, and `new CSSStyleSheet()` is bridged so
-  `shadowRoot.adoptedStyleSheets` works inside guest components.
+- **`document.adoptedStyleSheets` and guest shadow roots.** Both work.
+  `window.CSSStyleSheet` is bridged to host-document stylesheets defaulting to
+  the guest's base URL, so `shadowRoot.adoptedStyleSheets` works directly in
+  guest components (Lit, Shoelace, FAST), and sheets adopted onto
+  `document.adoptedStyleSheets` are mirrored into the render shadow root with
+  shell selector rewriting (`html`/`body`/`:root`), `:host` neutering, and URL
+  rebasing (including live updates from `replaceSync`, `replace`, `insertRule`,
+  `deleteRule`, `addRule`, `disabled`, and observable array mutations).
+- **Same-origin `POST` forms (`navigation="guest"`).** `application/x-www-form-urlencoded`,
+  `multipart/form-data`, and `text/plain` submissions run via same-origin
+  `fetch()`, follow PRG redirects, and materialize the HTML response into the
+  frame.
+- **Synchronous marking on `textContent`, `insertAdjacentText`, and `setHTMLUnsafe`.**
+  Nodes created by these APIs join the virtual tree synchronously rather than
+  waiting for the mutation observer microtask.
 - **Page visibility.** `document.hidden`, `document.visibilityState`, and
   `visibilitychange` mirror the host document.
 - **Dialogs, popovers, and the top layer.** Supported, including coordinate

@@ -84,17 +84,18 @@ export function createTreePatches(
         }
         requireNode(node, "replaceChild", 1);
         requireNode(child, "replaceChild", 2);
-        prepareInsertion(node);
+        const scan = prepareInsertion(node);
         const nodes = insertedNodes(node);
         const baseElementChanged =
-          subtreeHasBaseElement(child) || nodes.some(subtreeHasBaseElement);
+          subtreeHasBaseElement(child) ||
+          (scan !== undefined ? scan.hasBase : nodes.some(subtreeHasBaseElement));
         const result = nativeReplaceChild.call(this, node, child) as T;
         // Replacing a node with itself leaves it where it was.
         if (node !== child) {
           options.onDisconnectedNodes([child]);
         }
         if (this.isConnected) {
-          finishInsertion(nodes, baseElementChanged);
+          finishInsertion(nodes, baseElementChanged, scan);
           if (this instanceof window.HTMLScriptElement) {
             executeConnectedScript(this);
           }
@@ -170,19 +171,39 @@ export function createTreePatches(
             return Reflect.apply(nativeReplaceChildren, this, values);
           }
           const nodes = toNodes(values);
+          let combinedScan:
+            | {
+                styles: HTMLStyleElement[];
+                links: HTMLLinkElement[];
+                scripts: HTMLScriptElement[];
+                hasBase: boolean;
+                hasTarget: boolean;
+              }
+            | undefined = {
+            styles: [],
+            links: [],
+            scripts: [],
+            hasBase: false,
+            hasTarget: false,
+          };
           for (const node of nodes) {
-            prepareInsertion(node);
+            if (prepareInsertion(node, combinedScan) === undefined) {
+              combinedScan = undefined;
+            }
           }
           const inserted = nodes.flatMap(insertedNodes);
           const removed = Array.from(this.childNodes);
           const baseElementChanged =
             this.isConnected &&
-            (removed.some(subtreeHasBaseElement) || inserted.some(subtreeHasBaseElement));
+            (removed.some(subtreeHasBaseElement) ||
+              (combinedScan !== undefined
+                ? combinedScan.hasBase
+                : inserted.some(subtreeHasBaseElement)));
           performStyleMutationBatch(this, () => {
             Reflect.apply(nativeReplaceChildren, this, nodes);
             options.onDisconnectedNodes(removed);
             if (this.isConnected) {
-              finishInsertion(inserted, baseElementChanged);
+              finishInsertion(inserted, baseElementChanged, combinedScan);
               if (this instanceof window.HTMLScriptElement) {
                 executeConnectedScript(this);
               }

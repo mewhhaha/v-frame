@@ -63,9 +63,15 @@ export function installMarkupFacade(
     options.createHTML("<!doctype html><html><body></body></html>"),
     "text/html",
   );
+  const nativeSetHTMLUnsafe = (
+    elementPrototype as {
+      setHTMLUnsafe?: (this: Element, html: string) => void;
+    }
+  ).setHTMLUnsafe;
   const parseFragment = (
     markup: string,
     destination: Element | null,
+    unsafe = false,
   ): DocumentFragment => {
     const shellName =
       destination === options.html
@@ -79,7 +85,11 @@ export function installMarkupFacade(
       destination === null || shellName !== null
         ? fragmentDocument.createElement(shellName ?? "body")
         : (nativeImportNode.call(fragmentDocument, destination, false) as Element);
-    nativeInnerHTML.set?.call(parserContext, markup);
+    if (unsafe && nativeSetHTMLUnsafe !== undefined) {
+      nativeSetHTMLUnsafe.call(parserContext, markup);
+    } else {
+      nativeInnerHTML.set?.call(parserContext, markup);
+    }
     const fragment = fragmentDocument.createDocumentFragment();
     const parsedRoot = isHTMLTemplateElement(parserContext)
       ? parserContext.content
@@ -315,6 +325,69 @@ export function installMarkupFacade(
         }
       },
     });
+
+    const nativeInsertAdjacentText = elementPrototype.insertAdjacentText;
+    patch(elementPrototype, "insertAdjacentText", {
+      writable: true,
+      value(this: Element, position: InsertPosition, data: string): void {
+        const where = insertionPosition(position);
+        const text = toDOMString(data);
+        nativeInsertAdjacentText.call(this, where, text);
+        if (!virtualNodes.has(this)) {
+          return;
+        }
+        const inserted =
+          where === "beforebegin"
+            ? this.previousSibling
+            : where === "afterbegin"
+              ? this.firstChild
+              : where === "beforeend"
+                ? this.lastChild
+                : this.nextSibling;
+        if (inserted !== null) {
+          markVirtualNode(inserted);
+        }
+      },
+    });
+
+    if (nativeSetHTMLUnsafe !== undefined) {
+      patch(elementPrototype, "setHTMLUnsafe", {
+        writable: true,
+        value(this: Element, html: string): void {
+          const markup = options.createGuestHTML(html, false);
+          if (!virtualNodes.has(this)) {
+            nativeSetHTMLUnsafe.call(this, markup);
+            return;
+          }
+          if (isHTMLTemplateElement(this)) {
+            nativeSetHTMLUnsafe.call(this, markup);
+            markFragmentElements(this.content);
+            markVirtualNode(this.content);
+            return;
+          }
+          this.replaceChildren(parseFragment(markup, this, true));
+        },
+      });
+    }
+
+    const shadowRootPrototype = window.ShadowRoot?.prototype as
+      | (ShadowRoot & { setHTMLUnsafe?: (this: ShadowRoot, html: string) => void })
+      | undefined;
+    const nativeShadowSetHTMLUnsafe = shadowRootPrototype?.setHTMLUnsafe;
+    if (shadowRootPrototype !== undefined && nativeShadowSetHTMLUnsafe !== undefined) {
+      patch(shadowRootPrototype, "setHTMLUnsafe", {
+        writable: true,
+        value(this: ShadowRoot, html: string): void {
+          const markup = options.createGuestHTML(html, false);
+          nativeShadowSetHTMLUnsafe.call(this, markup);
+          if (virtualNodes.has(this)) {
+            for (let child = this.firstChild; child !== null; child = child.nextSibling) {
+              markVirtualNode(child);
+            }
+          }
+        },
+      });
+    }
 
     patch(elementPrototype, "innerHTML", {
       get(this: Element) {

@@ -5,16 +5,20 @@
 // tree-patches.ts, the Range overrides in selection.ts and innerHTML all go
 // through here.
 
-import type { FacadeContext } from "./context.js";
+import type { FacadeContext, SubtreeScan } from "./context.js";
 import type { NodeMarking } from "./marking.js";
 import type { NodeArguments } from "./node-arguments.js";
 import type { ScriptExecution } from "./script-execution.js";
 
 export interface NodeInsertion {
   collectElements(node: Node): Element[];
-  prepareInsertion(node: Node): void;
+  prepareInsertion(node: Node, scan?: SubtreeScan): SubtreeScan | undefined;
   insertedNodes(node: Node): Node[];
-  finishInsertion(nodes: readonly Node[], baseElementChanged: boolean): void;
+  finishInsertion(
+    nodes: readonly Node[],
+    baseElementChanged: boolean,
+    scan?: SubtreeScan,
+  ): void;
   insert<T extends Node>(parent: Node, node: T, method: string, operation: () => T): T;
   styleElementChanged(node: Node): void;
   performStyleMutationBatch(parent: Node, mutation: () => void): void;
@@ -43,7 +47,6 @@ export function createNodeInsertion(
     subtreeHasBaseElement,
     virtualNodes,
     fragmentNodes,
-    window,
     document,
     nativeQuerySelectorAll,
     nativeFragmentQuerySelectorAll,
@@ -84,32 +87,93 @@ export function createNodeInsertion(
     return elements;
   };
 
-  const prepareInsertion = (node: Node): void => {
-    markVirtualNode(node);
+  const emptyScan: SubtreeScan = {
+    styles: [],
+    links: [],
+    scripts: [],
+    hasBase: false,
+    hasTarget: false,
+  };
+  const createScan = (): SubtreeScan => ({
+    styles: [],
+    links: [],
+    scripts: [],
+    hasBase: false,
+    hasTarget: false,
+  });
 
-    for (const element of collectElements(node)) {
-      if (isHTMLStyleElement(element) && !fragmentNodes.has(element)) {
-        const nonce = options.getNonce();
-        if (nonce !== "") {
+  const prepareInsertion = (node: Node, scan?: SubtreeScan): SubtreeScan | undefined => {
+    if (!isElementNode(node) && !isDocumentFragmentNode(node)) {
+      markVirtualNode(node);
+      return scan ?? emptyScan;
+    }
+    const targetScan = scan ?? createScan();
+    if (!markVirtualNode(node, targetScan)) {
+      return undefined;
+    }
+
+    const nonce = options.getNonce();
+    if (nonce !== "" && targetScan.styles.length > 0) {
+      for (const element of targetScan.styles) {
+        if (!fragmentNodes.has(element)) {
           element.nonce = nonce;
         }
       }
     }
+    return targetScan;
   };
 
   const insertedNodes = (node: Node): Node[] =>
     isDocumentFragmentNode(node) ? Array.from(node.childNodes) : [node];
 
-  const finishInsertion = (nodes: readonly Node[], baseElementChanged: boolean): void => {
+  const finishInsertion = (
+    nodes: readonly Node[],
+    baseElementChanged: boolean,
+    scan?: SubtreeScan,
+  ): void => {
     if (baseElementChanged) {
       options.onBaseElementChange();
     }
-    for (const node of nodes) {
-      for (const element of collectElements(node)) {
-        if (isHTMLScriptElement(element)) {
-          executeConnectedScript(element);
+    if (scan !== undefined) {
+      for (const script of scan.scripts) {
+        executeConnectedScript(script);
+      }
+    } else {
+      for (const node of nodes) {
+        if (isElementNode(node)) {
+          if (isHTMLScriptElement(node)) {
+            executeConnectedScript(node);
+          } else if (node.firstElementChild !== null) {
+            for (const element of nativeQuerySelectorAll.call(node, "script")) {
+              if (isHTMLScriptElement(element)) {
+                executeConnectedScript(element);
+              }
+            }
+          }
+        } else if (isDocumentFragmentNode(node) && node.firstElementChild !== null) {
+          for (const element of nativeFragmentQuerySelectorAll.call(node, "script")) {
+            if (isHTMLScriptElement(element)) {
+              executeConnectedScript(element);
+            }
+          }
         }
       }
+    }
+    if (nodes.length === 0) {
+      return;
+    }
+    if (nodes.length === 1) {
+      const parent = nodes[0]!.parentNode;
+      if (
+        parent !== null &&
+        isElementNode(parent) &&
+        isHTMLStyleElement(parent) &&
+        styleMutationBatches.has(parent)
+      ) {
+        return;
+      }
+      options.onConnectedNodes(nodes, scan);
+      return;
     }
     const observableNodes = nodes.filter((node) => {
       const parent = node.parentNode;
@@ -121,7 +185,7 @@ export function createNodeInsertion(
       );
     });
     if (observableNodes.length > 0) {
-      options.onConnectedNodes(observableNodes);
+      options.onConnectedNodes(observableNodes, scan);
     }
   };
 
@@ -135,13 +199,14 @@ export function createNodeInsertion(
       return operation();
     }
     requireNode(node, method, 1);
-    prepareInsertion(node);
+    const scan = prepareInsertion(node);
     const nodes = insertedNodes(node);
-    const baseElementChanged = nodes.some(subtreeHasBaseElement);
+    const baseElementChanged =
+      scan !== undefined ? scan.hasBase : nodes.some(subtreeHasBaseElement);
     const result = operation();
     if (parent.isConnected) {
-      finishInsertion(nodes, baseElementChanged);
-      if (parent instanceof window.HTMLScriptElement) {
+      finishInsertion(nodes, baseElementChanged, scan);
+      if (isElementNode(parent) && isHTMLScriptElement(parent)) {
         executeConnectedScript(parent);
       }
     }

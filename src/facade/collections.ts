@@ -15,17 +15,54 @@ import {
 } from "./indexed-collection.js";
 import { toDOMString, toNullableDOMString } from "./webidl.js";
 
+const SHELL_SELECTOR_PATTERN = /(?:html|head|body|:root|:target|\\)/i;
+const TARGET_SELECTOR_PATTERN = /(?:target|\\)/i;
+const MAX_SELECTOR_CACHE_ENTRIES = 512;
+
+const translatedSelectorCache = new Map<string, string>();
+const targetSelectorCache = new Map<string, string>();
+
+function cacheSelector(cache: Map<string, string>, key: string, value: string): string {
+  if (cache.size >= MAX_SELECTOR_CACHE_ENTRIES) {
+    cache.clear();
+  }
+  cache.set(key, value);
+  return value;
+}
+
 function translateSelector(selector: string): string {
+  if (!SHELL_SELECTOR_PATTERN.test(selector)) {
+    return selector;
+  }
+  const cached = translatedSelectorCache.get(selector);
+  if (cached !== undefined) {
+    return cached;
+  }
   try {
-    return translateShellSelector(selector);
+    return cacheSelector(
+      translatedSelectorCache,
+      selector,
+      translateShellSelector(selector),
+    );
   } catch {
     return selector;
   }
 }
 
 function targetSelector(selector: string): string {
+  if (!selector.includes(":") || !TARGET_SELECTOR_PATTERN.test(selector)) {
+    return selector;
+  }
+  const cached = targetSelectorCache.get(selector);
+  if (cached !== undefined) {
+    return cached;
+  }
   try {
-    return translateTargetSelector(selector);
+    return cacheSelector(
+      targetSelectorCache,
+      selector,
+      translateTargetSelector(selector),
+    );
   } catch {
     return selector;
   }
@@ -377,7 +414,11 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     window.StyleSheetList.prototype,
     () =>
       Array.from(nativeQuerySelectorAll.call(options.html, "style"))
-        .map((style) => (style as HTMLStyleElement).sheet)
+        .map((style) => {
+          const styleElement = style as HTMLStyleElement;
+          options.onStyleSheetAccess?.(styleElement);
+          return styleElement.sheet;
+        })
         .filter((sheet): sheet is CSSStyleSheet => sheet !== null),
   ) as unknown as StyleSheetList;
   const formCollection = nativeGetElementsByTagName.call(

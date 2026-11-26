@@ -11,6 +11,14 @@ import { liveIndexedCollection } from "./indexed-collection.js";
 
 export { HTML_NAMESPACE, SVG_NAMESPACE } from "../asset-urls.js";
 
+export interface SubtreeScan {
+  styles: HTMLStyleElement[];
+  links: HTMLLinkElement[];
+  scripts: HTMLScriptElement[];
+  hasBase: boolean;
+  hasTarget: boolean;
+}
+
 export interface DocumentFacadeOptions {
   host: HTMLElement;
   shadowRoot: ShadowRoot;
@@ -27,6 +35,7 @@ export interface DocumentFacadeOptions {
   inlineStyleSelectorAttribute: string;
   inlineStyleSheet: HTMLStyleElement;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
+  constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>;
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
@@ -39,8 +48,9 @@ export interface DocumentFacadeOptions {
   onEventHandlerError(error: unknown): void;
   onDynamicScript(script: HTMLScriptElement, execution: "async" | "ordered"): void;
   onStyleElementChange(style: HTMLStyleElement): void;
+  onStyleSheetAccess?(style: HTMLStyleElement): void;
   onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
-  onConnectedNodes(nodes: readonly Node[]): void;
+  onConnectedNodes(nodes: readonly Node[], scan?: SubtreeScan): void;
   onDisconnectedNodes(nodes: readonly Node[]): void;
   onShadowRoot?(root: ShadowRoot): void;
 }
@@ -190,6 +200,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeClosest = elementPrototype.closest;
   const nativeQuerySelector = elementPrototype.querySelector;
   const nativeQuerySelectorAll = elementPrototype.querySelectorAll;
+  const nativeFragmentQuerySelector = documentFragmentPrototype.querySelector;
   const nativeFragmentQuerySelectorAll = documentFragmentPrototype.querySelectorAll;
   const nativeGetElementsByTagName = elementPrototype.getElementsByTagName;
   const nativeGetElementsByTagNameNS = elementPrototype.getElementsByTagNameNS;
@@ -284,10 +295,20 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const isBaseElement = (element: Element): boolean =>
     isHTMLElementNamed(element, "base");
   const subtreeHasBaseElement = (node: Node): boolean => {
-    if (isElementNode(node) && isBaseElement(node)) {
-      return true;
+    if (isElementNode(node)) {
+      return (
+        isBaseElement(node) ||
+        (node.firstElementChild !== null &&
+          nativeQuerySelector.call(node, "base") !== null)
+      );
     }
-    return "querySelector" in node && (node as ParentNode).querySelector("base") !== null;
+    if (isDocumentFragmentNode(node)) {
+      return (
+        node.firstElementChild !== null &&
+        nativeFragmentQuerySelector.call(node, "base") !== null
+      );
+    }
+    return false;
   };
   const connectedBaseElementChanged = (element: Element): void => {
     if (isBaseElement(element) && isInVirtualDocumentTree(element)) {

@@ -1,6 +1,6 @@
 {
   "name": "@mewhhaha/v-frame",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Render a trusted web application in a shadow tree backed by an isolated browser realm",
   "type": "module",
   "devEngines": {
@@ -75,13 +75,11 @@
   },
   "packageManager": "pnpm@12.10.1+sha512.ba40a37eb1a370d60fea8c4cf1d364c13bcccef518e98ad2bcee954f539d38da37458e58261a3fa55e06523450ea0ffff9f497b135be41f2c15c1642bacace6c",
   "dependencies": {
-    "css-tree": "3.2.1",
     "entities": "8.0.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
     "@playwright/test": "1.63.0",
-    "@types/css-tree": "3.2.0",
     "@types/node": "26.6.3",
     "jsr": "0.14.3",
     "oxfmt": "0.71.0",

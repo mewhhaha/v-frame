@@ -164,6 +164,16 @@ export function isSrcsetAttribute(
   );
 }
 
+export function canHaveURLAttributes(element: AssetElement): boolean {
+  if (element.namespaceURI === HTML_NAMESPACE) {
+    return Object.hasOwn(URL_ATTRIBUTES, element.localName);
+  }
+  return (
+    element.namespaceURI === SVG_NAMESPACE &&
+    SVG_EXTERNAL_RESOURCE_ELEMENTS.has(element.localName)
+  );
+}
+
 export function isURLAttribute(
   element: AssetElement,
   attributeName: string,

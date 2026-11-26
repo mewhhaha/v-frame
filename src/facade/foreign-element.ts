@@ -21,8 +21,10 @@ export function createForeignElementFacade(
   attributes: AttributeFacade,
 ): (element: Element) => void {
   const {
+    options,
     window,
     nativeAttributes,
+    isHTMLStyleElement,
     isHTMLLinkElement,
     isHTMLScriptElement,
     protectedScriptAttributes,
@@ -116,7 +118,33 @@ export function createForeignElementFacade(
             setLogicalStyleAttribute(element, toLegacyNullToEmptyString(value), true),
         };
       }
+      if (isHTMLStyleElement(element)) {
+        const nativeStyleSheet = Object.getOwnPropertyDescriptor(
+          window.HTMLStyleElement.prototype,
+          "sheet",
+        )?.get;
+        if (nativeStyleSheet !== undefined) {
+          descriptors.sheet = {
+            configurable: true,
+            get: () => {
+              options.onStyleSheetAccess?.(element);
+              return nativeStyleSheet.call(element);
+            },
+          };
+        }
+      }
       if (foreignLink !== null) {
+        descriptors.sheet = {
+          configurable: true,
+          get: () => {
+            const linked = options.linkedStyles.get(foreignLink);
+            if (linked !== undefined) {
+              options.onStyleSheetAccess?.(linked.style);
+              return linked.style.sheet;
+            }
+            return null;
+          },
+        };
         descriptors.rel = {
           configurable: true,
           get: () => authoredLinkRelValues.get(foreignLink) ?? "",

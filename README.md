@@ -15,12 +15,15 @@ contained in an open shadow root, its JavaScript running with normal `document`,
   viewport box, so sizing, scrolling, native popovers, modals, and accessibility
   participate directly in the host page.
 - **Scoped JS, CSS, and routing:** Guest scripts run in a hidden same-origin
-  realm with virtualized `Document`, `History`, `Location`, CSSOM, and
-  base-URL-aware networking. Guest styles stay scoped to the shadow tree.
+  realm with virtualized `Document`, `History`, `Location`, CSSOM
+  (including `document.adoptedStyleSheets`), same-origin `GET`/`POST` forms,
+  and base-URL-aware networking. Guest styles stay scoped to the shadow tree,
+  and the browser runtime is ~68 KB gzipped with zero runtime dependencies.
 
 Try the live demo: **[Contact Sheet](https://contact-sheet.jactor.dev/)** — an
 Apollo 11 photo desk composing three independently deployed sites on one page
-(turn on **Show site boundaries** to inspect the fragments).
+(turn on **Show site boundaries** to inspect the fragments, or click any
+dashed-underline mission term to lazily load a glossary `<v-frame>` popover).
 
 > [!IMPORTANT]
 > `v-frame` runs trusted code. It is **not** a sandbox or a security boundary.
@@ -220,8 +223,10 @@ document.addEventListener("click", (event) => {
 });
 ```
 
-See this pattern running end-to-end (with keyboard focus restoration, related
-concept navigation, and WCAG audits) in [`examples/ssr`](./examples/ssr).
+See this pattern running live in **[Contact Sheet](https://contact-sheet.jactor.dev/)**
+(click any dashed-underline Apollo 11 term in the photo captions or flight log)
+and end-to-end with keyboard focus restoration, related concept navigation, and
+WCAG audits in [`examples/ssr`](./examples/ssr).
 
 ### Coordinate routing between shell and guests
 
@@ -302,16 +307,15 @@ no response contract. The trade-off is that DOM/browser emulation is never
 total; read [Limitations](./docs/limitations.md) before adopting.
 
 **Guest DOM size.** Emulation is paid per node. Activation costs about
-13.6 µs per element against 0.65–0.9 µs for putting the same markup straight into
-the host page, so a 1,000-element guest activates in 37 ms, a 20,000-element one
-in 359 ms, and a 50,000-element one in about 0.7 s; appending 1,000 rows to a
-settled guest costs about 39 ms whatever its size. Firefox is dearer — roughly a
-fifth more per element on activation and close to double per appended row — and
-its retained heap cannot be measured at all (chromium 149 and firefox 151,
-Ryzen 7 7800X3D, `pnpm bench`). That suits guests whose live DOM stays in the
-low thousands of elements (forms, dashboards, virtualized tables) and does not
-suit pages materializing tens of thousands of nodes at once, which are better
-served by an `<iframe>`. Full measurements are in
+10.3 µs per element against 0.73 µs for putting the same markup straight into
+the host page, so a 1,000-element guest activates in ~55 ms, a 20,000-element
+one in ~304 ms, and a 50,000-element one in ~0.56 s; appending 1,000 rows to a
+settled guest costs about 14–18 ms whatever its size (chromium 153, Ryzen 7
+7800X3D, `pnpm bench`). Firefox is somewhat dearer on activation and insertion
+and its retained heap cannot be measured. That suits guests whose live DOM stays
+in the low thousands of elements (forms, dashboards, virtualized tables) and
+does not suit pages materializing tens of thousands of nodes at once, which are
+better served by an `<iframe>`. Full measurements are in
 [Guest size and activation cost](./docs/limitations.md#guest-size-and-activation-cost).
 
 ## Requirements
@@ -330,7 +334,7 @@ served by an `<iframe>`. Full measurements are in
 
 - **[Contact Sheet](https://contact-sheet.jactor.dev/)** — live production demo
   composing three independently deployed websites (photo archive, flight log,
-  and notebook).
+  and notebook) plus lazy click-to-load glossary popovers.
 - **[`examples/ssr`](./examples/ssr)** — flagship local example. A Cloudflare
   Workers host composes four independently built guests (React Router, Qwik,
   Angular, and SolidStart) with SSR Declarative Shadow DOM adoption, hydration,

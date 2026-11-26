@@ -144,6 +144,7 @@ export function installCSSStyleSheetBridge(
   window: VFrameWindow,
   hostWindow: Window & typeof globalThis,
   getBaseURL: () => string,
+  constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>,
 ): () => void {
   const NativeSheet = window.CSSStyleSheet;
   const HostSheet = hostWindow.CSSStyleSheet;
@@ -159,7 +160,11 @@ export function installCSSStyleSheetBridge(
         init?.baseURL !== undefined
           ? (URL.parse(init.baseURL, baseURL)?.href ?? init.baseURL)
           : baseURL;
-      return Reflect.construct(target, [{ ...init, baseURL: resolvedBase }]);
+      const sheet = Reflect.construct(target, [
+        { ...init, baseURL: resolvedBase },
+      ]) as CSSStyleSheet;
+      constructedSheetBaseURLs?.set(sheet, resolvedBase);
+      return sheet;
     },
     get(target, prop, receiver) {
       if (prop === Symbol.hasInstance) {

@@ -6,6 +6,7 @@
 // indirection hides the style, rel and inert-script attributes the facade owns.
 
 import {
+  canHaveURLAttributes,
   isSrcsetAttribute,
   isURLAttribute,
   rewriteAssetAttribute,
@@ -28,6 +29,32 @@ const URL_PROPERTY_NAMES = [
   "data",
 ] as const;
 
+const URL_PROPERTY_PROTOTYPES: ReadonlyArray<
+  readonly [constructorName: string, propertyName: (typeof URL_PROPERTY_NAMES)[number]]
+> = [
+  ["HTMLAnchorElement", "href"],
+  ["HTMLAreaElement", "href"],
+  ["HTMLBaseElement", "href"],
+  ["HTMLLinkElement", "href"],
+  ["HTMLImageElement", "src"],
+  ["HTMLScriptElement", "src"],
+  ["HTMLIFrameElement", "src"],
+  ["HTMLMediaElement", "src"],
+  ["HTMLSourceElement", "src"],
+  ["HTMLTrackElement", "src"],
+  ["HTMLEmbedElement", "src"],
+  ["HTMLInputElement", "src"],
+  ["HTMLFormElement", "action"],
+  ["HTMLButtonElement", "formAction"],
+  ["HTMLInputElement", "formAction"],
+  ["HTMLVideoElement", "poster"],
+  ["HTMLQuoteElement", "cite"],
+  ["HTMLModElement", "cite"],
+  ["HTMLObjectElement", "data"],
+];
+
+const SRCSET_PROPERTY_PROTOTYPES = ["HTMLImageElement", "HTMLSourceElement"] as const;
+
 export interface AttributeFacade {
   urlAttributeKey(
     element: Element,
@@ -37,6 +64,12 @@ export interface AttributeFacade {
   markURLProperties(element: Element): void;
   markSVGURLProperty(element: Element): void;
   rememberAuthoredURLAttributes(element: Element): void;
+  rememberPhysicalURLAttribute(
+    element: Element,
+    attributeName: string,
+    value: string | null,
+  ): void;
+  syncInitialPhysicalURLs(element: Element): void;
   rebaseElementURLs(element: Element): void;
   getVirtualAttribute(element: Element, qualifiedName: string): string | null;
   getVirtualAttributeNS(
@@ -283,8 +316,54 @@ export function installAttributeFacade(
     rememberPhysicalURLAttribute(element, attributeName, null);
   };
 
+  const readVirtualURLProperty = (
+    element: Element,
+    propertyName: (typeof URL_PROPERTY_NAMES)[number],
+    attributeName: string,
+  ): string => {
+    const value = options.authoredURLAttributes.get(element)?.get(attributeName);
+    if (value === undefined) {
+      if (propertyName === "action" || propertyName === "formAction") {
+        return options.getCurrentURL();
+      }
+      return "";
+    }
+
+    if (value === "" && (propertyName === "action" || propertyName === "formAction")) {
+      return options.getCurrentURL();
+    }
+
+    const baseURL = isBaseElement(element)
+      ? options.getCurrentURL()
+      : options.getBaseURL();
+    return window.URL.parse(value, baseURL)?.href ?? value;
+  };
+
+  const realmGlobals = window as unknown as Record<
+    string,
+    { prototype?: object } | undefined
+  >;
+  const urlPropertiesPrototypeWide =
+    URL_PROPERTY_PROTOTYPES.every(([ctorName, propertyName]) => {
+      const prototype = realmGlobals[ctorName]?.prototype;
+      const descriptor = prototype
+        ? Object.getOwnPropertyDescriptor(prototype, propertyName)
+        : undefined;
+      return Boolean(descriptor?.get && descriptor?.set);
+    }) &&
+    SRCSET_PROPERTY_PROTOTYPES.every((ctorName) => {
+      const prototype = realmGlobals[ctorName]?.prototype;
+      const descriptor = prototype
+        ? Object.getOwnPropertyDescriptor(prototype, "srcset")
+        : undefined;
+      return Boolean(descriptor?.get && descriptor?.set);
+    });
+
   const markURLProperties = (element: Element) => {
-    if (element.namespaceURI !== HTML_NAMESPACE) {
+    if (
+      element.namespaceURI !== HTML_NAMESPACE ||
+      (urlPropertiesPrototypeWide && element instanceof window.Element)
+    ) {
       return;
     }
 
@@ -297,27 +376,7 @@ export function installAttributeFacade(
       try {
         Object.defineProperty(element, propertyName, {
           configurable: true,
-          get() {
-            const value = options.authoredURLAttributes.get(element)?.get(attributeName);
-            if (value === undefined) {
-              if (propertyName === "action" || propertyName === "formAction") {
-                return options.getCurrentURL();
-              }
-              return "";
-            }
-
-            if (
-              value === "" &&
-              (propertyName === "action" || propertyName === "formAction")
-            ) {
-              return options.getCurrentURL();
-            }
-
-            const baseURL = isBaseElement(element)
-              ? options.getCurrentURL()
-              : options.getBaseURL();
-            return window.URL.parse(value, baseURL)?.href ?? value;
-          },
+          get: () => readVirtualURLProperty(element, propertyName, attributeName),
           set(value: string) {
             setVirtualAttribute(element, attributeName, toUSVString(value));
           },
@@ -383,8 +442,13 @@ export function installAttributeFacade(
   };
 
   const rememberAuthoredURLAttributes = (element: Element): void => {
+    if (!canHaveURLAttributes(element)) {
+      return;
+    }
+    const attributes = element.attributes;
     let authoredAttributes = options.authoredURLAttributes.get(element);
-    for (const attribute of Array.from(element.attributes)) {
+    for (let index = 0; index < attributes.length; index += 1) {
+      const attribute = attributes[index]!;
       const attributeName = urlAttributeKey(
         element,
         attribute.localName,
@@ -401,6 +465,27 @@ export function installAttributeFacade(
         authoredAttributes.set(attributeName, attribute.value);
       }
       rememberPhysicalURLAttribute(element, attributeName, attribute.value);
+    }
+  };
+
+  const syncInitialPhysicalURLs = (element: Element): void => {
+    const authoredAttributes = options.authoredURLAttributes.get(element);
+    if (authoredAttributes === undefined) {
+      return;
+    }
+    for (const attributeName of authoredAttributes.keys()) {
+      if (
+        isHTMLScriptElement(element) &&
+        protectedScriptAttributes.has(element) &&
+        attributeName === "src"
+      ) {
+        continue;
+      }
+      rememberPhysicalURLAttribute(
+        element,
+        attributeName,
+        physicalURLAttributeValue(element, attributeName),
+      );
     }
   };
 
@@ -1041,6 +1126,57 @@ export function installAttributeFacade(
         return nativeOwnerDocument?.get?.call(this) ?? null;
       },
     });
+    for (const [ctorName, propertyName] of URL_PROPERTY_PROTOTYPES) {
+      const prototype = realmGlobals[ctorName]?.prototype;
+      const descriptor = prototype
+        ? Object.getOwnPropertyDescriptor(prototype, propertyName)
+        : undefined;
+      if (prototype === undefined || !descriptor?.get || !descriptor?.set) {
+        continue;
+      }
+      const attributeName = propertyName === "formAction" ? "formaction" : propertyName;
+      const nativeGet = descriptor.get;
+      const nativeSet = descriptor.set;
+      patch(prototype, propertyName, {
+        get(this: Element): string {
+          return virtualNodes.has(this)
+            ? readVirtualURLProperty(this, propertyName, attributeName)
+            : (nativeGet.call(this) as string);
+        },
+        set(this: Element, value: string) {
+          if (virtualNodes.has(this)) {
+            setVirtualAttribute(this, attributeName, toUSVString(value));
+            return;
+          }
+          nativeSet.call(this, value);
+        },
+      });
+    }
+    for (const ctorName of SRCSET_PROPERTY_PROTOTYPES) {
+      const prototype = realmGlobals[ctorName]?.prototype;
+      const descriptor = prototype
+        ? Object.getOwnPropertyDescriptor(prototype, "srcset")
+        : undefined;
+      if (prototype === undefined || !descriptor?.get || !descriptor?.set) {
+        continue;
+      }
+      const nativeGet = descriptor.get;
+      const nativeSet = descriptor.set;
+      patch(prototype, "srcset", {
+        get(this: Element): string {
+          return virtualNodes.has(this)
+            ? (options.authoredURLAttributes.get(this)?.get("srcset") ?? "")
+            : (nativeGet.call(this) as string);
+        },
+        set(this: Element, value: string) {
+          if (virtualNodes.has(this)) {
+            setVirtualAttribute(this, "srcset", toDOMString(value));
+            return;
+          }
+          nativeSet.call(this, value);
+        },
+      });
+    }
   };
 
   return {
@@ -1048,6 +1184,8 @@ export function installAttributeFacade(
     markURLProperties,
     markSVGURLProperty,
     rememberAuthoredURLAttributes,
+    rememberPhysicalURLAttribute,
+    syncInitialPhysicalURLs,
     rebaseElementURLs,
     getVirtualAttribute,
     getVirtualAttributeNS,

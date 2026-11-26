@@ -50,7 +50,8 @@ test.beforeAll(async () => {
           });
         });
       </script>`),
-      "/shadow-sheet.html": htmlDocument(`<div id="wc"></div><script>
+      "/shadow-sheet.html":
+        htmlDocument(`<div id="wc"></div><p id="doc-target">Doc</p><script>
         const host = document.querySelector("#wc");
         const shadow = host.attachShadow({ mode: "open" });
         const sheet = new CSSStyleSheet();
@@ -60,15 +61,15 @@ test.beforeAll(async () => {
         p.id = "inner";
         p.textContent = "Styled";
         shadow.append(p);
-        let documentAdoptedError = "";
-        try {
-          void document.adoptedStyleSheets;
-        } catch (error) {
-          documentAdoptedError = error.name;
-        }
+        const docSheet = new CSSStyleSheet();
+        docSheet.replaceSync("body #doc-target { color: rgb(44, 55, 66); background-image: url('assets/doc.png'); }");
+        document.adoptedStyleSheets = [docSheet];
+        const docTarget = document.querySelector("#doc-target");
         window.__sheetState = {
           isInstance: sheet instanceof CSSStyleSheet,
-          documentAdoptedError,
+          documentAdoptedCount: document.adoptedStyleSheets.length,
+          docColor: getComputedStyle(docTarget).color,
+          docBg: getComputedStyle(docTarget).backgroundImage,
           bg: getComputedStyle(p).backgroundImage,
           color: getComputedStyle(p).color,
         };
@@ -163,7 +164,7 @@ test("VFrameElement.whenReady() resolves on load, resolves immediately when read
   });
 });
 
-test("bridges window.CSSStyleSheet for guest ShadowRoot adoptedStyleSheets while keeping document.adoptedStyleSheets unsupported", async ({
+test("bridges window.CSSStyleSheet for both guest ShadowRoot and document.adoptedStyleSheets", async ({
   page,
 }) => {
   await installBundle(page, fixture.origin);
@@ -176,7 +177,9 @@ test("bridges window.CSSStyleSheet for guest ShadowRoot adoptedStyleSheets while
         el.contentWindow as Window & {
           __sheetState?: {
             isInstance: boolean;
-            documentAdoptedError: string;
+            documentAdoptedCount: number;
+            docColor: string;
+            docBg: string;
             bg: string;
             color: string;
           };
@@ -185,7 +188,9 @@ test("bridges window.CSSStyleSheet for guest ShadowRoot adoptedStyleSheets while
   );
   expect(state).toEqual({
     isInstance: true,
-    documentAdoptedError: "NotSupportedError",
+    documentAdoptedCount: 1,
+    docColor: "rgb(44, 55, 66)",
+    docBg: `url("${fixture.origin}/assets/doc.png")`,
     bg: `url("${fixture.origin}/assets/bg.png")`,
     color: "rgb(33, 66, 99)",
   });

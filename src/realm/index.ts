@@ -26,7 +26,7 @@ import {
 import { installNetworkPatches } from "../network.js";
 import type { AdoptionState } from "./adoption-state.js";
 import { createDocumentBase } from "./base-url.js";
-import { removeRenderedNode } from "./native-dom.js";
+import { captureNativeDOM, removeRenderedNode } from "./native-dom.js";
 import { createFragmentTargets, scrollToFragment } from "./fragment-scroll.js";
 import { observeRealmMutations } from "./mutation-observer.js";
 import { ScriptRunner } from "../scripts.js";
@@ -35,6 +35,7 @@ import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect
 import { createDynamicStyles } from "./dynamic-styles.js";
 import {
   installRealmNavigation,
+  type DocumentNavigationRequest,
   type NativeLocationNavigationMode,
 } from "./navigation.js";
 import {
@@ -58,6 +59,7 @@ export {
   type ConnectedRealmIframe,
   type RealmFailure,
 } from "./connect.js";
+export type { DocumentNavigationRequest } from "./navigation.js";
 
 export interface CreateRealmOptions {
   host: HTMLElement;
@@ -90,6 +92,7 @@ export interface CreateRealmOptions {
   onDocumentNavigation(
     detail: VFrameNavigateEventDetail,
     mode: DocumentHistoryMode,
+    request?: DocumentNavigationRequest,
   ): boolean;
   onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
   onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
@@ -147,6 +150,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     disposers.push(() => hostListenerLifetime.abort());
     disposers.push(() => childListenerLifetime.abort());
 
+    const nativeDOM = captureNativeDOM(window);
+    const facadeConnectedNodes = new WeakSet<Node>();
     const nativeCurrentScriptGetter = Object.getOwnPropertyDescriptor(
       window.Document.prototype,
       "currentScript",
@@ -210,6 +215,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     let markupRevealed = staged === null;
     const fragmentTargets = createFragmentTargets({
       window,
+      nativeDOM,
       getRoot: () => markup?.html ?? null,
       isDisposed: () => disposed,
     });
@@ -274,7 +280,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       isActive: () => options.host.isConnected,
     });
     disposers.push(networkDispose);
-    disposers.push(installCSSStyleSheetBridge(window, hostView, getDocumentBaseURL));
+    const constructedSheetBaseURLs = new WeakMap<CSSStyleSheet, string>();
+    disposers.push(
+      installCSSStyleSheetBridge(
+        window,
+        hostView,
+        getDocumentBaseURL,
+        constructedSheetBaseURLs,
+      ),
+    );
     const viewport = installViewportPatches(
       options.host,
       window,
@@ -289,6 +303,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     const styles = createDynamicStyles({
       window,
       document,
+      nativeDOM,
       stylesheetContext: markup.stylesheetContext,
       linkedStyles: markup.linkedStyles,
       signal: options.signal,
@@ -346,6 +361,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       inlineStyleSelectorAttribute: markup.inlineStyleSelectorAttribute,
       inlineStyleSheet: markup.inlineStyleSheet,
       linkedStyles: markup.linkedStyles,
+      constructedSheetBaseURLs,
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
@@ -369,6 +385,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         }
         styles.scheduleDynamicStyle(style, style.textContent ?? "", true);
       },
+      onStyleSheetAccess(style) {
+        if (style !== markup?.inlineStyleSheet && isConnectedToRealm(style)) {
+          styles.installCSSOMStyleSheet(style);
+        }
+      },
       onLinkElementChange(link, authoredRel) {
         styles.scheduleDynamicLink(link, true, authoredRel);
       },
@@ -379,10 +400,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           }
         }
       },
-      onConnectedNodes(nodes) {
-        fragmentTargets.clearClones(nodes);
-        styles.installCSSOMStyleSheets(nodes);
-        styles.observeConnectedNodes(nodes);
+      onConnectedNodes(nodes, scan) {
+        for (const node of nodes) {
+          facadeConnectedNodes.add(node);
+        }
+        if (scan === undefined || scan.hasTarget) {
+          fragmentTargets.clearClones(nodes);
+        }
+        styles.observeConnectedNodes(nodes, scan);
         staged?.partsConnected(nodes);
       },
       ...(topLayer && { onShadowRoot: topLayer.observe }),
@@ -401,7 +426,6 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           linked.style.disabled = linked.disabled;
         }
       }
-      styles.installCSSOMStyleSheets([liveMarkup]);
       for (const link of styles.dynamicLinksFrom([liveMarkup])) {
         styles.scheduleDynamicLink(link);
       }
@@ -451,6 +475,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     disposers.push(
       observeRealmMutations({
         window,
+        nativeDOM,
+        facadeConnectedNodes,
         root: markup.html,
         styles,
         inlineStyleSheet: markup.inlineStyleSheet,

@@ -293,28 +293,44 @@ test("keeps a re-parented subtree virtual without walking it again", async ({ pa
     const image = branch.querySelector("img") as HTMLImageElement;
     const descendants = [branch, branch.firstElementChild, anchor, image];
 
-    // A node the guest adds through an API the facade does not intercept is
-    // reported to the realm's mutation observer, which is what lets the move
-    // above skip the walk. Read it after the observer has run.
+    // Synchronously marks nodes created by textContent, insertAdjacentText, and setHTMLUnsafe.
     anchor.insertAdjacentText("beforeend", " tail");
-    const unpatchedText = anchor.lastChild;
+    const adjacentText = anchor.lastChild;
+    const syncTextHost = virtualDocument.createElement("p");
+    root.append(syncTextHost);
+    syncTextHost.textContent = "sync text";
+    const syncTextNode = syncTextHost.firstChild;
+    const unsafeHost = virtualDocument.createElement("div");
+    root.append(unsafeHost);
+    let syncUnsafeLinkHref: string | null = null;
+    let syncUnsafeOwner = true;
+    if (
+      typeof (unsafeHost as Element & { setHTMLUnsafe?: (s: string) => void })
+        .setHTMLUnsafe === "function"
+    ) {
+      (unsafeHost as Element & { setHTMLUnsafe(s: string): void }).setHTMLUnsafe(
+        '<a href="unsafe/page.html">unsafe</a>',
+      );
+      const unsafeLink = unsafeHost.querySelector("a") as HTMLAnchorElement;
+      syncUnsafeOwner =
+        unsafeLink.ownerDocument === virtualDocument &&
+        unsafeLink.getRootNode() === virtualDocument;
+      syncUnsafeLinkHref = unsafeLink.href;
+    }
 
-    return new Promise<Record<string, unknown>>((settle) => {
-      setTimeout(() => {
-        settle({
-          ownerDocuments: descendants.every(
-            (node) => node?.ownerDocument === virtualDocument,
-          ),
-          roots: descendants.every((node) => node?.getRootNode() === virtualDocument),
-          baseURIs: descendants.every(
-            (node) => node?.baseURI === virtualDocument.baseURI,
-          ),
-          href: anchor.href,
-          src: image.src,
-          unpatchedTextOwner: unpatchedText?.ownerDocument === virtualDocument,
-        });
-      }, 0);
-    });
+    return {
+      ownerDocuments: descendants.every(
+        (node) => node?.ownerDocument === virtualDocument,
+      ),
+      roots: descendants.every((node) => node?.getRootNode() === virtualDocument),
+      baseURIs: descendants.every((node) => node?.baseURI === virtualDocument.baseURI),
+      href: anchor.href,
+      src: image.src,
+      unpatchedTextOwner: adjacentText?.ownerDocument === virtualDocument,
+      syncTextOwner: syncTextNode?.ownerDocument === virtualDocument,
+      syncUnsafeOwner,
+      syncUnsafeLinkHref,
+    };
   });
 
   expect(result).toEqual({
@@ -324,6 +340,9 @@ test("keeps a re-parented subtree virtual without walking it again", async ({ pa
     href: `${fixture.origin}/documents/moved/link.html`,
     src: `${fixture.origin}/documents/moved/image.png`,
     unpatchedTextOwner: true,
+    syncTextOwner: true,
+    syncUnsafeOwner: true,
+    syncUnsafeLinkHref: `${fixture.origin}/documents/unsafe/page.html`,
   });
 });
 
@@ -886,8 +905,8 @@ test("iterates live collections, resolves null-namespace attributes, and trusts 
 
   expect(result).toEqual({
     iterated: ["iterated-input"],
-    styleNS: "color:rgb(4,5,6)",
-    styleQualified: "color:rgb(4,5,6)",
+    styleNS: "color: rgb(4, 5, 6);",
+    styleQualified: "color: rgb(4, 5, 6);",
     hasStyleNS: true,
     trusted: "true",
   });

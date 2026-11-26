@@ -6,14 +6,16 @@
 // remembered, and has its scripts and inline handlers defused. Insertion,
 // cloning and markup parsing all funnel back through it.
 
+import { canHaveURLAttributes } from "../asset-urls.js";
 import { EnumerableWeakMap } from "../enumerable-weak.js";
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { AttributeFacade } from "./attributes.js";
-import type { FacadeContext } from "./context.js";
+import type { FacadeContext, SubtreeScan } from "./context.js";
 import type { EventFacade } from "./events.js";
 import type { StyleFacade } from "./style.js";
 
 export interface NodeMarking {
-  markVirtualNode(node: Node): void;
+  markVirtualNode(node: Node, scan?: SubtreeScan): boolean;
   markVirtualAttribute(attribute: Attr): void;
   /** Adopts a node the realm just created into the shell's document and marks it. */
   adoptAndMark<T extends Node>(node: T): T;
@@ -48,8 +50,10 @@ export function installNodeMarking(
     nativeRemoveAttribute,
     isElementNode,
     isHTMLTemplateElement,
+    isHTMLStyleElement,
     isHTMLLinkElement,
     isHTMLScriptElement,
+    isBaseElement,
     isInVirtualDocumentTree,
     virtualGetRootNode,
     virtualNodes,
@@ -62,9 +66,11 @@ export function installNodeMarking(
   const { rememberAuthoredStyleAttribute, rememberAuthoredLinkRel } = style;
   const { eventAttributeName, compileEventAttribute } = events;
   const {
+    urlAttributeKey,
     markURLProperties,
     markSVGURLProperty,
-    rememberAuthoredURLAttributes,
+    rememberPhysicalURLAttribute,
+    syncInitialPhysicalURLs,
     rebaseElementURLs,
   } = attributes;
 
@@ -167,7 +173,11 @@ export function installNodeMarking(
       installForeignNodeFacade(attribute);
     }
   };
-  const markVirtualSubtree = (node: Node): void => {
+  const markVirtualSubtree = (
+    node: Node,
+    initialPass: boolean,
+    scan?: SubtreeScan,
+  ): void => {
     const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
       virtualNodes.add(node);
@@ -184,52 +194,107 @@ export function installNodeMarking(
     }
 
     if (isElementNode(node)) {
-      for (const attribute of Array.from(node.attributes)) {
-        markVirtualAttribute(attribute);
+      const attrs = node.attributes;
+      const attrCount = attrs.length;
+      const hasURLCapability = canHaveURLAttributes(node);
+      let eventAttrs: Array<[string, string, string]> | undefined;
+      if (attrCount > 0) {
+        let authoredURLs =
+          hasURLCapability && !initialPass
+            ? options.authoredURLAttributes.get(node)
+            : undefined;
+        for (let index = 0; index < attrCount; index += 1) {
+          const attribute = attrs[index]!;
+          markVirtualAttribute(attribute);
+          const attrName = attribute.name;
+          if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
+            scan.hasTarget = true;
+          }
+          if (hasURLCapability && !initialPass) {
+            const urlKey = urlAttributeKey(
+              node,
+              attribute.localName,
+              attribute.namespaceURI,
+            );
+            if (urlKey !== null) {
+              if (authoredURLs === undefined) {
+                authoredURLs = new Map();
+                options.authoredURLAttributes.set(node, authoredURLs);
+              }
+              if (!authoredURLs.has(urlKey)) {
+                authoredURLs.set(urlKey, attribute.value);
+              }
+              rememberPhysicalURLAttribute(node, urlKey, attribute.value);
+            }
+          }
+          if (newlyVirtual && attrName.length > 2) {
+            const first = attrName.charCodeAt(0);
+            const second = attrName.charCodeAt(1);
+            if ((first === 111 || first === 79) && (second === 110 || second === 78)) {
+              const eventName = eventAttributeName(node, attrName);
+              if (eventName !== null) {
+                (eventAttrs ??= []).push([attrName, eventName, attribute.value]);
+              }
+            }
+          }
+        }
       }
-      rememberAuthoredURLAttributes(node);
       if (newlyVirtual) {
-        rememberAuthoredStyleAttribute(node);
+        if (attrCount > 0) {
+          rememberAuthoredStyleAttribute(node);
+        }
         if (isHTMLLinkElement(node)) {
           rememberAuthoredLinkRel(node);
         }
-      }
-      if (newlyVirtual && isHTMLScriptElement(node)) {
-        protectScript(node);
-      }
-      if (newlyVirtual) {
+        if (isHTMLScriptElement(node)) {
+          protectScript(node);
+        }
         foreignElementFacade(node);
-        for (const attribute of Array.from(node.attributes)) {
-          const attributeName = eventAttributeName(node, attribute.name);
-          if (attributeName === null) {
-            continue;
-          }
+        if (eventAttrs !== undefined) {
           let attributes = eventAttributeValues.get(node);
           if (attributes === undefined) {
             attributes = new Map();
             eventAttributeValues.set(node, attributes);
           }
-          attributes.set(attributeName, attribute.value);
-          nativeRemoveAttribute.call(node, attribute.name);
-          compileEventAttribute(
-            node,
-            attributeName,
-            attribute.value,
-            !fragmentNodes.has(node),
-          );
+          for (const [rawName, attributeName, value] of eventAttrs) {
+            attributes.set(attributeName, value);
+            nativeRemoveAttribute.call(node, rawName);
+            compileEventAttribute(node, attributeName, value, !fragmentNodes.has(node));
+          }
         }
-        markURLProperties(node);
-        markSVGURLProperty(node);
+        if (hasURLCapability) {
+          markURLProperties(node);
+          markSVGURLProperty(node);
+        }
       }
-      rebaseElementURLs(node);
+      if (hasURLCapability) {
+        if (initialPass) {
+          syncInitialPhysicalURLs(node);
+        } else {
+          rebaseElementURLs(node);
+        }
+      }
+      if (scan !== undefined) {
+        if (isHTMLStyleElement(node)) {
+          scan.styles.push(node);
+        } else if (isHTMLLinkElement(node)) {
+          scan.links.push(node);
+        } else if (isHTMLScriptElement(node)) {
+          scan.scripts.push(node);
+        } else if (isBaseElement(node)) {
+          scan.hasBase = true;
+        }
+      }
     }
 
-    for (const child of Array.from(node.childNodes)) {
-      markVirtualSubtree(child);
+    for (let child = node.firstChild; child !== null;) {
+      const next = child.nextSibling;
+      markVirtualSubtree(child, initialPass, scan);
+      child = next;
     }
 
     if (isElementNode(node) && isHTMLTemplateElement(node)) {
-      markVirtualSubtree(node.content);
+      markVirtualSubtree(node.content, false, undefined);
     }
   };
 
@@ -247,11 +312,12 @@ export function installNodeMarking(
   // subtree, so anything the guest put inside one since the last walk — a text
   // node from the textContent setter, the result of a DOM API the facade does
   // not intercept — is only found by walking it again.
-  const markVirtualNode = (node: Node): void => {
+  const markVirtualNode = (node: Node, scan?: SubtreeScan): boolean => {
     if (virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
-      return;
+      return false;
     }
-    markVirtualSubtree(node);
+    markVirtualSubtree(node, false, scan);
+    return true;
   };
 
   const installScrollFacade = (element: HTMLElement) => {
@@ -309,8 +375,8 @@ export function installNodeMarking(
     document.doctype ?? document.implementation.createDocumentType("html", "", "");
 
   const markShell = (): void => {
-    markVirtualNode(options.html);
-    markVirtualNode(virtualDoctype);
+    markVirtualSubtree(options.html, true);
+    markVirtualSubtree(virtualDoctype, true);
     try {
       defineNodeFacade(virtualDoctype, {
         parentNode: { configurable: true, get: () => document },

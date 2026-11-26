@@ -4,6 +4,7 @@ import {
   type ConnectedRealmIframe,
   createRealm,
   type CreateRealmOptions,
+  type DocumentNavigationRequest,
   type RealmFailure,
   type VFrameRealm,
 } from "./realm/index.js";
@@ -81,6 +82,7 @@ interface LoadProgress {
 
 interface FrameLoad {
   source: string;
+  request?: DocumentNavigationRequest;
   adoptedMarkup: AdoptedMarkup | null;
   historySession: VirtualHistorySession | null;
   stageMarkup: boolean;
@@ -608,6 +610,7 @@ export class VFrameElement extends HTMLElementBase {
   // the guest stays on screen until the replacement is ready.
   #frameLoad(options: {
     source: string;
+    request?: DocumentNavigationRequest;
     historySession?: VirtualHistorySession | null;
     navigationKind?: VFrameNavigationKind | null;
     boundNavigation?: boolean;
@@ -616,6 +619,7 @@ export class VFrameElement extends HTMLElementBase {
   }): FrameLoad {
     return {
       source: options.source,
+      ...(options.request !== undefined ? { request: options.request } : {}),
       adoptedMarkup: null,
       historySession: options.historySession ?? null,
       stageMarkup: (options.stage ?? true) && this.#realm !== null,
@@ -765,6 +769,11 @@ export class VFrameElement extends HTMLElementBase {
       let connection: ConnectedRealmIframe;
       if (load.adoptedMarkup === null) {
         const entryResponse = fetch(requestedURL, {
+          method: load.request?.method ?? "GET",
+          ...(load.request?.body !== undefined ? { body: load.request.body } : {}),
+          ...(load.request?.headers !== undefined
+            ? { headers: load.request.headers }
+            : {}),
           mode: "same-origin",
           credentials: this.credentials,
           signal: controller.signal,
@@ -1006,7 +1015,7 @@ export class VFrameElement extends HTMLElementBase {
         );
         return allowed && ownsController();
       },
-      onDocumentNavigation: (detail, mode) => {
+      onDocumentNavigation: (detail, mode, request) => {
         if (!ownsController() || !this.#dispatchNavigate(detail) || !ownsController()) {
           return false;
         }
@@ -1016,6 +1025,7 @@ export class VFrameElement extends HTMLElementBase {
           this.#deferGuestLoad(ownsController, () =>
             this.#frameLoad({
               source: detail.to,
+              ...(request !== undefined ? { request } : {}),
               historySession: nextSession,
               navigationKind: detail.kind,
             }),

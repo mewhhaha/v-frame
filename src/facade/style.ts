@@ -6,17 +6,17 @@
 // which v-frame renames so the browser does not fetch the sheet itself.
 
 import {
-  generate as generateCSS,
-  parse as parseCSS,
-  walk as walkCSS,
-} from "../css-tree-subpaths.js";
-import type { Declaration, DeclarationList } from "css-tree";
-import { rewriteStyleAttribute } from "../css.js";
+  extractAuthoredURLDeclarations,
+  normalizeDeclarationList,
+  rewriteStyleAttribute,
+  updateDeclarationProperty,
+} from "../css.js";
 import { NEUTRALIZED_STYLESHEET_REL } from "../wire-format.js";
 import type { FacadeContext } from "./context.js";
 import { toDOMString, toLegacyNullToEmptyString } from "./webidl.js";
 
 const INLINE_STYLE_SELECTOR_ID_COUNT = 32;
+const STYLE_URL_PATTERN = /(?:url|image-set|src)\s*\(/i;
 
 function stylePropertyKey(property: string): string {
   return property.startsWith("--") ? property : property.toLowerCase();
@@ -32,43 +32,17 @@ function stylePropertyNameFromIDL(property: string): string {
 
 const NO_AUTHORED_VALUES: ReadonlyMap<string, string> = new Map();
 
-function authoredStylePropertyValues(
-  source: string,
-  parse: typeof parseCSS,
-): ReadonlyMap<string, string> {
-  // Only a url() is kept, and a url() cannot be written without a parenthesis.
-  if (!source.includes("(")) {
-    return NO_AUTHORED_VALUES;
-  }
-  const properties = new Map<string, string>();
-  try {
-    const declarations = parse(source, {
-      context: "declarationList",
-      parseCustomProperty: true,
-    });
-    walkCSS(declarations, {
-      visit: "Declaration",
-      enter(declaration: Declaration) {
-        const value = generateCSS(declaration.value);
-        if (!/url\s*\(/i.test(value)) {
-          return;
-        }
-        properties.set(stylePropertyKey(declaration.property), value);
-      },
-    });
-  } catch {
-    // The native declaration remains the source of truth for malformed CSS.
-  }
-  return properties;
-}
-
 /**
  * Every string-valued read of `el.style.x` needs the authored values, and
  * parsing the whole attribute for each one made reading a property cost as much
  * as a write. The values are a pure function of the attribute text, so they are
  * kept per element and drop out by themselves when the text changes.
  */
-export function createAuthoredValueCache(parse: typeof parseCSS = parseCSS) {
+export function createAuthoredValueCache(
+  extract: (
+    source: string,
+  ) => ReadonlyMap<string, string> = extractAuthoredURLDeclarations,
+) {
   const cache = new WeakMap<
     object,
     { source: string; values: ReadonlyMap<string, string> }
@@ -78,18 +52,14 @@ export function createAuthoredValueCache(parse: typeof parseCSS = parseCSS) {
     if (cached?.source === source) {
       return cached.values;
     }
-    const values = authoredStylePropertyValues(source, parse);
+    const values = source.includes("(") ? extract(source) : NO_AUTHORED_VALUES;
     cache.set(owner, { source, values });
     return values;
   };
 }
 
 function normalizeAuthoredStyleAttribute(source: string): string {
-  const declarations = parseCSS(source, {
-    context: "declarationList",
-    parseCustomProperty: true,
-  });
-  return generateCSS(declarations);
+  return normalizeDeclarationList(source);
 }
 
 function updateAuthoredStyleProperty(
@@ -98,32 +68,7 @@ function updateAuthoredStyleProperty(
   value: string,
   priority: string,
 ): string {
-  const declarations = parseCSS(source, {
-    context: "declarationList",
-    parseCustomProperty: true,
-  }) as DeclarationList;
-  declarations.children.forEach((declaration, item, list) => {
-    if (
-      declaration.type === "Declaration" &&
-      stylePropertyKey(declaration.property) === stylePropertyKey(property)
-    ) {
-      list.remove(item);
-    }
-  });
-  if (value !== "") {
-    const addition = parseCSS(
-      `${property}:${value}${priority === "" ? "" : `!${priority}`}`,
-      {
-        context: "declarationList",
-        parseCustomProperty: true,
-      },
-    ) as DeclarationList;
-    const declaration = addition.children.first;
-    if (declaration !== null) {
-      declarations.children.appendData(declaration);
-    }
-  }
-  return generateCSS(declarations);
+  return updateDeclarationProperty(source, property, value, priority);
 }
 
 export interface StyleFacade {
@@ -173,6 +118,10 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   const linkDisabledValues = new WeakMap<HTMLLinkElement, boolean>();
   const nativeLinkSheet = Object.getOwnPropertyDescriptor(
     window.HTMLLinkElement.prototype,
+    "sheet",
+  );
+  const nativeStyleSheet = Object.getOwnPropertyDescriptor(
+    window.HTMLStyleElement.prototype,
     "sheet",
   );
   const nativeLinkDisabled = Object.getOwnPropertyDescriptor(
@@ -260,20 +209,29 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     (_value, index) => `#v-frame-inline-style-${index}`,
   ).join("")})`;
   const inlineStyleRules = new WeakMap<Element, CSSStyleRule>();
-  // CSS rules do not retain their matched elements. Retire a rule once its
-  // element is collected, so incremental updates do not turn DOM churn into
-  // an ever-growing sheet. No scheduling assumptions depend on this cleanup.
-  const collectedInlineStyles = new FinalizationRegistry<CSSStyleRule>((rule) => {
+  // CSS rules do not retain their matched elements. Batch retirements in a
+  // microtask so mass GC sweeps the sheet once instead of quadratically.
+  let pendingDeletedRules: Set<CSSStyleRule> | undefined;
+  const flushDeletedInlineStyles = (): void => {
+    const doomed = pendingDeletedRules;
+    pendingDeletedRules = undefined;
     const sheet = options.inlineStyleSheet.sheet;
-    if (sheet === null || rule.parentStyleSheet !== sheet) {
+    if (doomed === undefined || sheet === null) {
       return;
     }
-    for (let index = 0; index < sheet.cssRules.length; index += 1) {
-      if (sheet.cssRules[index] === rule) {
+    for (let index = sheet.cssRules.length - 1; index >= 0; index -= 1) {
+      const candidate = sheet.cssRules[index] as CSSStyleRule | undefined;
+      if (candidate !== undefined && doomed.has(candidate)) {
         sheet.deleteRule(index);
-        return;
       }
     }
+  };
+  const collectedInlineStyles = new FinalizationRegistry<CSSStyleRule>((rule) => {
+    if (pendingDeletedRules === undefined) {
+      pendingDeletedRules = new Set();
+      queueMicrotask(flushDeletedInlineStyles);
+    }
+    pendingDeletedRules.add(rule);
   });
   const applyInlineStyleNonce = (): void => {
     const nonce = options.getNonce();
@@ -338,10 +296,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     declaration.cssText = value;
     let logicalValue = value;
     if (normalize) {
-      try {
-        logicalValue = normalizeAuthoredStyleAttribute(value);
-      } catch {
+      if (!STYLE_URL_PATTERN.test(value)) {
         logicalValue = declaration.cssText;
+      } else {
+        try {
+          logicalValue = normalizeAuthoredStyleAttribute(value);
+        } catch {
+          logicalValue = declaration.cssText;
+        }
       }
       cssomMutatedStyleElements.add(element);
     } else {
@@ -418,6 +380,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       } else {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
       }
+      const previousAuthored = options.authoredStyleAttributes.get(element) ?? "";
+      if (
+        !STYLE_URL_PATTERN.test(previousAuthored) &&
+        !STYLE_URL_PATTERN.test(nextValue)
+      ) {
+        synchronizeDeclaration(declaration.cssText);
+        return;
+      }
       if (nextValue !== "") {
         const probe = probeStyleDeclaration();
         if (probe !== undefined) {
@@ -459,10 +429,15 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     const removeProperty = (property: string): string => {
       const propertyName = toDOMString(property);
       const previous = declaration.removeProperty(propertyName);
+      const previousAuthored = options.authoredStyleAttributes.get(element) ?? "";
+      if (!STYLE_URL_PATTERN.test(previousAuthored)) {
+        synchronizeDeclaration(declaration.cssText);
+        return previous;
+      }
       let logicalValue: string;
       try {
         logicalValue = updateAuthoredStyleProperty(
-          options.authoredStyleAttributes.get(element) ?? "",
+          previousAuthored,
           propertyName,
           "",
           "",
@@ -521,15 +496,22 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
           setLogicalStyleAttribute(element, toLegacyNullToEmptyString(value), true);
           return true;
         }
+        let logicalValue = options.authoredStyleAttributes.get(element) ?? "";
+        // CSS properties are [LegacyNullToEmptyString]: null clears, not "null".
+        const assigned = toLegacyNullToEmptyString(value);
+        if (!STYLE_URL_PATTERN.test(logicalValue) && !STYLE_URL_PATTERN.test(assigned)) {
+          const updated = Reflect.set(target, property, value, target);
+          if (updated) {
+            synchronizeDeclaration(target.cssText);
+          }
+          return updated;
+        }
         const previousProperties = new Set(
           Array.from({ length: target.length }, (_value, index) =>
             stylePropertyKey(target.item(index)),
           ),
         );
-        let logicalValue = options.authoredStyleAttributes.get(element) ?? "";
         const updated = Reflect.set(target, property, value, target);
-        // CSS properties are [LegacyNullToEmptyString]: null clears, not "null".
-        const assigned = toLegacyNullToEmptyString(value);
         if (updated) {
           const currentProperties = new Set(
             Array.from({ length: target.length }, (_value, index) =>
@@ -704,22 +686,24 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     return facade;
   };
   const rememberAuthoredStyleAttribute = (element: Element): void => {
-    if (!styleSelectorValues.has(element)) {
+    if (
+      !styleSelectorValues.has(element) &&
+      nativeHasAttribute.call(element, options.inlineStyleSelectorAttribute)
+    ) {
       removeStyleSelector(element);
     }
 
     const authoredStyle = nativeGetAttribute.call(element, "style");
-    if (authoredStyle !== null && !options.authoredStyleAttributes.has(element)) {
+    if (authoredStyle === null) {
+      return;
+    }
+    if (!options.authoredStyleAttributes.has(element)) {
       options.authoredStyleAttributes.set(element, authoredStyle);
       nativeStyleDeclaration(element).cssText = authoredStyle;
     }
-    if (authoredStyle !== null) {
-      nativeRemoveAttribute.call(element, "style");
-    }
+    nativeRemoveAttribute.call(element, "style");
     physicalStyleAttributeValues.set(element, null);
-    if (authoredStyle !== null) {
-      updateInlineStyle(element);
-    }
+    updateInlineStyle(element);
   };
 
   const rememberAuthoredLinkRel = (link: HTMLLinkElement): void => {
@@ -743,7 +727,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       return;
     }
     const physicalValue = nativeGetAttribute.call(element, "style");
-    if (physicalStyleAttributeValues.get(element) === physicalValue) {
+    if ((physicalStyleAttributeValues.get(element) ?? null) === physicalValue) {
       return;
     }
     if (physicalValue === null) {
@@ -760,12 +744,28 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   }
 
   const installPatches = (): void => {
+    if (nativeStyleSheet?.get !== undefined) {
+      patch(window.HTMLStyleElement.prototype, "sheet", {
+        get(this: HTMLStyleElement): CSSStyleSheet | null {
+          if (virtualNodes.has(this)) {
+            options.onStyleSheetAccess?.(this);
+          }
+          return nativeStyleSheet.get?.call(this) ?? null;
+        },
+      });
+    }
     if (nativeLinkSheet?.get !== undefined) {
       patch(window.HTMLLinkElement.prototype, "sheet", {
         get(this: HTMLLinkElement): CSSStyleSheet | null {
-          return virtualNodes.has(this)
-            ? (options.linkedStyles.get(this)?.style.sheet ?? null)
-            : (nativeLinkSheet.get?.call(this) ?? null);
+          if (!virtualNodes.has(this)) {
+            return nativeLinkSheet.get?.call(this) ?? null;
+          }
+          const linked = options.linkedStyles.get(this);
+          if (linked !== undefined) {
+            options.onStyleSheetAccess?.(linked.style);
+            return linked.style.sheet;
+          }
+          return null;
         },
       });
     }

@@ -8,10 +8,12 @@ import { HTML_NAMESPACE } from "../asset-urls.js";
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 import type { DynamicStyles } from "./dynamic-styles.js";
-import { captureNativeDOM } from "./native-dom.js";
+import { captureNativeDOM, type NativeDOM } from "./native-dom.js";
 
 interface RealmMutationObserverOptions {
   window: VFrameWindow;
+  nativeDOM?: NativeDOM;
+  facadeConnectedNodes?: WeakSet<Node>;
   root: Element;
   styles: DynamicStyles;
   /** The realm's own inline stylesheet, which the pipeline must never rewrite. */
@@ -23,16 +25,17 @@ interface RealmMutationObserverOptions {
 
 /** Returns the disposer that disconnects the observer. */
 export function observeRealmMutations(options: RealmMutationObserverOptions): () => void {
-  const { window, styles, inlineStyleSheet } = options;
-  const nativeDOM = captureNativeDOM(window);
+  const { window, styles, inlineStyleSheet, facadeConnectedNodes } = options;
+  const nativeDOM = options.nativeDOM ?? captureNativeDOM(window);
 
   // Only HTML-namespace base elements affect the document base URL;
   // querySelector's unprefixed type selector also matches foreign ones.
   const isHTMLBase = (element: Element): boolean =>
     element.localName === "base" && element.namespaceURI === HTML_NAMESPACE;
   const subtreeHasBaseElement = (node: Node): boolean =>
-    (node instanceof window.Element && isHTMLBase(node)) ||
-    ("querySelectorAll" in node &&
+    (node.nodeType === 1 && isHTMLBase(node as Element)) ||
+    ((node.nodeType === 1 || node.nodeType === 11) &&
+      (node as ParentNode).firstElementChild !== null &&
       nativeDOM.querySelectorAll(node as ParentNode, "base").some(isHTMLBase));
 
   const observer = new globalThis.MutationObserver((records) => {
@@ -54,6 +57,9 @@ export function observeRealmMutations(options: RealmMutationObserverOptions): ()
           stylesWithContentChanges.add(record.target);
         }
         for (const node of record.addedNodes) {
+          if (facadeConnectedNodes?.delete(node) === true) {
+            continue;
+          }
           facade?.markVirtualTree(node);
           for (const style of styles.virtualStylesFrom([node])) {
             if (!styles.claimAwaitedStyle(style)) {

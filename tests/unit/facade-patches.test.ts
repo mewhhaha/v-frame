@@ -118,12 +118,12 @@ test("DOMString conversion follows WebIDL", async () => {
 
 test("the authored style values are parsed once per attribute text", async () => {
   const { createAuthoredValueCache } = await import("../../src/facade/style.js");
-  const { parse } = await import("../../src/css-tree-subpaths.js");
+  const { extractAuthoredURLDeclarations } = await import("../../src/css.js");
   let parses = 0;
-  const values = createAuthoredValueCache(((...args: Parameters<typeof parse>) => {
+  const values = createAuthoredValueCache((source: string) => {
     parses += 1;
-    return parse(...args);
-  }) as typeof parse);
+    return extractAuthoredURLDeclarations(source);
+  });
   const element = {};
   const source = 'background: url("a.png"); color: red';
   assert.equal(values(element, source).get("background"), "url(a.png)");

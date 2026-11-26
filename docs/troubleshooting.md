@@ -64,12 +64,8 @@ replace the route.
 Confirm that the host materializer rewrote document selectors, and that server
 and client rendering produce the same application markup. The guest stylesheet
 should keep using normal document selectors — `html`, `body`, `:root` — and both
-the materializer and the browser runtime rewrite them to the shell elements.
-
-If document-level styles fail when calling `document.adoptedStyleSheets`, see
-[constructed stylesheets](./limitations.md#documentadoptedstylesheets-and-constructed-stylesheets)
-(constructed stylesheets are supported on guest-created shadow roots, not on
-`document`).
+the materializer and the browser runtime rewrite them to the shell elements
+(including constructed stylesheets adopted via `document.adoptedStyleSheets`).
 
 ## Relative assets resolve against the wrong application
 

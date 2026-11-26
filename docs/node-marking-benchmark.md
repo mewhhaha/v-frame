@@ -317,14 +317,64 @@ insertion is not bound by re-walking.
 ### What insertion is bound by
 
 A CPU profile of the insertion loop (`Profiler.start` over CDP, unminified bundle,
-1,000-element guest) attributes about 40% of it to one thing — `querySelectorAllWithShell`
+1,000-element guest) attributed about 40% of it to one thing — `querySelectorAllWithShell`
 in `src/facade/collections.ts`, reached six times per inserted row from `collectElements`,
 `subtreeHasBaseElement`, `virtualStylesFrom`, `dynamicLinksFrom` and
-`installCSSOMStyleSheets`. Each call parses its selector with `css-tree` and regenerates it
-so that `html` and `body` translate to the shell elements, and the selectors involved are
-the constants `"*"`, `"base"`, `"style"` and `"link"`. Marking itself is about 18% of the
-same profile. Caching the translation of a selector string would be the next thing to try,
-and it is a separate change from this one.
+`installCSSOMStyleSheets`. Each call parsed its selector with `css-tree` and regenerated it
+so that `html` and `body` translate to the shell elements, and the selectors involved were
+the constants `"*"`, `"base"`, `"style"` and `"link"`. Marking itself was about 18% of the
+same profile.
+
+## Round three — insertion, marking, CSSOM, and bundle size
+
+Round 3 eliminated the selector-parsing bottleneck identified above and removed
+per-element overhead across marking, CSSOM, and inline style updates:
+
+- **Pre-facade native DOM capture + single-pass insertion (`SubtreeScan`):**
+  `nativeDOM` captures unpatched `Element.prototype.querySelectorAll` before the
+  facade installs, `markVirtualSubtree` collects `<base>`, `<style>`,
+  `<link rel="stylesheet">`, and `<script>` elements in one `firstChild`/`nextSibling`
+  pass (plus a single indexed `attributes` loop per element), and
+  `observeRealmMutations` skips nodes already handled synchronously by the facade.
+- **Selector fast-path and bounded cache:** `translateSelector` / `targetSelector`
+  bail out with a fast regex when a selector cannot mention `html`, `head`, `body`,
+  `:root`, `:host`, `:target`, or CSS escapes, and memoize rewritten selectors in a
+  bounded 512-entry cache.
+- **Prototype-level reflected URL properties:** `href`, `src`, `srcset`, `action`,
+  `formAction`, `poster`, `cite`, and `data` moved from per-instance
+  `Object.defineProperty` onto the realm's HTML element prototypes gated on
+  `virtualNodes` (keeping the foreign-element fallback).
+- **Lazy CSSOM & inline-style fast-path:** `<style>.sheet` / `<link>.sheet`
+  CSSOM wrappers are installed lazily on first `.sheet` or `document.styleSheets`
+  access instead of eagerly at boot, non-URL `el.style` writes bypass CSS
+  declaration parsing, and finalizer rule deletion is microtask-batched (`O(n)`).
+- **Zero-dependency CSS rewriter:** Replaced `css-tree` in `src/css.ts` with a
+  purpose-built CSS Syntax Level 3 tokenizer and rewriter, cutting `dist/index.js`
+  from `78.7 KB` gzip to `67.7 KB` gzip (`-11.1 KB` gzip).
+
+### Numbers
+
+Chromium 153.0.8010.12, AMD Ryzen 7 7800X3D, 2026-11-26, measured before and
+after Round 3 on the same machine (`pnpm bench`, Chromium section):
+
+|            |          | 1,000   | 5,000    | 20,000   | 50,000   |
+| ---------- | -------- | ------- | -------- | -------- | -------- |
+| insertion  | before   | 29.7 ms | 23.1 ms  | 24.4 ms  | 24.0 ms  |
+|            | after    | 17.5 ms | 14.2 ms  | 16.8 ms  | 15.8 ms  |
+|            | host DOM | 2.3 ms  | 2.3 ms   | 1.6 ms   | 1.6 ms   |
+| re-parent  | before   | 48.4 ms | 49.4 ms  | 52.6 ms  | 73.5 ms  |
+|            | after    | 22.3 ms | 21.7 ms  | 31.5 ms  | 45.3 ms  |
+|            | host DOM | 7.1 ms  | 6.6 ms   | 6.0 ms   | 7.4 ms   |
+| activation | before   | 51.8 ms | 99.8 ms  | 278.1 ms | 637.3 ms |
+|            | after    | 54.5 ms | 125.7 ms | 303.6 ms | 559.2 ms |
+|            | host DOM | 3.7 ms  | 5.2 ms   | 15.7 ms  | 39.5 ms  |
+
+- **Insertion** dropped from `23–30 ms` (`12–20x` host DOM) to `14–18 ms`
+  (`6–10x` host DOM) — nearly **2x faster** per 1,000 appended rows.
+- **Re-parenting** dropped from `48–74 ms` (`10x` host DOM) to `22–45 ms`
+  (`3–6x` host DOM) — **2–3x faster** on settled subtrees.
+- **Marginal activation cost** dropped from `11.95 µs/element` (`17.5x`) to
+  `10.30 µs/element` (`14.1x`).
 
 ## What this does not answer
 
@@ -339,7 +389,7 @@ and it is a separate change from this one.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
 - Detached subtrees are still walked in full every time they are inserted, and a guest that
-  detaches a container, edits it and re-attaches it pays the old price. Closing that needs
-  the facade to intercept every write that can put an unmarked node inside a marked one,
-  rather than repairing them afterwards; `insertAdjacentText` and `setHTMLUnsafe` are the
-  two known gaps.
+  detaches a container, edits it and re-attaches it pays the old price. Standard guest writes
+  (`textContent`, `insertAdjacentText`, `setHTMLUnsafe`, `innerHTML`, `outerHTML`,
+  `insertAdjacentHTML`) now mark newly created nodes synchronously; only direct writes via
+  unpatched host-realm prototypes defer to the mutation observer microtask.

@@ -24,6 +24,19 @@ const preloadScripts = ["classic", "module"].map((kind) => {
   };
 });
 
+const inlinePreloadGate = {
+  first: parkRoute({
+    type: "text/javascript",
+    body: "globalThis.log.push('first');",
+    headers: { "cache-control": "public, max-age=60" },
+  }),
+  dep: parkRoute({
+    type: "text/javascript",
+    body: "export const tag = 'inline-dep';",
+    headers: { "cache-control": "public, max-age=60" },
+  }),
+};
+
 function script(body: string, delay = 0) {
   return { type: "text/javascript", body, delay };
 }
@@ -49,6 +62,17 @@ test.beforeAll(async () => {
         <script defer src="/scripts/fast-classic.js"></script>
       `),
       "/scripts/fast-classic.js": script("globalThis.log.push('defer-classic');"),
+      "/documents/inline-preload.html": htmlDocument(`
+        <script>globalThis.log = [];</script>
+        <script type="module" src="/scripts/inline-first.js"></script>
+        <script type="module">
+          // import "/scripts/ignored-comment.js";
+          import { tag } from "/scripts/inline-dep.js";
+          log.push(tag);
+        </script>
+      `),
+      "/scripts/inline-first.js": inlinePreloadGate.first.route,
+      "/scripts/inline-dep.js": inlinePreloadGate.dep.route,
       "/documents/preload-options.html": htmlDocument(`
         <script>globalThis.log = [];</script>
         ${preloadScripts.map(({ kind, integrity }) => `<script ${kind === "module" ? 'type="module"' : "defer"} src="/scripts/preload-${kind}.js" integrity="${integrity}" referrerpolicy="no-referrer" fetchpriority="high"></script>`).join("")}
@@ -65,6 +89,8 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   for (const { gate } of preloadScripts) gate.abandon();
+  inlinePreloadGate.first.abandon();
+  inlinePreloadGate.dep.abandon();
   await fixture.close();
 });
 
@@ -144,3 +170,27 @@ for (const [name, path, expected] of [
     expect(log).toEqual(expected);
   });
 }
+
+test("preloads static imports of later inline module scripts while earlier scripts are still loading", async ({
+  page,
+}) => {
+  fixture.requests.length = 0;
+  await installBundle(page, fixture.origin);
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/inline-preload.html`,
+    settle: "none",
+  });
+  await expect.poll(() => fixture.requests.includes("/scripts/inline-dep.js")).toBe(true);
+  expect(fixture.requests).not.toContain("/scripts/ignored-comment.js");
+  await inlinePreloadGate.dep.release();
+  await inlinePreloadGate.first.release();
+  await expect
+    .poll(() => frame.evaluate((element: VFrameElement) => element.status))
+    .toBe("ready");
+  expect(
+    await frame.evaluate(
+      (element) =>
+        (element as unknown as { contentWindow: { log: string[] } }).contentWindow.log,
+    ),
+  ).toEqual(["first", "inline-dep"]);
+});
