@@ -151,7 +151,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     disposers.push(() => childListenerLifetime.abort());
 
     const nativeDOM = captureNativeDOM(window);
-    const facadeConnectedNodes = new WeakSet<Node>();
+    const facadeConnectedCounts = new WeakMap<Node, number>();
+    const bumpCount = (counts: WeakMap<Node, number>, node: Node): void => {
+      counts.set(node, (counts.get(node) ?? 0) + 1);
+    };
     const nativeCurrentScriptGetter = Object.getOwnPropertyDescriptor(
       window.Document.prototype,
       "currentScript",
@@ -266,7 +269,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           onDocumentTraversal: options.onDocumentTraversal,
         });
     history.install();
-    fragmentTargets.clearClones([markup.html]);
+    if (markup.hasTargetAttribute) {
+      fragmentTargets.clearClones([markup.html]);
+    }
     fragmentTargets.update(currentURL);
     disposers.push(() => history.dispose());
 
@@ -317,11 +322,13 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
 
     const initialStyleSources = new Map<HTMLStyleElement, string>();
-    for (const style of markup.html.querySelectorAll("style")) {
-      const source = style.textContent ?? "";
-      initialStyleSources.set(style, source);
-      styles.recordProcessedStyle(style, source);
-      style.textContent = "";
+    if (markup.hasStyleElements) {
+      for (const style of markup.html.querySelectorAll("style")) {
+        const source = style.textContent ?? "";
+        initialStyleSources.set(style, source);
+        styles.recordProcessedStyle(style, source);
+        style.textContent = "";
+      }
     }
 
     const liveMarkup = markup.html;
@@ -362,6 +369,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       inlineStyleSheet: markup.inlineStyleSheet,
       linkedStyles: markup.linkedStyles,
       constructedSheetBaseURLs,
+      hasInlineEventCandidate: markup.hasInlineEventCandidate,
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
@@ -402,7 +410,23 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       },
       onConnectedNodes(nodes, scan) {
         for (const node of nodes) {
-          facadeConnectedNodes.add(node);
+          if (isConnectedToRealm(node)) {
+            bumpCount(facadeConnectedCounts, node);
+          }
+        }
+        if (
+          scan !== undefined &&
+          scan.styles.length === 0 &&
+          scan.links.length === 0 &&
+          !scan.hasTarget
+        ) {
+          for (const node of nodes) {
+            if (node.parentNode instanceof window.HTMLStyleElement) {
+              styles.scheduleDynamicStyleContent(node.parentNode);
+            }
+          }
+          staged?.partsConnected(nodes);
+          return;
         }
         if (scan === undefined || scan.hasTarget) {
           fragmentTargets.clearClones(nodes);
@@ -420,13 +444,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.applyNonce(style);
         style.textContent = source;
       }
-      for (const link of styles.dynamicLinksFrom([liveMarkup])) {
+      const connectedLinks = styles.dynamicLinksFrom([liveMarkup]);
+      for (const link of connectedLinks) {
         const linked = markup.linkedStyles.get(link);
         if (linked !== undefined) {
           linked.style.disabled = linked.disabled;
         }
       }
-      for (const link of styles.dynamicLinksFrom([liveMarkup])) {
+      for (const link of connectedLinks) {
         styles.scheduleDynamicLink(link);
       }
       if (!options.stageMarkup && !options.restoreScroll && new URL(currentURL).hash) {
@@ -476,7 +501,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       observeRealmMutations({
         window,
         nativeDOM,
-        facadeConnectedNodes,
+        facadeConnectedCounts,
         root: markup.html,
         styles,
         inlineStyleSheet: markup.inlineStyleSheet,

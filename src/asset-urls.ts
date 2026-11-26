@@ -31,6 +31,10 @@ const URL_ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
 // link address), which read the physical href against the host document's base.
 const SVG_EXTERNAL_RESOURCE_ELEMENTS = new Set(["a", "feImage", "image", "use"]);
 
+/** Native selector matching every HTML/SVG element that can carry URL or srcset attributes. */
+export const URL_ELEMENT_SELECTOR =
+  "a,area,audio,base,blockquote,button,del,embed,form,iframe,img,input,ins,link,object,q,script,source,track,video,feImage,image,use";
+
 export interface AssetElement {
   localName: string;
   namespaceURI: string | null;

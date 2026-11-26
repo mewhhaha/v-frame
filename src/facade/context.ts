@@ -36,6 +36,7 @@ export interface DocumentFacadeOptions {
   inlineStyleSheet: HTMLStyleElement;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>;
+  hasInlineEventCandidate?: boolean;
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
@@ -247,8 +248,8 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const isDocumentFragmentNode = (node: Node): node is DocumentFragment =>
     node.nodeType === 11;
   const isHTMLElementNamed = (element: Element, localName: string): boolean =>
-    element.namespaceURI === "http://www.w3.org/1999/xhtml" &&
-    element.localName === localName;
+    element.localName === localName &&
+    element.namespaceURI === "http://www.w3.org/1999/xhtml";
   const isHTMLTemplateElement = (element: Element): element is HTMLTemplateElement =>
     isHTMLElementNamed(element, "template");
   const isHTMLStyleElement = (element: Element): element is HTMLStyleElement =>
@@ -489,6 +490,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeClosest,
     nativeQuerySelector,
     nativeQuerySelectorAll,
+    nativeFragmentQuerySelector,
     nativeFragmentQuerySelectorAll,
     nativeGetElementsByTagName,
     nativeGetElementsByTagNameNS,

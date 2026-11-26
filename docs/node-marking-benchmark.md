@@ -376,6 +376,70 @@ after Round 3 on the same machine (`pnpm bench`, Chromium section):
 - **Marginal activation cost** dropped from `11.95 µs/element` (`17.5x`) to
   `10.30 µs/element` (`14.1x`).
 
+## Round four — initial markup, marking, insertion, and cold boot
+
+Round 4 profiled the remaining activation, insertion, re-parenting, and cold-boot
+hot spots over CDP in Chromium 153 and removed the next layer of per-element and
+per-mutation work without compromising durable virtual identity or cross-browser
+fidelity:
+
+- **Single-pass markup preparation (`src/markup.ts`):** Length-preserving ASCII
+  lowercasing (`asciiLower`), fast-path chunked style neutralization, and targeted
+  CSS queries (`[style]`, `[data-v-frame-inert-...]`, URL attribute selectors,
+  `link[rel~="stylesheet" i][href]`, `script`, `base[href]`) replaced repeated
+  full-tree `querySelectorAll("*")` walks and multi-pass string slicing.
+- **Faster initial marking and element creation (`src/facade/marking.ts`):**
+  During the initial pass over documents without inline `on*` candidates, `Attr`
+  nodes are durably marked in a tight zero-string-read loop while leaf `Text`
+  nodes join `virtualNodes` inline without recursing. `adoptCreatedElement` and
+  `adoptAndMark` take direct fast paths for freshly created elements and
+  text/comment nodes, and `isHTMLElementNamed` checks `localName` before
+  `namespaceURI`.
+- **Leaner steady-state mutations (`src/facade/attributes.ts`,
+  `src/facade/insertion.ts`, `src/facade/node-patches.ts`,
+  `src/realm/mutation-observer.ts`):** `managedAttributeFor` fast-rejects ordinary
+  unmanaged attributes (`class`, `id`, `data-*`, `aria-*`), `prepareInsertion`
+  reuses a pooled `SubtreeScan` scratch buffer, single-node `append`/`prepend`
+  skips array allocation, settled re-parents use one targeted post-move candidate
+  query instead of full subtree scans, `textContent` marks its plain text node
+  directly, and the realm `MutationObserver` coalesces `<base>` checks per batch
+  using counted `facadeConnectedCounts`.
+- **Overlapped cold boot (`src/v-frame-element.ts`, `src/facade/events.ts`):**
+  Entry HTML decoding (`readHTMLDocument`) now overlaps with `connectRealmIframe`
+  in `Promise.all`, pristine guest realm `Event` constructor names are cached
+  across mounts on the same host window, and discovered handler event types are
+  reused between `installHandlerProperties` and `installRelays`.
+
+### Numbers
+
+Chromium 153.0.8010.12, AMD Ryzen 7 7800X3D, 2026-11-26, measured against Round 3
+on the same idle machine (`pnpm bench`, Chromium section):
+
+|            |          | 1,000   | 5,000    | 20,000   | 50,000   |
+| ---------- | -------- | ------- | -------- | -------- | -------- |
+| activation | Round 3  | 54.5 ms | 125.7 ms | 303.6 ms | 559.2 ms |
+|            | Round 4  | 38.8 ms | 62.1 ms  | 144.3 ms | 311.3 ms |
+|            | host DOM | 2.0 ms  | 4.6 ms   | 12.8 ms  | 31.0 ms  |
+| insertion  | Round 3  | 17.5 ms | 14.2 ms  | 16.8 ms  | 15.8 ms  |
+|            | Round 4  | 10.2 ms | 11.9 ms  | 9.2 ms   | 9.2 ms   |
+|            | host DOM | 1.5 ms  | 1.3 ms   | 1.3 ms   | 1.3 ms   |
+| re-parent  | Round 3  | 22.3 ms | 21.7 ms  | 31.5 ms  | 45.3 ms  |
+|            | Round 4  | 13.9 ms | 17.0 ms  | 22.0 ms  | 31.4 ms  |
+|            | host DOM | 4.7 ms  | 4.6 ms   | 5.4 ms   | 6.6 ms   |
+
+- **Activation** dropped from `126 / 304 / 559 ms` at 5k/20k/50k to
+  `62 / 144 / 311 ms`, cutting marginal cost nearly in half from
+  `10.30 µs/element` (`14.1x`) to **`5.56 µs/element`** (`9.4x` host DOM) — a
+  ~2.4x marginal speedup over `0.3.0`'s `13.57 µs/element`.
+- **Insertion** dropped from `14.2–17.5 ms` to **`9.2–11.9 ms`** (`6.8–9.2x` host
+  DOM) per 1,000 appended rows — well under a single 60 Hz frame and ~3.5–4x
+  faster than `0.3.0`.
+- **Re-parenting** dropped from `21.7–45.3 ms` to **`13.9–31.4 ms`** (`3.0–4.8x`
+  host DOM) across 1,000 moves of a hundred-node subtree.
+- **Retained JS heap** at 50,000 elements is `8.3–8.9 MB` (`57–61 B/object`), and
+  2,000-row churn retention is `1,242 KB` (`636 B/row`), while `dist/index.js`
+  stays under the `70 KB` gzip budget (`69.6 KB` gzip).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

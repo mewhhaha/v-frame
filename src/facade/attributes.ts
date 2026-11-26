@@ -706,8 +706,28 @@ export function installAttributeFacade(
     element: Element,
     name: string,
     access: "read" | "write",
-  ): ManagedAttribute | undefined =>
-    managedAttributes.find((managed) => managed.matches(element, name, access));
+  ): ManagedAttribute | undefined => {
+    if (!virtualNodes.has(element)) {
+      return undefined;
+    }
+    const c0 = name.charCodeAt(0);
+    const c1 = name.charCodeAt(1);
+    // Fast-reject ordinary unmanaged attributes (class, id, data-*, aria-*, title, etc.)
+    // without walking the managed-attribute table on every get/set/has/remove call.
+    if (
+      name !== "style" &&
+      name !== "rel" &&
+      name !== "src" &&
+      name !== "type" &&
+      name !== options.inlineStyleSelectorAttribute &&
+      name !== FRAGMENT_TARGET_ATTRIBUTE &&
+      !(name.length > 2 && (c0 === 111 || c0 === 79) && (c1 === 110 || c1 === 78)) &&
+      !canHaveURLAttributes(element)
+    ) {
+      return undefined;
+    }
+    return managedAttributes.find((managed) => managed.matches(element, name, access));
+  };
 
   // The authored value of an attribute the facade manages, null when it has
   // none, undefined when the name is not managed and the physical attribute is
@@ -853,7 +873,9 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
-    getVirtualAttributeNode(element, qualifiedName);
+    if (virtualNodes.has(element)) {
+      getVirtualAttributeNode(element, qualifiedName);
+    }
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
@@ -932,7 +954,9 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttributeNS.call(element, namespace, qualifiedName, authoredValue);
-    getVirtualAttributeNodeNS(element, namespace, localName);
+    if (virtualNodes.has(element)) {
+      getVirtualAttributeNodeNS(element, namespace, localName);
+    }
   }
 
   function removeVirtualAttributeNS(

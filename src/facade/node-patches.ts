@@ -100,22 +100,40 @@ export function createNodePatches(
       patch(nodePrototype, "textContent", {
         get: nativeTextContent.get,
         set(this: Node, value: string | null) {
-          const removedNodes = virtualNodes.has(this) ? Array.from(this.childNodes) : [];
+          const virtual = virtualNodes.has(this);
+          const hadChildren = this.firstChild !== null;
+          const connected = this.isConnected;
+          const removedNodes =
+            virtual && hadChildren ? Array.from(this.childNodes) : null;
           const baseElementChanged =
-            isInVirtualDocumentTree(this) && subtreeHasBaseElement(this);
+            hadChildren &&
+            connected &&
+            isInVirtualDocumentTree(this) &&
+            subtreeHasBaseElement(this);
           nativeTextContent.set?.call(this, value);
-          if (virtualNodes.has(this) && this.firstChild !== null) {
-            markVirtualNode(this.firstChild);
+          if (virtual) {
+            const child = this.firstChild;
+            if (child !== null) {
+              if (child.nodeType === 3 && child instanceof window.Node) {
+                virtualNodes.add(child);
+              } else {
+                markVirtualNode(child);
+              }
+            }
           }
-          if (removedNodes.length > 0) {
+          if (removedNodes !== null && removedNodes.length > 0) {
             options.onDisconnectedNodes(removedNodes);
           }
-          styleElementChanged(this);
-          if (baseElementChanged) {
+          if (this.isConnected) {
+            styleElementChanged(this);
+            if (baseElementChanged) {
+              options.onBaseElementChange();
+            }
+            if (virtual && this instanceof window.HTMLScriptElement) {
+              executeConnectedScript(this);
+            }
+          } else if (baseElementChanged) {
             options.onBaseElementChange();
-          }
-          if (virtualNodes.has(this) && this instanceof window.HTMLScriptElement) {
-            executeConnectedScript(this);
           }
         },
       });

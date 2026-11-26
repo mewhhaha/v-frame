@@ -35,10 +35,6 @@ const nativeNonceDescriptor = Object.getOwnPropertyDescriptor(
   "nonce",
 );
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
 function idleNavigationError(method: string): DOMException {
   return new DOMException(
     `v-frame cannot ${method} without an active guest`,
@@ -756,6 +752,10 @@ export class VFrameElement extends HTMLElementBase {
         this.#trustedTypesPolicy !== null,
       )
         .then((connection) => {
+          if (controller.signal.aborted || this.#generation !== generation) {
+            connection.iframe.remove();
+            throw abortError();
+          }
           pendingRealm.iframe = connection.iframe;
           return connection;
         })
@@ -768,7 +768,7 @@ export class VFrameElement extends HTMLElementBase {
       let source: string;
       let connection: ConnectedRealmIframe;
       if (load.adoptedMarkup === null) {
-        const entryResponse = fetch(requestedURL, {
+        const entryDocument = fetch(requestedURL, {
           method: load.request?.method ?? "GET",
           ...(load.request?.body !== undefined ? { body: load.request.body } : {}),
           ...(load.request?.headers !== undefined
@@ -777,22 +777,25 @@ export class VFrameElement extends HTMLElementBase {
           mode: "same-origin",
           credentials: this.credentials,
           signal: controller.signal,
+        }).then(async (response) => {
+          if (!isHTMLDocumentResponse(response)) {
+            void response.body?.cancel().catch(() => {});
+            const status = response.statusText || "without a successful status";
+            let message = `v-frame entry ${requestedURL.href} returned ${response.status} ${status}`;
+            if (response.ok) {
+              message += ` (${response.headers.get("content-type") ?? "no content type"}); expected a 200 text/html document`;
+            }
+            throw new TypeError(message);
+          }
+          const html = await readHTMLDocument(response);
+          return { response, html };
         });
-        const [response, connectedRealm] = await Promise.all([
-          entryResponse,
+        const [{ response, html }, connectedRealm] = await Promise.all([
+          entryDocument,
           connectRealm(requestedURL.href),
         ]);
         connection = connectedRealm;
-        if (!isHTMLDocumentResponse(response)) {
-          void response.body?.cancel().catch(() => {});
-          const status = response.statusText || "without a successful status";
-          let message = `v-frame entry ${requestedURL.href} returned ${response.status} ${status}`;
-          if (response.ok) {
-            message += ` (${response.headers.get("content-type") ?? "no content type"}); expected a 200 text/html document`;
-          }
-          throw new TypeError(message);
-        }
-        source = await readHTMLDocument(response);
+        source = html;
         this.#assertCurrentGeneration(generation, controller.signal);
         const responseURL = parseEntryURL(
           response.url || requestedURL.href,
@@ -924,13 +927,11 @@ export class VFrameElement extends HTMLElementBase {
       return true;
     } catch (error) {
       pendingRealm.iframe?.remove();
-      if (
-        this.#generation !== generation ||
-        controller.signal.aborted ||
-        isAbortError(error)
-      ) {
+      if (this.#generation !== generation || controller.signal.aborted) {
+        controller.abort();
         return false;
       }
+      controller.abort();
 
       const failure = {
         phase:

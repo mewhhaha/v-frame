@@ -290,45 +290,48 @@ the fetch and the parse. "Plain host DOM" is the same markup fetched,
 
 | guest elements | `v-frame` | plain host DOM | overhead |
 | -------------- | --------- | -------------- | -------- |
-| 1,000          | 54.5 ms   | 3.7 ms         | 14.7x    |
-| 5,000          | 125.7 ms  | 5.2 ms         | 24.2x    |
-| 20,000         | 303.6 ms  | 15.7 ms        | 19.3x    |
-| 50,000         | 559.2 ms  | 39.5 ms        | 14.2x    |
+| 1,000          | 38.8 ms   | 2.0 ms         | 19.4x    |
+| 5,000          | 62.1 ms   | 4.6 ms         | 13.5x    |
+| 20,000         | 144.3 ms  | 12.8 ms        | 11.3x    |
+| 50,000         | 311.3 ms  | 31.0 ms        | 10.0x    |
 
 Chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D, 2026-11-26. Each
 cell is the median of three runs and run-to-run spread is about ±10%, so read the
 slope rather than a cell; the overhead column is the noisiest of the four, because
 its denominator is a few milliseconds. The stable figure is the marginal cost:
-**10.3 µs per element for `v-frame`, 0.73 µs for host DOM**. Reproduce with
-`pnpm bench`; the method, and the measurements across all three rounds of
+**5.56 µs per element for `v-frame`, 0.59 µs for host DOM** (`9.4x`). Reproduce
+with `pnpm bench`; the method, and the measurements across all four rounds of
 optimization, are in [`node-marking-benchmark.md`](./node-marking-benchmark.md).
 
-**Insertion into a settled guest** costs about 14–18 ms per 1,000 appended
-elements — roughly 15 µs each against 1.6–2.3 µs for host DOM (6–10x) — and is
+**Insertion into a settled guest** costs about 9–12 ms per 1,000 appended
+elements — roughly 10 µs each against 1.3–1.5 µs for host DOM (6–9x) — and is
 flat in the size of the tree already there, because marking is per inserted
-subtree rather than per document. One 60 Hz frame per thousand rows is the
-budget to plan against.
+subtree rather than per document.
 
 **Re-parenting a settled subtree** — what a list does when it reorders rows —
-runs at roughly 3–6x the cost of plain host DOM for 1,000 moves of a hundred-node
+runs at roughly 3–5x the cost of plain host DOM for 1,000 moves of a hundred-node
 subtree (down from roughly 50–80x originally and 12–20x after Round 2). Marking
 does not run again for a subtree that is already marked and still connected, and
 the insertion path uses a single-pass scan without redundant CSS selector
 parsing. The absolute milliseconds move with machine load — run `pnpm bench` for
 a figure on your own hardware; the ratio is what holds across runs.
 
-**Retained JS heap** is about 7.5–10 MB for a 50,000-element guest against
+**Retained JS heap** is about 7.5–9 MB for a 50,000-element guest against
 220–490 KB for the same markup in the host document, which never gets JS wrappers
 for its nodes at all. This one is chromium-only; see
 [below](#what-firefox-costs).
 
-Three rounds of work produced the numbers above: moving `ownerDocument` and
+Four rounds of work produced the numbers above: moving `ownerDocument` and
 `baseURI` onto `Node.prototype` (Round 1), skipping marking for already-marked
-connected subtrees (Round 2), and capturing native DOM walkers pre-facade,
-caching selector translations, collapsing insertion into a single-pass subtree
-scan, moving reflected URL properties onto HTML element prototypes, making
-CSSOM installation lazy, adding non-URL inline-style fast paths, and replacing
-`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3).
+connected subtrees (Round 2), capturing native DOM walkers pre-facade, caching
+selector translations, collapsing insertion into a single-pass subtree scan,
+moving reflected URL properties onto HTML element prototypes, making CSSOM
+installation lazy, adding non-URL inline-style fast paths, and replacing
+`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3), followed by
+single-pass targeted markup preparation, tight initial `Attr` and leaf `Text`
+marking loops, unmanaged attribute fast-rejection, pooled subtree scans,
+overlapped HTML decoding + realm iframe connection, and pristine Event
+constructor caching (Round 4).
 
 What is left is the walk itself, and it is not going away: visiting every node
 once is irreducible for this design. No version of this runtime has activated a
@@ -336,13 +339,12 @@ large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front
-of it. At 20,000 elements activation is ~0.3 seconds, and at 50,000 it is ~0.56
+of it. At 20,000 elements activation is ~0.14 seconds, and at 50,000 it is ~0.31
 seconds from `src` to `v-frame-load`, most of it synchronous work on the main
-thread — long enough that the choice of runtime is the dominant cost of the
-page. The [SSR path](./ssr.md) moves that cost rather than removing it: the
-server markup paints immediately, so the delay is before the guest is live rather
-than before anything is visible, but the realm still re-parses and marks the same
-tree.
+thread — long enough that the choice of runtime is a major cost of the page. The
+[SSR path](./ssr.md) moves that cost rather than removing it: the server markup
+paints immediately, so the delay is before the guest is live rather than before
+anything is visible, but the realm still re-parses and marks the same tree.
 
 **Instead.** Render pages rather than datasets — virtualize or paginate long
 lists, which keeps the tree at the size the viewport implies instead of the size

@@ -117,6 +117,10 @@ export interface EventFacade {
   dispose(): void;
 }
 
+// Per-host-window cache of browser Event constructor names on a pristine realm
+// window so later mounts avoid scanning every global property.
+const cachedEventConstructorNames = new WeakMap<Window, string[]>();
+
 export function installEventFacade(
   context: FacadeContext,
   mutationObserver: MutationObserverFacade,
@@ -173,6 +177,8 @@ export function installEventFacade(
   const listenerEventSources = new WeakMap<Event, Event>();
   const listenerEvents = new WeakMap<Event, Event>();
   const nativeEventMembers = new WeakMap<object, PropertyDescriptorMap>();
+  const hostWindow = hostDocument.defaultView!;
+  const hostEventPrototype = hostWindow.Event.prototype;
   const nativeEventMember = (
     event: Event,
     property: PropertyKey,
@@ -812,6 +818,7 @@ export function installEventFacade(
     return registry;
   };
 
+  const discoveredHandlerTypes = new Set<string>();
   const installHandlerProperties = (): void => {
     // The window-reflecting handlers HTMLElement lacks only exist on the body
     // interface; the shell body gets them as properties of its own.
@@ -861,6 +868,7 @@ export function installEventFacade(
           }
           names.add(propertyName);
           const eventName = propertyName.slice(2);
+          discoveredHandlerTypes.add(eventName);
           patch(prototype, propertyName, {
             get(this: Element) {
               if (!virtualNodes.has(this)) {
@@ -894,15 +902,16 @@ export function installEventFacade(
   // the same prototypes the handler properties do. Types outside both lists are
   // covered the first time the guest listens for or dispatches them.
   const installRelays = (): void => {
-    const handlerTypes = eventHandlerNames(
-      [
-        window.HTMLElement.prototype,
-        window.SVGElement.prototype,
-        window.Document.prototype,
-      ],
+    for (const eventType of discoveredHandlerTypes) {
+      ensureBoundaryEventRelay(eventType);
+    }
+    for (const eventType of eventHandlerNames(
+      [window.Document.prototype],
       eventTargetPrototype,
-    );
-    for (const eventType of [...handlerTypes, ...HANDLERLESS_UI_EVENT_TYPES]) {
+    )) {
+      ensureBoundaryEventRelay(eventType);
+    }
+    for (const eventType of HANDLERLESS_UI_EVENT_TYPES) {
       ensureBoundaryEventRelay(eventType);
     }
   };
@@ -986,26 +995,49 @@ export function installEventFacade(
       new Set(["preventDefault", "returnValue", "defaultPrevented"]),
     );
     // The window is still pristine here, so every Event subclass on it is one
-    // of the browser's own.
-    for (const name of Object.getOwnPropertyNames(window)) {
-      const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
-      const prototype =
-        typeof member === "function" ? (member.prototype as unknown) : null;
-      if (
-        typeof prototype === "object" &&
-        prototype !== null &&
-        prototype !== eventPrototype &&
-        eventPrototype.isPrototypeOf(prototype)
-      ) {
-        forwardMembers(prototype, new Set());
+    // of the browser's own. Cache the list of constructor names across mounts
+    // in the same host window so subsequent mounts avoid scanning all globals.
+    const emptySkip = new Set<string>();
+    const constructorNames = cachedEventConstructorNames.get(hostWindow);
+    if (constructorNames === undefined) {
+      const discovered: string[] = [];
+      for (const name of Object.getOwnPropertyNames(window)) {
+        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
+        const prototype =
+          typeof member === "function" ? (member.prototype as unknown) : null;
+        if (
+          typeof prototype === "object" &&
+          prototype !== null &&
+          prototype !== eventPrototype &&
+          eventPrototype.isPrototypeOf(prototype)
+        ) {
+          discovered.push(name);
+          forwardMembers(prototype, emptySkip);
+        }
+      }
+      cachedEventConstructorNames.set(hostWindow, discovered);
+    } else {
+      for (const name of constructorNames) {
+        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
+        const prototype =
+          typeof member === "function" ? (member.prototype as unknown) : null;
+        if (
+          typeof prototype === "object" &&
+          prototype !== null &&
+          prototype !== eventPrototype &&
+          eventPrototype.isPrototypeOf(prototype)
+        ) {
+          forwardMembers(prototype, emptySkip);
+        }
       }
     }
     // A host event may expose an interface that the mirrored event does not.
-    // Its native members also require the original receiver.
-    const hostWindow = hostDocument.defaultView!;
+    // Its native members also require the original receiver; snapshotting per
+    // mount lets later mounts see new host subclasses while properties added
+    // after mount still receive the logical event proxy.
     nativeEventMembers.set(
-      hostWindow.Event.prototype,
-      Object.getOwnPropertyDescriptors(hostWindow.Event.prototype),
+      hostEventPrototype,
+      Object.getOwnPropertyDescriptors(hostEventPrototype),
     );
     for (const name of Object.getOwnPropertyNames(hostWindow)) {
       const member: unknown = Object.getOwnPropertyDescriptor(hostWindow, name)?.value;
@@ -1013,7 +1045,7 @@ export function installEventFacade(
       if (
         typeof prototype === "object" &&
         prototype !== null &&
-        hostWindow.Event.prototype.isPrototypeOf(prototype)
+        hostEventPrototype.isPrototypeOf(prototype)
       ) {
         nativeEventMembers.set(prototype, Object.getOwnPropertyDescriptors(prototype));
       }

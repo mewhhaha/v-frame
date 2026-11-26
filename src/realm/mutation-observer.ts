@@ -13,7 +13,7 @@ import { captureNativeDOM, type NativeDOM } from "./native-dom.js";
 interface RealmMutationObserverOptions {
   window: VFrameWindow;
   nativeDOM?: NativeDOM;
-  facadeConnectedNodes?: WeakSet<Node>;
+  facadeConnectedCounts?: WeakMap<Node, number>;
   root: Element;
   styles: DynamicStyles;
   /** The realm's own inline stylesheet, which the pipeline must never rewrite. */
@@ -23,9 +23,18 @@ interface RealmMutationObserverOptions {
   onBaseElementChange(): void;
 }
 
+function consumeCount(counts: WeakMap<Node, number> | undefined, node: Node): boolean {
+  if (counts === undefined) return false;
+  const remaining = counts.get(node);
+  if (remaining === undefined || remaining <= 0) return false;
+  if (remaining === 1) counts.delete(node);
+  else counts.set(node, remaining - 1);
+  return true;
+}
+
 /** Returns the disposer that disconnects the observer. */
 export function observeRealmMutations(options: RealmMutationObserverOptions): () => void {
-  const { window, styles, inlineStyleSheet, facadeConnectedNodes } = options;
+  const { window, styles, inlineStyleSheet, facadeConnectedCounts } = options;
   const nativeDOM = options.nativeDOM ?? captureNativeDOM(window);
 
   // Only HTML-namespace base elements affect the document base URL;
@@ -47,6 +56,7 @@ export function observeRealmMutations(options: RealmMutationObserverOptions): ()
     const linksConnectedWithoutFacade = new Set<HTMLLinkElement>();
     const removedStyles = new Set<HTMLStyleElement>();
     const removedLinks = new Set<HTMLLinkElement>();
+    const checkedRemovedBase = new Set<Node>();
     let baseElementsChanged = false;
     for (const record of records) {
       if (record.type === "childList") {
@@ -57,7 +67,7 @@ export function observeRealmMutations(options: RealmMutationObserverOptions): ()
           stylesWithContentChanges.add(record.target);
         }
         for (const node of record.addedNodes) {
-          if (facadeConnectedNodes?.delete(node) === true) {
+          if (consumeCount(facadeConnectedCounts, node)) {
             continue;
           }
           facade?.markVirtualTree(node);
@@ -74,6 +84,13 @@ export function observeRealmMutations(options: RealmMutationObserverOptions): ()
           baseElementsChanged ||= subtreeHasBaseElement(node);
         }
         for (const node of record.removedNodes) {
+          if (options.isConnectedToRealm(node)) {
+            if (!baseElementsChanged && !checkedRemovedBase.has(node)) {
+              checkedRemovedBase.add(node);
+              baseElementsChanged = subtreeHasBaseElement(node);
+            }
+            continue;
+          }
           for (const style of styles.virtualStylesFrom([node])) {
             removedStyles.add(style);
           }

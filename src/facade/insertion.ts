@@ -5,10 +5,13 @@
 // tree-patches.ts, the Range overrides in selection.ts and innerHTML all go
 // through here.
 
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { FacadeContext, SubtreeScan } from "./context.js";
 import type { NodeMarking } from "./marking.js";
 import type { NodeArguments } from "./node-arguments.js";
 import type { ScriptExecution } from "./script-execution.js";
+
+const SETTLED_MOVE_POST_SELECTOR = "script,style,link,[data-v-frame-target]";
 
 export interface NodeInsertion {
   collectElements(node: Node): Element[];
@@ -42,18 +45,24 @@ export function createNodeInsertion(
     isElementNode,
     isDocumentFragmentNode,
     isHTMLStyleElement,
+    isHTMLLinkElement,
     isHTMLScriptElement,
     isInVirtualDocumentTree,
     subtreeHasBaseElement,
     virtualNodes,
     fragmentNodes,
     document,
+    nativeAppendChild,
+    nativeInsertBefore,
+    nativeHasAttribute,
+    nativeQuerySelector,
     nativeQuerySelectorAll,
+    nativeFragmentQuerySelector,
     nativeFragmentQuerySelectorAll,
   } = context;
   const { markVirtualNode } = marking;
   const { executeConnectedScript } = scripts;
-  const { requireNode, toNodes } = nodeArguments;
+  const { isNodeValue, requireNode, toNodes } = nodeArguments;
 
   const styleMutationBatches = new WeakSet<HTMLStyleElement>();
   const styleElementForMutation = (node: Node): HTMLStyleElement | null => {
@@ -101,26 +110,87 @@ export function createNodeInsertion(
     hasBase: false,
     hasTarget: false,
   });
+  const scratchScan: SubtreeScan = createScan();
+  let scratchInUse = false;
+
+  const isSettledMovePostCandidate = (node: Node): boolean => {
+    if (isElementNode(node)) {
+      return (
+        isHTMLScriptElement(node) ||
+        isHTMLStyleElement(node) ||
+        isHTMLLinkElement(node) ||
+        nativeHasAttribute.call(node, FRAGMENT_TARGET_ATTRIBUTE) ||
+        (node.firstElementChild !== null &&
+          nativeQuerySelector.call(node, SETTLED_MOVE_POST_SELECTOR) !== null)
+      );
+    }
+    if (isDocumentFragmentNode(node)) {
+      return (
+        node.firstElementChild !== null &&
+        nativeFragmentQuerySelector.call(node, SETTLED_MOVE_POST_SELECTOR) !== null
+      );
+    }
+    return false;
+  };
 
   const prepareInsertion = (node: Node, scan?: SubtreeScan): SubtreeScan | undefined => {
     if (!isElementNode(node) && !isDocumentFragmentNode(node)) {
       markVirtualNode(node);
       return scan ?? emptyScan;
     }
-    const targetScan = scan ?? createScan();
-    if (!markVirtualNode(node, targetScan)) {
+    if (scan === undefined && virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
       return undefined;
     }
+    const useScratch = scan === undefined && !scratchInUse;
+    const targetScan = scan ?? (useScratch ? scratchScan : createScan());
+    if (useScratch) {
+      scratchInUse = true;
+      scratchScan.styles.length = 0;
+      scratchScan.links.length = 0;
+      scratchScan.scripts.length = 0;
+      scratchScan.hasBase = false;
+      scratchScan.hasTarget = false;
+    }
+    try {
+      if (!markVirtualNode(node, targetScan)) {
+        return undefined;
+      }
 
-    const nonce = options.getNonce();
-    if (nonce !== "" && targetScan.styles.length > 0) {
-      for (const element of targetScan.styles) {
-        if (!fragmentNodes.has(element)) {
-          element.nonce = nonce;
+      const nonce = options.getNonce();
+      if (nonce !== "" && targetScan.styles.length > 0) {
+        for (const element of targetScan.styles) {
+          if (!fragmentNodes.has(element)) {
+            element.nonce = nonce;
+          }
         }
       }
+      if (!useScratch) {
+        return targetScan;
+      }
+      if (
+        scratchScan.styles.length === 0 &&
+        scratchScan.links.length === 0 &&
+        scratchScan.scripts.length === 0 &&
+        !scratchScan.hasBase &&
+        !scratchScan.hasTarget
+      ) {
+        return emptyScan;
+      }
+      return {
+        styles: scratchScan.styles.slice(),
+        links: scratchScan.links.slice(),
+        scripts: scratchScan.scripts.slice(),
+        hasBase: scratchScan.hasBase,
+        hasTarget: scratchScan.hasTarget,
+      };
+    } finally {
+      if (useScratch) {
+        scratchScan.styles.length = 0;
+        scratchScan.links.length = 0;
+        scratchScan.scripts.length = 0;
+        scratchInUse = false;
+      }
     }
-    return targetScan;
   };
 
   const insertedNodes = (node: Node): Node[] =>
@@ -205,7 +275,13 @@ export function createNodeInsertion(
       scan !== undefined ? scan.hasBase : nodes.some(subtreeHasBaseElement);
     const result = operation();
     if (parent.isConnected) {
-      finishInsertion(nodes, baseElementChanged, scan);
+      const resolvedScan =
+        scan !== undefined
+          ? scan
+          : nodes.some(isSettledMovePostCandidate)
+            ? undefined
+            : emptyScan;
+      finishInsertion(nodes, baseElementChanged, resolvedScan);
       if (isElementNode(parent) && isHTMLScriptElement(parent)) {
         executeConnectedScript(parent);
       }
@@ -253,6 +329,20 @@ export function createNodeInsertion(
     values: Array<Node | string>,
     prepend: boolean,
   ): void => {
+    if (
+      values.length === 1 &&
+      isNodeValue(values[0]) &&
+      virtualNodes.has(parent) &&
+      !(isElementNode(parent) && isHTMLStyleElement(parent))
+    ) {
+      const node = values[0];
+      insert(parent, node, prepend ? "prepend" : "append", () =>
+        prepend
+          ? nativeInsertBefore.call(parent, node, parent.firstChild)
+          : nativeAppendChild.call(parent, node),
+      );
+      return;
+    }
     const nodes = toNodes(values);
     performStyleMutationBatch(parent, () => {
       const node = convertToNode(nodes);

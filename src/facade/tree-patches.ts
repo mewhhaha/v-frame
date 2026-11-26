@@ -191,7 +191,7 @@ export function createTreePatches(
               combinedScan = undefined;
             }
           }
-          const inserted = nodes.flatMap(insertedNodes);
+          const inserted = Array.from(new Set(nodes.flatMap(insertedNodes)));
           const removed = Array.from(this.childNodes);
           const baseElementChanged =
             this.isConnected &&
