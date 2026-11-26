@@ -3,6 +3,24 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 - 2026-11-26
+
+### Changed
+
+- Optimized initial markup preparation, initial marking, steady-state DOM
+  mutations, re-parenting, and cold realm boot (Round 4): eliminated full-tree
+  `querySelectorAll("*")` walks and multi-pass string slicing in `src/markup.ts`,
+  added a zero-string-read initial `Attr` marking loop plus inline leaf `Text`
+  marking and fast paths for freshly created elements and unmanaged attributes,
+  pooled insertion `SubtreeScan` buffers, used a single post-move candidate query
+  for settled re-parents, coalesced mutation-observer `<base>` checks, overlapped
+  entry HTML decoding with realm iframe connection, and cached pristine guest
+  realm `Event` constructor names across mounts. In Chromium 153 benchmarks
+  (`pnpm bench`), marginal activation cost fell nearly 2x (`10.30` →
+  `5.56 µs/element`; 50k elements in `~311 ms`), 1,000-row insertion fell from
+  `14–18 ms` to `9–12 ms`, and 1,000 settled subtree re-parents fell to
+  `3–5x` plain host DOM, while `dist/index.js` stayed under `70 KB` gzipped.
+
 ## 0.4.0 - 2026-11-26
 
 ### Added
@@ -22,20 +40,15 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Replaced `css-tree` with a zero-dependency CSS Syntax Level 3 tokenizer and
-  rewriter (`src/css.ts`), keeping the browser runtime (`dist/index.js`) under
-  70 KB gzipped (~11 KB smaller than with `css-tree`).
-- Optimized initial markup preparation, marking, steady-state DOM mutations,
-  re-parenting, CSSOM, and cold realm boot: eliminated full-tree
-  `querySelectorAll("*")` passes in `src/markup.ts`, added tight initial `Attr`
-  and leaf `Text` marking loops plus fast paths for fresh element creation and
-  unmanaged attributes, pooled insertion scans, moved reflected HTML URL
-  properties onto realm prototypes, made CSSOM installation lazy, added non-URL
-  inline-style fast paths with microtask-batched finalizer cleanup, and
-  overlapped entry HTML decoding with realm iframe connection. In Chromium 153
-  benchmarks (`pnpm bench`), marginal activation cost fell ~2.4x (`13.6` →
-  `5.56 µs/element`; 50k elements in `~311 ms`), 1,000-row insertion fell to
-  `9–12 ms` (`~3–4x` faster), and 1,000 settled subtree re-parents fell to
-  `3–5x` plain host DOM.
+  rewriter (`src/css.ts`), reducing the browser runtime bundle (`dist/index.js`)
+  by ~11 KB gzip (`78.7 KB` → `67.7 KB`).
+- Captured native DOM walkers before facade patching, added selector translation
+  fast paths and caching, collapsed insertion bookkeeping into a single-pass
+  subtree scan, moved reflected HTML URL properties onto realm prototypes, made
+  CSSOM installation lazy on first `.sheet` / `document.styleSheets` access,
+  added an inline-style non-URL fast path, and microtask-batched inline-style
+  finalizer cleanup — cutting insertion latency ~2x and re-parenting latency
+  2–3x in Chromium benchmarks.
 
 ## 0.3.0 - 2026-11-26
 
