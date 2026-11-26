@@ -1,6 +1,6 @@
 {
   "name": "@mewhhaha/v-frame",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Render a trusted web application in a shadow tree backed by an isolated browser realm",
   "type": "module",
   "devEngines": {

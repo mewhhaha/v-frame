@@ -29,33 +29,21 @@ const URL_PROPERTY_NAMES = [
   "data",
 ] as const;
 
-const URL_PROPERTY_PROTOTYPES: ReadonlyArray<
-  readonly [constructorName: string, propertyName: (typeof URL_PROPERTY_NAMES)[number]]
+const REFLECTED_URL_GROUPS: ReadonlyArray<
+  readonly [propertyName: string, stems: readonly string[]]
 > = [
-  ["HTMLAnchorElement", "href"],
-  ["HTMLAreaElement", "href"],
-  ["HTMLBaseElement", "href"],
-  ["HTMLLinkElement", "href"],
-  ["HTMLImageElement", "src"],
-  ["HTMLScriptElement", "src"],
-  ["HTMLIFrameElement", "src"],
-  ["HTMLMediaElement", "src"],
-  ["HTMLSourceElement", "src"],
-  ["HTMLTrackElement", "src"],
-  ["HTMLEmbedElement", "src"],
-  ["HTMLInputElement", "src"],
-  ["HTMLFormElement", "action"],
-  ["HTMLButtonElement", "formAction"],
-  ["HTMLInputElement", "formAction"],
-  ["HTMLVideoElement", "poster"],
-  ["HTMLQuoteElement", "cite"],
-  ["HTMLModElement", "cite"],
-  ["HTMLObjectElement", "data"],
+  ["href", ["Anchor", "Area", "Base", "Link"]],
+  ["src", ["Image", "Script", "IFrame", "Media", "Source", "Track", "Embed", "Input"]],
+  ["action", ["Form"]],
+  ["formAction", ["Button", "Input"]],
+  ["poster", ["Video"]],
+  ["cite", ["Quote", "Mod"]],
+  ["data", ["Object"]],
+  ["srcset", ["Image", "Source"]],
 ];
 
-const SRCSET_PROPERTY_PROTOTYPES = ["HTMLImageElement", "HTMLSourceElement"] as const;
-
 export interface AttributeFacade {
+  urlPropertiesPrototypeWide: boolean;
   urlAttributeKey(
     element: Element,
     attributeName: string,
@@ -343,21 +331,36 @@ export function installAttributeFacade(
     string,
     { prototype?: object } | undefined
   >;
-  const urlPropertiesPrototypeWide =
-    URL_PROPERTY_PROTOTYPES.every(([ctorName, propertyName]) => {
-      const prototype = realmGlobals[ctorName]?.prototype;
+  const reflectedURLPatches: Array<
+    readonly [
+      prototype: object,
+      propertyName: string,
+      attributeName: string,
+      nativeGet: () => unknown,
+      nativeSet: (value: unknown) => void,
+    ]
+  > = [];
+  let urlPropertiesPrototypeWide = true;
+  for (const [propertyName, stems] of REFLECTED_URL_GROUPS) {
+    const attributeName = propertyName === "formAction" ? "formaction" : propertyName;
+    for (const stem of stems) {
+      const prototype = realmGlobals[`HTML${stem}Element`]?.prototype;
       const descriptor = prototype
         ? Object.getOwnPropertyDescriptor(prototype, propertyName)
         : undefined;
-      return Boolean(descriptor?.get && descriptor?.set);
-    }) &&
-    SRCSET_PROPERTY_PROTOTYPES.every((ctorName) => {
-      const prototype = realmGlobals[ctorName]?.prototype;
-      const descriptor = prototype
-        ? Object.getOwnPropertyDescriptor(prototype, "srcset")
-        : undefined;
-      return Boolean(descriptor?.get && descriptor?.set);
-    });
+      if (prototype === undefined || !descriptor?.get || !descriptor?.set) {
+        urlPropertiesPrototypeWide = false;
+        continue;
+      }
+      reflectedURLPatches.push([
+        prototype,
+        propertyName,
+        attributeName,
+        descriptor.get,
+        descriptor.set,
+      ]);
+    }
+  }
 
   const markURLProperties = (element: Element) => {
     if (
@@ -748,13 +751,11 @@ export function installAttributeFacade(
       : logical;
   }
 
-  function getVirtualAttributeNS(
+  const logicalAttributeNS = (
     element: Element,
     namespaceURI: string | null,
     localName: string,
-  ): string | null {
-    namespaceURI = toNullableDOMString(namespaceURI);
-    localName = toDOMString(localName);
+  ): string | null | undefined => {
     // With no namespace, the lookup covers the same managed attributes as
     // getAttribute. localName stays case-sensitive, so only the canonical
     // lowercase spelling can name a managed attribute.
@@ -774,7 +775,20 @@ export function installAttributeFacade(
         return authoredAttributes.get(attributeName) ?? null;
       }
     }
-    return nativeGetAttributeNS.call(element, namespaceURI, localName);
+    return undefined;
+  };
+
+  function getVirtualAttributeNS(
+    element: Element,
+    namespaceURI: string | null,
+    localName: string,
+  ): string | null {
+    namespaceURI = toNullableDOMString(namespaceURI);
+    localName = toDOMString(localName);
+    const logical = logicalAttributeNS(element, namespaceURI, localName);
+    return logical === undefined
+      ? nativeGetAttributeNS.call(element, namespaceURI, localName)
+      : logical;
   }
 
   function hasVirtualAttribute(element: Element, qualifiedName: string): boolean {
@@ -792,25 +806,10 @@ export function installAttributeFacade(
   ): boolean {
     namespaceURI = toNullableDOMString(namespaceURI);
     localName = toDOMString(localName);
-    // Mirrors getVirtualAttributeNS: null-namespace lookups resolve the same
-    // managed attributes as hasAttribute.
-    if (
-      (namespaceURI === null || namespaceURI === "") &&
-      localName === localName.toLowerCase()
-    ) {
-      const logical = logicalAttribute(element, localName);
-      if (logical !== undefined) {
-        return logical !== null;
-      }
-    }
-    if (virtualNodes.has(element)) {
-      const attributeName = urlAttributeKey(element, localName, namespaceURI);
-      const authoredAttributes = options.authoredURLAttributes.get(element);
-      if (attributeName !== null && authoredAttributes?.has(attributeName) === true) {
-        return true;
-      }
-    }
-    return nativeHasAttributeNS.call(element, namespaceURI, localName);
+    const logical = logicalAttributeNS(element, namespaceURI, localName);
+    return logical === undefined
+      ? nativeHasAttributeNS.call(element, namespaceURI, localName)
+      : logical !== null;
   }
 
   function getVirtualAttributeNames(element: Element): string[] {
@@ -1030,12 +1029,6 @@ export function installAttributeFacade(
   }
 
   const installPatches = (): void => {
-    patch(elementPrototype, "getAttribute", {
-      writable: true,
-      value(this: Element, qualifiedName: string): string | null {
-        return getVirtualAttribute(this, qualifiedName);
-      },
-    });
     patch(elementPrototype, "getBoundingClientRect", {
       writable: true,
       value(this: Element): DOMRect {
@@ -1052,46 +1045,29 @@ export function installAttributeFacade(
           : nativeGetClientRects.call(this);
       },
     });
-    patch(elementPrototype, "getAttributeNS", {
-      writable: true,
-      value(
-        this: Element,
-        namespaceURI: string | null,
-        localName: string,
-      ): string | null {
-        return getVirtualAttributeNS(this, namespaceURI, localName);
-      },
-    });
-    patch(elementPrototype, "hasAttribute", {
-      writable: true,
-      value(this: Element, qualifiedName: string): boolean {
-        return hasVirtualAttribute(this, qualifiedName);
-      },
-    });
-    patch(elementPrototype, "hasAttributeNS", {
-      writable: true,
-      value(this: Element, namespaceURI: string | null, localName: string): boolean {
-        return hasVirtualAttributeNS(this, namespaceURI, localName);
-      },
-    });
-    patch(elementPrototype, "getAttributeNames", {
-      writable: true,
-      value(this: Element): string[] {
-        return getVirtualAttributeNames(this);
-      },
-    });
-    patch(elementPrototype, "getAttributeNode", {
-      writable: true,
-      value(this: Element, qualifiedName: string): Attr | null {
-        return getVirtualAttributeNode(this, qualifiedName);
-      },
-    });
-    patch(elementPrototype, "getAttributeNodeNS", {
-      writable: true,
-      value(this: Element, namespaceURI: string | null, localName: string): Attr | null {
-        return getVirtualAttributeNodeNS(this, namespaceURI, localName);
-      },
-    });
+    for (const [name, fn] of [
+      ["getAttribute", getVirtualAttribute],
+      ["getAttributeNS", getVirtualAttributeNS],
+      ["hasAttribute", hasVirtualAttribute],
+      ["hasAttributeNS", hasVirtualAttributeNS],
+      ["getAttributeNames", getVirtualAttributeNames],
+      ["getAttributeNode", getVirtualAttributeNode],
+      ["getAttributeNodeNS", getVirtualAttributeNodeNS],
+      ["setAttribute", setVirtualAttribute],
+      ["removeAttribute", removeVirtualAttribute],
+      ["removeAttributeNS", removeVirtualAttributeNS],
+      ["toggleAttribute", toggleVirtualAttribute],
+      ["setAttributeNS", setVirtualAttributeNS],
+    ] as ReadonlyArray<
+      readonly [string, (el: Element, a: never, b: never, c: never) => unknown]
+    >) {
+      patch(elementPrototype, name, {
+        writable: true,
+        value(this: Element, a: never, b: never, c: never) {
+          return fn(this, a, b, c);
+        },
+      });
+    }
     const nativeAttributesGetter = nativeAttributes?.get;
     if (nativeAttributesGetter !== undefined) {
       patch(elementPrototype, "attributes", {
@@ -1103,42 +1079,6 @@ export function installAttributeFacade(
         },
       });
     }
-
-    patch(elementPrototype, "setAttribute", {
-      writable: true,
-      value(this: Element, qualifiedName: string, value: string) {
-        setVirtualAttribute(this, qualifiedName, value);
-      },
-    });
-    patch(elementPrototype, "removeAttribute", {
-      writable: true,
-      value(this: Element, qualifiedName: string): void {
-        removeVirtualAttribute(this, qualifiedName);
-      },
-    });
-    patch(elementPrototype, "removeAttributeNS", {
-      writable: true,
-      value(this: Element, namespaceURI: string | null, localName: string): void {
-        removeVirtualAttributeNS(this, namespaceURI, localName);
-      },
-    });
-    patch(elementPrototype, "toggleAttribute", {
-      writable: true,
-      value(this: Element, qualifiedName: string, force?: boolean): boolean {
-        return toggleVirtualAttribute(this, qualifiedName, force);
-      },
-    });
-    patch(elementPrototype, "setAttributeNS", {
-      writable: true,
-      value(
-        this: Element,
-        namespace: string | null,
-        qualifiedName: string,
-        value: string,
-      ) {
-        setVirtualAttributeNS(this, namespace, qualifiedName, value);
-      },
-    });
     patch(window.Attr.prototype, "ownerDocument", {
       get(this: Attr): Document | null {
         if (
@@ -1150,51 +1090,32 @@ export function installAttributeFacade(
         return nativeOwnerDocument?.get?.call(this) ?? null;
       },
     });
-    for (const [ctorName, propertyName] of URL_PROPERTY_PROTOTYPES) {
-      const prototype = realmGlobals[ctorName]?.prototype;
-      const descriptor = prototype
-        ? Object.getOwnPropertyDescriptor(prototype, propertyName)
-        : undefined;
-      if (prototype === undefined || !descriptor?.get || !descriptor?.set) {
-        continue;
-      }
-      const attributeName = propertyName === "formAction" ? "formaction" : propertyName;
-      const nativeGet = descriptor.get;
-      const nativeSet = descriptor.set;
+    for (const [
+      prototype,
+      propertyName,
+      attributeName,
+      nativeGet,
+      nativeSet,
+    ] of reflectedURLPatches) {
+      const isSrcset = propertyName === "srcset";
       patch(prototype, propertyName, {
         get(this: Element): string {
-          return virtualNodes.has(this)
-            ? readVirtualURLProperty(this, propertyName, attributeName)
-            : (nativeGet.call(this) as string);
-        },
-        set(this: Element, value: string) {
-          if (virtualNodes.has(this)) {
-            setVirtualAttribute(this, attributeName, toUSVString(value));
-            return;
-          }
-          nativeSet.call(this, value);
-        },
-      });
-    }
-    for (const ctorName of SRCSET_PROPERTY_PROTOTYPES) {
-      const prototype = realmGlobals[ctorName]?.prototype;
-      const descriptor = prototype
-        ? Object.getOwnPropertyDescriptor(prototype, "srcset")
-        : undefined;
-      if (prototype === undefined || !descriptor?.get || !descriptor?.set) {
-        continue;
-      }
-      const nativeGet = descriptor.get;
-      const nativeSet = descriptor.set;
-      patch(prototype, "srcset", {
-        get(this: Element): string {
-          return virtualNodes.has(this)
+          if (!virtualNodes.has(this)) return nativeGet.call(this) as string;
+          return isSrcset
             ? (options.authoredURLAttributes.get(this)?.get("srcset") ?? "")
-            : (nativeGet.call(this) as string);
+            : readVirtualURLProperty(
+                this,
+                propertyName as (typeof URL_PROPERTY_NAMES)[number],
+                attributeName,
+              );
         },
         set(this: Element, value: string) {
           if (virtualNodes.has(this)) {
-            setVirtualAttribute(this, "srcset", toDOMString(value));
+            setVirtualAttribute(
+              this,
+              attributeName,
+              isSrcset ? toDOMString(value) : toUSVString(value),
+            );
             return;
           }
           nativeSet.call(this, value);
@@ -1204,6 +1125,7 @@ export function installAttributeFacade(
   };
 
   return {
+    urlPropertiesPrototypeWide,
     urlAttributeKey,
     markURLProperties,
     markSVGURLProperty,

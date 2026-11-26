@@ -290,48 +290,52 @@ the fetch and the parse. "Plain host DOM" is the same markup fetched,
 
 | guest elements | `v-frame` | plain host DOM | overhead |
 | -------------- | --------- | -------------- | -------- |
-| 1,000          | 38.8 ms   | 2.0 ms         | 19.4x    |
-| 5,000          | 62.1 ms   | 4.6 ms         | 13.5x    |
-| 20,000         | 144.3 ms  | 12.8 ms        | 11.3x    |
-| 50,000         | 311.3 ms  | 31.0 ms        | 10.0x    |
+| 1,000          | 39.7 ms   | 2.5 ms         | 15.9x    |
+| 5,000          | 60.8 ms   | 4.3 ms         | 14.1x    |
+| 20,000         | 142.6 ms  | 12.7 ms        | 11.2x    |
+| 50,000         | 294.4 ms  | 32.1 ms        | 9.2x     |
 
 Chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D, 2026-11-26. Each
 cell is the median of three runs and run-to-run spread is about ±10%, so read the
 slope rather than a cell; the overhead column is the noisiest of the four, because
 its denominator is a few milliseconds. The stable figure is the marginal cost:
-**5.56 µs per element for `v-frame`, 0.59 µs for host DOM** (`9.4x`). Reproduce
-with `pnpm bench`; the method, and the measurements across all four rounds of
+**5.20 µs per element for `v-frame`, 0.60 µs for host DOM** (`8.6x`). Reproduce
+with `pnpm bench`; the method, and the measurements across all five rounds of
 optimization, are in [`node-marking-benchmark.md`](./node-marking-benchmark.md).
 
-**Insertion into a settled guest** costs about 9–12 ms per 1,000 appended
-elements — roughly 10 µs each against 1.3–1.5 µs for host DOM (6–9x) — and is
+**Insertion into a settled guest** costs about 9–11 ms per 1,000 appended
+elements — roughly 10 µs each against 1.4–1.6 µs for host DOM (6–7x) — and is
 flat in the size of the tree already there, because marking is per inserted
 subtree rather than per document.
 
 **Re-parenting a settled subtree** — what a list does when it reorders rows —
-runs at roughly 3–5x the cost of plain host DOM for 1,000 moves of a hundred-node
+runs at roughly 3–4x the cost of plain host DOM for 1,000 moves of a hundred-node
 subtree (down from roughly 50–80x originally and 12–20x after Round 2). Marking
 does not run again for a subtree that is already marked and still connected, and
-the insertion path uses a single-pass scan without redundant CSS selector
-parsing. The absolute milliseconds move with machine load — run `pnpm bench` for
-a figure on your own hardware; the ratio is what holds across runs.
+the single realm mutation observer tracks connected special elements in a bounded
+index so pure single-node self-moves skip subtree scans and observer churn. The
+absolute milliseconds move with machine load — run `pnpm bench` for a figure on
+your own hardware; the ratio is what holds across runs.
 
-**Retained JS heap** is about 7.5–9 MB for a 50,000-element guest against
+**Retained JS heap** is about 7.5–8.5 MB for a 50,000-element guest against
 220–490 KB for the same markup in the host document, which never gets JS wrappers
 for its nodes at all. This one is chromium-only; see
 [below](#what-firefox-costs).
 
-Four rounds of work produced the numbers above: moving `ownerDocument` and
+Five rounds of work produced the numbers above: moving `ownerDocument` and
 `baseURI` onto `Node.prototype` (Round 1), skipping marking for already-marked
 connected subtrees (Round 2), capturing native DOM walkers pre-facade, caching
 selector translations, collapsing insertion into a single-pass subtree scan,
 moving reflected URL properties onto HTML element prototypes, making CSSOM
 installation lazy, adding non-URL inline-style fast paths, and replacing
-`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3), followed by
-single-pass targeted markup preparation, tight initial `Attr` and leaf `Text`
-marking loops, unmanaged attribute fast-rejection, pooled subtree scans,
-overlapped HTML decoding + realm iframe connection, and pristine Event
-constructor caching (Round 4).
+`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3), single-pass
+targeted markup preparation, tight initial `Attr` and leaf `Text` marking loops,
+unmanaged attribute fast-rejection, pooled subtree scans, overlapped HTML
+decoding + realm iframe connection, and pristine Event constructor caching
+(Round 4), and finally a bounded special-element index with pure self-move fast
+paths, ownership-only initial marking with `hasAttributes()` guards, synchronous
+`replaceState` on engines that complete `document.close()` synchronously, and
+opt-in `VFrameElement.prewarm()` via `moveBefore` (Round 5).
 
 What is left is the walk itself, and it is not going away: visiting every node
 once is irreducible for this design. No version of this runtime has activated a
@@ -339,7 +343,7 @@ large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front
-of it. At 20,000 elements activation is ~0.14 seconds, and at 50,000 it is ~0.31
+of it. At 20,000 elements activation is ~0.14 seconds, and at 50,000 it is ~0.29
 seconds from `src` to `v-frame-load`, most of it synchronous work on the main
 thread — long enough that the choice of runtime is a major cost of the page. The
 [SSR path](./ssr.md) moves that cost rather than removing it: the server markup
@@ -355,33 +359,30 @@ README](../README.md#what-you-are-trading) are what you would be giving up.
 
 ### What firefox costs
 
-The tables above are chromium. Firefox pays the same shape of cost and more of
-it: the same guests, the same harness, the same machine, `pnpm bench` measuring
-chromium and firefox in one run (WebKit is not benchmarked).
+The tables above are chromium. Firefox pays the same shape of cost and slightly
+more of it on insertion: the same guests, the same harness, the same machine,
+`pnpm bench` measuring chromium and firefox in one run (WebKit is not
+benchmarked).
 
 | guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
 | -------------- | ------------------ | ----------------- | ----------------- | ---------------- |
-| 1,000          | 37 ms              | 35 ms             | 2.3 ms            | 2 ms             |
-| 5,000          | 83 ms              | 92 ms             | 4.7 ms            | 7 ms             |
-| 20,000         | 276 ms             | 340 ms            | 17 ms             | 23 ms            |
-| 50,000         | 694 ms             | 846 ms            | 33 ms             | 52 ms            |
+| 1,000          | 39.7 ms            | 32 ms             | 2.5 ms            | 2 ms             |
+| 5,000          | 60.8 ms            | 54 ms             | 4.3 ms            | 6 ms             |
+| 20,000         | 142.6 ms           | 148 ms            | 12.7 ms           | 17 ms            |
+| 50,000         | 294.4 ms           | 338 ms            | 32.1 ms           | 40 ms            |
 
-Firefox 151.0 and chromium 149.0.7827.55, headless, on an AMD Ryzen 7 7800X3D,
-2026-08-01. All four columns come from one `pnpm bench` run, so they are
-comparable to each other; they are a _different_ run from the chromium table
-above, which is why individual cells differ from it by 20–30% — that is the
-run-to-run spread, and it is why the ratio rather than any cell is the figure to
-read.
+Firefox 155.0 and chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D,
+2026-11-26. All four columns come from one `pnpm bench` run, so they are
+comparable to each other. Marginal activation cost is **6.24 µs/element** on
+firefox (`8.1x` host DOM's `0.78 µs/element`) vs **5.20 µs/element** on
+chromium (`8.6x` host DOM's `0.60 µs/element`) — about 1.2x chromium in absolute
+milliseconds and slightly lower relative overhead.
 
-Across the runs taken that day the marginal activation cost was consistently
-higher on firefox than on chromium, but by an unstable margin — measurements
-ranged from about 1.03x to 1.24x. Read it as _firefox is somewhat dearer, never
-dramatically so_; the sample is too noisy to support a specific multiple.
-
-Insertion is the wider gap: about **66–79 ms per 1,000 appended elements against
-chromium's 32–44** across the two runs — very close to double — and still flat in
-the size of the tree already there. Re-parenting is the narrower one, 66–96 ms
-against 57–91 ms, because the work the gate skips is skipped in both engines measured.
+Insertion is the wider gap: **25–26 ms per 1,000 appended elements on firefox
+against chromium's 9.4–10.8 ms** (down from 66–79 ms originally) — still flat in
+the size of the tree already there. Re-parenting tracks chromium closely at
+**14–37 ms** (`2.5–6.2x` host DOM, down from 66–96 ms originally), because the
+settled-move fast path skips the same work in both engines.
 
 Every firefox reading above is a whole millisecond, and that is the clock rather
 than a coincidence: 20 consecutive `performance.now()` calls in a Playwright

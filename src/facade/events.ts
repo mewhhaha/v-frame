@@ -120,6 +120,17 @@ export interface EventFacade {
 // Per-host-window cache of browser Event constructor names on a pristine realm
 // window so later mounts avoid scanning every global property.
 const cachedEventConstructorNames = new WeakMap<Window, string[]>();
+const MIRRORED_EVENT_NAMES = [
+  "PointerEvent",
+  "WheelEvent",
+  "DragEvent",
+  "MouseEvent",
+  "KeyboardEvent",
+  "InputEvent",
+  "SubmitEvent",
+  "FocusEvent",
+  "CustomEvent",
+] as const;
 
 export function installEventFacade(
   context: FacadeContext,
@@ -261,49 +272,26 @@ export function installEventFacade(
         return Reflect.get(source, property, source);
       },
     });
-    let mirrored: Event;
+    let mirrored: Event | undefined;
     try {
-      if (
-        hostWindow !== null &&
-        typeof hostWindow.PointerEvent === "function" &&
-        source instanceof hostWindow.PointerEvent &&
-        typeof window.PointerEvent === "function"
-      ) {
-        mirrored = new window.PointerEvent(source.type, eventInit as PointerEventInit);
-      } else if (hostWindow !== null && source instanceof hostWindow.WheelEvent) {
-        mirrored = new window.WheelEvent(source.type, eventInit as WheelEventInit);
-      } else if (
-        hostWindow !== null &&
-        typeof hostWindow.DragEvent === "function" &&
-        source instanceof hostWindow.DragEvent &&
-        typeof window.DragEvent === "function"
-      ) {
-        mirrored = new window.DragEvent(source.type, eventInit as DragEventInit);
-      } else if (hostWindow !== null && source instanceof hostWindow.MouseEvent) {
-        mirrored = new window.MouseEvent(source.type, eventInit as MouseEventInit);
-      } else if (hostWindow !== null && source instanceof hostWindow.KeyboardEvent) {
-        mirrored = new window.KeyboardEvent(source.type, eventInit as KeyboardEventInit);
-      } else if (
-        hostWindow !== null &&
-        typeof hostWindow.InputEvent === "function" &&
-        source instanceof hostWindow.InputEvent &&
-        typeof window.InputEvent === "function"
-      ) {
-        mirrored = new window.InputEvent(source.type, eventInit as InputEventInit);
-      } else if (
-        hostWindow !== null &&
-        typeof hostWindow.SubmitEvent === "function" &&
-        source instanceof hostWindow.SubmitEvent &&
-        typeof window.SubmitEvent === "function"
-      ) {
-        mirrored = new window.SubmitEvent(source.type, eventInit as SubmitEventInit);
-      } else if (hostWindow !== null && source instanceof hostWindow.FocusEvent) {
-        mirrored = new window.FocusEvent(source.type, eventInit as FocusEventInit);
-      } else if (hostWindow !== null && source instanceof hostWindow.CustomEvent) {
-        mirrored = new window.CustomEvent(source.type, eventInit as CustomEventInit);
-      } else {
-        mirrored = new window.Event(source.type, eventInit);
+      if (hostWindow !== null) {
+        const hostRecord = hostWindow as unknown as Record<string, unknown>;
+        const guestRecord = window as unknown as Record<string, unknown>;
+        for (const name of MIRRORED_EVENT_NAMES) {
+          const HostCtor = hostRecord[name];
+          if (typeof HostCtor === "function" && source instanceof HostCtor) {
+            const GuestCtor = guestRecord[name];
+            if (typeof GuestCtor === "function") {
+              mirrored = new (GuestCtor as new (type: string, init?: EventInit) => Event)(
+                source.type,
+                eventInit,
+              );
+              break;
+            }
+          }
+        }
       }
+      mirrored ??= new window.Event(source.type, eventInit);
     } catch {
       mirrored = new window.Event(source.type, {
         bubbles: source.bubbles,
@@ -850,6 +838,7 @@ export function installEventFacade(
     ]) {
       let prototype: object | null = startingPrototype;
       while (prototype !== null && prototype !== eventTargetPrototype) {
+        let names = patchedEventHandlerProperties.get(prototype);
         for (const propertyName of Object.getOwnPropertyNames(prototype)) {
           if (!propertyName.startsWith("on")) {
             continue;
@@ -858,7 +847,6 @@ export function installEventFacade(
           if (descriptor?.get === undefined || descriptor.set === undefined) {
             continue;
           }
-          let names = patchedEventHandlerProperties.get(prototype);
           if (names === undefined) {
             names = new Set();
             patchedEventHandlerProperties.set(prototype, names);
@@ -998,38 +986,24 @@ export function installEventFacade(
     // of the browser's own. Cache the list of constructor names across mounts
     // in the same host window so subsequent mounts avoid scanning all globals.
     const emptySkip = new Set<string>();
-    const constructorNames = cachedEventConstructorNames.get(hostWindow);
-    if (constructorNames === undefined) {
-      const discovered: string[] = [];
-      for (const name of Object.getOwnPropertyNames(window)) {
-        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
-        const prototype =
-          typeof member === "function" ? (member.prototype as unknown) : null;
-        if (
-          typeof prototype === "object" &&
-          prototype !== null &&
-          prototype !== eventPrototype &&
-          eventPrototype.isPrototypeOf(prototype)
-        ) {
-          discovered.push(name);
-          forwardMembers(prototype, emptySkip);
-        }
+    const cachedNames = cachedEventConstructorNames.get(hostWindow);
+    const discovered = cachedNames === undefined ? ([] as string[]) : undefined;
+    for (const name of cachedNames ?? Object.getOwnPropertyNames(window)) {
+      const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
+      const prototype =
+        typeof member === "function" ? (member.prototype as unknown) : null;
+      if (
+        typeof prototype === "object" &&
+        prototype !== null &&
+        prototype !== eventPrototype &&
+        eventPrototype.isPrototypeOf(prototype)
+      ) {
+        discovered?.push(name);
+        forwardMembers(prototype, emptySkip);
       }
+    }
+    if (discovered !== undefined) {
       cachedEventConstructorNames.set(hostWindow, discovered);
-    } else {
-      for (const name of constructorNames) {
-        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
-        const prototype =
-          typeof member === "function" ? (member.prototype as unknown) : null;
-        if (
-          typeof prototype === "object" &&
-          prototype !== null &&
-          prototype !== eventPrototype &&
-          eventPrototype.isPrototypeOf(prototype)
-        ) {
-          forwardMembers(prototype, emptySkip);
-        }
-      }
     }
     // A host event may expose an interface that the mirrored event does not.
     // Its native members also require the original receiver; snapshotting per

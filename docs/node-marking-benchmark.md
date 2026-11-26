@@ -440,6 +440,85 @@ on the same idle machine (`pnpm bench`, Chromium section):
   2,000-row churn retention is `1,242 KB` (`636 B/row`), while `dist/index.js`
   stays under the `70 KB` gzip budget (`69.6 KB` gzip).
 
+## Round five — tracked special elements, ownership-only initial walk, and opt-in `moveBefore` prewarming
+
+Round 5 targeted the three remaining ceilings above plain host DOM — settled
+re-parenting queries, initial marking per-node work, and realm iframe bootstrap
+latency — while keeping durable `WeakSet` ownership intact across Chromium,
+Firefox, and WebKit:
+
+- **Tier 1 — Bounded special-element index & pure self-move fast path
+  (`src/realm/mutation-observer.ts`, `src/facade/insertion.ts`,
+  `src/realm/index.ts`):** The single realm `MutationObserver` starts before
+  initial connection and maintains a bounded (`<= 32`, overflow-falling-back)
+  set of connected `<base>`, `<style>`, `<link>`, `<script>`, and
+  `[data-v-frame-target]` elements, seeded directly from `markup.scripts` and
+  `fragmentTargets.current` when markup flags rule out initial styles, links,
+  targets, or bases. On a settled single-node re-parent inside the light tree
+  with no `<base>` and no `<style>` target, `flushIndex` discards the pure
+  self-move records inline (skipping `querySelector`, observer microtasks, and
+  `facadeConnectedCounts` bookkeeping); any non-pure records update the index
+  passively and re-arm the observer's existing microtask delivery via a private
+  observed text node so stylesheet edits preserve their async schedule and
+  microtask ordering. Disconnected appends without
+  a CSP nonce also skip `SubtreeScan` collection (with synchronous fallback if
+  a custom element connects the parent reentrantly).
+- **Tier 2 — Synchronous `replaceState` & opt-in `VFrameElement.prewarm()`
+  (`src/realm/connect.ts`, `src/v-frame-element.ts`):** After `document.close()`
+  in the hidden execution realm, engines that dispatch native
+  `readystatechange("complete")` synchronously (Chromium) run
+  `history.replaceState` immediately without a `setTimeout(0)` task hop, while
+  engines that defer it (Firefox) keep the single-task yield. Hosts can also
+  opt in to `VFrameElement.prewarm()` to pre-load one pristine hidden
+  `about:srcdoc` iframe per host document and atomically claim it into the next
+  `<v-frame>` via `ShadowRoot.prototype.moveBefore` (with identity verification,
+  reload/reparent invalidation, `pagehide` teardown, and GC-safe disposal).
+- **Tier 3 — Ownership-only initial marking walk (`src/facade/marking.ts`,
+  `src/markup.ts`, `src/facade/attributes.ts`):** Split initial marking into
+  branchless `markInitialOwnershipFast` (with `hasAttributes()` guards avoiding
+  `NamedNodeMap` allocation on attribute-less elements and direct native
+  `element.attributes` reads before patching) plus targeted post-walk passes for
+  `<template>`, nested `<v-frame>` shadow roots, authored styles/URLs, `<link>`,
+  `<script>`, and SVG URLs, and unified reflected URL descriptor collection into
+  a single pass.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-26 (`pnpm bench`):
+
+|            |          | 1,000   | 5,000   | 20,000   | 50,000   |
+| ---------- | -------- | ------- | ------- | -------- | -------- |
+| activation | Chromium | 39.7 ms | 60.8 ms | 142.6 ms | 294.4 ms |
+|            | Host Cr  | 2.5 ms  | 4.3 ms  | 12.7 ms  | 32.1 ms  |
+|            | Firefox  | 32 ms   | 54 ms   | 148 ms   | 338 ms   |
+|            | Host FF  | 2 ms    | 6 ms    | 17 ms    | 40 ms    |
+| insertion  | Chromium | 10.8 ms | 9.4 ms  | 9.8 ms   | 9.4 ms   |
+|            | Host Cr  | 1.5 ms  | 1.6 ms  | 1.5 ms   | 1.4 ms   |
+|            | Firefox  | 25 ms   | 26 ms   | 26 ms    | 26 ms    |
+|            | Host FF  | 2 ms    | 1 ms    | 2 ms     | 2 ms     |
+| re-parent  | Chromium | 14.1 ms | 16.6 ms | 21.5 ms  | 29.5 ms  |
+|            | Host Cr  | 4.8 ms  | 4.9 ms  | 5.5 ms   | 6.9 ms   |
+|            | Firefox  | 14 ms   | 15 ms   | 24 ms    | 37 ms    |
+|            | Host FF  | 5 ms    | 6 ms    | 6 ms     | 6 ms     |
+
+- **Marginal activation cost** dropped to **`5.20 µs/element`** (`8.6x` host DOM)
+  in Chromium (50k elements under 300 ms at **`294.4 ms`**) and
+  **`6.24 µs/element`** (`8.1x` host DOM) in Firefox (**`338 ms`** at 50k, down
+  from `846 ms` in earlier runs).
+- **Insertion** stayed flat at **`9.4–10.8 ms`** (`5.9–7.2x`) in Chromium and
+  dropped to **`25–26 ms`** in Firefox (down from `66–79 ms`).
+- **Re-parenting** dropped to **`14.1–29.5 ms`** (`2.9–4.3x` host DOM) in
+  Chromium and **`14–37 ms`** (`2.5–6.2x`) in Firefox (down from `66–96 ms`).
+- **Opt-in `VFrameElement.prewarm()`** (median of 15 warm mounts): raw iframe
+  bootstrap fell from `3.35 ms` to `0.18 ms` (`18.6x`), cutting end-to-end warm
+  mount latency from `6.3 → 5.3 ms` (empty, `-16%`) and `10.0 → 8.2 ms` (1k
+  elements, `-18%`) in Chromium 153, and `9 → 7 ms` (empty, `-22%`) and
+  `15 → 14 ms` (1k elements, `-7%`) in Firefox 155.
+- **Retained JS heap** at 50,000 elements is `8,436 KB` (`58 B/object`),
+  2,000-row churn retention is `1,267 KB` (`649 B/row`), and `dist/index.js` is
+  `71.7 KB` gzipped.
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

@@ -15,12 +15,17 @@ const SETTLED_MOVE_POST_SELECTOR = "script,style,link,[data-v-frame-target]";
 
 export interface NodeInsertion {
   collectElements(node: Node): Element[];
-  prepareInsertion(node: Node, scan?: SubtreeScan): SubtreeScan | undefined;
+  prepareInsertion(
+    node: Node,
+    scan?: SubtreeScan,
+    collectScan?: boolean,
+  ): SubtreeScan | undefined;
   insertedNodes(node: Node): Node[];
   finishInsertion(
     nodes: readonly Node[],
     baseElementChanged: boolean,
     scan?: SubtreeScan,
+    alreadyFlushed?: boolean,
   ): void;
   insert<T extends Node>(parent: Node, node: T, method: string, operation: () => T): T;
   styleElementChanged(node: Node): void;
@@ -96,13 +101,6 @@ export function createNodeInsertion(
     return elements;
   };
 
-  const emptyScan: SubtreeScan = {
-    styles: [],
-    links: [],
-    scripts: [],
-    hasBase: false,
-    hasTarget: false,
-  };
   const createScan = (): SubtreeScan => ({
     styles: [],
     links: [],
@@ -110,7 +108,8 @@ export function createNodeInsertion(
     hasBase: false,
     hasTarget: false,
   });
-  const scratchScan: SubtreeScan = createScan();
+  const emptyScan = createScan();
+  const scratchScan = createScan();
   let scratchInUse = false;
 
   const isSettledMovePostCandidate = (node: Node): boolean => {
@@ -133,13 +132,24 @@ export function createNodeInsertion(
     return false;
   };
 
-  const prepareInsertion = (node: Node, scan?: SubtreeScan): SubtreeScan | undefined => {
+  const prepareInsertion = (
+    node: Node,
+    scan?: SubtreeScan,
+    collectScan = true,
+  ): SubtreeScan | undefined => {
     if (!isElementNode(node) && !isDocumentFragmentNode(node)) {
       markVirtualNode(node);
       return scan ?? emptyScan;
     }
     if (scan === undefined && virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
       return undefined;
+    }
+    const nonce = options.getNonce();
+    if (!collectScan && scan === undefined && nonce === "") {
+      if (!markVirtualNode(node)) {
+        return undefined;
+      }
+      return emptyScan;
     }
     const useScratch = scan === undefined && !scratchInUse;
     const targetScan = scan ?? (useScratch ? scratchScan : createScan());
@@ -156,7 +166,6 @@ export function createNodeInsertion(
         return undefined;
       }
 
-      const nonce = options.getNonce();
       if (nonce !== "" && targetScan.styles.length > 0) {
         for (const element of targetScan.styles) {
           if (!fragmentNodes.has(element)) {
@@ -200,6 +209,7 @@ export function createNodeInsertion(
     nodes: readonly Node[],
     baseElementChanged: boolean,
     scan?: SubtreeScan,
+    alreadyFlushed = false,
   ): void => {
     if (baseElementChanged) {
       options.onBaseElementChange();
@@ -232,31 +242,34 @@ export function createNodeInsertion(
     if (nodes.length === 0) {
       return;
     }
-    if (nodes.length === 1) {
-      const parent = nodes[0]!.parentNode;
-      if (
-        parent !== null &&
-        isElementNode(parent) &&
-        isHTMLStyleElement(parent) &&
-        styleMutationBatches.has(parent)
-      ) {
-        return;
-      }
-      options.onConnectedNodes(nodes, scan);
-      return;
-    }
-    const observableNodes = nodes.filter((node) => {
+    const isBatchedStyleChild = (node: Node): boolean => {
       const parent = node.parentNode;
-      return !(
+      return (
         parent !== null &&
         isElementNode(parent) &&
         isHTMLStyleElement(parent) &&
         styleMutationBatches.has(parent)
       );
-    });
-    if (observableNodes.length > 0) {
-      options.onConnectedNodes(observableNodes, scan);
+    };
+    if (nodes.length === 1) {
+      if (!isBatchedStyleChild(nodes[0]!)) {
+        options.onConnectedNodes(nodes, scan, alreadyFlushed);
+      }
+      return;
     }
+    const observableNodes = nodes.filter((node) => !isBatchedStyleChild(node));
+    if (observableNodes.length > 0) {
+      options.onConnectedNodes(observableNodes, scan, alreadyFlushed);
+    }
+  };
+
+  const settledNodeHas = (node: Node, baseOnly: boolean): boolean => {
+    const tracked = options.settledSubtreeHas?.(node, baseOnly);
+    return tracked !== undefined
+      ? tracked
+      : baseOnly
+        ? subtreeHasBaseElement(node)
+        : isSettledMovePostCandidate(node);
   };
 
   const insert = <T extends Node>(
@@ -269,19 +282,30 @@ export function createNodeInsertion(
       return operation();
     }
     requireNode(node, method, 1);
-    const scan = prepareInsertion(node);
+    const wasConnected = parent.isConnected;
+    const scan = prepareInsertion(node, undefined, wasConnected);
     const nodes = insertedNodes(node);
-    const baseElementChanged =
-      scan !== undefined ? scan.hasBase : nodes.some(subtreeHasBaseElement);
+    const skippedScan = !wasConnected && scan === emptyScan;
+    let baseElementChanged = false;
+    if (scan === undefined) {
+      options.flushSettledMove?.();
+      baseElementChanged = nodes.some((n) => settledNodeHas(n, true));
+    } else if (!skippedScan) {
+      baseElementChanged = scan.hasBase;
+    }
     const result = operation();
     if (parent.isConnected) {
-      const resolvedScan =
-        scan !== undefined
-          ? scan
-          : nodes.some(isSettledMovePostCandidate)
-            ? undefined
-            : emptyScan;
-      finishInsertion(nodes, baseElementChanged, resolvedScan);
+      if (skippedScan) {
+        finishInsertion(nodes, nodes.some(subtreeHasBaseElement), undefined);
+      } else if (scan === undefined) {
+        const flushed = options.flushSettledMove?.(nodes) === true;
+        const resolvedScan = nodes.some((n) => settledNodeHas(n, false))
+          ? undefined
+          : emptyScan;
+        finishInsertion(nodes, baseElementChanged, resolvedScan, flushed);
+      } else {
+        finishInsertion(nodes, baseElementChanged, scan);
+      }
       if (isElementNode(parent) && isHTMLScriptElement(parent)) {
         executeConnectedScript(parent);
       }

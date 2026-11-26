@@ -162,3 +162,10 @@ test("a patched member takes the name and length of the native one", () => {
     "get baseURI",
   );
 });
+
+test("VFrameElement.prewarm() is a safe no-op outside a browser document", async () => {
+  const { VFrameElement } = await import("../../src/v-frame-element.js");
+  const dispose = VFrameElement.prewarm(undefined);
+  assert.equal(typeof dispose, "function");
+  assert.doesNotThrow(() => dispose());
+});

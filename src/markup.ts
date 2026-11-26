@@ -65,15 +65,21 @@ export interface PrepareMarkupOptions {
   onError(error: MarkupError): void;
 }
 
+export const MARKUP_FLAG_STYLES = 1;
+export const MARKUP_FLAG_LINKS = 2;
+export const MARKUP_FLAG_SVG = 4;
+export const MARKUP_FLAG_TEMPLATES = 8;
+export const MARKUP_FLAG_TARGET = 16;
+export const MARKUP_FLAG_INLINE_EVENTS = 32;
+export const MARKUP_FLAG_BASE = 64;
+
 export interface PreparedMarkup {
   html: HTMLElement;
   head: HTMLElement;
   body: HTMLElement;
   baseURL: string;
   scripts: HTMLScriptElement[];
-  hasStyleElements: boolean;
-  hasTargetAttribute: boolean;
-  hasInlineEventCandidate: boolean;
+  flags: number;
   authoredURLAttributes: EnumerableWeakMap<Element, Map<string, string>>;
   authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   inlineStyleSelectorAttribute: string;
@@ -314,16 +320,6 @@ function neutralizeStyleMarkup(
     "inert-style-attribute",
   );
   let nextStyle = lowerSource.indexOf("style");
-  if (nextStyle === -1) {
-    return {
-      source,
-      inertStyleElementMarker,
-      inertStyleAttribute,
-      hasInertStyleElement: false,
-      hasInertStyleAttribute: false,
-    };
-  }
-
   const rewritten: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
@@ -456,18 +452,12 @@ function neutralizeStyleMarkup(
     }
   }
 
-  if (copiedThrough === 0) {
-    return {
-      source,
-      inertStyleElementMarker,
-      inertStyleAttribute,
-      hasInertStyleElement,
-      hasInertStyleAttribute,
-    };
+  if (copiedThrough > 0) {
+    rewritten.push(source.slice(copiedThrough));
+    source = rewritten.join("");
   }
-  rewritten.push(source.slice(copiedThrough));
   return {
-    source: rewritten.join(""),
+    source,
     inertStyleElementMarker,
     inertStyleAttribute,
     hasInertStyleElement,
@@ -478,23 +468,26 @@ function neutralizeStyleMarkup(
 function collectTargetedElements(
   root: Element | DocumentFragment,
   selector: string,
-  out: Element[],
   hasTemplates: boolean,
   skipTemplate?: (template: HTMLTemplateElement) => boolean,
-): void {
+  out: Element[] = [],
+): Element[] {
   if (root.nodeType === 1 && (root as Element).matches(selector)) {
     out.push(root as Element);
   }
   for (const element of root.querySelectorAll(selector)) {
     out.push(element);
   }
-  if (!hasTemplates) return;
-  for (const element of root.querySelectorAll("template")) {
-    if (element.namespaceURI !== HTML_NAMESPACE) continue;
-    const template = element as HTMLTemplateElement;
-    if (skipTemplate?.(template) === true) continue;
-    collectTargetedElements(template.content, selector, out, true, skipTemplate);
+  if (hasTemplates) {
+    for (const element of root.querySelectorAll("template")) {
+      if (element.namespaceURI !== HTML_NAMESPACE) continue;
+      const template = element as HTMLTemplateElement;
+      if (skipTemplate?.(template) !== true) {
+        collectTargetedElements(template.content, selector, true, skipTemplate, out);
+      }
+    }
   }
+  return out;
 }
 
 function restoreStyleMarkup(
@@ -514,15 +507,12 @@ function restoreStyleMarkup(
     hasInertStyleElement && template.hasAttribute(inertStyleElementMarker);
 
   if (hasInertStyleAttribute) {
-    const styledElements: Element[] = [];
-    collectTargetedElements(
+    for (const element of collectTargetedElements(
       root,
       `[${inertStyleAttribute}]`,
-      styledElements,
       hasTemplates,
       skipInertStyleTemplate,
-    );
-    for (const element of styledElements) {
+    )) {
       const authoredStyle = element.getAttribute(inertStyleAttribute);
       if (authoredStyle === null) continue;
       authoredStyleAttributes.set(element, authoredStyle);
@@ -531,15 +521,12 @@ function restoreStyleMarkup(
   }
 
   if (hasInertStyleElement) {
-    const markerElements: Element[] = [];
-    collectTargetedElements(
+    for (const element of collectTargetedElements(
       root,
       `[${inertStyleElementMarker}]`,
-      markerElements,
       hasTemplates,
       skipInertStyleTemplate,
-    );
-    for (const element of markerElements) {
+    )) {
       const style = element.ownerDocument.createElementNS(
         element.namespaceURI ?? HTML_NAMESPACE,
         "style",
@@ -619,35 +606,7 @@ function resolveMarkupBaseURL(
   return fallbackURL;
 }
 
-const URL_ATTRIBUTE_NAMES = [
-  "href",
-  "src",
-  "srcset",
-  "imagesrcset",
-  "action",
-  "formaction",
-  "poster",
-  "cite",
-] as const;
-
-function urlCandidateSelectorFor(
-  lowerSource: string,
-  restoredAttributes: boolean,
-): string | null {
-  if (restoredAttributes || lowerSource.includes(":href")) {
-    return URL_ELEMENT_SELECTOR;
-  }
-  const selectors: string[] = [];
-  for (const name of URL_ATTRIBUTE_NAMES) {
-    if (lowerSource.includes(name)) {
-      selectors.push(`[${name}]`);
-    }
-  }
-  if (lowerSource.includes("<object")) {
-    selectors.push("object[data]");
-  }
-  return selectors.length === 0 ? null : selectors.join(",");
-}
+const URL_CANDIDATE_PATTERN = /href|src|action|formaction|poster|cite|<object/;
 
 function collectAndAbsolutizeURLAttributes(
   root: Element,
@@ -658,12 +617,11 @@ function collectAndAbsolutizeURLAttributes(
   createScriptURL: PrepareMarkupOptions["createScriptURL"],
 ): EnumerableWeakMap<Element, Map<string, string>> {
   const authoredURLAttributes = new EnumerableWeakMap<Element, Map<string, string>>();
-  const selector = urlCandidateSelectorFor(lowerSource, restoredAttributes);
-  if (selector === null) {
+  if (!restoredAttributes && !URL_CANDIDATE_PATTERN.test(lowerSource)) {
     return authoredURLAttributes;
   }
 
-  for (const element of root.querySelectorAll(selector)) {
+  for (const element of root.querySelectorAll(URL_ELEMENT_SELECTOR)) {
     if (!canHaveURLAttributes(element)) continue;
     const attrs = element.attributes;
     const attrCount = attrs.length;
@@ -859,6 +817,7 @@ interface MarkupParts {
   authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   rewriteInlineStyles: boolean;
   hasPhysicalStyleAttributes: boolean;
+  hasRestoredStyles?: boolean;
 }
 
 /** What parsed and adopted markup share once their tree and authored values exist. */
@@ -903,7 +862,8 @@ async function finishMarkup(
   );
   const stylesheetJobs: Promise<void>[] = [];
   const linkedStyles = new WeakMap<HTMLLinkElement, LinkedStyle>();
-  const mayHaveStyles = lowerSource.includes("<style");
+  const mayHaveStyles =
+    parts.hasRestoredStyles === true || lowerSource.includes("<style");
   const mayHaveLinks = lowerSource.includes("<link");
 
   if (mayHaveStyles) {
@@ -961,10 +921,16 @@ async function finishMarkup(
     scripts: lowerSource.includes("<script")
       ? Array.from(html.querySelectorAll("script"))
       : [],
-    hasStyleElements: mayHaveStyles || hasLinkedStyles,
-    hasTargetAttribute: lowerSource.includes(FRAGMENT_TARGET_ATTRIBUTE),
-    hasInlineEventCandidate:
-      restoredAttributes || INLINE_EVENT_CANDIDATE_PATTERN.test(lowerSource),
+    flags:
+      (mayHaveStyles || hasLinkedStyles ? MARKUP_FLAG_STYLES : 0) |
+      (mayHaveLinks ? MARKUP_FLAG_LINKS : 0) |
+      (lowerSource.includes("<svg") ? MARKUP_FLAG_SVG : 0) |
+      (lowerSource.includes("<template") ? MARKUP_FLAG_TEMPLATES : 0) |
+      (lowerSource.includes(FRAGMENT_TARGET_ATTRIBUTE) ? MARKUP_FLAG_TARGET : 0) |
+      (restoredAttributes || INLINE_EVENT_CANDIDATE_PATTERN.test(lowerSource)
+        ? MARKUP_FLAG_INLINE_EVENTS
+        : 0) |
+      (lowerSource.includes("<base") ? MARKUP_FLAG_BASE : 0),
     authoredURLAttributes,
     authoredStyleAttributes,
     inlineStyleSelectorAttribute,
@@ -1001,9 +967,7 @@ export async function prepareMarkup(
     hasTemplates,
   );
   if (policyRewrote && lowerSource.includes("style")) {
-    const policyStyled: Element[] = [];
-    collectTargetedElements(parsedRoot, "[style]", policyStyled, hasTemplates);
-    for (const element of policyStyled) {
+    for (const element of collectTargetedElements(parsedRoot, "[style]", hasTemplates)) {
       const physicalStyle = element.getAttribute("style");
       if (physicalStyle !== null) {
         parsedStyleAttributes.set(element, physicalStyle);
@@ -1050,6 +1014,7 @@ export async function prepareMarkup(
     authoredStyleAttributes,
     rewriteInlineStyles: true,
     hasPhysicalStyleAttributes: false,
+    hasRestoredStyles: neutralized.hasInertStyleElement,
   });
 }
 
@@ -1124,28 +1089,22 @@ function restoreAuthoredAttributes(element: Element, marker: string): void {
 }
 
 function transferNestedFrameStyles(
-  root: DocumentFragment,
+  root: Element | DocumentFragment,
   styles: Map<Element, string>,
 ): void {
-  const stack: Array<Element | DocumentFragment> = [root];
-  for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
-    for (
-      let child = current.firstElementChild;
-      child !== null;
-      child = child.nextElementSibling
-    ) {
-      const style = styles.get(child);
-      if (style !== undefined) {
-        child.setAttribute("style", style);
-        styles.delete(child);
-        if (styles.size === 0) return;
-      }
-      if (child.firstElementChild !== null) {
-        stack.push(child);
-      }
-      if (child.namespaceURI === HTML_NAMESPACE && child.localName === "template") {
-        stack.push((child as HTMLTemplateElement).content);
-      }
+  for (
+    let child = root.firstElementChild;
+    child !== null && styles.size > 0;
+    child = child.nextElementSibling
+  ) {
+    const style = styles.get(child);
+    if (style !== undefined) {
+      child.setAttribute("style", style);
+      styles.delete(child);
+    }
+    if (child.firstElementChild !== null) transferNestedFrameStyles(child, styles);
+    if (child.namespaceURI === HTML_NAMESPACE && child.localName === "template") {
+      transferNestedFrameStyles((child as HTMLTemplateElement).content, styles);
     }
   }
 }
@@ -1156,8 +1115,7 @@ function restoreNestedFrames(
   styles?: Map<Element, string>,
 ): void {
   if (!hasTemplates) return;
-  const templates: Element[] = [];
-  collectTargetedElements(root, "template", templates, true);
+  const templates = collectTargetedElements(root, "template", true);
   if (templates.length === 0) return;
   const shadowHosts = new WeakSet<Element>();
   for (const element of templates) {
@@ -1232,16 +1190,12 @@ export async function prepareAdoptedMarkup(
   // Nested adopting shadows have already been moved out of this traversal.
   // Ordinary templates are owned by this guest even though their contents are inert.
   if (lowerSource.includes(SSR_PREVIEW_ATTRIBUTES)) {
-    const previewTargets: Element[] = [];
-    collectTargetedElements(
+    const previewTargets = collectTargetedElements(
       html,
       `[${SSR_PREVIEW_ATTRIBUTES}]`,
-      previewTargets,
       hasTemplates,
     );
-    if (previewTargets.length > 0) {
-      restoredAttributes = true;
-    }
+    if (previewTargets.length > 0) restoredAttributes = true;
     for (const element of previewTargets) {
       restoreAuthoredAttributes(element, SSR_PREVIEW_ATTRIBUTES);
     }

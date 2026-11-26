@@ -1,6 +1,7 @@
 import {
   abortError,
   connectRealmIframe,
+  prewarmRealmIframe,
   type ConnectedRealmIframe,
   createRealm,
   type CreateRealmOptions,
@@ -127,6 +128,15 @@ export class VFrameElement extends HTMLElementBase {
     "nonce",
     "trusted-types-policy",
   ];
+
+  /**
+   * Opt-in: prewarms a single pristine hidden execution iframe for the next
+   * `<v-frame>` mount on `targetDocument` when `ShadowRoot.prototype.moveBefore`
+   * is supported. Returns a disposer that removes an unclaimed spare.
+   */
+  static prewarm(targetDocument?: Document): () => void {
+    return prewarmRealmIframe(targetDocument);
+  }
 
   readonly #root: ShadowRoot;
   readonly #internals: ElementInternals;

@@ -50,6 +50,230 @@ export function abortError(): DOMException {
   return new DOMException("The v-frame load was superseded", "AbortError");
 }
 
+type NativeMoveBefore = (node: Node, child: Node | null) => void;
+
+const nativeShadowMoveBefore: NativeMoveBefore | undefined =
+  typeof ShadowRoot === "function"
+    ? (ShadowRoot.prototype as ShadowRoot & { moveBefore?: NativeMoveBefore }).moveBefore
+    : undefined;
+
+interface PrewarmedRealmSlot {
+  targetDocument: Document | null;
+  hostWindow: Window | null;
+  iframe: HTMLIFrameElement | null;
+  moveBefore: NativeMoveBefore | null;
+  readyDoc: Document | null;
+  readyWin: Window | null;
+  expectedSrcdoc: string | null;
+  onLoad: EventListener | null;
+  onPageHide: EventListener | null;
+  removalObserver: MutationObserver | null;
+}
+
+const prewarmedSlots = new WeakMap<Document, PrewarmedRealmSlot>();
+
+function teardownPrewarmedSlot(slot: PrewarmedRealmSlot, keepIframe = false): void {
+  const { iframe, hostWindow, targetDocument, onLoad, onPageHide, removalObserver } =
+    slot;
+  if (iframe === null) return;
+  slot.targetDocument = null;
+  slot.hostWindow = null;
+  slot.iframe = null;
+  slot.moveBefore = null;
+  slot.readyDoc = null;
+  slot.readyWin = null;
+  slot.expectedSrcdoc = null;
+  slot.onLoad = null;
+  slot.onPageHide = null;
+  slot.removalObserver = null;
+  removalObserver?.disconnect();
+  if (onLoad !== null) iframe.removeEventListener("load", onLoad);
+  if (onPageHide !== null) hostWindow?.removeEventListener("pagehide", onPageHide);
+  if (targetDocument !== null && prewarmedSlots.get(targetDocument) === slot) {
+    prewarmedSlots.delete(targetDocument);
+  }
+  if (!keepIframe) iframe.remove();
+}
+
+function makeSlotDisposer(initial: PrewarmedRealmSlot): () => void {
+  let slot: PrewarmedRealmSlot | null = initial;
+  return () => {
+    if (slot === null) return;
+    const current = slot;
+    slot = null;
+    teardownPrewarmedSlot(current, false);
+  };
+}
+
+function createHiddenRealmIframe(
+  hostDocument: Document,
+  hostTrustedTypes: TrustedTypePolicyFactoryLike | undefined,
+): HTMLIFrameElement {
+  const iframe = hostDocument.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.tabIndex = -1;
+  for (const [property, value] of [
+    ["position", "absolute"],
+    ["top", "0"],
+    ["left", "0"],
+    ["width", "1px"],
+    ["height", "1px"],
+    ["border", "0"],
+    ["opacity", "0"],
+    ["pointer-events", "none"],
+  ] as const) {
+    iframe.style.setProperty(property, value, "important");
+  }
+  try {
+    iframe.srcdoc = (hostTrustedTypes?.emptyHTML ?? "") as string;
+  } catch (error) {
+    throw new Error("v-frame could not create its empty srcdoc execution realm", {
+      cause: error,
+    });
+  }
+  return iframe;
+}
+
+/** Prewarms a single pristine hidden srcdoc iframe per host document for atomic `moveBefore` claiming. */
+export function prewarmRealmIframe(
+  targetDocument: Document | undefined = globalThis.document,
+): () => void {
+  const hostWindow = targetDocument?.defaultView as
+    | (Window & {
+        ShadowRoot?: typeof ShadowRoot;
+        trustedTypes?: TrustedTypePolicyFactoryLike;
+      })
+    | null
+    | undefined;
+  const hostRoot = targetDocument?.documentElement;
+  const moveBefore =
+    hostWindow === globalThis.window && typeof nativeShadowMoveBefore === "function"
+      ? nativeShadowMoveBefore
+      : (
+          hostWindow?.ShadowRoot?.prototype as
+            | (ShadowRoot & { moveBefore?: NativeMoveBefore })
+            | undefined
+        )?.moveBefore;
+  if (
+    targetDocument === undefined ||
+    !hostWindow ||
+    !hostRoot ||
+    typeof moveBefore !== "function"
+  ) {
+    return () => {};
+  }
+  const existing = prewarmedSlots.get(targetDocument);
+  if (existing !== undefined) {
+    if (existing.iframe?.parentNode === hostRoot) return makeSlotDisposer(existing);
+    teardownPrewarmedSlot(existing, true);
+  }
+  let iframe: HTMLIFrameElement;
+  try {
+    iframe = createHiddenRealmIframe(targetDocument, hostWindow.trustedTypes);
+  } catch {
+    return () => {};
+  }
+  const expectedSrcdoc = iframe.getAttribute("srcdoc");
+  const slot: PrewarmedRealmSlot = {
+    targetDocument,
+    hostWindow,
+    iframe,
+    moveBefore,
+    readyDoc: null,
+    readyWin: null,
+    expectedSrcdoc,
+    onLoad: null,
+    onPageHide: null,
+    removalObserver: null,
+  };
+  const onLoad: EventListener = () => {
+    // Pin the first pristine srcdoc Document/WindowProxy. Any prior or later
+    // srcdoc/src modification or subsequent load invalidates the spare.
+    if (slot.readyDoc !== null || slot.iframe === null) {
+      teardownPrewarmedSlot(slot, false);
+      return;
+    }
+    const doc = slot.iframe.contentDocument;
+    const win = slot.iframe.contentWindow;
+    if (
+      doc === null ||
+      win === null ||
+      doc.URL !== "about:srcdoc" ||
+      slot.iframe.getAttribute("srcdoc") !== slot.expectedSrcdoc ||
+      slot.iframe.hasAttribute("src")
+    ) {
+      teardownPrewarmedSlot(slot, false);
+      return;
+    }
+    slot.readyDoc = doc;
+    slot.readyWin = win;
+  };
+  const onPageHide: EventListener = () => teardownPrewarmedSlot(slot, false);
+  const removalObserver = new globalThis.MutationObserver(() => {
+    if (
+      slot.iframe !== null &&
+      slot.iframe.parentNode !== slot.targetDocument?.documentElement
+    ) {
+      teardownPrewarmedSlot(slot, true);
+    }
+  });
+  slot.onLoad = onLoad;
+  slot.onPageHide = onPageHide;
+  slot.removalObserver = removalObserver;
+  iframe.addEventListener("load", onLoad);
+  hostWindow.addEventListener("pagehide", onPageHide, { once: true });
+  prewarmedSlots.set(targetDocument, slot);
+  try {
+    hostRoot.append(iframe);
+    removalObserver.observe(hostRoot, { childList: true });
+  } catch {
+    teardownPrewarmedSlot(slot, false);
+    return () => {};
+  }
+  return makeSlotDisposer(slot);
+}
+
+function claimPrewarmedIframe(shadowRoot: ShadowRoot): HTMLIFrameElement | null {
+  if (!shadowRoot.isConnected) return null;
+  const slot = prewarmedSlots.get(shadowRoot.ownerDocument);
+  if (slot === undefined) return null;
+  const candidate = slot.iframe;
+  if (
+    candidate === null ||
+    candidate.parentNode !== shadowRoot.ownerDocument.documentElement
+  ) {
+    teardownPrewarmedSlot(slot, true);
+    return null;
+  }
+  const { readyDoc, readyWin, expectedSrcdoc, moveBefore } = slot;
+  if (readyDoc === null || readyWin === null || moveBefore === null) {
+    return null;
+  }
+  teardownPrewarmedSlot(slot, true);
+  if (
+    candidate.contentDocument === readyDoc &&
+    candidate.contentWindow === readyWin &&
+    candidate.getAttribute("srcdoc") === expectedSrcdoc &&
+    !candidate.hasAttribute("src") &&
+    readyDoc.URL === "about:srcdoc"
+  ) {
+    try {
+      moveBefore.call(shadowRoot, candidate, null);
+      if (
+        candidate.parentNode === shadowRoot &&
+        candidate.contentDocument === readyDoc &&
+        candidate.contentWindow === readyWin
+      ) {
+        return candidate;
+      }
+    } catch {
+      // Fall back to a fresh realm iframe if moveBefore is rejected or resets the realm.
+    }
+  }
+  candidate.remove();
+  return null;
+}
+
 export async function connectRealmIframe(
   shadowRoot: ShadowRoot,
   signal: AbortSignal,
@@ -61,34 +285,24 @@ export async function connectRealmIframe(
     throw abortError();
   }
 
-  const iframe = shadowRoot.ownerDocument.createElement("iframe");
-  iframe.setAttribute("aria-hidden", "true");
-  iframe.tabIndex = -1;
-  iframe.style.setProperty("position", "absolute", "important");
-  iframe.style.setProperty("top", "0", "important");
-  iframe.style.setProperty("left", "0", "important");
-  iframe.style.setProperty("width", "1px", "important");
-  iframe.style.setProperty("height", "1px", "important");
-  iframe.style.setProperty("border", "0", "important");
-  iframe.style.setProperty("opacity", "0", "important");
-  iframe.style.setProperty("pointer-events", "none", "important");
-  const hostWindow = shadowRoot.ownerDocument.defaultView;
+  const hostDocument = shadowRoot.ownerDocument;
   const hostTrustedTypes = (
-    hostWindow as (Window & { trustedTypes?: TrustedTypePolicyFactoryLike }) | null
+    hostDocument.defaultView as
+      | (Window & { trustedTypes?: TrustedTypePolicyFactoryLike })
+      | null
   )?.trustedTypes;
-  try {
-    iframe.srcdoc = (hostTrustedTypes?.emptyHTML ?? "") as string;
-  } catch (error) {
-    throw new Error("v-frame could not create its empty srcdoc execution realm", {
-      cause: error,
-    });
+  const prewarmed = claimPrewarmedIframe(shadowRoot);
+  if (signal.aborted) {
+    prewarmed?.remove();
+    throw abortError();
   }
+  const iframe = prewarmed ?? createHiddenRealmIframe(hostDocument, hostTrustedTypes);
 
   let realmTrustedTypes: RealmTrustedTypes | null = null;
 
   await new Promise<void>((resolve, reject) => {
     let replacementDocumentOpened = false;
-    const loaded = () => {
+    const loaded = (defer = true) => {
       if (replacementDocumentOpened) {
         return;
       }
@@ -117,7 +331,7 @@ export async function connectRealmIframe(
       }
 
       replacementDocumentOpened = true;
-      queueMicrotask(() => {
+      const initialize = () => {
         if (signal.aborted) {
           return;
         }
@@ -180,15 +394,30 @@ export async function connectRealmIframe(
               }
             }
           }
+          let sawCompleteEvent = false;
+          const onReadyStateChange = () => {
+            if (document.readyState === "complete") {
+              sawCompleteEvent = true;
+            }
+          };
           document.open();
-          document.write(realmTrustedTypes.createHTML("<!doctype html>"));
-          document.close();
-          realmWindow.setTimeout(() => {
+          document.addEventListener("readystatechange", onReadyStateChange);
+          try {
+            document.write(realmTrustedTypes.createHTML("<!doctype html>"));
+            document.close();
+          } finally {
+            document.removeEventListener("readystatechange", onReadyStateChange);
+          }
+          const finalizeLocation = (allowRetry: boolean) => {
             try {
               realmWindow.history.replaceState(null, "", locationURL);
               cleanup();
               resolve();
             } catch (error) {
+              if (allowRetry) {
+                realmWindow.setTimeout(() => finalizeLocation(false), 0);
+                return;
+              }
               cleanup();
               iframe.remove();
               reject(
@@ -198,27 +427,43 @@ export async function connectRealmIframe(
                 ),
               );
             }
-          }, 0);
+          };
+          // Chromium fires the native readystatechange("complete") synchronously inside
+          // document.close(), so replaceState can run immediately without a timer hop.
+          // Engines that defer readystatechange("complete") (Firefox) yield one task so
+          // the native event drains before guest lifecycle listeners attach.
+          if (sawCompleteEvent) {
+            finalizeLocation(true);
+          } else {
+            realmWindow.setTimeout(() => finalizeLocation(false), 0);
+          }
         } catch (error) {
           cleanup();
           iframe.remove();
           reject(error);
         }
-      });
+      };
+      if (defer) queueMicrotask(initialize);
+      else initialize();
     };
+    const onLoad = () => loaded(true);
     const aborted = () => {
       cleanup();
       iframe.remove();
       reject(abortError());
     };
     const cleanup = () => {
-      iframe.removeEventListener("load", loaded);
+      iframe.removeEventListener("load", onLoad);
       signal.removeEventListener("abort", aborted);
     };
 
-    iframe.addEventListener("load", loaded);
     signal.addEventListener("abort", aborted, { once: true });
-    shadowRoot.append(iframe);
+    if (prewarmed !== null) {
+      loaded(false);
+    } else {
+      iframe.addEventListener("load", onLoad);
+      shadowRoot.append(iframe);
+    }
   });
 
   if (signal.aborted) {

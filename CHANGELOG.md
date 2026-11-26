@@ -3,23 +3,59 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.4.1 - 2026-11-26
+## 0.5.0 - 2026-11-26
+
+### Added
+
+- Opt-in `VFrameElement.prewarm(targetDocument?)` static helper that prewarms a
+  single pristine hidden `about:srcdoc` execution iframe per host document and
+  atomically claims it into the next `<v-frame>` via
+  `ShadowRoot.prototype.moveBefore` (with automatic fallback when unsupported,
+  disposal cleanup returning a GC-safe disposer, `pagehide` teardown, and
+  automatic invalidation if the spare is reloaded, reparented, or removed).
 
 ### Changed
 
 - Optimized initial markup preparation, initial marking, steady-state DOM
-  mutations, re-parenting, and cold realm boot (Round 4): eliminated full-tree
-  `querySelectorAll("*")` walks and multi-pass string slicing in `src/markup.ts`,
-  added a zero-string-read initial `Attr` marking loop plus inline leaf `Text`
-  marking and fast paths for freshly created elements and unmanaged attributes,
-  pooled insertion `SubtreeScan` buffers, used a single post-move candidate query
-  for settled re-parents, coalesced mutation-observer `<base>` checks, overlapped
-  entry HTML decoding with realm iframe connection, and cached pristine guest
-  realm `Event` constructor names across mounts. In Chromium 153 benchmarks
-  (`pnpm bench`), marginal activation cost fell nearly 2x (`10.30` →
-  `5.56 µs/element`; 50k elements in `~311 ms`), 1,000-row insertion fell from
-  `14–18 ms` to `9–12 ms`, and 1,000 settled subtree re-parents fell to
-  `3–5x` plain host DOM, while `dist/index.js` stayed under `70 KB` gzipped.
+  mutations, re-parenting, and cold realm boot (Rounds 4 and 5):
+  - Replaced full-tree `querySelectorAll("*")` walks and multi-pass string
+    slicing in `src/markup.ts` with single-pass ASCII lowercasing, chunked style
+    neutralization, targeted queries, and a packed feature bitmask.
+  - Added an ownership-only initial walk (`markInitialOwnershipFast` /
+    `markInitialOwnershipWithEvents`) guarded by `hasAttributes()` with targeted
+    post-walk special-element initialization, fast-pathed freshly created
+    elements and unmanaged attributes, and pooled insertion `SubtreeScan`
+    buffers.
+  - Replaced settled re-parent subtree queries with a bounded passive
+    special-element index and pure single-node self-move fast path on the
+    single realm `MutationObserver` (re-arming the observer's native microtask
+    delivery slot for non-pure records so stylesheet edits preserve their async
+    ordering), and skipped subtree scan collection on disconnected appends when
+    no nonce is configured.
+  - Overlapped entry HTML decoding with realm iframe connection, cached pristine
+    guest realm `Event` constructor names across mounts, and ran
+    `history.replaceState` synchronously after `document.close()` on engines
+    that dispatch `readystatechange("complete")` synchronously (yielding one
+    task on engines like Firefox that defer it).
+  - In idle `pnpm bench` runs on an AMD Ryzen 7 7800X3D, Chromium 153 marginal
+    activation cost dropped from `10.30` to **`5.20 µs/element`** (`8.6x` host
+    DOM; 50k elements in **`294.4 ms`**), 1,000-row insertion fell to
+    **`9.4–10.8 ms`** (`5.9–7.2x`), and 1,000 settled subtree re-parents fell to
+    **`14.1–29.5 ms`** (`2.9–4.3x`). Firefox 155 50k activation fell to
+    **`338 ms`** (`6.24 µs/element`, `8.1x`), 1,000-row insertion fell to
+    **`25–26 ms`**, and 1,000 re-parents fell to **`14–37 ms`** (`2.5–6.2x`).
+    Opt-in `VFrameElement.prewarm()` cut warm empty/1k mount latency by
+    `16–18%` in Chromium (`6.3 → 5.3 ms` / `10.0 → 8.2 ms`) and `7–22%` in
+    Firefox (`9 → 7 ms` / `15 → 14 ms`).
+
+### Fixed
+
+- Recomputing the document base URL after mounting now picks up `<base>`
+  elements added or removed natively by host custom-element
+  `connectedCallback`s during initial connection.
+- Custom Trusted Types `createHTML` policies that rewrite fetched HTML
+  containing neutralized `<style>` elements now still restore and rewrite those
+  styles.
 
 ## 0.4.0 - 2026-11-26
 

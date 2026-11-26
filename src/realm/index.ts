@@ -18,6 +18,10 @@ import {
   VirtualHistorySession,
 } from "../history.js";
 import {
+  MARKUP_FLAG_BASE,
+  MARKUP_FLAG_LINKS,
+  MARKUP_FLAG_STYLES,
+  MARKUP_FLAG_TARGET,
   prepareAdoptedMarkup,
   prepareMarkup,
   type PreparedMarkup,
@@ -28,7 +32,10 @@ import type { AdoptionState } from "./adoption-state.js";
 import { createDocumentBase } from "./base-url.js";
 import { captureNativeDOM, removeRenderedNode } from "./native-dom.js";
 import { createFragmentTargets, scrollToFragment } from "./fragment-scroll.js";
-import { observeRealmMutations } from "./mutation-observer.js";
+import {
+  observeRealmMutations,
+  type RealmMutationObserver,
+} from "./mutation-observer.js";
 import { ScriptRunner } from "../scripts.js";
 import { createStagedRoot } from "./staging.js";
 import { abortError, type RealmFailure, type RealmTrustedTypes } from "./connect.js";
@@ -56,6 +63,7 @@ import type {
 export {
   abortError,
   connectRealmIframe,
+  prewarmRealmIframe,
   type ConnectedRealmIframe,
   type RealmFailure,
 } from "./connect.js";
@@ -215,6 +223,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     let disposed = false;
     let scriptRunner: ScriptRunner | null = null;
     let facade: DocumentFacade | null = null;
+    let realmObserver: RealmMutationObserver | null = null;
     let markupRevealed = staged === null;
     const fragmentTargets = createFragmentTargets({
       window,
@@ -222,6 +231,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       getRoot: () => markup?.html ?? null,
       isDisposed: () => disposed,
     });
+    const updateFragmentTarget = (url: string): void => {
+      fragmentTargets.update(url);
+      if (fragmentTargets.current !== null) {
+        realmObserver?.trackElement(fragmentTargets.current);
+      }
+    };
     disposers.push(() => fragmentTargets.dispose());
     const isConnectedToRealm = (node: Node): boolean =>
       markup?.html.contains(node) ?? false;
@@ -254,7 +269,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           getBaseURL: getDocumentBaseURL,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
-          onActivate: fragmentTargets.update,
+          onActivate: updateFragmentTarget,
           onFragmentScroll: scrollFragment,
         })
       : new VirtualHistory({
@@ -264,12 +279,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           getBaseURL: getDocumentBaseURL,
           onNavigate: options.onNavigate,
           onURLChange: historyURLChanged,
-          onActivate: fragmentTargets.update,
+          onActivate: updateFragmentTarget,
           onFragmentScroll: scrollFragment,
           onDocumentTraversal: options.onDocumentTraversal,
         });
     history.install();
-    if (markup.hasTargetAttribute) {
+    if (markup.flags & MARKUP_FLAG_TARGET) {
       fragmentTargets.clearClones([markup.html]);
     }
     fragmentTargets.update(currentURL);
@@ -322,7 +337,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
 
     const initialStyleSources = new Map<HTMLStyleElement, string>();
-    if (markup.hasStyleElements) {
+    if (markup.flags & MARKUP_FLAG_STYLES) {
       for (const style of markup.html.querySelectorAll("style")) {
         const source = style.textContent ?? "";
         initialStyleSources.set(style, source);
@@ -369,7 +384,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       inlineStyleSheet: markup.inlineStyleSheet,
       linkedStyles: markup.linkedStyles,
       constructedSheetBaseURLs,
-      hasInlineEventCandidate: markup.hasInlineEventCandidate,
+      initialFlags: markup.flags,
+      initialScripts: markup.scripts,
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
@@ -408,12 +424,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           }
         }
       },
-      onConnectedNodes(nodes, scan) {
-        for (const node of nodes) {
-          if (isConnectedToRealm(node)) {
-            bumpCount(facadeConnectedCounts, node);
+      onConnectedNodes(nodes, scan, alreadyFlushed) {
+        if (!alreadyFlushed) {
+          for (const node of nodes) {
+            if (isConnectedToRealm(node)) {
+              bumpCount(facadeConnectedCounts, node);
+            }
           }
         }
+        realmObserver?.recordConnected(nodes, scan);
         if (
           scan !== undefined &&
           scan.styles.length === 0 &&
@@ -434,12 +453,54 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.observeConnectedNodes(nodes, scan);
         staged?.partsConnected(nodes);
       },
+      flushSettledMove(nodes) {
+        return realmObserver !== null ? realmObserver.flushIndex(nodes) : false;
+      },
+      settledSubtreeHas: (node, baseOnly) => realmObserver?.subtreeHas(node, baseOnly),
       ...(topLayer && { onShadowRoot: topLayer.observe }),
     });
     disposers.push(() => facade?.dispose());
+    // Start passive special-element indexing before renderRoot.append(liveMarkup)
+    // so host custom-element connectedCallbacks that append <base>/<style>/<link>/<script>
+    // natively during bootstrap are indexed immediately without a full 50k scan when
+    // only known scripts / fragment targets exist.
+    realmObserver = observeRealmMutations(
+      {
+        window,
+        nativeDOM,
+        facadeConnectedCounts,
+        root: markup.html,
+        styles,
+        inlineStyleSheet: markup.inlineStyleSheet,
+        skipInitialScan:
+          (markup.flags &
+            (MARKUP_FLAG_STYLES |
+              MARKUP_FLAG_LINKS |
+              MARKUP_FLAG_TARGET |
+              MARKUP_FLAG_BASE)) ===
+          0,
+        getFacade: () => facade,
+        isConnectedToRealm,
+        onBaseElementChange: updateDocumentBaseURL,
+      },
+      fragmentTargets.current !== null
+        ? [...markup.scripts, fragmentTargets.current]
+        : markup.scripts,
+    );
+    disposers.push(() => {
+      realmObserver?.dispose();
+      realmObserver = null;
+    });
     if (!markupRevealed) styles.installCSSOMStyleSheet(markup.inlineStyleSheet);
     if (!options.signal.aborted) {
       renderRoot.append(liveMarkup);
+      realmObserver.flushIndex();
+      if (
+        (markup.flags & MARKUP_FLAG_BASE) !== 0 ||
+        realmObserver.subtreeHas(liveMarkup, true) !== false
+      ) {
+        updateDocumentBaseURL();
+      }
       for (const [style, source] of initialStyleSources) {
         styles.applyNonce(style);
         style.textContent = source;
@@ -497,19 +558,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     );
     disposers.push(windowEventDispose);
 
-    disposers.push(
-      observeRealmMutations({
-        window,
-        nativeDOM,
-        facadeConnectedCounts,
-        root: markup.html,
-        styles,
-        inlineStyleSheet: markup.inlineStyleSheet,
-        getFacade: () => facade,
-        isConnectedToRealm,
-        onBaseElementChange: updateDocumentBaseURL,
-      }),
-    );
+    realmObserver.observeMutations();
 
     const navigation = installRealmNavigation({
       window,

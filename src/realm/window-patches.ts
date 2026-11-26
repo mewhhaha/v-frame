@@ -12,26 +12,9 @@ import { renderedBy } from "./staging.js";
 import type { DocumentFacade } from "../facade/index.js";
 import type { VFrameWindow } from "../types.js";
 
-const HOST_CSS = `
-:host {
-  contain: layout;
-  display: block;
-  position: relative;
-  overflow: auto;
-}
-:host([hidden]:not([hidden="until-found" i])) {
-  display: none !important;
-}
-`;
-const GUEST_CSS = `
-v-html,
-v-body {
-  display: block;
-}
-v-head {
-  display: none !important;
-}
-`;
+const HOST_CSS =
+  ':host{contain:layout;display:block;position:relative;overflow:auto}:host([hidden]:not([hidden="until-found" i])){display:none!important}';
+const GUEST_CSS = "v-html,v-body{display:block}v-head{display:none!important}";
 
 interface WindowEventHandler {
   listener: EventListener;

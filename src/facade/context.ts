@@ -9,6 +9,7 @@ import type { VFrameWindow } from "../types.js";
 import type { LinkedStyle } from "../linked-styles.js";
 import { liveIndexedCollection } from "./indexed-collection.js";
 
+import { HTML_NAMESPACE } from "../asset-urls.js";
 export { HTML_NAMESPACE, SVG_NAMESPACE } from "../asset-urls.js";
 
 export interface SubtreeScan {
@@ -36,7 +37,8 @@ export interface DocumentFacadeOptions {
   inlineStyleSheet: HTMLStyleElement;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>;
-  hasInlineEventCandidate?: boolean;
+  initialFlags?: number;
+  initialScripts?: readonly HTMLScriptElement[];
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
@@ -51,8 +53,14 @@ export interface DocumentFacadeOptions {
   onStyleElementChange(style: HTMLStyleElement): void;
   onStyleSheetAccess?(style: HTMLStyleElement): void;
   onLinkElementChange(link: HTMLLinkElement, authoredRel: string | null): void;
-  onConnectedNodes(nodes: readonly Node[], scan?: SubtreeScan): void;
+  onConnectedNodes(
+    nodes: readonly Node[],
+    scan?: SubtreeScan,
+    alreadyFlushed?: boolean,
+  ): void;
   onDisconnectedNodes(nodes: readonly Node[]): void;
+  flushSettledMove?(nodes?: readonly Node[]): boolean;
+  settledSubtreeHas?(node: Node, baseOnly: boolean): boolean | undefined;
   onShadowRoot?(root: ShadowRoot): void;
 }
 
@@ -61,26 +69,17 @@ export interface PatchRegistry {
   restorePatches(): void;
 }
 
-/**
- * Remembers what the facade overwrote on the realm's prototypes so that
- * dispose() can put it back. Restoring drains the record newest-first: a key
- * patched more than once has to end up with the descriptor it had before the
- * first patch, and unwinding has to be idempotent, so a second run finds
- * nothing left rather than replaying the record in the wrong order.
- */
-// A patch written as `{ value() {} }` or `{ get() {} }` is called "value" or
-// "get", which the guest can read off the member it replaced. Give such a
-// function the name and length of the native one it stands in for.
 function adoptNativeShape(
   replacement: unknown,
   original: unknown,
   name: string,
   length?: number,
 ): void {
-  if (
-    typeof replacement !== "function" ||
-    !["", "value", "get", "set"].includes(replacement.name)
-  ) {
+  if (typeof replacement !== "function") {
+    return;
+  }
+  const fnName = replacement.name;
+  if (fnName !== "" && fnName !== "value" && fnName !== "get" && fnName !== "set") {
     return;
   }
   Object.defineProperty(replacement, "name", { value: name, configurable: true });
@@ -248,8 +247,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const isDocumentFragmentNode = (node: Node): node is DocumentFragment =>
     node.nodeType === 11;
   const isHTMLElementNamed = (element: Element, localName: string): boolean =>
-    element.localName === localName &&
-    element.namespaceURI === "http://www.w3.org/1999/xhtml";
+    element.localName === localName && element.namespaceURI === HTML_NAMESPACE;
   const isHTMLTemplateElement = (element: Element): element is HTMLTemplateElement =>
     isHTMLElementNamed(element, "template");
   const isHTMLStyleElement = (element: Element): element is HTMLStyleElement =>

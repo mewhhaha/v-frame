@@ -223,14 +223,15 @@ v-frame:state(error) {
 
 ## Element methods
 
-| Method                             | Effect                                                                      |
-| ---------------------------------- | --------------------------------------------------------------------------- |
-| `whenReady()`                      | Resolves once the frame is `"ready"`, or rejects on fatal error/disconnect. |
-| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.                      |
-| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved.                   |
-| `reload()`                         | Reloads the current guest document over the network.                        |
+| Method                             | Effect                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `whenReady()`                      | Resolves once the frame is `"ready"`, or rejects on fatal error/disconnect.        |
+| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.                             |
+| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved.                          |
+| `reload()`                         | Reloads the current guest document over the network.                               |
+| `VFrameElement.prewarm(document?)` | Opt-in: prewarms one hidden execution iframe via `moveBefore`; returns a disposer. |
 
-All six return a `Promise<void>`. `whenReady()` resolves immediately when
+The six instance methods return a `Promise<void>`. `whenReady()` resolves immediately when
 `status === "ready"`, rejects immediately when `status === "error"`, and can be
 called before or after connecting the element to await initial readiness. The
 navigation methods are described in [Navigation](./navigation.md), including
@@ -253,6 +254,24 @@ even if a `v-frame-navigated` or `v-frame-load` listener then starts another one
 Two cases have nothing to reload and reject with an `InvalidStateError` without
 starting a load: a disconnected element, and one with no `src`. Both return the
 element to `status === "idle"`.
+
+`VFrameElement.prewarm(targetDocument?)` is an optional cold-boot hint for
+instant transitions and SSR adoption. On browsers that support
+`ShadowRoot.prototype.moveBefore`, it attaches a single hidden empty-`srcdoc`
+`<iframe>` to `targetDocument.documentElement` (default `globalThis.document`)
+and atomically moves it into the next `<v-frame>` that connects — avoiding
+empty-iframe bootstrap latency without ever reusing a realm that ran guest code.
+Calling it twice before claim is idempotent; calling the returned disposer
+removes an unclaimed spare (and is a no-op once claimed), and an unclaimed spare
+is also cleaned up on `pagehide` or if removed/reparented externally. In SSR or
+browsers without `moveBefore`, it is a safe no-op returning `() => {}`.
+
+```ts
+import { VFrameElement } from "@mewhhaha/v-frame";
+
+// Optional: warm one spare execution realm ahead of an upcoming mount or SSR handoff
+const cancelPrewarm = VFrameElement.prewarm();
+```
 
 ```ts
 try {

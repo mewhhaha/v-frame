@@ -8,6 +8,12 @@
 
 import { canHaveURLAttributes, HTML_NAMESPACE } from "../asset-urls.js";
 import { EnumerableWeakMap } from "../enumerable-weak.js";
+import {
+  MARKUP_FLAG_INLINE_EVENTS,
+  MARKUP_FLAG_LINKS,
+  MARKUP_FLAG_SVG,
+  MARKUP_FLAG_TEMPLATES,
+} from "../markup.js";
 import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { AttributeFacade } from "./attributes.js";
 import type { FacadeContext, SubtreeScan } from "./context.js";
@@ -49,6 +55,7 @@ export function installNodeMarking(
     nativeSetAttribute,
     nativeRemoveAttribute,
     nativeAttributes,
+    nativeQuerySelectorAll,
     isHTMLTemplateElement,
     isHTMLStyleElement,
     isHTMLLinkElement,
@@ -64,11 +71,14 @@ export function installNodeMarking(
     patch,
   } = context;
   const nativeAttributesGetter = nativeAttributes?.get;
+  const nativeHasAttributes = window.Element.prototype.hasAttributes;
   const onShadowRoot = options.onShadowRoot;
-  const hasInitialInlineEvents = options.hasInlineEventCandidate !== false;
+  const initialFlags = options.initialFlags ?? 0xff;
+  const hasInitialInlineEvents = (initialFlags & MARKUP_FLAG_INLINE_EVENTS) !== 0;
   const { rememberAuthoredStyleAttribute, rememberAuthoredLinkRel } = style;
   const { eventAttributeName, compileEventAttribute } = events;
   const {
+    urlPropertiesPrototypeWide,
     urlAttributeKey,
     markURLProperties,
     markSVGURLProperty,
@@ -176,19 +186,45 @@ export function installNodeMarking(
       installForeignNodeFacade(attribute);
     }
   };
-  const markVirtualSubtree = (
-    node: Node,
-    initialPass: boolean,
-    scan?: SubtreeScan,
+  const installInlineEventAttributes = (
+    element: Element,
+    eventAttrs: Array<[string, string, string]>,
   ): void => {
+    let attributes = eventAttributeValues.get(element);
+    if (attributes === undefined) {
+      attributes = new Map();
+      eventAttributeValues.set(element, attributes);
+    }
+    for (const [rawName, attributeName, value] of eventAttrs) {
+      attributes.set(attributeName, value);
+      nativeRemoveAttribute.call(element, rawName);
+      compileEventAttribute(element, attributeName, value, !fragmentNodes.has(element));
+    }
+  };
+  const collectInlineEventAttr = (
+    element: Element,
+    attribute: Attr,
+    attrName: string,
+    out: Array<[string, string, string]> | undefined,
+  ): Array<[string, string, string]> | undefined => {
+    if (attrName.length > 2) {
+      const first = attrName.charCodeAt(0);
+      const second = attrName.charCodeAt(1);
+      if ((first === 111 || first === 79) && (second === 110 || second === 78)) {
+        const eventName = eventAttributeName(element, attrName);
+        if (eventName !== null) {
+          (out ??= []).push([attrName, eventName, attribute.value]);
+        }
+      }
+    }
+    return out;
+  };
+  const markVirtualSubtree = (node: Node, scan?: SubtreeScan): void => {
     const nodeType = node.nodeType;
-    const newlyVirtual = initialPass || !virtualNodes.has(node);
+    const newlyVirtual = !virtualNodes.has(node);
     if (newlyVirtual) {
       virtualNodes.add(node);
-      if (
-        !nodeIdentityIsPrototypeWide ||
-        (!initialPass && !(node instanceof window.Node))
-      ) {
+      if (!nodeIdentityIsPrototypeWide || !(node instanceof window.Node)) {
         installForeignNodeFacade(node);
       }
       if (onShadowRoot !== undefined) {
@@ -204,64 +240,47 @@ export function installNodeMarking(
       const element = node as Element;
       const hasURLCapability = canHaveURLAttributes(element);
       let eventAttrs: Array<[string, string, string]> | undefined;
-      const attrs =
-        nativeAttributesGetter !== undefined
-          ? (nativeAttributesGetter.call(element) as NamedNodeMap)
-          : element.attributes;
-      const attrCount = attrs.length;
-      if (attrCount > 0) {
-        if (initialPass && !hasInitialInlineEvents) {
-          for (let index = 0; index < attrCount; index += 1) {
-            const attribute = attrs[index]!;
-            virtualNodes.add(attribute);
-            if (!nodeIdentityIsPrototypeWide || !(attribute instanceof window.Node)) {
-              installForeignNodeFacade(attribute);
+      let attrCount = 0;
+      if (nativeHasAttributes.call(element)) {
+        const attrs =
+          nativeAttributesGetter !== undefined
+            ? (nativeAttributesGetter.call(element) as NamedNodeMap)
+            : element.attributes;
+        attrCount = attrs.length;
+        let authoredURLs = hasURLCapability
+          ? options.authoredURLAttributes.get(element)
+          : undefined;
+        for (let index = 0; index < attrCount; index += 1) {
+          const attribute = attrs[index]!;
+          markVirtualAttribute(attribute);
+          const attrName = attribute.name;
+          if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
+            scan.hasTarget = true;
+          }
+          if (hasURLCapability) {
+            const urlKey = urlAttributeKey(
+              element,
+              attribute.localName,
+              attribute.namespaceURI,
+            );
+            if (urlKey !== null) {
+              if (authoredURLs === undefined) {
+                authoredURLs = new Map();
+                options.authoredURLAttributes.set(element, authoredURLs);
+              }
+              if (!authoredURLs.has(urlKey)) {
+                authoredURLs.set(urlKey, attribute.value);
+              }
+              rememberPhysicalURLAttribute(element, urlKey, attribute.value);
             }
           }
-        } else {
-          let authoredURLs =
-            hasURLCapability && !initialPass
-              ? options.authoredURLAttributes.get(element)
-              : undefined;
-          for (let index = 0; index < attrCount; index += 1) {
-            const attribute = attrs[index]!;
-            markVirtualAttribute(attribute);
-            const attrName = attribute.name;
-            if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
-              scan.hasTarget = true;
-            }
-            if (hasURLCapability && !initialPass) {
-              const urlKey = urlAttributeKey(
-                element,
-                attribute.localName,
-                attribute.namespaceURI,
-              );
-              if (urlKey !== null) {
-                if (authoredURLs === undefined) {
-                  authoredURLs = new Map();
-                  options.authoredURLAttributes.set(element, authoredURLs);
-                }
-                if (!authoredURLs.has(urlKey)) {
-                  authoredURLs.set(urlKey, attribute.value);
-                }
-                rememberPhysicalURLAttribute(element, urlKey, attribute.value);
-              }
-            }
-            if (newlyVirtual && attrName.length > 2) {
-              const first = attrName.charCodeAt(0);
-              const second = attrName.charCodeAt(1);
-              if ((first === 111 || first === 79) && (second === 110 || second === 78)) {
-                const eventName = eventAttributeName(element, attrName);
-                if (eventName !== null) {
-                  (eventAttrs ??= []).push([attrName, eventName, attribute.value]);
-                }
-              }
-            }
+          if (newlyVirtual) {
+            eventAttrs = collectInlineEventAttr(element, attribute, attrName, eventAttrs);
           }
         }
       }
       if (newlyVirtual) {
-        if (initialPass ? options.authoredStyleAttributes.has(element) : attrCount > 0) {
+        if (attrCount > 0) {
           rememberAuthoredStyleAttribute(element);
         }
         if (isHTMLLinkElement(element)) {
@@ -269,25 +288,9 @@ export function installNodeMarking(
         } else if (isHTMLScriptElement(element)) {
           protectScript(element);
         }
-        if (!initialPass) {
-          foreignElementFacade(element);
-        }
+        foreignElementFacade(element);
         if (eventAttrs !== undefined) {
-          let attributes = eventAttributeValues.get(element);
-          if (attributes === undefined) {
-            attributes = new Map();
-            eventAttributeValues.set(element, attributes);
-          }
-          for (const [rawName, attributeName, value] of eventAttrs) {
-            attributes.set(attributeName, value);
-            nativeRemoveAttribute.call(element, rawName);
-            compileEventAttribute(
-              element,
-              attributeName,
-              value,
-              !fragmentNodes.has(element),
-            );
-          }
+          installInlineEventAttributes(element, eventAttrs);
         }
         if (hasURLCapability) {
           markURLProperties(element);
@@ -295,11 +298,7 @@ export function installNodeMarking(
         }
       }
       if (hasURLCapability) {
-        if (initialPass) {
-          syncInitialPhysicalURLs(element);
-        } else {
-          rebaseElementURLs(element);
-        }
+        rebaseElementURLs(element);
       }
       if (scan !== undefined) {
         if (isHTMLStyleElement(element)) {
@@ -315,16 +314,12 @@ export function installNodeMarking(
 
       for (let child = element.firstChild; child !== null;) {
         const next = child.nextSibling;
-        if (initialPass && nodeIdentityIsPrototypeWide && child.nodeType === 3) {
-          virtualNodes.add(child);
-        } else {
-          markVirtualSubtree(child, initialPass, scan);
-        }
+        markVirtualSubtree(child, scan);
         child = next;
       }
 
       if (isHTMLTemplateElement(element)) {
-        markVirtualSubtree(element.content, false, undefined);
+        markVirtualSubtree(element.content);
       }
       return;
     }
@@ -332,7 +327,7 @@ export function installNodeMarking(
     if (nodeType === 11) {
       for (let child = node.firstChild; child !== null;) {
         const next = child.nextSibling;
-        markVirtualSubtree(child, initialPass, scan);
+        markVirtualSubtree(child, scan);
         child = next;
       }
     }
@@ -356,7 +351,7 @@ export function installNodeMarking(
     if (virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
       return false;
     }
-    markVirtualSubtree(node, false, scan);
+    markVirtualSubtree(node, scan);
     return true;
   };
 
@@ -433,7 +428,7 @@ export function installNodeMarking(
       } else if (localName === "link") {
         rememberAuthoredLinkRel(element as unknown as HTMLLinkElement);
       } else if (localName === "template") {
-        markVirtualSubtree((element as unknown as HTMLTemplateElement).content, false);
+        markVirtualSubtree((element as unknown as HTMLTemplateElement).content);
       }
       if (canHaveURLAttributes(element)) {
         markURLProperties(element);
@@ -450,23 +445,118 @@ export function installNodeMarking(
   const virtualDoctype =
     document.doctype ?? document.implementation.createDocumentType("html", "", "");
 
+  // markShell runs before Element.prototype.attributes is patched, so direct
+  // element.attributes access is native and guarding with hasAttributes() avoids
+  // allocating a NamedNodeMap wrapper for every attribute-less element.
+  const markInitialOwnershipFast = (element: Element): void => {
+    virtualNodes.add(element);
+    if (element.hasAttributes()) {
+      const attrs = element.attributes;
+      for (let index = 0, len = attrs.length; index < len; index += 1) {
+        virtualNodes.add(attrs[index]!);
+      }
+    }
+    for (let child = element.firstChild; child !== null; child = child.nextSibling) {
+      if (child.nodeType === 1) {
+        markInitialOwnershipFast(child as Element);
+      } else {
+        virtualNodes.add(child);
+      }
+    }
+  };
+
+  const markInitialOwnershipWithEvents = (element: Element): void => {
+    virtualNodes.add(element);
+    if (element.hasAttributes()) {
+      const attrs = element.attributes;
+      let eventAttrs: Array<[string, string, string]> | undefined;
+      for (let index = 0, len = attrs.length; index < len; index += 1) {
+        const attribute = attrs[index]!;
+        virtualNodes.add(attribute);
+        eventAttrs = collectInlineEventAttr(
+          element,
+          attribute,
+          attribute.name,
+          eventAttrs,
+        );
+      }
+      if (eventAttrs !== undefined) {
+        installInlineEventAttributes(element, eventAttrs);
+      }
+    }
+    for (let child = element.firstChild; child !== null; child = child.nextSibling) {
+      if (child.nodeType === 1) {
+        markInitialOwnershipWithEvents(child as Element);
+      } else {
+        virtualNodes.add(child);
+      }
+    }
+  };
+
   const markShell = (): void => {
-    markVirtualSubtree(options.html, true);
-    markVirtualSubtree(virtualDoctype, true);
+    const query = (selector: string) =>
+      nativeQuerySelectorAll.call(options.html, selector);
+    if (
+      nodeIdentityIsPrototypeWide &&
+      urlPropertiesPrototypeWide &&
+      options.html instanceof window.Node
+    ) {
+      if (hasInitialInlineEvents) {
+        markInitialOwnershipWithEvents(options.html);
+      } else {
+        markInitialOwnershipFast(options.html);
+      }
+      if (initialFlags & MARKUP_FLAG_TEMPLATES) {
+        for (const template of query("template")) {
+          if (isHTMLTemplateElement(template)) markVirtualSubtree(template.content);
+        }
+        if (onShadowRoot !== undefined) {
+          for (const nested of query("v-frame")) {
+            if (nested.shadowRoot !== null) onShadowRoot(nested.shadowRoot);
+          }
+        }
+      }
+      for (const element of options.authoredStyleAttributes.keys()) {
+        rememberAuthoredStyleAttribute(element);
+      }
+      if (initialFlags & MARKUP_FLAG_LINKS) {
+        for (const link of query("link")) {
+          if (isHTMLLinkElement(link)) rememberAuthoredLinkRel(link);
+        }
+      }
+      for (const script of options.initialScripts ?? query("script")) {
+        if (isHTMLScriptElement(script)) protectScript(script);
+      }
+      if (initialFlags & MARKUP_FLAG_SVG) {
+        for (const svg of query("a,feImage,image,use")) markSVGURLProperty(svg);
+      }
+      for (const element of options.authoredURLAttributes.keys()) {
+        syncInitialPhysicalURLs(element);
+      }
+    } else {
+      markVirtualSubtree(options.html);
+    }
+    virtualNodes.add(virtualDoctype);
+    if (!nodeIdentityIsPrototypeWide) installForeignNodeFacade(virtualDoctype);
+    const ro = (value: Node | null): PropertyDescriptor => ({
+      configurable: true,
+      get: () => value,
+    });
+    const nullProp = ro(null);
     try {
       defineNodeFacade(virtualDoctype, {
-        parentNode: { configurable: true, get: () => document },
-        parentElement: { configurable: true, get: () => null },
-        previousSibling: { configurable: true, get: () => null },
-        nextSibling: { configurable: true, get: () => options.html },
+        parentNode: ro(document),
+        parentElement: nullProp,
+        previousSibling: nullProp,
+        nextSibling: ro(options.html),
       });
       defineNodeFacade(options.html, {
-        parentNode: { configurable: true, get: () => document },
-        parentElement: { configurable: true, get: () => null },
-        previousSibling: { configurable: true, get: () => virtualDoctype },
-        nextSibling: { configurable: true, get: () => null },
-        previousElementSibling: { configurable: true, get: () => null },
-        nextElementSibling: { configurable: true, get: () => null },
+        parentNode: ro(document),
+        parentElement: nullProp,
+        previousSibling: ro(virtualDoctype),
+        nextSibling: nullProp,
+        previousElementSibling: nullProp,
+        nextElementSibling: nullProp,
       });
     } catch {
       // The shell remains reachable from document.documentElement even if parent identity cannot be shadowed.
