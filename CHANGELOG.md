@@ -3,14 +3,6 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Fixed
-
-- Clicking a link inside a nested `<v-frame>` now navigates only the owning
-  inner frame instead of being hijacked by an ancestor `<v-frame>`'s capture
-  listener.
-
 ## 0.3.0 - 2026-11-26
 
 ### Added
@@ -48,6 +40,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Clicking a link inside a nested `<v-frame>` now navigates only the owning
+  inner frame instead of being hijacked by an ancestor `<v-frame>`'s capture
+  listener.
 - Hardened SSR materialization against Declarative Shadow DOM `</template>`
   breakout, forged guest `data-v-frame-*` markers, inert `<template>` stylesheet
   fetches, unmaterialized `<style>` nonce propagation, and `HTMLRewriter` entity
