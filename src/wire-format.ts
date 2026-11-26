@@ -49,3 +49,26 @@ export const SHELL_ELEMENT_NAMES: ReadonlyMap<string, string> = new Map([
   ["head", "v-head"],
   ["body", "v-body"],
 ]);
+
+const RESERVED_SSR_ATTRIBUTES = new Set([
+  SCRIPT_MARKER_ATTRIBUTE,
+  SCRIPT_TYPE_ATTRIBUTE,
+  SSR_ATTRIBUTES,
+  SSR_PREVIEW_ATTRIBUTES,
+  SSR_LINK_REL,
+  SSR_LINK_STYLE,
+  SSR_LINK_SOURCE,
+  SSR_LINK_INTEGRITY,
+  FRAGMENT_TARGET_ATTRIBUTE,
+  SSR_STYLE,
+]);
+
+/** True when an attribute name belongs to the SSR wire format and must be server-owned. */
+export function isReservedSSRAttribute(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    RESERVED_SSR_ATTRIBUTES.has(lower) ||
+    lower.startsWith(`${SSR_ATTRIBUTES}-`) ||
+    lower.startsWith(`${SSR_PREVIEW_ATTRIBUTES}-`)
+  );
+}

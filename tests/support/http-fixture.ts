@@ -65,6 +65,20 @@ export const registerBundleRoute: RouteResponse = {
   missing: "Register build output not found",
 };
 
+/** The channel entry point for cross-frame communication tests. */
+export const channelBundleRoute: RouteResponse = {
+  file: resolve(process.cwd(), "dist/channel.js"),
+  type: "text/javascript",
+  missing: "Channel build output not found",
+};
+
+/** The testing adapter entry point for shadow-piercing test helpers. */
+export const testingBundleRoute: RouteResponse = {
+  file: resolve(process.cwd(), "dist/testing.js"),
+  type: "text/javascript",
+  missing: "Testing build output not found",
+};
+
 export function htmlDocument(body: string, head = ""): string {
   return `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 }

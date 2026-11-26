@@ -1,4 +1,8 @@
-export { composeFrames, type ComposeFramesOptions } from "./compose.js";
+export {
+  composeFrames,
+  type ComposeFramesOptions,
+  type ComposeSlotFailure,
+} from "./compose.js";
 export { materializeVFrameDocument } from "./html-rewriter.js";
 export { isHTMLDocumentResponse as isVFrameDocumentResponse } from "../html-response.js";
 export type {
@@ -8,6 +12,7 @@ export type {
 export { fragmentIdentifiers, fragmentTargetRank } from "../fragment.js";
 export type { FragmentElement } from "../fragment.js";
 export {
+  balanceTemplateTags,
   escapeStylesheetText,
   materializeStylesheet,
   rewriteAssetAttributes,
@@ -33,6 +38,7 @@ export type {
   AttributeAssignment,
   AssetElementAttributes,
   MaterializeStylesheetOptions,
+  RewriteAssetAttributesOptions,
   ServerStylesheetFetch,
   StylesheetBytes,
   ScriptElementAttributes,

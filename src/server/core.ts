@@ -1,6 +1,7 @@
 import { createStylesheetContext, extractFontFaces, rewriteStylesheet } from "../css.js";
 import {
   HTML_NAMESPACE,
+  isASCIIWhitespace,
   rewriteAssetAttribute,
   SVG_NAMESPACE,
   XLINK_NAMESPACE,
@@ -20,6 +21,573 @@ import {
   SSR_PREVIEW_ATTRIBUTES,
   SSR_STYLE,
 } from "../wire-format.js";
+
+export const DEFAULT_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_MAX_STYLESHEET_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MAX_STYLESHEETS = 64;
+export const DEFAULT_MAX_IMPORT_DEPTH = 8;
+export const DEFAULT_MAX_CONCURRENCY = 8;
+export const DEFAULT_MAX_SLOTS = 32;
+export const DEFAULT_MAX_TOTAL_FETCHES = 256;
+
+const RAW_TEXT_ELEMENTS = new Set([
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+]);
+
+const SVG_HTML_INTEGRATION_POINTS = new Set(["foreignobject", "desc", "title"]);
+const MATH_TEXT_INTEGRATION_POINTS = new Set(["mi", "mo", "mn", "ms", "mtext"]);
+// HTML5 13.2.6.5 "in foreign content": start tags that immediately pop foreign
+// elements back to the HTML namespace (plus <font color|face|size>).
+const FOREIGN_BREAKOUT_TAGS = new Set([
+  "b",
+  "big",
+  "blockquote",
+  "body",
+  "br",
+  "center",
+  "code",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "embed",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "hr",
+  "i",
+  "img",
+  "li",
+  "listing",
+  "menu",
+  "meta",
+  "nobr",
+  "ol",
+  "p",
+  "pre",
+  "ruby",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "strike",
+  "sub",
+  "sup",
+  "table",
+  "tt",
+  "u",
+  "ul",
+  "var",
+]);
+
+function isASCIIAlpha(character: string | undefined): boolean {
+  if (character === undefined) return false;
+  const code = character.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isRawTextBoundary(character: string | undefined): boolean {
+  return (
+    character === undefined ||
+    isASCIIWhitespace(character) ||
+    character === "/" ||
+    character === ">"
+  );
+}
+
+function findScriptEnd(lowerSource: string, cursor: number): number {
+  let pos = cursor;
+  let state: "data" | "escaped" | "double-escaped" = "data";
+  while (pos < lowerSource.length) {
+    if (state === "data") {
+      if (lowerSource.startsWith("<!--", pos)) {
+        state = "escaped";
+        pos += 4;
+        continue;
+      }
+      if (
+        lowerSource.startsWith("</script", pos) &&
+        isRawTextBoundary(lowerSource[pos + 8])
+      ) {
+        return pos;
+      }
+      pos += 1;
+      continue;
+    }
+    if (lowerSource.startsWith("-->", pos)) {
+      state = "data";
+      pos += 3;
+      continue;
+    }
+    if (state === "escaped") {
+      if (
+        lowerSource.startsWith("<script", pos) &&
+        isRawTextBoundary(lowerSource[pos + 7])
+      ) {
+        state = "double-escaped";
+        pos += 7;
+        continue;
+      }
+      if (
+        lowerSource.startsWith("</script", pos) &&
+        isRawTextBoundary(lowerSource[pos + 8])
+      ) {
+        return pos;
+      }
+      pos += 1;
+      continue;
+    }
+    if (
+      lowerSource.startsWith("</script", pos) &&
+      isRawTextBoundary(lowerSource[pos + 8])
+    ) {
+      state = "escaped";
+      pos += 8;
+      continue;
+    }
+    pos += 1;
+  }
+  return -1;
+}
+
+function findRawTextEnd(
+  lowerSource: string,
+  cursor: number,
+  elementName: string,
+): number {
+  if (elementName === "script") return findScriptEnd(lowerSource, cursor);
+  const endTagPrefix = `</${elementName}`;
+  let candidate = lowerSource.indexOf(endTagPrefix, cursor);
+  while (candidate !== -1) {
+    if (isRawTextBoundary(lowerSource[candidate + endTagPrefix.length])) {
+      return candidate;
+    }
+    candidate = lowerSource.indexOf(endTagPrefix, candidate + endTagPrefix.length);
+  }
+  return -1;
+}
+
+function findTagEnd(
+  source: string,
+  startAfterName: number,
+): { end: number; selfClosing: boolean } | null {
+  let cursor = startAfterName;
+  let selfClosing = false;
+  while (cursor < source.length) {
+    while (isASCIIWhitespace(source[cursor])) cursor += 1;
+    if (cursor >= source.length) return null;
+    if (source[cursor] === ">") {
+      return { end: cursor + 1, selfClosing };
+    }
+    if (source[cursor] === "/") {
+      selfClosing = true;
+      cursor += 1;
+      continue;
+    }
+    selfClosing = false;
+    while (
+      cursor < source.length &&
+      !isASCIIWhitespace(source[cursor]) &&
+      source[cursor] !== "/" &&
+      source[cursor] !== ">" &&
+      source[cursor] !== "="
+    ) {
+      cursor += 1;
+    }
+    while (isASCIIWhitespace(source[cursor])) cursor += 1;
+    if (source[cursor] !== "=") continue;
+    cursor += 1;
+    while (isASCIIWhitespace(source[cursor])) cursor += 1;
+    const quote = source[cursor];
+    if (quote === '"' || quote === "'") {
+      const close = source.indexOf(quote, cursor + 1);
+      if (close === -1) return null;
+      cursor = close + 1;
+      continue;
+    }
+    while (
+      cursor < source.length &&
+      !isASCIIWhitespace(source[cursor]) &&
+      source[cursor] !== ">"
+    ) {
+      cursor += 1;
+    }
+  }
+  return null;
+}
+
+function hasForeignFontBreakoutAttribute(tagText: string): boolean {
+  return /[\t\n\f\r /](?:color|face|size)(?=[\t\n\f\r =/>])/i.test(tagText);
+}
+
+function isHTMLAnnotationXML(tagText: string): boolean {
+  const match =
+    /[\t\n\f\r /]encoding[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]*))/i.exec(
+      tagText,
+    );
+  const value = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim().toLowerCase();
+  return value === "text/html" || value === "application/xhtml+xml";
+}
+
+/**
+ * Ensures guest HTML cannot break out of or swallow an enclosing Declarative
+ * Shadow DOM `<template shadowrootmode="open">...</template>` wrapper: drops
+ * unmatched `</template>` end tags at depth 0 (accounting for SVG/MathML
+ * foreign content and HTML5 foreign-content breakout tags), closes unclosed
+ * `<template>`, comments, CDATA, and raw-text elements at EOF, discards
+ * truncated tags at EOF, and neutralizes `<plaintext>`.
+ */
+export function balanceTemplateTags(source: string): string {
+  const lower = source.toLowerCase();
+  const out: string[] = [];
+  let cursor = 0;
+  let templateDepth = 0;
+  interface ForeignScope {
+    kind: "svg" | "math";
+    integrationTag: string | null;
+    integrationDepth: number;
+    foreignTemplateDepth: number;
+    htmlTemplateDepthAtEntry: number;
+  }
+  const foreignStack: ForeignScope[] = [];
+
+  const inForeignContent = (): boolean => {
+    const top = foreignStack[foreignStack.length - 1];
+    return top !== undefined && top.integrationTag === null;
+  };
+
+  while (cursor < source.length) {
+    const tagStart = source.indexOf("<", cursor);
+    if (tagStart === -1) {
+      out.push(source.slice(cursor));
+      cursor = source.length;
+      break;
+    }
+    out.push(source.slice(cursor, tagStart));
+
+    if (source.startsWith("<!--", tagStart)) {
+      if (source.startsWith("<!-->", tagStart)) {
+        out.push("<!-->");
+        cursor = tagStart + 5;
+        continue;
+      }
+      if (source.startsWith("<!--->", tagStart)) {
+        out.push("<!--->");
+        cursor = tagStart + 6;
+        continue;
+      }
+      const commentEnd = source.indexOf("-->", tagStart + 4);
+      if (commentEnd === -1) {
+        out.push(source.slice(tagStart), "-->");
+        cursor = source.length;
+        break;
+      }
+      out.push(source.slice(tagStart, commentEnd + 3));
+      cursor = commentEnd + 3;
+      continue;
+    }
+
+    if (inForeignContent() && source.startsWith("<![CDATA[", tagStart)) {
+      const cdataEnd = source.indexOf("]]>", tagStart + 9);
+      if (cdataEnd === -1) {
+        out.push(source.slice(tagStart), "]]>");
+        cursor = source.length;
+        break;
+      }
+      out.push(source.slice(tagStart, cdataEnd + 3));
+      cursor = cdataEnd + 3;
+      continue;
+    }
+
+    if (source[tagStart + 1] === "!" || source[tagStart + 1] === "?") {
+      const declarationEnd = source.indexOf(">", tagStart + 2);
+      if (declarationEnd === -1) {
+        out.push(source.slice(tagStart), ">");
+        cursor = source.length;
+        break;
+      }
+      out.push(source.slice(tagStart, declarationEnd + 1));
+      cursor = declarationEnd + 1;
+      continue;
+    }
+
+    const isEndTag = source[tagStart + 1] === "/";
+    const nameStart = tagStart + (isEndTag ? 2 : 1);
+    if (!isASCIIAlpha(source[nameStart])) {
+      if (isEndTag) {
+        // HTML5 bogus comment for `</...` without ASCII alpha: runs to next `>`.
+        const bogusEnd = source.indexOf(">", nameStart);
+        if (bogusEnd === -1) {
+          out.push(source.slice(tagStart), ">");
+          cursor = source.length;
+          break;
+        }
+        out.push(source.slice(tagStart, bogusEnd + 1));
+        cursor = bogusEnd + 1;
+        continue;
+      }
+      out.push("<");
+      cursor = tagStart + 1;
+      continue;
+    }
+
+    let nameEnd = nameStart + 1;
+    while (
+      nameEnd < source.length &&
+      !isASCIIWhitespace(source[nameEnd]) &&
+      source[nameEnd] !== "/" &&
+      source[nameEnd] !== ">"
+    ) {
+      nameEnd += 1;
+    }
+    const tagName = lower.slice(nameStart, nameEnd);
+    const parsedTag = findTagEnd(source, nameEnd);
+    if (parsedTag === null) {
+      // Truncated tag or unclosed attribute quote at EOF: discard it so it
+      // cannot swallow the host's closing `</template>`.
+      cursor = source.length;
+      break;
+    }
+    const { end: tagEnd, selfClosing } = parsedTag;
+    const rawTag = source.slice(tagStart, tagEnd);
+    let foreign = inForeignContent();
+
+    if (isEndTag) {
+      if (tagName === "template") {
+        const top = foreignStack[foreignStack.length - 1];
+        if (foreign && top !== undefined && top.foreignTemplateDepth > 0) {
+          top.foreignTemplateDepth -= 1;
+          out.push(rawTag);
+          cursor = tagEnd;
+          continue;
+        }
+        if (templateDepth === 0) {
+          // Stray `</template>` with no open HTML `<template>` would close the
+          // host's DSD wrapper (including from inside foreign content).
+          cursor = tagEnd;
+          continue;
+        }
+        while (
+          foreignStack.length > 0 &&
+          foreignStack[foreignStack.length - 1]!.htmlTemplateDepthAtEntry ===
+            templateDepth
+        ) {
+          foreignStack.pop();
+        }
+        templateDepth -= 1;
+      } else {
+        const top = foreignStack[foreignStack.length - 1];
+        if (top !== undefined && top.htmlTemplateDepthAtEntry === templateDepth) {
+          if (top.integrationTag === tagName) {
+            top.integrationDepth -= 1;
+            if (top.integrationDepth <= 0) {
+              top.integrationTag = null;
+              top.integrationDepth = 0;
+            }
+          } else if (top.kind === tagName && top.integrationTag === null) {
+            foreignStack.pop();
+          }
+        }
+      }
+      out.push(rawTag);
+      cursor = tagEnd;
+      continue;
+    }
+
+    if (
+      foreign &&
+      (FOREIGN_BREAKOUT_TAGS.has(tagName) ||
+        (tagName === "font" && hasForeignFontBreakoutAttribute(rawTag)))
+    ) {
+      while (inForeignContent()) {
+        foreignStack.pop();
+      }
+      foreign = inForeignContent();
+    }
+
+    if (!foreign && tagName === "plaintext") {
+      // `<plaintext>` has no closing tag in HTML5 and would swallow the host
+      // document after the DSD wrapper. Render its remainder safely inside `<pre>`.
+      const rest = source.slice(tagEnd).replaceAll("&", "&amp;").replaceAll("<", "&lt;");
+      out.push("<pre>", rest, "</pre>");
+      cursor = source.length;
+      break;
+    }
+
+    if (!foreign && (tagName === "svg" || tagName === "math")) {
+      if (!selfClosing) {
+        foreignStack.push({
+          kind: tagName,
+          integrationTag: null,
+          integrationDepth: 0,
+          foreignTemplateDepth: 0,
+          htmlTemplateDepthAtEntry: templateDepth,
+        });
+      }
+    } else if (foreign && !selfClosing) {
+      const top = foreignStack[foreignStack.length - 1]!;
+      if (tagName === "template") {
+        top.foreignTemplateDepth += 1;
+      } else if (
+        (top.kind === "svg" && SVG_HTML_INTEGRATION_POINTS.has(tagName)) ||
+        (top.kind === "math" &&
+          (MATH_TEXT_INTEGRATION_POINTS.has(tagName) ||
+            (tagName === "annotation-xml" && isHTMLAnnotationXML(rawTag))))
+      ) {
+        top.integrationTag = tagName;
+        top.integrationDepth = 1;
+      }
+    } else if (foreignStack.length > 0 && !selfClosing) {
+      const top = foreignStack[foreignStack.length - 1]!;
+      if (
+        top.htmlTemplateDepthAtEntry === templateDepth &&
+        top.integrationTag === tagName
+      ) {
+        top.integrationDepth += 1;
+      }
+    }
+
+    if (!foreign && tagName === "template") {
+      templateDepth += 1;
+    }
+
+    out.push(rawTag);
+    cursor = tagEnd;
+
+    if (!foreign && RAW_TEXT_ELEMENTS.has(tagName)) {
+      const rawEnd = findRawTextEnd(lower, cursor, tagName);
+      if (rawEnd === -1) {
+        out.push(source.slice(cursor), `</${tagName}>`);
+        cursor = source.length;
+        break;
+      }
+      out.push(source.slice(cursor, rawEnd));
+      const closeTag = findTagEnd(source, rawEnd + 2 + tagName.length);
+      if (closeTag === null) {
+        out.push(`</${tagName}>`);
+        cursor = source.length;
+        break;
+      }
+      out.push(source.slice(rawEnd, closeTag.end));
+      cursor = closeTag.end;
+    }
+  }
+
+  if (templateDepth > 0) {
+    out.push("</template>".repeat(templateDepth));
+  }
+  return out.join("");
+}
+
+/** Shared concurrency + request-count gate for composition and materialization. */
+export function createFetchBudget(options: {
+  maxRequests: number;
+  maxConcurrency: number;
+  label: string;
+}): <T>(signal: AbortSignal | undefined, run: () => Promise<T>) => Promise<T> {
+  const maxRequests = options.maxRequests;
+  const maxConcurrency = Math.max(1, options.maxConcurrency);
+  let total = 0;
+  let active = 0;
+  const waiters: Array<() => void> = [];
+  const acquire = (signal?: AbortSignal): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      const wake = () => {
+        signal?.removeEventListener("abort", onAbort);
+        active += 1;
+        resolve();
+      };
+      const onAbort = () => {
+        const index = waiters.indexOf(wake);
+        if (index !== -1) waiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      waiters.push(wake);
+    });
+  };
+  const release = () => {
+    active -= 1;
+    waiters.shift()?.();
+  };
+  return async <T>(
+    signal: AbortSignal | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    if (total >= maxRequests) {
+      throw new RangeError(
+        `${options.label} exceeded maximum of ${maxRequests} requests`,
+      );
+    }
+    total += 1;
+    if (active < maxConcurrency) {
+      if (signal?.aborted) throw signal.reason;
+      active += 1;
+    } else {
+      await acquire(signal);
+    }
+    try {
+      return await run();
+    } finally {
+      release();
+    }
+  };
+}
+
+/** Wraps a response body in a strict byte cap without buffering the whole stream up front. */
+export function limitResponseBytes(
+  response: Response,
+  maxBytes: number,
+  label: string,
+): Response {
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) return response;
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    throw new RangeError(`${label} exceeded maximum size of ${maxBytes} bytes`);
+  }
+  if (response.body === null) return response;
+  let seen = 0;
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      seen += chunk.byteLength;
+      if (seen > maxBytes) {
+        controller.error(
+          new RangeError(`${label} exceeded maximum size of ${maxBytes} bytes`),
+        );
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  return new Response(response.body.pipeThrough(limiter), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+export async function readBoundedBytes(
+  response: Response,
+  maxBytes: number,
+  label: string,
+): Promise<ArrayBuffer> {
+  return limitResponseBytes(response, maxBytes, label).arrayBuffer();
+}
 
 /**
  * Runtime-neutral rules for turning a trusted guest document into markup that a
@@ -154,29 +722,45 @@ export function rewritePreviewAttributes(element: AssetElementAttributes): {
   return { removeAttributes, setAttributes };
 }
 
+export interface RewriteAssetAttributesOptions {
+  /** Decodes raw HTML-encoded attribute values before URL/CSS rewriting. */
+  decode?(value: string): string;
+  /** Encodes rewritten attribute values for a rewriter whose setAttribute preserves entities. */
+  encode?(value: string): string;
+}
+
 /** Rebase preview resources while retaining authored values for hydration. */
 export function rewriteAssetAttributes(
   element: AssetElementAttributes,
   baseURL: string,
+  options: RewriteAssetAttributesOptions = {},
 ): AttributeAssignment[] {
   const node = {
     localName: element.tagName,
     namespaceURI: element.namespaceURI,
   };
+  const decode = options.decode;
+  const encode = options.encode;
   const assignments: AttributeAssignment[] = [];
   const authored = new Map<string, string | null>();
-  for (const [name, value] of element.attributes) {
+  for (const [name, rawValue] of element.attributes) {
     const prefixed = name.startsWith("xlink:");
-    const rewritten = rewriteAssetAttribute(
-      node,
-      prefixed ? name.slice("xlink:".length) : name,
-      prefixed ? XLINK_NAMESPACE : null,
-      value,
-      baseURL,
-    );
+    const decoded = decode ? decode(rawValue) : rawValue;
+    let rewritten: string | null;
+    try {
+      rewritten = rewriteAssetAttribute(
+        node,
+        prefixed ? name.slice("xlink:".length) : name,
+        prefixed ? XLINK_NAMESPACE : null,
+        decoded,
+        baseURL,
+      );
+    } catch {
+      continue;
+    }
     if (rewritten !== null) {
-      authored.set(name, value);
-      assignments.push({ name, value: rewritten });
+      authored.set(name, rawValue);
+      assignments.push({ name, value: encode ? encode(rewritten) : rewritten });
     }
   }
   if (authored.size !== 0 && !element.hasAttribute(SSR_ATTRIBUTES)) {
@@ -235,6 +819,14 @@ export interface MaterializeStylesheetOptions {
   onFontFace?(css: string): void;
   /** Aborts the fetches still in flight and silences their failures. */
   signal?: AbortSignal;
+  /** Maximum byte length accepted for a single stylesheet. Defaults to 2 MiB. */
+  maxStylesheetBytes?: number;
+  /** Maximum distinct stylesheet fetches per materialization. Defaults to 64. */
+  maxStylesheets?: number;
+  /** Maximum nested `@import` depth. Defaults to 8. */
+  maxImportDepth?: number;
+  /** Maximum concurrent stylesheet fetches. Defaults to 8. */
+  maxConcurrency?: number;
 }
 
 export interface StylesheetBytes {
@@ -250,17 +842,126 @@ export interface ServerStylesheetFetch {
   ): Promise<string | StylesheetSource | StylesheetBytes>;
 }
 
+/**
+ * Default SSR stylesheet fetcher: restricted to same-origin HTTP(S) URLs
+ * without embedded credentials, manual redirects, 200 responses, and a byte cap.
+ * Pass a custom `options.fetchText` for cross-origin or internal routing.
+ */
+export function createDefaultStylesheetFetch(
+  documentURL: string,
+  maxBytes = DEFAULT_MAX_STYLESHEET_BYTES,
+): ServerStylesheetFetch {
+  const allowedOrigin = URL.parse(documentURL)?.origin ?? null;
+  return async (url, { signal } = {}) => {
+    const target = URL.parse(url);
+    if (
+      target === null ||
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username !== "" ||
+      target.password !== "" ||
+      (allowedOrigin !== null && target.origin !== allowedOrigin)
+    ) {
+      throw new TypeError(
+        `v-frame SSR stylesheet ${url} must be a same-origin HTTP(S) URL`,
+      );
+    }
+    const init: RequestInit = { redirect: "manual" };
+    if (signal !== undefined) init.signal = signal;
+    const response = await fetch(target.href, init);
+    if (response.redirected || response.status !== 200) {
+      void response.body?.cancel().catch(() => {});
+      throw new TypeError(
+        `v-frame SSR stylesheet ${url} returned ${response.status} ${response.statusText}`,
+      );
+    }
+    return {
+      bytes: await readBoundedBytes(response, maxBytes, `v-frame SSR stylesheet ${url}`),
+      url: response.url || target.href,
+    };
+  };
+}
+
 export async function fetchStylesheetSource(
   url: string,
   { signal }: StylesheetFetchOptions = {},
 ): Promise<StylesheetBytes> {
-  const response = await fetch(url, signal ? { signal } : undefined);
-  if (!response.ok) {
-    throw new TypeError(
-      `v-frame SSR stylesheet ${url} returned ${response.status} ${response.statusText}`,
-    );
-  }
-  return { bytes: await response.arrayBuffer(), url: response.url || url };
+  return createDefaultStylesheetFetch(url)(
+    url,
+    signal ? { signal } : undefined,
+  ) as Promise<StylesheetBytes>;
+}
+
+/** Wraps a stylesheet fetcher with total fetch budget, concurrency cap, and byte limit. */
+export function createBoundedStylesheetFetch(
+  fetchText: ServerStylesheetFetch,
+  options: {
+    maxStylesheets?: number;
+    maxConcurrency?: number;
+    maxStylesheetBytes?: number;
+  } = {},
+): ServerStylesheetFetch {
+  const maxStylesheets = options.maxStylesheets ?? DEFAULT_MAX_STYLESHEETS;
+  const maxConcurrency = Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+  const maxStylesheetBytes = options.maxStylesheetBytes ?? DEFAULT_MAX_STYLESHEET_BYTES;
+  let totalFetches = 0;
+  let active = 0;
+  const waiters: Array<() => void> = [];
+  const acquire = (signal?: AbortSignal): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (active < maxConcurrency) {
+      active += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const wake = () => {
+        signal?.removeEventListener("abort", onAbort);
+        active += 1;
+        resolve();
+      };
+      const onAbort = () => {
+        const index = waiters.indexOf(wake);
+        if (index !== -1) waiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      waiters.push(wake);
+    });
+  };
+  const release = () => {
+    active -= 1;
+    waiters.shift()?.();
+  };
+  return async (url, request) => {
+    if (totalFetches >= maxStylesheets) {
+      throw new RangeError(
+        `v-frame SSR exceeded maximum of ${maxStylesheets} stylesheet fetches`,
+      );
+    }
+    totalFetches += 1;
+    if (active < maxConcurrency) {
+      if (request?.signal?.aborted) throw request.signal.reason;
+      active += 1;
+    } else {
+      await acquire(request?.signal);
+    }
+    try {
+      const result = await fetchText(url, request);
+      const byteLength =
+        typeof result === "string"
+          ? new TextEncoder().encode(result).byteLength
+          : "bytes" in result
+            ? result.bytes.byteLength
+            : new TextEncoder().encode(result.text).byteLength;
+      if (byteLength > maxStylesheetBytes) {
+        throw new RangeError(
+          `v-frame SSR stylesheet ${url} exceeded maximum size of ${maxStylesheetBytes} bytes`,
+        );
+      }
+      return result;
+    } finally {
+      release();
+    }
+  };
 }
 
 const INTEGRITY_ALGORITHMS = ["SHA-256", "SHA-384", "SHA-512"];
@@ -332,10 +1033,27 @@ export async function materializeStylesheet(
   documentURL: string,
   options: MaterializeStylesheetOptions = {},
 ): Promise<string> {
-  const fetchText = options.fetchText ?? fetchStylesheetSource;
+  const maxStylesheetBytes = options.maxStylesheetBytes ?? DEFAULT_MAX_STYLESHEET_BYTES;
+  const maxImportDepth = options.maxImportDepth ?? DEFAULT_MAX_IMPORT_DEPTH;
+  const baseFetch =
+    options.fetchText ?? createDefaultStylesheetFetch(documentURL, maxStylesheetBytes);
+  const fetchText = createBoundedStylesheetFetch(baseFetch, {
+    maxStylesheetBytes,
+    ...(options.maxStylesheets !== undefined
+      ? { maxStylesheets: options.maxStylesheets }
+      : {}),
+    ...(options.maxConcurrency !== undefined
+      ? { maxConcurrency: options.maxConcurrency }
+      : {}),
+  });
   const load: StylesheetFetch = async (url, request) =>
     readStylesheetSource(await fetchText(url, request), url, request?.integrity);
-  const context = createStylesheetContext(load, options.onImportFailure, options.signal);
+  const context = createStylesheetContext(
+    load,
+    options.onImportFailure,
+    options.signal,
+    maxImportDepth,
+  );
   const rewritten = await rewriteStylesheet(source, documentURL, context);
   const fonts = options.onFontFace ? extractFontFaces(rewritten, documentURL) : "";
   if (fonts) options.onFontFace?.(escapeStylesheetText(fonts));

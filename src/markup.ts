@@ -85,6 +85,7 @@ interface NeutralizedStyleMarkup {
 interface NeutralizedTag {
   source: string;
   end: number;
+  selfClosing: boolean;
 }
 
 function isASCIIAlpha(character: string | undefined): boolean {
@@ -122,6 +123,47 @@ function findRawTextEnd(
   cursor: number,
   elementName: string,
 ): number {
+  if (elementName === "script") {
+    let pos = cursor;
+    let state = 0; // 0 = data, 1 = escaped, 2 = double-escaped
+    while (pos < lowerSource.length) {
+      if (state === 0) {
+        if (lowerSource.startsWith("<!--", pos)) {
+          state = 1;
+          pos += 4;
+          continue;
+        }
+        if (
+          lowerSource.startsWith("</script", pos) &&
+          isRawTextEndBoundary(lowerSource[pos + 8])
+        ) {
+          return pos;
+        }
+      } else if (lowerSource.startsWith("-->", pos)) {
+        state = 0;
+        pos += 3;
+        continue;
+      } else if (
+        state === 1 &&
+        lowerSource.startsWith("<script", pos) &&
+        isRawTextEndBoundary(lowerSource[pos + 7])
+      ) {
+        state = 2;
+        pos += 7;
+        continue;
+      } else if (
+        lowerSource.startsWith("</script", pos) &&
+        isRawTextEndBoundary(lowerSource[pos + 8])
+      ) {
+        if (state === 1) return pos;
+        state = 1;
+        pos += 8;
+        continue;
+      }
+      pos += 1;
+    }
+    return -1;
+  }
   const endTagPrefix = `</${elementName}`;
   let candidate = lowerSource.indexOf(endTagPrefix, cursor);
 
@@ -153,6 +195,7 @@ function neutralizeTag(
   }
 
   let cursor = nameEnd;
+  let selfClosing = false;
   while (cursor < source.length) {
     while (isASCIIWhitespace(source[cursor])) {
       cursor += 1;
@@ -163,9 +206,11 @@ function neutralizeTag(
       break;
     }
     if (source[cursor] === "/") {
+      selfClosing = true;
       cursor += 1;
       continue;
     }
+    selfClosing = false;
 
     const attributeStart = cursor;
     while (
@@ -224,7 +269,7 @@ function neutralizeTag(
     copiedThrough = replacement.end;
   }
   rewritten += source.slice(copiedThrough, cursor);
-  return { source: rewritten, end: cursor };
+  return { source: rewritten, end: cursor, selfClosing };
 }
 
 function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
@@ -235,6 +280,8 @@ function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
   let cursor = 0;
   let rawTextElement: string | undefined;
   let closesStyleElement = false;
+  let foreignDepth = 0;
+  const foreignStack: string[] = [];
 
   while (cursor < source.length) {
     if (rawTextElement !== undefined) {
@@ -269,13 +316,18 @@ function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
     rewritten.push(source.slice(cursor, tagStart));
 
     if (source.startsWith("<!--", tagStart)) {
-      const commentEnd = source.indexOf("-->", tagStart + 4);
-      const end = commentEnd === -1 ? source.length : commentEnd + 3;
+      let end: number;
+      if (source.startsWith("<!-->", tagStart)) end = tagStart + 5;
+      else if (source.startsWith("<!--->", tagStart)) end = tagStart + 6;
+      else {
+        const commentEnd = source.indexOf("-->", tagStart + 4);
+        end = commentEnd === -1 ? source.length : commentEnd + 3;
+      }
       rewritten.push(source.slice(tagStart, end));
       cursor = end;
       continue;
     }
-    if (source.startsWith("<![CDATA[", tagStart)) {
+    if (foreignDepth > 0 && source.startsWith("<![CDATA[", tagStart)) {
       const cdataEnd = source.indexOf("]]>", tagStart + 9);
       const end = cdataEnd === -1 ? source.length : cdataEnd + 3;
       rewritten.push(source.slice(tagStart, end));
@@ -322,11 +374,25 @@ function neutralizeStyleMarkup(source: string): NeutralizedStyleMarkup {
     cursor = tag.end;
     closesStyleElement = false;
 
-    if (
-      !isEndTag &&
-      (RAW_TEXT_ELEMENTS.has(elementName) || elementName === "plaintext")
+    const inForeign = foreignDepth > 0;
+    if (!isEndTag) {
+      if ((elementName === "svg" || elementName === "math") && !tag.selfClosing) {
+        foreignStack.push(elementName);
+        foreignDepth += 1;
+      }
+      if (
+        !(inForeign && tag.selfClosing) &&
+        (RAW_TEXT_ELEMENTS.has(elementName) ||
+          (!inForeign && elementName === "plaintext"))
+      ) {
+        rawTextElement = elementName;
+      }
+    } else if (
+      foreignStack.length > 0 &&
+      foreignStack[foreignStack.length - 1] === elementName
     ) {
-      rawTextElement = elementName;
+      foreignStack.pop();
+      foreignDepth -= 1;
     }
   }
 
@@ -586,7 +652,10 @@ async function prepareLinkedStyle(
       }
       style.remove();
     }
-    const source = await fetchStylesheet(href, context, integrity);
+    const source = await fetchStylesheet(href, context, integrity, {
+      crossOrigin: link.getAttribute("crossorigin"),
+      referrerPolicy: link.referrerPolicy as ReferrerPolicy | "",
+    });
     const rewritten = await rewriteStylesheet(source.text, source.url, context);
     const style = createGeneratedStyle(document, rewritten, nonce, source.url);
     style.media = link.media;
@@ -774,32 +843,74 @@ export async function prepareMarkup(
   });
 }
 
+const PREVIEW_RESTORE_NAMES = new Set([
+  "href",
+  "xlink:href",
+  "aria-disabled",
+  "role",
+  "readonly",
+  "method",
+  "formmethod",
+]);
+
+function canRestoreAuthoredAttribute(
+  element: Element,
+  marker: string,
+  name: string,
+): boolean {
+  const lower = name.toLowerCase();
+  if (marker === SSR_PREVIEW_ATTRIBUTES) {
+    return lower.startsWith("on") || PREVIEW_RESTORE_NAMES.has(lower);
+  }
+  const prefixed = lower.startsWith("xlink:");
+  const local = prefixed ? lower.slice(6) : lower;
+  const ns = prefixed ? XLINK_NAMESPACE : null;
+  return (
+    (ns === null && local === "style") ||
+    isURLAttribute(element, local, ns) ||
+    isSrcsetAttribute(element, local, ns)
+  );
+}
+
 function restoreAuthoredAttributes(element: Element, marker: string): void {
   const provenance = element.getAttribute(marker);
   if (provenance === null) return;
-  const authored = JSON.parse(provenance) as string[] | Record<string, string | null>;
+  element.removeAttribute(marker);
+  let authored: unknown;
+  try {
+    authored = JSON.parse(provenance);
+  } catch {
+    return;
+  }
+  if (authored === null || typeof authored !== "object") return;
   // Older materializers put values in the JSON marker itself. New ones let the
   // HTML parser decode the values as ordinary attributes before restoring them.
   let attributes: [string, string | null][];
   if (Array.isArray(authored)) {
-    attributes = authored.map((name, index) => {
+    attributes = [];
+    for (let index = 0; index < authored.length; index += 1) {
+      const name = authored[index];
       const valueAttribute = `${marker}-${index}`;
       const value = element.getAttribute(valueAttribute);
       element.removeAttribute(valueAttribute);
-      return [name, value];
-    });
+      if (typeof name === "string") attributes.push([name, value]);
+    }
   } else {
-    attributes = Object.entries(authored);
+    attributes = Object.entries(authored as Record<string, string | null>);
   }
   for (const [name, value] of attributes) {
-    if (value === null) element.removeAttribute(name);
-    else if (typeof value !== "string")
-      throw new TypeError("Invalid v-frame SSR attribute provenance");
-    else if (name.startsWith("xlink:"))
-      element.setAttributeNS(XLINK_NAMESPACE, name, value);
-    else element.setAttribute(name, value);
+    if (!canRestoreAuthoredAttribute(element, marker, name)) continue;
+    try {
+      if (value === null) element.removeAttribute(name);
+      else if (typeof value === "string") {
+        if (name.startsWith("xlink:"))
+          element.setAttributeNS(XLINK_NAMESPACE, name, value);
+        else element.setAttribute(name, value);
+      }
+    } catch {
+      // Ignore malformed attribute names in provenance metadata.
+    }
   }
-  element.removeAttribute(marker);
 }
 
 function restoreNestedFrames(root: Element, styles?: Map<Element, string>): void {

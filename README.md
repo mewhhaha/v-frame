@@ -155,6 +155,7 @@ For one-time events, use `publish(value)`. See [fragment communication](./docs/a
 | [API reference](./docs/api.md)               | Attributes, properties, methods, events, custom states, CSP and Trusted Types. |
 | [Navigation](./docs/navigation.md)           | Guest and host navigation modes, interception, and the imperative routing API. |
 | [SSR](./docs/ssr.md)                         | Server-rendered adoption and the `@mewhhaha/v-frame/server` materializer.      |
+| [Testing](./docs/testing.md)                 | Cross-app testing with `@mewhhaha/v-frame/testing`, Playwright, and jsdom.     |
 | [Troubleshooting](./docs/troubleshooting.md) | Symptoms and their causes.                                                     |
 
 ## Examples

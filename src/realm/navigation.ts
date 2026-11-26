@@ -38,6 +38,24 @@ function isHTTPURL(url: URL): boolean {
   return url.protocol === "http:" || url.protocol === "https:";
 }
 
+function isElementNode(value: unknown): value is Element {
+  return typeof value === "object" && value !== null && (value as Node).nodeType === 1;
+}
+
+function isSVGAElement(element: Element): element is SVGAElement {
+  return (
+    element.namespaceURI === "http://www.w3.org/2000/svg" && element.localName === "a"
+  );
+}
+
+function isHTMLFormElement(value: unknown): value is HTMLFormElement {
+  return (
+    isElementNode(value) &&
+    value.namespaceURI === "http://www.w3.org/1999/xhtml" &&
+    value.localName === "form"
+  );
+}
+
 interface RealmNavigationOptions {
   window: VFrameWindow;
   host: HTMLElement;
@@ -121,7 +139,11 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     const target = (
       submissionAttribute(form, submitter, "target") ?? options.getBaseTarget()
     ).toLowerCase();
-    const targetURL = new URL(action || options.getCurrentURL(), options.getBaseURL());
+    const targetURL = window.URL.parse(
+      action || options.getCurrentURL(),
+      options.getBaseURL(),
+    );
+    if (targetURL === null) return;
     // HTML defaults missing and invalid methods to GET.
     const isGet = method !== "post" && method !== "dialog";
     if (isGet) {
@@ -194,13 +216,17 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     event: MouseEvent,
     anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement,
   ) => {
-    const href =
-      anchor instanceof window.SVGAElement
-        ? (nativeDOM.getAttribute(anchor, "href") ??
-          anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
-          "")
-        : anchor.href;
-    const targetURL = new URL(href || options.getCurrentURL(), options.getBaseURL());
+    const svgAnchor = isSVGAElement(anchor);
+    const href = svgAnchor
+      ? (nativeDOM.getAttribute(anchor, "href") ??
+        anchor.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
+        "")
+      : anchor.href;
+    const targetURL = window.URL.parse(
+      href || options.getCurrentURL(),
+      options.getBaseURL(),
+    );
+    if (targetURL === null) return;
     const target = nativeDOM.hasAttribute(anchor, "target")
       ? (nativeDOM.getAttribute(anchor, "target") ?? "").toLowerCase()
       : options.getBaseTarget();
@@ -210,7 +236,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     // other default actions. A guest may have changed href or download.
     if (
       !opensNewContext &&
-      !(anchor instanceof window.SVGAElement) &&
+      !svgAnchor &&
       nativeDOM.hasAttribute(anchor, "download") &&
       isHTTPURL(targetURL) &&
       targetURL.origin === window.location.origin
@@ -274,7 +300,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     if (!path.includes(options.guestRoot)) return;
     const anchor = path.find(
       (candidate): candidate is HTMLAnchorElement | HTMLAreaElement | SVGAElement =>
-        candidate instanceof window.Element &&
+        isElementNode(candidate) &&
         (candidate.localName === "a" || candidate.localName === "area") &&
         (candidate.hasAttribute("href") ||
           candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href")),
@@ -316,7 +342,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
   const suppressSubmitDefault = (event: Event) => {
     if (!event.composedPath().includes(options.guestRoot)) return;
     const form = event.target;
-    if (!(form instanceof window.HTMLFormElement)) {
+    if (!isHTMLFormElement(form)) {
       return;
     }
     let submitter: HTMLElement | null;

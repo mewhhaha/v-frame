@@ -39,6 +39,7 @@ export function createNodeCloning(
     isHTMLLinkElement,
     isHTMLScriptElement,
     createdScripts,
+    fragmentNodes,
     protectedScriptAttributes,
     eventAttributeValues,
     cssomMutatedStyleElements,
@@ -57,6 +58,9 @@ export function createNodeCloning(
 
   const copyElementMetadata = (source: Node, clone: Node): void => {
     if (isElementNode(source) && isElementNode(clone)) {
+      if (fragmentNodes.has(source)) {
+        fragmentNodes.add(clone);
+      }
       // Target state belongs to the selected element, not to its attributes.
       nativeRemoveAttribute.call(clone, FRAGMENT_TARGET_ATTRIBUTE);
       const authoredAttributes = options.authoredURLAttributes.get(source);
@@ -138,7 +142,7 @@ export function createNodeCloning(
         continue;
       }
       for (const [attributeName, value] of eventAttributes) {
-        compileEventAttribute(element, attributeName, value);
+        compileEventAttribute(element, attributeName, value, !fragmentNodes.has(element));
       }
     }
     return clone;

@@ -466,6 +466,115 @@ const cases = {
       globalThis.fetch = originalFetch;
     }
   },
+  async securityHardening() {
+    const templateFetches = [];
+    const templateFonts = [];
+    const htmlWithThreats = `<!doctype html><html><head>
+      <template><style>@font-face{font-family:InertFont;src:url(inert.woff)}@import "inert.css";</style><link rel="stylesheet" href="inert-link.css"></template>
+      <link rel="stylesheet" title="A &amp; B" href="titled.css">
+    </head><body>
+      </template><script id="escaped">1</script>
+      <svg><template></svg></template><style id="svg-escaped">p{color:red}</style>
+      <script id="forged" type="application/vnd.v-frame" data-v-frame-script>2</script>
+      <img id="encoded-src" src="&#x2f;admin?x=1&amp;y=2">
+      <v-frame adopt src="/child"><template shadowrootmode="open"><v-html><v-head></v-head><v-body><script id="nested-ok" type="application/vnd.v-frame" data-v-frame-script data-v-frame-type="module">3</script><script id="nested-live">4</script></v-body></v-html></template></v-frame>
+    </body></html>`;
+    const defaultResponse = await materializeVFrameDocument(
+      html(htmlWithThreats),
+      guestURL,
+      {
+        async fetchText(url) {
+          templateFetches.push(url);
+          return "p{color:blue}";
+        },
+        onFontFace(css) {
+          templateFonts.push(css);
+        },
+      },
+    );
+    const nestedResponse = await materializeVFrameDocument(
+      html(htmlWithThreats),
+      guestURL,
+      {
+        preserveNestedFrames: true,
+        async fetchText() {
+          return "p{color:blue}";
+        },
+      },
+    );
+    return {
+      body: await defaultResponse.text(),
+      nestedBody: await nestedResponse.text(),
+      templateFetches,
+      templateFonts,
+    };
+  },
+  async composeHardening() {
+    const slotErrors = [];
+    let maxInFlight = 0;
+    let inFlight = 0;
+    const shell = html(`<!doctype html><html><body>
+      <v-frame id="one" nonce="n1" src="/apps/one"></v-frame>
+      <v-frame id="two" nonce="n1" src="/apps/two"></v-frame>
+      <v-frame id="slow" src="/apps/slow"></v-frame>
+      <v-frame id="huge" src="/apps/huge"></v-frame>
+      <v-frame id="overflow" src="/apps/overflow"></v-frame>
+    </body></html>`);
+    const composed = await composeFrames(shell, {
+      request: new Request("https://host.test/"),
+      timeoutMs: 80,
+      maxSlots: 4,
+      maxConcurrency: 2,
+      maxDocumentBytes: 512,
+      onSlotError(failure) {
+        slotErrors.push({
+          src: failure.src,
+          name: failure.error?.name ?? String(failure.error),
+        });
+      },
+      async fetchGuest(request) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          const path = new URL(request.url).pathname;
+          if (path === "/apps/one") {
+            await sleep(10);
+            return html(
+              '<html><head><link rel="stylesheet" href="/apps/shared.css"></head><body></template><p>One</p></body></html>',
+            );
+          }
+          if (path === "/apps/two") {
+            await sleep(10);
+            return html(
+              '<html><head><link rel="stylesheet" href="/apps/shared.css"><style id="too-big">' +
+                "a".repeat(200) +
+                "</style></head><body><p>Two</p></body></html>",
+            );
+          }
+          if (path === "/apps/shared.css") {
+            return new Response(
+              "@font-face{font-family:Shared;src:url(/apps/f.woff2)}p{color:green}",
+              { headers: { "content-type": "text/css" } },
+            );
+          }
+          if (path === "/apps/slow") {
+            return await new Promise((_, reject) =>
+              request.signal.addEventListener("abort", () =>
+                reject(request.signal.reason),
+              ),
+            );
+          }
+          if (path === "/apps/huge") {
+            return html("<html><body>" + "x".repeat(1024) + "</body></html>");
+          }
+          return new Response("Not found", { status: 404 });
+        } finally {
+          inFlight -= 1;
+        }
+      },
+    });
+    return { markup: await composed.text(), slotErrors, maxInFlight };
+  },
 };
 
 // A host page that embeds the materialized output the way a server would, for

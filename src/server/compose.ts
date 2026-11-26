@@ -1,7 +1,18 @@
 import { decodeHTMLAttribute } from "entities/decode";
 import { isHTMLDocumentResponse, readHTMLDocument } from "../html-response.js";
 import {
+  createFetchBudget,
+  DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_MAX_DOCUMENT_BYTES,
+  DEFAULT_MAX_SLOTS,
+  DEFAULT_MAX_STYLESHEET_BYTES,
+  DEFAULT_MAX_TOTAL_FETCHES,
+  limitResponseBytes,
+  readBoundedBytes,
+} from "./core.js";
+import {
   charsetDeclarationHandlers,
+  encodeRewriterAttribute,
   escapeAttribute,
   getHTMLRewriter,
   type HTMLRewriterConstructor,
@@ -11,6 +22,16 @@ import {
   rewrittenHTMLResponse,
   UTF8_HTML,
 } from "./html-rewriter.js";
+import { SSR_LINK_STYLE, SSR_STYLE } from "../wire-format.js";
+
+const DEFAULT_SLOT_TIMEOUT_MS = 10_000;
+
+export interface ComposeSlotFailure {
+  /** The slot's authored `src` attribute. */
+  src: string;
+  /** The error that caused this slot to fall back to client loading. */
+  error: unknown;
+}
 
 export interface ComposeFramesOptions {
   /** The incoming request supplies the public URL and cancellation signal. */
@@ -19,6 +40,30 @@ export interface ComposeFramesOptions {
   fetchGuest(request: Request): Promise<Response> | Response;
   /** Defaults to the runtime's global HTMLRewriter. */
   HTMLRewriter?: HTMLRewriterConstructor;
+  /** Per-slot materialization timeout in milliseconds. Defaults to 10_000. */
+  timeoutMs?: number;
+  /** Called when a slot fails to compose and falls back to client loading. Not called once the request is aborted. */
+  onSlotError?(failure: ComposeSlotFailure): void;
+  /** Maximum number of `<v-frame>` slots composed per shell response. Defaults to 32. */
+  maxSlots?: number;
+  /** Maximum total upstream guest + stylesheet fetches across the whole composition. Defaults to 256. */
+  maxTotalFetches?: number;
+  /**
+   * Preserve already-materialized nested same-origin `<v-frame adopt src="...">`
+   * shadow roots returned by inner composing services. Set `false` for leaf-only
+   * composition to strip every incoming `data-v-frame-*` marker. Defaults to `true`.
+   */
+  allowNestedComposition?: boolean;
+  /** Maximum byte length accepted for the shell or a guest HTML document. Defaults to 10 MiB. */
+  maxDocumentBytes?: number;
+  /** Maximum byte length accepted for a single stylesheet. Defaults to 2 MiB. */
+  maxStylesheetBytes?: number;
+  /** Maximum distinct stylesheet fetches per slot. Defaults to 64. */
+  maxStylesheets?: number;
+  /** Maximum nested `@import` depth per slot. Defaults to 8. */
+  maxImportDepth?: number;
+  /** Maximum concurrent upstream fetches across the whole composition. Defaults to 8. */
+  maxConcurrency?: number;
 }
 
 interface FrameSlot {
@@ -35,9 +80,24 @@ export async function composeFrames(
   if (!isHTMLDocumentResponse(shell)) return shell;
   const { request, fetchGuest } = options;
   const Rewriter = getHTMLRewriter(options.HTMLRewriter);
+  const maxDocumentBytes = options.maxDocumentBytes ?? DEFAULT_MAX_DOCUMENT_BYTES;
+  const maxStylesheetBytes = options.maxStylesheetBytes ?? DEFAULT_MAX_STYLESHEET_BYTES;
+  const maxSlots = options.maxSlots ?? DEFAULT_MAX_SLOTS;
+  const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+  const maxTotalFetches = options.maxTotalFetches ?? DEFAULT_MAX_TOTAL_FETCHES;
+  const allowNestedComposition = options.allowNestedComposition ?? true;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_SLOT_TIMEOUT_MS;
+  const compositionBudget = createFetchBudget({
+    maxRequests: maxTotalFetches,
+    maxConcurrency,
+    label: "v-frame composition",
+  });
   const abort = new AbortController();
   const signal = AbortSignal.any([request.signal, abort.signal]);
-  const source = await readHTMLDocument(shell, signal);
+  const source = await readHTMLDocument(
+    limitResponseBytes(shell, maxDocumentBytes, `v-frame shell ${request.url}`),
+    signal,
+  );
   const shellURL = new URL(request.url);
   // Keep positions for *all* v-frame tags so the second pass cannot apply
   // another frame's result to an inert, nested or pre-composed slot.
@@ -96,60 +156,119 @@ export async function composeFrames(
   const baseURL = readBase();
 
   const preview = async (slot: FrameSlot) => {
-    const url = new URL(slot.src, baseURL);
-    const load = async (target: URL, accept: string, signal: AbortSignal) => {
-      if (
-        target.origin !== shellURL.origin ||
-        !["http:", "https:"].includes(target.protocol) ||
-        target.username ||
-        target.password
-      )
-        throw new TypeError("Guest URL must share the public shell origin");
-      const result = await fetchGuest(
-        new Request(target, {
-          headers: { Accept: accept },
-          credentials: slot.credentials,
-          redirect: "manual",
-          signal,
-        }),
+    const slotAbort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(
+        () =>
+          slotAbort.abort(
+            new DOMException(
+              `v-frame slot ${slot.src} timed out after ${timeoutMs}ms`,
+              "TimeoutError",
+            ),
+          ),
+        timeoutMs,
       );
-      if (result.redirected || result.status !== 200) {
-        void result.body?.cancel().catch(() => {});
-        throw new TypeError(`Unexpected guest response (${result.status})`);
+    }
+    const slotSignal = AbortSignal.any([signal, slotAbort.signal]);
+    try {
+      const url = new URL(slot.src, baseURL);
+      const load = async (target: URL, accept: string, requestSignal: AbortSignal) => {
+        if (
+          target.origin !== shellURL.origin ||
+          !["http:", "https:"].includes(target.protocol) ||
+          target.username ||
+          target.password
+        )
+          throw new TypeError("Guest URL must share the public shell origin");
+        const result = await compositionBudget(requestSignal, async () =>
+          fetchGuest(
+            new Request(target, {
+              headers: { Accept: accept },
+              credentials: slot.credentials,
+              redirect: "manual",
+              signal: requestSignal,
+            }),
+          ),
+        );
+        if (result.redirected || result.status !== 200) {
+          void result.body?.cancel().catch(() => {});
+          throw new TypeError(`Unexpected guest response (${result.status})`);
+        }
+        return result;
+      };
+      const guest = await load(url, "text/html", slotSignal);
+      if (!isHTMLDocumentResponse(guest)) {
+        void guest.body?.cancel().catch(() => {});
+        throw new TypeError(`Expected a 200 text/html guest response for ${url.href}`);
       }
-      return result;
-    };
-    const guest = await load(url, "text/html", signal);
-    if (!isHTMLDocumentResponse(guest)) {
-      void guest.body?.cancel().catch(() => {});
+      const fonts = new Set<string>();
+      let materialized = await materializeVFrameDocument(guest, url.href, {
+        HTMLRewriter: Rewriter,
+        requireDocument: true,
+        preserveNestedFrames: allowNestedComposition,
+        signal: slotSignal,
+        maxDocumentBytes,
+        maxStylesheetBytes,
+        ...(options.maxStylesheets !== undefined
+          ? { maxStylesheets: options.maxStylesheets }
+          : {}),
+        ...(options.maxImportDepth !== undefined
+          ? { maxImportDepth: options.maxImportDepth }
+          : {}),
+        maxConcurrency,
+        onFontFace: (css) => fonts.add(css),
+        async fetchText(href, init) {
+          const sheet = await load(new URL(href), "text/css", init?.signal ?? slotSignal);
+          return {
+            bytes: await readBoundedBytes(
+              sheet,
+              maxStylesheetBytes,
+              `v-frame SSR stylesheet ${href}`,
+            ),
+            url: href,
+          };
+        },
+      });
+      if (slot.nonce) {
+        const encodedNonce = encodeRewriterAttribute(slot.nonce);
+        materialized = new Rewriter()
+          .on(`style[${SSR_STYLE}], style[${SSR_LINK_STYLE}], v-frame`, {
+            element(el) {
+              el.setAttribute("nonce", encodedNonce);
+            },
+          })
+          .transform(materialized);
+      }
+      const markup = await materialized.text();
+      return { markup, fonts, nonce: slot.nonce };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+  // Start eligible siblings together up to the composition-wide slot and
+  // request budgets. Failed or overflow slots keep their client-loadable src.
+  let eligibleCount = 0;
+  const results = slots.map((slot) => {
+    if (!slot) return null;
+    if (eligibleCount >= maxSlots) {
+      if (!signal.aborted) {
+        options.onSlotError?.({
+          src: slot.src,
+          error: new RangeError(
+            `v-frame composition exceeded maximum of ${maxSlots} slots`,
+          ),
+        });
+      }
       return null;
     }
-    const fonts = new Set<string>();
-    let materialized = await materializeVFrameDocument(guest, url.href, {
-      HTMLRewriter: Rewriter,
-      requireDocument: true,
-      signal,
-      onFontFace: (css) => fonts.add(css),
-      async fetchText(href, init) {
-        const sheet = await load(new URL(href), "text/css", init?.signal ?? signal);
-        return { bytes: await sheet.arrayBuffer(), url: href };
-      },
+    eligibleCount += 1;
+    return preview(slot).catch((error) => {
+      if (!signal.aborted) options.onSlotError?.({ src: slot.src, error });
+      return null;
     });
-    if (slot.nonce) {
-      materialized = new Rewriter()
-        .on("style, v-frame", {
-          element(el) {
-            el.setAttribute("nonce", slot.nonce);
-          },
-        })
-        .transform(materialized);
-    }
-    const markup = await materialized.text();
-    return { markup, fonts, nonce: slot.nonce };
-  };
-  // Start siblings together. A failed guest keeps its client-loadable src;
-  // its diagnostic response must never become part of the host page.
-  const results = slots.map((slot) => slot && preview(slot).catch(() => null));
+  });
+  const emittedFonts = new Set<string>();
   let index = 0;
   const composed = new Rewriter()
     .on("meta", charsetDeclarationHandlers)
@@ -163,13 +282,19 @@ export async function composeFrames(
           `<template shadowrootmode="open" shadowrootserializable>${result.markup}</template>`,
           { html: true },
         );
-        if (result.fonts.size) {
+        const freshFonts: string[] = [];
+        for (const css of result.fonts) {
+          if (!emittedFonts.has(css)) {
+            emittedFonts.add(css);
+            freshFonts.push(css);
+          }
+        }
+        if (freshFonts.length) {
           let nonce = "";
           if (result.nonce) nonce = ` nonce="${escapeAttribute(result.nonce)}"`;
-          el.after(
-            `<style data-v-frame-fonts${nonce}>${[...result.fonts].join("\n")}</style>`,
-            { html: true },
-          );
+          el.after(`<style data-v-frame-fonts${nonce}>${freshFonts.join("\n")}</style>`, {
+            html: true,
+          });
         }
       },
     })

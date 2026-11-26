@@ -9,6 +9,7 @@ import {
   type Route,
   type RouteResponse,
   startHTTPFixture,
+  testingBundleRoute,
 } from "./http-fixture";
 
 /**
@@ -274,6 +275,7 @@ const documentRoutes: Record<string, Route> = {
 
 const assetRoutes: Record<string, Route> = {
   "/dist/index.js": bundleRoute,
+  "/dist/testing.js": testingBundleRoute,
   "/assets/append-content.js": {
     type: "text/javascript",
     body: `document.body.insertAdjacentHTML('beforeend', '<p id="script-added">Script executed</p>');`,

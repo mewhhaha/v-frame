@@ -6,12 +6,13 @@ materializer, see [SSR](./ssr.md).
 
 ## Entries
 
-| Import                       | Contents                                                                                     |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.             |
-| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.           |
-| `@mewhhaha/v-frame/channel`  | `channel<T>(name)` for communication within one composed page.                               |
-| `@mewhhaha/v-frame/server`   | `composeFrames()` for shells, plus the materializer and stylesheet APIs for custom adapters. |
+| Import                       | Contents                                                                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `@mewhhaha/v-frame/register` | Defines `<v-frame>` in a browser custom element registry; safe no-op during SSR.                                                   |
+| `@mewhhaha/v-frame`          | `VFrameElement`, `defineVFrame()`, `VFrameStatus`, and the event and option types.                                                 |
+| `@mewhhaha/v-frame/channel`  | `channel<T>(name)` for communication within one composed page.                                                                     |
+| `@mewhhaha/v-frame/server`   | `composeFrames()` for shells, plus the materializer and stylesheet APIs for custom adapters.                                       |
+| `@mewhhaha/v-frame/testing`  | Zero-dependency shadow-piercing Testing Library queries, `resetChannels()`, and `defineMockVFrame()`. See [Testing](./testing.md). |
 
 ```ts
 import "@mewhhaha/v-frame/register";
@@ -49,29 +50,43 @@ export const orderSelected = channel<{ id: string }>("orders.selected.v1");
 orderSelected.publish({ id: "A42" }, { retain: true });
 
 // Order details
-const unsubscribe = orderSelected.subscribe(({ id }) => showOrder(id));
+const controller = new AbortController();
+const unsubscribe = orderSelected.subscribe(({ id }) => showOrder(id), {
+  signal: controller.signal,
+});
+const current = orderSelected.get(); // structured clone of the retained value, or undefined
+orderSelected.clear(); // drops the retained value without notifying subscribers
 ```
 
 The host and nested fragments on one page share the topic. Each standalone
 page and browser tab has its own scope. Subscriptions run synchronously,
 including the publisher’s own subscriptions. Each subscriber receives a
 structured clone. Use data such as IDs or dates. Functions and DOM nodes
-raise `DataCloneError`.
+raise `DataCloneError`. Errors thrown by a guest subscriber are reported inside
+that guest's realm rather than leaking to the host `window`.
 
 If a listener publishes on the same topic, all current listeners finish
 receiving the first value before the next value is delivered. The outermost
-`publish()` call delivers both before returning. Other topics remain immediate.
-The helper ships with each application, so deploy ordering updates to each publisher.
+`publish()` call delivers queued updates before returning, up to a cap of 1,000
+queued publications per synchronous turn (exceeding the cap throws a
+`RangeError` to prevent infinite synchronous loops). Other topics remain
+immediate. Initial retained replay finishes before the listener is attached to
+the hub, so publishing synchronously inside initial replay does not re-enter the
+same listener. The helper ships with each application, so deploy ordering
+updates to each publisher.
 
 `publish(value)` delivers a one-time event. Pass `{ retain: true }` for state
 such as the current selection. A late or reloaded subscriber immediately
-receives the latest retained value. The next publication replaces it or,
-for a one-time event, clears it. Retained values live until the page unloads.
+receives the latest retained value. Use `get()` to read a clone of the retained
+value without subscribing, and `clear()` to clear retained state without
+notifying listeners. The next publication replaces retained state or, for a
+one-time event, clears it. Retained values live until the page unloads.
 Choose stable topic names and version incompatible payload changes. All trusted
 participants can publish. The TypeScript type checks each build locally, so a
 receiver can validate the payload when deployed versions may differ.
 
-Call `unsubscribe()` when a component unmounts. On removal or navigation,
+Call `unsubscribe()` (or pass `{ signal }` to `subscribe()`) when a component
+unmounts. On removal or navigation,
 the runtime disconnects the retiring guest's channels before its DOM cleanup
 callbacks run. Guest scripts can subscribe or publish during staged startup.
 During a staged replacement, both guest instances can briefly be
@@ -85,6 +100,8 @@ Guest rectangles and hit-test coordinates are frame-local. Window viewport sizes
 and media queries follow the host page; there is no separate layout viewport.
 `document.scrollingElement` is the virtual HTML element and mirrors frame
 scrolling. The virtual body keeps its own native scroll and client metrics.
+`document.hidden`, `document.visibilityState`, and `visibilitychange` mirror the
+host document.
 
 Document listeners receive outside pointer, click, and focus interactions as
 synthetic events targeted at the virtual body. This lets guest dismiss layers
@@ -206,14 +223,18 @@ v-frame:state(error) {
 
 ## Element methods
 
-| Method                             | Effect                                                    |
-| ---------------------------------- | --------------------------------------------------------- |
-| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.    |
-| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved. |
-| `reload()`                         | Reloads the current guest document over the network.      |
+| Method                             | Effect                                                                      |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| `whenReady()`                      | Resolves once the frame is `"ready"`, or rejects on fatal error/disconnect. |
+| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.                      |
+| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved.                   |
+| `reload()`                         | Reloads the current guest document over the network.                        |
 
-All five return a `Promise<void>`. The navigation methods are described in
-[Navigation](./navigation.md), including exactly which errors they reject with.
+All six return a `Promise<void>`. `whenReady()` resolves immediately when
+`status === "ready"`, rejects immediately when `status === "error"`, and can be
+called before or after connecting the element to await initial readiness. The
+navigation methods are described in [Navigation](./navigation.md), including
+exactly which errors they reject with.
 None of the four navigation methods can run before `v-frame-load`, because the
 first guest is not live until then. `reload()` can: on a connected frame with a
 `src` it starts a fresh load whether or not a guest is live yet.
@@ -303,10 +324,16 @@ way.
 
 Guest execution inherits the host page's Content Security Policy. The fetched
 guest's CSP and framing headers do not supply a second policy. Client stylesheet
-requests use the host's `connect-src` policy. Rewritten styles and compiled inline
+requests use the host's `connect-src` policy, honor `<link>` `crossorigin` and
+`referrerpolicy` attributes, and default cross-origin stylesheet fetches without
+`crossorigin` to `credentials: "omit"`. Rewritten styles and compiled inline
 event handlers run through generated style and script elements, which use the
-frame's nonce when one is provided. A stylesheet link's `integrity` is checked
-against its original bytes before rewriting.
+frame's nonce when one is provided — except `<style>` elements and `on*`
+handlers parsed from runtime HTML-string sinks (`innerHTML`, `outerHTML`,
+`insertAdjacentHTML`), which are **not** automatically stamped with the host's
+nonce so strict nonce CSP continues to block DOM-injected inline code and
+styles. A stylesheet link's `integrity` is checked against its original bytes
+before rewriting.
 
 Set `nonce` when the host requires one:
 
@@ -325,11 +352,15 @@ that name on the frame:
 trusted-types orders-frame; require-trusted-types-for 'script'
 ```
 
-The string form only _names_ a policy the CSP already allows. The policy it
-installs returns every value unchanged and performs **no sanitization**, so it
-gives the guest permission to create that policy and nothing else. It suits a
-guest that is already trusted to execute. A host that needs validation or
-transformation can assign a full policy definition through the property instead:
+The string form only _names_ a policy the CSP already allows so `v-frame` itself
+can bootstrap the execution realm, parse the fetched guest entry document, and
+run guest scripts. It performs **no sanitization**, and it does **not** wrap raw
+strings passed by guest scripts to `innerHTML`, `outerHTML`, or
+`insertAdjacentHTML` — browser Trusted Types enforcement remains active on guest
+runtime HTML sinks, while genuine `TrustedHTML` objects created by a guest's own
+policy pass through unchanged. A host that wants `v-frame` to sanitize or
+transform raw guest strings can assign a full policy definition through the
+property instead:
 
 ```ts
 frame.trustedTypesPolicy = {
@@ -371,11 +402,16 @@ declare global {
 
 `@mewhhaha/v-frame/server` is documented in [SSR](./ssr.md), which holds the
 complete export table. `materializeVFrameDocument(response, documentURL, options?)`
-resolves to a `Response`: it buffers a `200 text/html` guest document, then
-streams the rewritten markup with backpressure and cancellation (any other
-response is returned unchanged). It drives the runtime's global `HTMLRewriter`,
-or `options.HTMLRewriter` where there is none, and `options` also takes the
-stylesheet options `fetchText(url, { signal })`, `onImportFailure` and
-`onFontFace`. The guest may use any encoding the platform decodes (BOM, header
+resolves to a `Response`: it buffers a bounded `200 text/html` guest document,
+balances `<template>` tags against Declarative Shadow DOM breakout, strips
+forged guest `data-v-frame-*` markers, and streams the rewritten markup with
+backpressure and cancellation (any other response is returned unchanged). It
+drives the runtime's global `HTMLRewriter`, or `options.HTMLRewriter` where
+there is none, and `options` also takes `fetchText(url, { signal })`,
+`onImportFailure`, `onFontFace`, and resource limits (`maxDocumentBytes`,
+`maxStylesheetBytes`, `maxStylesheets`, `maxImportDepth`, `maxConcurrency`). The
+default stylesheet fetcher only allows same-origin HTTP(S) URLs without
+redirects. The guest may use any encoding the platform decodes (BOM, header
 charset, then `<meta>`); the output is UTF-8. Stylesheets are fetched
-concurrently, and cancelling the response aborts them through `signal`.
+concurrently up to `maxConcurrency`, and cancelling the response aborts them
+through `signal`.

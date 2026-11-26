@@ -38,6 +38,7 @@ import {
   type NativeLocationNavigationMode,
 } from "./navigation.js";
 import {
+  installCSSStyleSheetBridge,
   installInternalStyles,
   installStagedFocus,
   installStagedTopLayer,
@@ -273,6 +274,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       isActive: () => options.host.isConnected,
     });
     disposers.push(networkDispose);
+    disposers.push(installCSSStyleSheetBridge(window, hostView, getDocumentBaseURL));
     const viewport = installViewportPatches(
       options.host,
       window,
@@ -345,6 +347,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       inlineStyleSheet: markup.inlineStyleSheet,
       linkedStyles: markup.linkedStyles,
       createHTML: options.trustedTypes.createHTML,
+      createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
       updateTopLayerViewport: internalStyles.updateTopLayerViewport,
       getNonce: options.getNonce,

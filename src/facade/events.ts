@@ -99,7 +99,12 @@ export interface EventFacade {
     eventName: string,
     listener: EventListener | null,
   ): void;
-  compileEventAttribute(element: Element, attributeName: string, source: string): void;
+  compileEventAttribute(
+    element: Element,
+    attributeName: string,
+    source: string,
+    allowNonce?: boolean,
+  ): void;
   ensureRootEventRelay(type: string): void;
   documentListeners: ListenerRegistry;
   listenerEventSource(event: Event): Event;
@@ -618,6 +623,7 @@ export function installEventFacade(
     element: Element,
     attributeName: string,
     source: string,
+    allowNonce = true,
   ): void => {
     const eventName = attributeName.slice(2);
     // On the window, onerror is called with ErrorEvent's fields spread out.
@@ -644,7 +650,7 @@ export function installEventFacade(
 
     const companion = nativeCreateElement.call(document, "script") as HTMLScriptElement;
     const nonce = options.getNonce();
-    if (nonce !== "") {
+    if (allowNonce && nonce !== "") {
       companion.nonce = nonce;
     }
     companion.text = options.createScript(

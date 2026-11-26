@@ -75,7 +75,7 @@ const NATIVE_WINDOW_EVENT_HANDLER_TYPES = new Set([
 ]);
 
 interface InternalStyles {
-  updateTopLayerViewport(x: number, y: number): void;
+  updateTopLayerViewport(x: number | null, y?: number): void;
   dispose(): void;
 }
 
@@ -102,14 +102,25 @@ export function installInternalStyles(
   }
   const sheet = new view.CSSStyleSheet();
   sheet.replaceSync(guestCSS);
+  let topLayerRule: CSSStyleRule | null = null;
   renderRoot.adoptedStyleSheets = [...renderRoot.adoptedStyleSheets, sheet];
   return {
-    updateTopLayerViewport(x, y) {
-      sheet.replaceSync(`${guestCSS}
-:where([popover]:popover-open) {
-  translate: ${x}px ${y}px !important;
-}
-`);
+    updateTopLayerViewport(x, y = 0) {
+      if (x === null) {
+        if (topLayerRule !== null) {
+          topLayerRule.style.removeProperty("translate");
+        }
+        return;
+      }
+      if (topLayerRule === null) {
+        const index = sheet.insertRule(
+          `:where([popover]:popover-open){translate:${x}px ${y}px}`,
+          sheet.cssRules.length,
+        );
+        topLayerRule = sheet.cssRules[index] as CSSStyleRule;
+      } else {
+        topLayerRule.style.setProperty("translate", `${x}px ${y}px`);
+      }
     },
     dispose() {
       renderRoot.adoptedStyleSheets = renderRoot.adoptedStyleSheets.filter(
@@ -121,6 +132,54 @@ export function installInternalStyles(
         );
       }
     },
+  };
+}
+
+/**
+ * Bridges guest `new CSSStyleSheet()` to the host document so guest shadow roots
+ * (adopted into the host document) can assign `shadowRoot.adoptedStyleSheets`
+ * without a cross-document DOMException, while defaulting `baseURL` to the guest's.
+ */
+export function installCSSStyleSheetBridge(
+  window: VFrameWindow,
+  hostWindow: Window & typeof globalThis,
+  getBaseURL: () => string,
+): () => void {
+  const NativeSheet = window.CSSStyleSheet;
+  const HostSheet = hostWindow.CSSStyleSheet;
+  if (typeof NativeSheet !== "function" || typeof HostSheet !== "function") {
+    return () => undefined;
+  }
+  const originalDescriptor = Object.getOwnPropertyDescriptor(window, "CSSStyleSheet");
+  const BridgedCSSStyleSheet = new Proxy(HostSheet, {
+    construct(target, args: [CSSStyleSheetInit?]) {
+      const init = args[0];
+      const baseURL = getBaseURL();
+      const resolvedBase =
+        init?.baseURL !== undefined
+          ? (URL.parse(init.baseURL, baseURL)?.href ?? init.baseURL)
+          : baseURL;
+      return Reflect.construct(target, [{ ...init, baseURL: resolvedBase }]);
+    },
+    get(target, prop, receiver) {
+      if (prop === Symbol.hasInstance) {
+        return (instance: unknown) =>
+          instance instanceof HostSheet || instance instanceof NativeSheet;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  Object.defineProperty(window, "CSSStyleSheet", {
+    configurable: true,
+    writable: true,
+    value: BridgedCSSStyleSheet,
+  });
+  return () => {
+    if (originalDescriptor) {
+      Object.defineProperty(window, "CSSStyleSheet", originalDescriptor);
+    } else {
+      delete (window as unknown as Record<string, unknown>).CSSStyleSheet;
+    }
   };
 }
 

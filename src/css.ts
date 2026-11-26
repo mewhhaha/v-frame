@@ -35,6 +35,10 @@ export interface StylesheetFetchOptions {
   signal?: AbortSignal;
   /** Authored link integrity to verify on the original bytes before rewriting. */
   integrity?: string;
+  /** Authored `crossorigin` attribute on a `<link rel="stylesheet">` element. */
+  crossOrigin?: string | null;
+  /** Authored `referrerpolicy` attribute on a `<link rel="stylesheet">` element. */
+  referrerPolicy?: ReferrerPolicy | "";
 }
 
 export interface StylesheetFetch {
@@ -51,6 +55,8 @@ export interface StylesheetContext {
   requests: Map<string, Promise<StylesheetSource>>;
   /** Passed to every fetch; once aborted, failures are expected and not reported. */
   signal?: AbortSignal;
+  /** Maximum nested `@import` depth; deeper imports are dropped and reported. */
+  maxImportDepth?: number;
   onImportFailure?(failure: StylesheetImportFailure): void;
 }
 
@@ -58,6 +64,7 @@ export function createStylesheetContext(
   fetchText: StylesheetFetch,
   onImportFailure?: StylesheetContext["onImportFailure"],
   signal?: AbortSignal,
+  maxImportDepth?: number,
 ): StylesheetContext {
   const context: StylesheetContext = {
     fetchText,
@@ -69,17 +76,50 @@ export function createStylesheetContext(
   if (signal !== undefined) {
     context.signal = signal;
   }
+  if (maxImportDepth !== undefined) {
+    context.maxImportDepth = maxImportDepth;
+  }
   return context;
+}
+
+function expandNestedRules(ast: CssNode, depth = 0): void {
+  if (depth >= 32) return;
+  walkCSS(ast, {
+    visit: "Block",
+    enter(block: CssNode) {
+      if (block.type !== "Block") return;
+      block.children.forEach((child, item, list) => {
+        if (child.type !== "Raw" || !child.value.includes("{")) return;
+        let parsed: StyleSheet;
+        try {
+          parsed = parseCSS(child.value, {
+            context: "stylesheet",
+            parseCustomProperty: true,
+          }) as StyleSheet;
+        } catch {
+          return;
+        }
+        if (
+          parsed.children.some((node) => node.type === "Rule" || node.type === "Atrule")
+        ) {
+          expandNestedRules(parsed, depth + 1);
+          list.replace(item, parsed.children.copy());
+        }
+      });
+    },
+  });
 }
 
 function parseStylesheet(source: string, stylesheetURL: string): StyleSheet {
   try {
-    return parseCSS(source, {
+    const ast = parseCSS(source, {
       context: "stylesheet",
       filename: stylesheetURL,
       parseCustomProperty: true,
       positions: true,
     }) as StyleSheet;
+    expandNestedRules(ast);
+    return ast;
   } catch (cause) {
     throw new SyntaxError(`Stylesheet ${stylesheetURL} could not be parsed`, {
       cause,
@@ -267,9 +307,14 @@ export function fetchStylesheet(
   url: string,
   context: StylesheetContext,
   integrity = "",
+  requestOptions?: Pick<StylesheetFetchOptions, "crossOrigin" | "referrerPolicy">,
 ): Promise<StylesheetSource> {
+  const crossOrigin = requestOptions?.crossOrigin ?? null;
+  const referrerPolicy = requestOptions?.referrerPolicy ?? "";
   let key = url;
-  if (integrity !== "") key = JSON.stringify([url, integrity]);
+  if (integrity !== "" || crossOrigin !== null || referrerPolicy !== "") {
+    key = JSON.stringify([url, integrity, crossOrigin, referrerPolicy]);
+  }
   const existing = context.requests.get(key);
   if (existing !== undefined) {
     return existing;
@@ -278,9 +323,19 @@ export function fetchStylesheet(
   const options: StylesheetFetchOptions = {};
   if (context.signal !== undefined) options.signal = context.signal;
   if (integrity !== "") options.integrity = integrity;
+  if (crossOrigin !== null) options.crossOrigin = crossOrigin;
+  if (referrerPolicy !== "") options.referrerPolicy = referrerPolicy;
   let fetched: ReturnType<StylesheetFetch>;
-  if (context.signal === undefined && integrity === "") fetched = context.fetchText(url);
-  else fetched = context.fetchText(url, options);
+  if (
+    context.signal === undefined &&
+    integrity === "" &&
+    crossOrigin === null &&
+    referrerPolicy === ""
+  ) {
+    fetched = context.fetchText(url);
+  } else {
+    fetched = context.fetchText(url, options);
+  }
   const request = fetched.then((source) =>
     typeof source === "string"
       ? { text: source, url }
@@ -358,6 +413,14 @@ async function inlineImports(
       }
 
       try {
+        if (
+          context.maxImportDepth !== undefined &&
+          ancestors.size > context.maxImportDepth
+        ) {
+          throw new RangeError(
+            `Stylesheet @import depth exceeded limit of ${context.maxImportDepth}`,
+          );
+        }
         const source = await fetchStylesheet(parts.url, context);
         if (ancestors.has(source.url)) {
           entry.list.remove(entry.item);
@@ -428,9 +491,24 @@ export function extractFontFaces(source: string, stylesheetURL: string): string 
         faces++;
         return walkCSS.skip;
       }
-      if (!["media", "supports", "layer"].includes(name) && item && list) {
+      if (
+        (node.block === null || !["media", "supports", "layer"].includes(name)) &&
+        item &&
+        list
+      ) {
         list.remove(item);
         return walkCSS.skip;
+      }
+    },
+    leave(node: CssNode, item: ListItem<CssNode>, list: List<CssNode>) {
+      if (
+        node.type === "Atrule" &&
+        node.name.toLowerCase() !== "font-face" &&
+        node.block?.children.isEmpty &&
+        item &&
+        list
+      ) {
+        list.remove(item);
       }
     },
   });

@@ -43,6 +43,8 @@ interface DynamicStyleUpdate {
 interface DynamicLinkSnapshot {
   href: string;
   integrity: string;
+  crossOrigin: string | null;
+  referrerPolicy: ReferrerPolicy | "";
   media: string;
   disabled: boolean;
   authoredRel: string;
@@ -251,6 +253,11 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     });
   };
   const applyNonce = (style: HTMLStyleElement): void => {
+    // Styles parsed from HTML-string sinks (innerHTML/outerHTML/insertAdjacentHTML)
+    // must not be upgraded with the host's CSP nonce.
+    if (options.getFacade()?.isFragmentNode(style)) {
+      return;
+    }
     if (options.getNonce() === "") {
       style.removeAttribute("nonce");
     } else {
@@ -579,6 +586,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
   ): boolean =>
     first.href === second.href &&
     first.integrity === second.integrity &&
+    first.crossOrigin === second.crossOrigin &&
+    first.referrerPolicy === second.referrerPolicy &&
     first.media === second.media &&
     first.disabled === second.disabled &&
     first.authoredRel === second.authoredRel;
@@ -605,6 +614,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       NEUTRALIZED_STYLESHEET_REL &&
     link.href === snapshot.href &&
     link.integrity.trim() === snapshot.integrity &&
+    link.getAttribute("crossorigin") === snapshot.crossOrigin &&
+    link.referrerPolicy === snapshot.referrerPolicy &&
     link.media === snapshot.media &&
     linkDisabled(link, snapshot.authoredRel) === snapshot.disabled;
   const scheduleDynamicLink = (
@@ -642,6 +653,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     const snapshot: DynamicLinkSnapshot = {
       href: link.href,
       integrity: link.integrity.trim(),
+      crossOrigin: link.getAttribute("crossorigin"),
+      referrerPolicy: link.referrerPolicy as ReferrerPolicy | "",
       media: link.media,
       disabled: linkDisabled(link, authoredRelValue),
       authoredRel: authoredRelValue,
@@ -683,6 +696,10 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
           snapshot.href,
           options.stylesheetContext,
           snapshot.integrity,
+          {
+            crossOrigin: snapshot.crossOrigin,
+            referrerPolicy: snapshot.referrerPolicy,
+          },
         );
         const rewritten = await rewriteStylesheet(
           source.text,

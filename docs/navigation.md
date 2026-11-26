@@ -73,9 +73,13 @@ setting. A replacement document is restored before its first visible paint.
 ```
 
 In host mode, the guest's history _is_ the shell's history. A guest navigation
-is promoted to a host page navigation, so the address bar follows the guest, the
-browser's own back button traverses it, and a deep link to the shell restores the
-guest's route.
+(including cross-origin `http:`/`https:` links, `GET` forms, `window.open(..., "_self")`,
+and `location` assignments) is promoted to a host page navigation, so the
+address bar follows the guest, the browser's own back button traverses it, and a
+deep link to the shell restores the guest's route. Non-HTTP schemes are never
+forwarded to the host `location`. A shell that wants to block cross-origin
+promotions can inspect `event.detail.to` and call `event.preventDefault()` on
+`v-frame-navigate`.
 
 `v-frame` follows the shell by observing the host page's `navigation` object. It
 never patches the host's `history.pushState` or `history.replaceState`, so a

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { VFrameElement } from "../src/index";
+import type * as TestingModule from "../src/testing";
 import { type FixtureServer, startFixtureServer } from "./support/fixture-server";
 
 let fixture: FixtureServer;
@@ -124,34 +125,40 @@ test("preserves nested adopted frames without fetching either entry document", a
     fixture.requests.filter((path) => path === "/documents/inner-adopted-entry.html"),
   ).toHaveLength(innerRequestsBefore);
 
-  await page.evaluate(() => {
+  // Dogfood @mewhhaha/v-frame/testing during staged SSR adoption: shadowScreen must see
+  // only the visible preview (ignoring the hidden data-v-frame-staged clone), and an
+  // existing withinFrame(outer) handle must follow the shadowRoot swap after release.
+  const testingCheck = await page.evaluate(async (origin) => {
+    const { shadowScreen, withinFrame } = (await import(
+      `${origin}/dist/testing.js`
+    )) as typeof TestingModule;
+    const outer = document.querySelector<VFrameElement>("#outer-frame")!;
+    const outerQueries = withinFrame(outer);
+    const visibleBeforeRelease = shadowScreen.getAllByText(
+      "Nested preview activated",
+    ).length;
+
     (
       window as Window & typeof globalThis & { __releaseNestedOuterModule: () => void }
     ).__releaseNestedOuterModule();
+
+    await outerQueries.ready();
+    const inner = outerQueries.queryShadow<VFrameElement>("#inner-frame");
+    return {
+      visibleBeforeRelease,
+      outerStatus: outer.status,
+      innerStatus: inner?.status,
+      nestedFrames: outerQueries.queryAllShadow("#inner-frame").length,
+      nestedText: outerQueries.getByText("Nested preview activated").textContent,
+    };
+  }, fixture.origin);
+  expect(testingCheck).toEqual({
+    visibleBeforeRelease: 1,
+    outerStatus: "ready",
+    innerStatus: "ready",
+    nestedFrames: 1,
+    nestedText: "Nested preview activated",
   });
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const outer = document.querySelector("#outer-frame") as
-          | (HTMLElement & { status: string })
-          | null;
-        const inner = outer?.shadowRoot?.querySelector("#inner-frame") as
-          | (HTMLElement & { status: string })
-          | null;
-        return {
-          innerStatus: inner?.status,
-          nestedFrames: outer?.shadowRoot?.querySelectorAll("#inner-frame").length,
-          nestedText: inner?.shadowRoot?.querySelector("#nested-copy")?.textContent,
-          outerStatus: outer?.status,
-        };
-      }),
-    )
-    .toEqual({
-      innerStatus: "ready",
-      nestedFrames: 1,
-      nestedText: "Nested preview activated",
-      outerStatus: "ready",
-    });
 });
 
 test("keeps adopted preview visible until its initial module completes", async ({

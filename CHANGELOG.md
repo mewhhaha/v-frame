@@ -7,6 +7,19 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `@mewhhaha/v-frame/testing` provides zero-dependency shadow-piercing Testing
+  Library–style queries (`shadowScreen`, `withinShadow`, `withinFrame`,
+  `queryShadow`, `queryAllShadow`, `activeShadowElement`, `waitFor`,
+  `prettyShadowDOM`), `resetChannels()`, and `defineMockVFrame()` for
+  cross-application and shell unit tests.
+- `VFrameElement.whenReady()` returns a promise that resolves when the frame is
+  ready or rejects on a fatal load error or disconnect.
+- `@mewhhaha/v-frame/channel` adds `get()`, `clear()`, and `{ signal }` support
+  on `subscribe()`.
+- `composeFrames` accepts `timeoutMs`, `onSlotError`, and resource limits
+  (`maxDocumentBytes`, `maxStylesheetBytes`, `maxStylesheets`, `maxImportDepth`,
+  `maxConcurrency`), and deduplicates `@font-face` rules across sibling frames.
+- `@mewhhaha/v-frame/server` exports `balanceTemplateTags` for custom adapters.
 - `@mewhhaha/v-frame/channel` lets separately bundled guests and the host
   exchange typed messages on one page and replay a selected value at startup.
 
@@ -16,10 +29,35 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `trusted-types-policy="name"` (the string form) now keeps browser Trusted
+  Types enforcement active on guest `innerHTML`, `outerHTML`, and
+  `insertAdjacentHTML` sinks while preserving genuine `TrustedHTML` values.
+- `materializeVFrameDocument`'s default stylesheet fetcher now requires
+  same-origin HTTP(S) URLs, uses manual redirects, and enforces default document
+  and stylesheet resource budgets.
 - `frame.shadowRoot` follows the visible guest document. Read it again after
   `v-frame-load` when inspecting content across navigation.
 
 ### Fixed
+
+- Hardened SSR materialization against Declarative Shadow DOM `</template>`
+  breakout, forged guest `data-v-frame-*` markers, inert `<template>` stylesheet
+  fetches, unmaterialized `<style>` nonce propagation, and `HTMLRewriter` entity
+  double-escaping.
+- Rewrote CSS Nesting Level 1 nested rules, stripped non-font `@layer`
+  statements from extracted `@font-face` CSS, and fixed HTML5 scanner edge cases
+  (abrupt comments, foreign CDATA/self-closing tags, and `<script>` escaped
+  states).
+- Stopped stamping the host's CSP `nonce` onto `<style>` elements and `on*`
+  handlers parsed from `innerHTML`, `outerHTML`, and `insertAdjacentHTML`.
+- Bridged `window.CSSStyleSheet` so guest ShadowRoots can use
+  `adoptedStyleSheets`, mirrored host `document.hidden`/`visibilityState` and
+  `visibilitychange`, scoped popover viewport tracking to open popovers without
+  clobbering guest `translate` with `!important`, forwarded `crossorigin` and
+  `referrerpolicy` on client stylesheet fetches (defaulting cross-origin sheets
+  to `credentials: "omit"`), validated host-mode native location schemes, and
+  capped synchronous channel re-entrancy with guest-scoped subscriber error
+  reporting.
 
 - Subscribers see same-topic updates in publication order, including when a
   listener publishes the next update before returning. A retiring guest's

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  balanceTemplateTags,
+  createDefaultStylesheetFetch,
   escapeStylesheetText,
   materializeStylesheet,
+  rewriteAssetAttributes,
   rewriteScriptElement,
   rewriteShellElement,
   SHELL_DISPLAY_STYLE,
@@ -115,4 +118,118 @@ test("materializeStylesheet reports a dropped import and hands over font rules",
   assert.equal(fonts.length, 1);
   assert.ok(fonts[0]!.includes("url(https://guest.test/orders/f.woff2)"));
   assert.ok(!css.includes("gone.css"));
+});
+
+test("balanceTemplateTags neutralizes DSD breakout, unclosed templates, abrupt comments, and plaintext", () => {
+  assert.equal(
+    balanceTemplateTags("<div></template><script>1</script></div>"),
+    "<div><script>1</script></div>",
+  );
+  assert.equal(
+    balanceTemplateTags("<template><p>ok</p></template></template>"),
+    "<template><p>ok</p></template>",
+  );
+  assert.equal(
+    balanceTemplateTags("<template><p>unclosed"),
+    "<template><p>unclosed</template>",
+  );
+  assert.equal(balanceTemplateTags("<!--></template>ok"), "<!-->ok");
+  assert.equal(balanceTemplateTags("<!---></template>ok"), "<!--->ok");
+  assert.equal(
+    balanceTemplateTags("<svg><template/></svg></template>ok"),
+    "<svg><template/></svg>ok",
+  );
+  assert.equal(
+    balanceTemplateTags(
+      '<svg><template></svg></template><style id="escaped">body{color:red}</style>',
+    ),
+    '<svg><template></svg><style id="escaped">body{color:red}</style>',
+  );
+  assert.equal(
+    balanceTemplateTags("<svg><template><div></template>ok"),
+    "<svg><template><div>ok",
+  );
+  assert.equal(
+    balanceTemplateTags("<math><template></math></template>ok"),
+    "<math><template></math>ok",
+  );
+  assert.equal(
+    balanceTemplateTags("<svg><style></template></style></svg>ok"),
+    "<svg><style></style></svg>ok",
+  );
+  assert.equal(
+    balanceTemplateTags("<svg><template></template></template>ok"),
+    "<svg><template></template>ok",
+  );
+  assert.equal(balanceTemplateTags("<svg></template>ok"), "<svg>ok");
+  assert.equal(
+    balanceTemplateTags("<textarea>raw</template>"),
+    "<textarea>raw</template></textarea>",
+  );
+  assert.equal(
+    balanceTemplateTags('<script>"<!-- <script></script> -->"</script></template>ok'),
+    '<script>"<!-- <script></script> -->"</script>ok',
+  );
+  assert.equal(balanceTemplateTags("<p>hi<!-- open"), "<p>hi<!-- open-->");
+  assert.equal(balanceTemplateTags('<div title="unclosed'), "");
+  assert.equal(
+    balanceTemplateTags("<plaintext>a < b </template>"),
+    "<pre>a &lt; b &lt;/template></pre>",
+  );
+});
+
+test("createDefaultStylesheetFetch rejects cross-origin, credentialed, and non-HTTP URLs", async () => {
+  const fetcher = createDefaultStylesheetFetch("https://guest.test/orders/");
+  await assert.rejects(() => fetcher("https://evil.test/a.css"), TypeError);
+  await assert.rejects(() => fetcher("http://169.254.169.254/latest"), TypeError);
+  await assert.rejects(() => fetcher("https://user:pass@guest.test/a.css"), TypeError);
+  await assert.rejects(() => fetcher("file:///etc/passwd"), TypeError);
+});
+
+test("materializeStylesheet enforces maxStylesheets and maxStylesheetBytes budgets", async () => {
+  const failures: unknown[] = [];
+  const css = await materializeStylesheet(
+    '@import "a.css"; @import "b.css"; @import "c.css";',
+    DOCUMENT,
+    {
+      maxStylesheets: 2,
+      fetchText: async (url) => `.${url.split("/").pop()!.replace(".", "-")}{color:red}`,
+      onImportFailure: (failure) => failures.push(failure.error),
+    },
+  );
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0] instanceof RangeError);
+  assert.ok(css.includes(".a-css{color:red}"));
+  assert.ok(!css.includes(".c-css{color:red}"));
+
+  const sizeFailures: unknown[] = [];
+  await materializeStylesheet('@import "big.css";', DOCUMENT, {
+    maxStylesheetBytes: 10,
+    fetchText: async () => "a".repeat(20),
+    onImportFailure: (failure) => sizeFailures.push(failure.error),
+  });
+  assert.equal(sizeFailures.length, 1);
+  assert.ok(sizeFailures[0] instanceof RangeError);
+});
+
+test("rewriteAssetAttributes decodes entities before rebasing and tolerates malformed inline styles", () => {
+  const img = {
+    tagName: "img",
+    namespaceURI: "http://www.w3.org/1999/xhtml",
+    attributes: [["src", "&#x2f;admin?a=1&amp;b=2"]] as [string, string][],
+    getAttribute: (name: string) => (name === "src" ? "&#x2f;admin?a=1&amp;b=2" : null),
+    hasAttribute: (name: string) => name === "src",
+  };
+  const assignments = rewriteAssetAttributes(img, DOCUMENT, {
+    decode: (value) => value.replace("&#x2f;", "/").replaceAll("&amp;", "&"),
+    encode: (value) => value.replaceAll("&", "&amp;"),
+  });
+  assert.deepEqual(
+    assignments.find((entry) => entry.name === "src"),
+    { name: "src", value: "https://guest.test/admin?a=1&amp;b=2" },
+  );
+  assert.deepEqual(
+    assignments.find((entry) => entry.name === "data-v-frame-attributes-0"),
+    { name: "data-v-frame-attributes-0", value: "&#x2f;admin?a=1&amp;b=2" },
+  );
 });

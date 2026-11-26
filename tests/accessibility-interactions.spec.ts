@@ -1,6 +1,12 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { VFrameElement } from "../src/index";
-import { bundleRoute, startHTTPFixture, type HTTPFixture } from "./support/http-fixture";
+import type * as TestingModule from "../src/testing";
+import {
+  bundleRoute,
+  startHTTPFixture,
+  testingBundleRoute,
+  type HTTPFixture,
+} from "./support/http-fixture";
 import { interactionLab } from "./support/interaction-lab";
 import { frameFailures, installBundle, mountFrame } from "./support/mount-frame";
 import { auditAccessibility } from "./support/accessibility";
@@ -13,6 +19,7 @@ test.beforeAll(async () => {
     routes: {
       "/": '<!doctype html><html lang="en"><head><title>Host</title></head><body><main><button id="before">Before guest</button><div id="host"></div><button id="after">After guest</button></main></body></html>',
       "/dist/index.js": bundleRoute,
+      "/dist/testing.js": testingBundleRoute,
       "/lab": interactionLab,
     },
   });
@@ -72,6 +79,140 @@ test("preserves explicit and implicit labels, descriptions and dynamic names", a
   await expect(
     frame.getByRole("textbox", { name: "Contact email" }),
   ).toHaveAccessibleDescription("Used for delivery updates.");
+});
+
+test("@mewhhaha/v-frame/testing matches native roles, labels, disclosures, overlays, and host inertness on the interaction lab", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async (origin) => {
+    const { shadowScreen, withinFrame } = (await import(
+      `${origin}/dist/testing.js`
+    )) as typeof TestingModule;
+    const hostContainer = document.querySelector<HTMLElement>("#host")!;
+    const vFrame = document.querySelector<VFrameElement>("#interactive")!;
+    const lab = withinFrame(vFrame);
+    await lab.ready();
+
+    // Roles, labels, descriptions, native states, and dynamic label updates
+    const email = lab.getByRole<HTMLInputElement>("textbox", {
+      name: "Email address",
+      description: "Used for delivery updates.",
+    });
+    const switchControl = lab.getByRole<HTMLInputElement>("switch", {
+      name: "Delivery updates",
+      checked: false,
+    });
+    switchControl.click();
+    const switchChecked =
+      lab.getByRole("switch", { name: "Delivery updates", checked: true }) ===
+      switchControl;
+
+    const speedGroup = lab.getByRole("group", { name: "Delivery speed" });
+    const standardRadio = lab.getByRole("radio", { name: "Standard", checked: true });
+    const expressRadio = lab.getByRole("radio", { name: "Express", checked: false });
+    const regionSelect = lab.getByRole<HTMLSelectElement>("combobox", { name: "Region" });
+    const regionDisplayMatch = lab.getByDisplayValue("Europe") === regionSelect;
+
+    // Closed popover & dialog are hidden until opened
+    const popoverHiddenInitially =
+      lab.queryByRole("dialog", { name: "Delivery details" }) === null;
+    lab.getByRole("button", { name: "Delivery details" }).click();
+    const popoverOpen =
+      lab.queryByRole("dialog", {
+        name: "Delivery details",
+        description: "Change delivery instructions.",
+      }) !== null;
+    lab.getByRole("button", { name: "Close details" }).click();
+    const popoverClosedAgain =
+      lab.queryByRole("dialog", { name: "Delivery details" }) === null;
+
+    const modalHiddenInitially =
+      lab.queryByRole("dialog", { name: "Edit delivery" }) === null;
+    lab.getByRole("button", { name: "Edit delivery" }).click();
+    const modalOpen =
+      lab.queryByRole("dialog", {
+        name: "Edit delivery",
+        description: "Confirm the delivery name.",
+      }) !== null;
+    lab.getByRole("button", { name: "Cancel edit" }).click();
+    const modalClosedAgain =
+      lab.queryByRole("dialog", { name: "Edit delivery" }) === null;
+
+    // Closed <details> hides inner button while exposing <summary> with expanded: false
+    const summaryClosed = lab.getByRole("button", {
+      name: "Advanced settings",
+      expanded: false,
+    });
+    const resetHiddenWhileClosed =
+      lab.queryByRole("button", { name: "Reset settings" }) === null;
+    summaryClosed.click();
+    const summaryOpen =
+      lab.queryByRole("button", { name: "Advanced settings", expanded: true }) !== null;
+    const resetVisibleWhenOpen =
+      lab.queryByRole("button", { name: "Reset settings" }) !== null;
+
+    // Guest hidden / inert controls excluded by default, found with hidden: true
+    const guestHiddenExcluded =
+      lab.queryByRole("button", { name: "Hidden action" }) === null &&
+      lab.queryByRole("button", { name: "Inert action" }) === null;
+    const guestHiddenIncluded =
+      lab.queryByRole("button", { name: "Hidden action", hidden: true }) !== null &&
+      lab.queryByRole("button", { name: "Inert action", hidden: true }) !== null;
+
+    // Host-side inert ancestor hides guest controls across the shadow boundary
+    hostContainer.inert = true;
+    const hostInertHidesGuest =
+      shadowScreen.queryByRole("button", { name: "Save settings" }) === null;
+    const hostButtonStillVisible =
+      shadowScreen.queryByRole("button", { name: "Before guest" }) !== null;
+    hostContainer.inert = false;
+    const guestRestored =
+      shadowScreen.queryByRole("button", { name: "Save settings" }) !== null;
+
+    return {
+      emailId: email.id,
+      switchChecked,
+      hasSpeedGroup: speedGroup.tagName === "FIELDSET",
+      radiosDistinct: standardRadio !== expressRadio,
+      regionDisplayMatch,
+      popoverHiddenInitially,
+      popoverOpen,
+      popoverClosedAgain,
+      modalHiddenInitially,
+      modalOpen,
+      modalClosedAgain,
+      resetHiddenWhileClosed,
+      summaryOpen,
+      resetVisibleWhenOpen,
+      guestHiddenExcluded,
+      guestHiddenIncluded,
+      hostInertHidesGuest,
+      hostButtonStillVisible,
+      guestRestored,
+    };
+  }, fixture.origin);
+
+  expect(result).toEqual({
+    emailId: "email",
+    switchChecked: true,
+    hasSpeedGroup: true,
+    radiosDistinct: true,
+    regionDisplayMatch: true,
+    popoverHiddenInitially: true,
+    popoverOpen: true,
+    popoverClosedAgain: true,
+    modalHiddenInitially: true,
+    modalOpen: true,
+    modalClosedAgain: true,
+    resetHiddenWhileClosed: true,
+    summaryOpen: true,
+    resetVisibleWhenOpen: true,
+    guestHiddenExcluded: true,
+    guestHiddenIncluded: true,
+    hostInertHidesGuest: true,
+    hostButtonStillVisible: true,
+    guestRestored: true,
+  });
 });
 
 test("label clicks focus the physical control and relay guest focus events", async () => {

@@ -1,18 +1,25 @@
 import { decodeHTMLAttribute } from "entities/decode";
 import { isHTMLDocumentResponse, readHTMLDocument } from "../html-response.js";
 import {
+  balanceTemplateTags,
+  createBoundedStylesheetFetch,
+  createDefaultStylesheetFetch,
+  DEFAULT_MAX_DOCUMENT_BYTES,
+  DEFAULT_MAX_IMPORT_DEPTH,
+  DEFAULT_MAX_STYLESHEET_BYTES,
+  limitResponseBytes,
   materializeStylesheet,
   rewriteScriptElement,
   rewriteShellElement,
   rewriteAssetAttributes,
   rewritePreviewAttributes,
   readStylesheetSource,
-  fetchStylesheetSource,
 } from "./core.js";
 import type { MaterializeStylesheetOptions } from "./core.js";
 import { HTML_NAMESPACE, rewriteAssetAttribute } from "../asset-urls.js";
 import type { StylesheetFetchOptions, StylesheetSource } from "../css.js";
 import {
+  isReservedSSRAttribute,
   NEUTRALIZED_STYLESHEET_REL,
   SSR_LINK_REL,
   SSR_LINK_INTEGRITY,
@@ -72,6 +79,15 @@ export interface MaterializeDocumentOptions extends MaterializeStylesheetOptions
   HTMLRewriter?: HTMLRewriterConstructor;
   /** Reject responses that cannot be transformed before embedding them as HTML. */
   requireDocument?: boolean;
+  /** Maximum byte length accepted for the guest HTML document. Defaults to 10 MiB. */
+  maxDocumentBytes?: number;
+  /**
+   * Preserve already-materialized SSR markers inside nested same-origin
+   * `<v-frame adopt src="..."><template shadowrootmode="open">` elements
+   * produced by an inner trusted composer. Defaults to `false`, stripping all
+   * incoming `data-v-frame-*` markers across the guest document.
+   */
+  preserveNestedFrames?: boolean;
 }
 
 // Validators and range metadata describe the guest's bytes, which this
@@ -144,22 +160,18 @@ type LinkResult =
 const isStylesheetRel = (rel: string, token = "stylesheet") =>
   rel.split(/\s+/).some((part) => part.toLowerCase() === token);
 
-export const escapeAttribute = (value: string) =>
+export const escapeAttribute = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 
-const shellHandlers: RewriterHandlers = {
-  element(element) {
-    const rewrite = rewriteShellElement(element.tagName);
-    if (rewrite === null) {
-      return;
-    }
+// lol-html's setAttribute escapes `"` but preserves `&`, so decoded strings
+// written back via setAttribute must escape `&` to avoid HTML entity re-parsing.
+export const encodeRewriterAttribute = (value: string): string =>
+  value.replaceAll("&", "&amp;");
 
-    element.tagName = rewrite.tagName;
-    if (rewrite.prependHTML !== null) {
-      element.prepend(rewrite.prependHTML, { html: true });
-    }
-  },
-};
+function decodedAttribute(element: RewriterElement, name: string): string | null {
+  const value = element.getAttribute(name);
+  return value === null ? null : decodeHTMLAttribute(value);
+}
 
 const scriptHandlers: RewriterHandlers = {
   element(element) {
@@ -203,25 +215,29 @@ export async function materializeVFrameDocument(
   const Rewriter = getHTMLRewriter(options.HTMLRewriter);
 
   const identifiers = fragmentIdentifiers(documentURL);
+  const maxDocumentBytes = options.maxDocumentBytes ?? DEFAULT_MAX_DOCUMENT_BYTES;
+  const maxStylesheetBytes = options.maxStylesheetBytes ?? DEFAULT_MAX_STYLESHEET_BYTES;
+  const maxImportDepth = options.maxImportDepth ?? DEFAULT_MAX_IMPORT_DEPTH;
   let elementIndex = 0;
   let templateDepth = 0;
   let targetIndex = -1;
   let targetRank = Infinity;
-  const enterTemplate = (element: RewriterElement) => {
-    if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "template") {
-      templateDepth++;
-      element.onEndTag(() => templateDepth--);
-    }
-  };
   // Decoded once: the runtime re-encodes rewriter output in the charset the
   // response declares, so feeding it the guest's own bytes would hand `.text()`
-  // Latin-1 (or worse) to misread as UTF-8.
-  const guest = await readHTMLDocument(response, options.signal);
+  // Latin-1 (or worse) to misread as UTF-8. Balancing `<template>` tags here
+  // guarantees the output cannot break out of a Declarative Shadow DOM wrapper.
+  const guest = balanceTemplateTags(
+    await readHTMLDocument(
+      limitResponseBytes(response, maxDocumentBytes, `v-frame guest ${documentURL}`),
+      options.signal,
+    ),
+  );
   // Stylesheets are known only after the whole document has been read, since a
   // late `<base>` re-bases them all. The first parse gathers their sources so
   // the fetches can start together before the second parse reaches them.
   const styleSources: string[] = [];
   const linkHrefs: Array<{ href: string; stylesheet: boolean; integrity: string }> = [];
+  let collectingStyle = false;
   // A base applies to the entire document, even to resources preceding it. The
   // first parse is deliberately side-effect free.
   const scan = new Rewriter();
@@ -235,7 +251,7 @@ export async function materializeVFrameDocument(
             {
               localName: element.tagName,
               namespaceURI: element.namespaceURI,
-              getAttribute: (name) => element.getAttribute(name),
+              getAttribute: (name) => decodedAttribute(element, name),
             },
             identifiers,
           );
@@ -244,23 +260,34 @@ export async function materializeVFrameDocument(
             targetRank = rank;
           }
         }
-        enterTemplate(element);
+        if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "template") {
+          templateDepth++;
+          element.onEndTag(() => {
+            templateDepth--;
+          });
+        }
       },
     })
     .on("style", {
       element() {
-        styleSources.push("");
+        collectingStyle = templateDepth === 0;
+        if (collectingStyle) {
+          styleSources.push("");
+        }
       },
       text(chunk) {
-        styleSources[styleSources.length - 1] += chunk.text;
+        if (collectingStyle) {
+          styleSources[styleSources.length - 1] += chunk.text;
+        }
       },
     })
     .on("link[href]", {
       element(element) {
+        if (templateDepth > 0) return;
         linkHrefs.push({
           href: decodeHTMLAttribute(element.getAttribute("href")!),
-          stylesheet: isStylesheetRel(element.getAttribute("rel") ?? ""),
-          integrity: element.getAttribute("integrity")?.trim() ?? "",
+          stylesheet: isStylesheetRel(decodedAttribute(element, "rel") ?? ""),
+          integrity: (decodedAttribute(element, "integrity") ?? "").trim(),
         });
       },
     })
@@ -274,18 +301,31 @@ export async function materializeVFrameDocument(
   const requests = new Map<string, Promise<StylesheetSource>>();
   elementIndex = 0;
   templateDepth = 0;
+  let nestedShadowDepth = 0;
+  let pendingNestedShadow = false;
   // An aborted materialization is discarded, so the fetches it cancelled
   // failing is the cancellation working; reporting them would make a client
   // disconnect look like a broken stylesheet.
   const onImportFailure: MaterializeStylesheetOptions["onImportFailure"] = (failure) => {
     if (!signal.aborted) options.onImportFailure?.(failure);
   };
+  const baseFetch =
+    options.fetchText ?? createDefaultStylesheetFetch(documentURL, maxStylesheetBytes);
+  const boundedFetch = createBoundedStylesheetFetch(baseFetch, {
+    maxStylesheetBytes,
+    ...(options.maxStylesheets !== undefined
+      ? { maxStylesheets: options.maxStylesheets }
+      : {}),
+    ...(options.maxConcurrency !== undefined
+      ? { maxConcurrency: options.maxConcurrency }
+      : {}),
+  });
   const fetchText = (url: string, { integrity = "" }: StylesheetFetchOptions = {}) => {
     let key = url;
     if (integrity !== "") key = JSON.stringify([url, integrity]);
     let result = requests.get(key);
     if (!result) {
-      result = (options.fetchText ?? fetchStylesheetSource)(url, {
+      result = boundedFetch(url, {
         signal,
         integrity,
       }).then((source) => readStylesheetSource(source, url, integrity));
@@ -293,11 +333,17 @@ export async function materializeVFrameDocument(
     }
     return result;
   };
+  // Document-level fetch budget, byte cap, and concurrency are enforced once
+  // on `boundedFetch` above; disable duplicate wrappers inside `materializeStylesheet`.
   const settings: MaterializeStylesheetOptions = {
     ...options,
     fetchText,
     onImportFailure,
     signal,
+    maxImportDepth,
+    maxStylesheets: Infinity,
+    maxConcurrency: Infinity,
+    maxStylesheetBytes: Infinity,
   };
   // Font declarations are collected per sheet and handed over in document
   // order when the rewriter reaches the sheet, whatever order the fetches
@@ -313,6 +359,11 @@ export async function materializeVFrameDocument(
   const styleJobs = styleSources.map(async (css): Promise<StyleResult | null> => {
     const fonts: string[] = [];
     try {
+      if (new TextEncoder().encode(css).byteLength > maxStylesheetBytes) {
+        throw new RangeError(
+          `v-frame SSR inline stylesheet exceeded maximum size of ${maxStylesheetBytes} bytes`,
+        );
+      }
       return { css: await materializeStylesheet(css, baseURL, collecting(fonts)), fonts };
     } catch (error) {
       onImportFailure({ url: baseURL, error });
@@ -356,22 +407,106 @@ export async function materializeVFrameDocument(
       }
     })());
   let styleIndex = -1;
+  let activeStyle = false;
   let linkIndex = 0;
-  const transformed = new Rewriter()
+  const shellHandlers: RewriterHandlers = {
+    element(element) {
+      if (nestedShadowDepth > 0) return;
+      const rewrite = rewriteShellElement(element.tagName);
+      if (rewrite === null) {
+        return;
+      }
+
+      element.tagName = rewrite.tagName;
+      if (rewrite.prependHTML !== null) {
+        element.prepend(rewrite.prependHTML, { html: true });
+      }
+    },
+  };
+  const assetOptions = {
+    decode: decodeHTMLAttribute,
+    encode: encodeRewriterAttribute,
+  };
+  const preserveNestedFrames = options.preserveNestedFrames === true;
+  const documentOrigin = URL.parse(documentURL)?.origin ?? null;
+  let eligibleNestedHost = false;
+  const transformedRewriter = new Rewriter();
+  if (preserveNestedFrames) {
+    transformedRewriter
+      .on("v-frame", {
+        element(element) {
+          eligibleNestedHost = false;
+          if (templateDepth > 0 || !element.hasAttribute("adopt")) return;
+          const rawSrc = decodedAttribute(element, "src")?.trim() ?? "";
+          if (rawSrc === "") return;
+          const resolved = URL.parse(rawSrc, baseURL);
+          if (
+            resolved !== null &&
+            (resolved.protocol === "http:" || resolved.protocol === "https:") &&
+            (documentOrigin === null || resolved.origin === documentOrigin)
+          ) {
+            eligibleNestedHost = true;
+          }
+        },
+      })
+      .on("v-frame[adopt][src] > template[shadowrootmode]", {
+        element(element) {
+          if (
+            eligibleNestedHost &&
+            templateDepth === 0 &&
+            element.getAttribute("shadowrootmode")?.toLowerCase() === "open"
+          ) {
+            pendingNestedShadow = true;
+          }
+        },
+      });
+  }
+  const transformed = transformedRewriter
     .on("*", {
       element(element) {
+        const isNestedShadow = pendingNestedShadow;
+        pendingNestedShadow = false;
+        if (element.tagName !== "v-frame") eligibleNestedHost = false;
         const index = elementIndex++;
-        if (templateDepth === 0) {
-          element.removeAttribute(FRAGMENT_TARGET_ATTRIBUTE);
-          if (index === targetIndex) element.setAttribute(FRAGMENT_TARGET_ATTRIBUTE, "");
+        const insideTemplate = templateDepth > 0;
+        const insideNestedShadow = nestedShadowDepth > 0;
+        if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "template") {
+          templateDepth++;
+          if (isNestedShadow) nestedShadowDepth++;
+          element.onEndTag(() => {
+            templateDepth--;
+            if (isNestedShadow) nestedShadowDepth--;
+          });
         }
-        enterTemplate(element);
+        if (isNestedShadow) {
+          return;
+        }
+        if (insideNestedShadow) {
+          // Preserve pre-composed nested frame provenance, while still
+          // neutralizing any unmaterialized inline event handlers or links.
+          const preview = rewritePreviewAttributes(element);
+          for (const name of preview.removeAttributes) element.removeAttribute(name);
+          for (const { name, value } of preview.setAttributes)
+            element.setAttribute(name, value);
+          return;
+        }
+        // SSR wire-format markers are server-owned: strip any guest-authored
+        // copies before recording this materialization's own provenance.
+        const forged: string[] = [];
+        for (const [name] of element.attributes) {
+          if (isReservedSSRAttribute(name)) forged.push(name);
+        }
+        for (const name of forged) element.removeAttribute(name);
+        if (!insideTemplate && index === targetIndex) {
+          element.setAttribute(FRAGMENT_TARGET_ATTRIBUTE, "");
+        }
         const preview = rewritePreviewAttributes(element);
         for (const assignment of rewriteAssetAttributes(
           element,
           element.namespaceURI === HTML_NAMESPACE && element.tagName === "base"
             ? documentURL
             : baseURL,
+          assetOptions,
         )) {
           element.setAttribute(assignment.name, assignment.value);
         }
@@ -383,9 +518,16 @@ export async function materializeVFrameDocument(
     .on("html", shellHandlers)
     .on("head", shellHandlers)
     .on("body", shellHandlers)
-    .on("meta", charsetDeclarationHandlers)
+    .on("meta", {
+      element(element) {
+        if (nestedShadowDepth > 0) return;
+        charsetDeclarationHandlers.element!(element);
+      },
+    })
     .on("style", {
       async element(element) {
+        activeStyle = templateDepth === 0;
+        if (!activeStyle) return;
         // Only the server's own success vouches for a style; a guest-authored
         // marker must not exempt its sheet from the runtime's rewrite.
         element.removeAttribute(SSR_STYLE);
@@ -394,6 +536,7 @@ export async function materializeVFrameDocument(
         }
       },
       async text(chunk) {
+        if (!activeStyle) return;
         // A stylesheet only parses as a whole, so the chunks are dropped and
         // the rewritten text replaces the last one.
         if (!chunk.lastInTextNode) {
@@ -409,15 +552,17 @@ export async function materializeVFrameDocument(
     .on("script", scriptHandlers)
     .on("link[href]", {
       async element(element) {
+        if (templateDepth > 0) return;
         const job = linkJobs[linkIndex++];
         const result = await job;
         if (!result) return;
-        const rel = element.getAttribute("rel") ?? "";
-        const href = element.getAttribute("href")!;
+        const rawRel = element.getAttribute("rel") ?? "";
+        const rel = decodeHTMLAttribute(rawRel);
+        const href = decodedAttribute(element, "href")!;
         // Neutralized even when the fetch fails: left live, the browser would
         // load it against the host page. The runtime restores `rel` and, with no
         // materialized style beside the link, fetches the sheet itself.
-        element.setAttribute(SSR_LINK_REL, rel);
+        element.setAttribute(SSR_LINK_REL, rawRel);
         element.setAttribute("rel", NEUTRALIZED_STYLESHEET_REL);
         try {
           if (!result.ok) throw result.error;
@@ -426,17 +571,18 @@ export async function materializeVFrameDocument(
           // its preview starts disabled like the link itself.
           const disabled =
             element.hasAttribute("disabled") || isStylesheetRel(rel, "alternate");
+          const media = decodedAttribute(element, "media") ?? "";
           const attrs = [
             `${SSR_LINK_SOURCE}="${escapeAttribute(result.sheet.url)}"`,
             `${SSR_LINK_STYLE}=""`,
-            `media="${disabled ? "not all" : escapeAttribute(element.getAttribute("media") ?? "")}"`,
+            `media="${disabled ? "not all" : escapeAttribute(media)}"`,
           ];
-          const integrity = element.getAttribute("integrity")?.trim();
+          const integrity = (decodedAttribute(element, "integrity") ?? "").trim();
           if (integrity) {
             attrs.push(`${SSR_LINK_INTEGRITY}="${escapeAttribute(integrity)}"`);
           }
           for (const name of ["nonce", "title"]) {
-            const value = element.getAttribute(name);
+            const value = decodedAttribute(element, name);
             if (value !== null) attrs.push(`${name}="${escapeAttribute(value)}"`);
           }
           element.after(`<style ${attrs.join(" ")}>${result.css}</style>`, {

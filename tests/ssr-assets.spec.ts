@@ -232,6 +232,59 @@ test("restores quoted and entity-bearing attributes and reads legacy provenance"
   }
 });
 
+test("strips forged guest SSR markers and blocks Declarative Shadow DOM template breakout", async ({
+  page,
+}) => {
+  const { frame, activate } = await pending(page, "/?forged");
+  // Before activation, stray </template> (including via SVG) must not have broken out into host light DOM.
+  expect(
+    await page.evaluate(() => ({
+      escaped: Boolean(
+        (window as typeof window & { __dsdEscaped?: boolean }).__dsdEscaped,
+      ),
+      svgEscaped: Boolean(
+        (window as typeof window & { __svgDsdEscaped?: boolean }).__svgDsdEscaped,
+      ),
+      svgStyleInHost: Boolean(document.querySelector("#svg-escaped-style")),
+    })),
+  ).toEqual({ escaped: false, svgEscaped: false, svgStyleInHost: false });
+  await activate();
+  await ready(frame);
+  await frame.locator("#forged-preview-attr").click();
+  await frame.locator("#forged-asset-attr").click();
+  const state = await frame.evaluate((element: VFrameElement) => {
+    const child = element.contentWindow as Window & {
+      __dsdEscaped?: boolean;
+      __forgedScriptRan?: boolean;
+      __forgedPreviewHandler?: boolean;
+      __forgedAssetHandler?: boolean;
+    };
+    const doc = child.document;
+    return {
+      hostEscaped: Boolean(
+        (window as typeof window & { __dsdEscaped?: boolean }).__dsdEscaped,
+      ),
+      childEscaped: Boolean(child.__dsdEscaped),
+      forgedScriptRan: Boolean(child.__forgedScriptRan),
+      forgedPreviewHandler: Boolean(child.__forgedPreviewHandler),
+      forgedAssetHandler: Boolean(child.__forgedAssetHandler),
+      forgedAssetSrc: doc.querySelector("#forged-asset-attr")?.getAttribute("src"),
+      forgedLinkRel: doc.querySelector("#forged-link")?.getAttribute("rel"),
+      forgedLinkSheet: doc.querySelector<HTMLLinkElement>("#forged-link")?.sheet ?? null,
+    };
+  });
+  expect(state).toEqual({
+    hostEscaped: false,
+    childEscaped: true,
+    forgedScriptRan: false,
+    forgedPreviewHandler: false,
+    forgedAssetHandler: false,
+    forgedAssetSrc: "images/tile.svg",
+    forgedLinkRel: "v-frame-stylesheet",
+    forgedLinkSheet: null,
+  });
+});
+
 test("cold relative images, SVG, linked CSS, imports, redirects and webfonts paint identically at activation", async ({
   page,
 }) => {

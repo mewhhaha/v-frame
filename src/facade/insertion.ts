@@ -42,6 +42,7 @@ export function createNodeInsertion(
     isInVirtualDocumentTree,
     subtreeHasBaseElement,
     virtualNodes,
+    fragmentNodes,
     window,
     document,
     nativeQuerySelectorAll,
@@ -87,7 +88,7 @@ export function createNodeInsertion(
     markVirtualNode(node);
 
     for (const element of collectElements(node)) {
-      if (isHTMLStyleElement(element)) {
+      if (isHTMLStyleElement(element) && !fragmentNodes.has(element)) {
         const nonce = options.getNonce();
         if (nonce !== "") {
           element.nonce = nonce;

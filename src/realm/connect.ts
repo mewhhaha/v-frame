@@ -6,6 +6,7 @@
 // is the one module in the directory that imports nothing from its siblings, so
 // keeping them here is what makes the directory's imports acyclic.
 
+import { toDOMString, toLegacyNullToEmptyString } from "../facade/webidl.js";
 import type {
   VFrameErrorPhase,
   VFrameTrustedTypesPolicyDefinition,
@@ -20,6 +21,7 @@ export interface RealmFailure {
 
 export interface RealmTrustedTypes {
   createHTML(source: string): string;
+  createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
   createScriptURL(source: string): string;
 }
@@ -37,6 +39,7 @@ export type NavigationWindow = VFrameWindow & {
 
 interface TrustedTypePolicyFactoryLike {
   readonly emptyHTML: unknown;
+  isHTML?(value: unknown): boolean;
   createPolicy(
     name: string,
     policy: Omit<VFrameTrustedTypesPolicyDefinition, "name">,
@@ -52,6 +55,7 @@ export async function connectRealmIframe(
   signal: AbortSignal,
   locationURL: string,
   trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null,
+  isCustomPolicy = false,
 ): Promise<ConnectedRealmIframe> {
   if (signal.aborted) {
     throw abortError();
@@ -118,9 +122,24 @@ export async function connectRealmIframe(
           return;
         }
         try {
+          const factory = (
+            realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
+          ).trustedTypes;
+          const isTrustedHTML = (value: unknown): boolean =>
+            Boolean(factory?.isHTML?.(value) || hostTrustedTypes?.isHTML?.(value));
+          const makeGuestHTML =
+            (wrap: ((source: string) => string) | null) =>
+            (value: unknown, legacyNull = false): string => {
+              if (isTrustedHTML(value)) return value as string;
+              const text = legacyNull
+                ? toLegacyNullToEmptyString(value)
+                : toDOMString(value);
+              return wrap ? wrap(text) : text;
+            };
           if (trustedTypesPolicy === null) {
             realmTrustedTypes = {
               createHTML: (source) => source,
+              createGuestHTML: makeGuestHTML(null),
               createScript: (source) => source,
               createScriptURL: (source) => source,
             };
@@ -131,16 +150,23 @@ export async function connectRealmIframe(
               createScriptURL: (source: string) =>
                 trustedTypesPolicy.createScriptURL(source),
             };
-            const factory = (
-              realmWindow as unknown as { trustedTypes?: TrustedTypePolicyFactoryLike }
-            ).trustedTypes;
             if (factory === undefined) {
-              realmTrustedTypes = policyRules;
+              realmTrustedTypes = {
+                ...policyRules,
+                createGuestHTML: makeGuestHTML(
+                  isCustomPolicy ? policyRules.createHTML : null,
+                ),
+              };
             } else {
               try {
                 const policy = factory.createPolicy(trustedTypesPolicy.name, policyRules);
+                const createHTML = (source: string) =>
+                  policy.createHTML(source) as unknown as string;
                 realmTrustedTypes = {
-                  createHTML: (source) => policy.createHTML(source) as unknown as string,
+                  createHTML,
+                  // Only custom host-supplied policies transform raw guest HTML strings;
+                  // a string allowlist name keeps browser Trusted Types active on guest sinks.
+                  createGuestHTML: makeGuestHTML(isCustomPolicy ? createHTML : null),
                   createScript: (source) =>
                     policy.createScript(source) as unknown as string,
                   createScriptURL: (source) =>

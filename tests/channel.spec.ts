@@ -1,11 +1,13 @@
-import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { VFrameElement } from "../src/index";
 import type { FragmentChannel } from "../src/channel";
+import type * as TestingModule from "../src/testing";
 import {
   bundleRoute,
+  channelBundleRoute,
   htmlDocument,
   startHTTPFixture,
+  testingBundleRoute,
   type HTTPFixture,
 } from "./support/http-fixture";
 import { installBundle, mountFrame } from "./support/mount-frame";
@@ -21,7 +23,8 @@ test.beforeAll(async () => {
     routes: {
       "/": htmlDocument('<main id="host"></main>'),
       "/dist/index.js": bundleRoute,
-      "/channel.js": { type: "text/javascript", file: resolve("dist/channel.js") },
+      "/dist/testing.js": testingBundleRoute,
+      "/channel.js": channelBundleRoute,
       "/publisher": htmlDocument(`<button>Choose</button><script type="module">
       import { channel } from "/channel.js?publisher";
       const topic = channel("selection.v1");
@@ -67,16 +70,42 @@ test("independent guests, a late nested guest and the host share a selection onl
     src: fixture.origin + "/nested",
   });
   await expect(nested.locator("output")).toHaveText("orbit true");
-  const hostValue = await page.evaluate(async (url) => {
-    const { channel } = (await import(url)) as typeof import("../src/channel");
+  const hostValue = await page.evaluate(async (origin) => {
+    const { channel } = (await import(
+      `${origin}/channel.js?host`
+    )) as typeof import("../src/channel");
+    const { resetChannels, shadowScreen, withinFrame } = (await import(
+      `${origin}/dist/testing.js`
+    )) as typeof TestingModule;
+
+    // Dogfood shadowScreen + withinFrame across sibling and nested channel guests.
+    const allStatuses = shadowScreen
+      .getAllByRole("status")
+      .map((element) => element.textContent);
+    const readerFrame = document.querySelector<VFrameElement>("#reader")!;
+    const readerStatus = withinFrame(readerFrame).getByRole("status").textContent;
+
     const values: string[] = [];
     const stop = channel<Payload>("selection.v1").subscribe(({ items, date }) => {
       values.push(items.join(",") + " " + (date instanceof Date));
     });
     stop();
-    return values;
-  }, fixture.origin + "/channel.js?host");
-  expect(hostValue).toEqual(["orbit true"]);
+
+    // Dogfood resetChannels(): clears retained state so a fresh check sees undefined,
+    // then re-publish through the publisher guest button for the isolation check below.
+    resetChannels();
+    const clearedRetained = channel<Payload>("selection.v1").get();
+    const publisherFrame = document.querySelector<VFrameElement>("#publisher")!;
+    withinFrame(publisherFrame).getByRole("button", { name: "Choose" }).click();
+
+    return { values, allStatuses, readerStatus, clearedRetained };
+  }, fixture.origin);
+  expect(hostValue).toEqual({
+    values: ["orbit true"],
+    allStatuses: ["orbit true", "orbit true"],
+    readerStatus: "orbit true",
+    clearedRetained: undefined,
+  });
   const other = await context.newPage();
   await installBundle(other, fixture.origin);
   const isolated = await mountFrame(other, { src: fixture.origin + "/reader" });
@@ -206,4 +235,118 @@ test("a listener can republish without leaving other teams on an older selection
     ],
     joined: [1, 2],
   });
+});
+
+test("supports get(), clear(), AbortSignal unsubscription, non-reentrant initial replay, and bounded re-entrant publish queues", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  const result = await page.evaluate(async (url) => {
+    const { channel } = (await import(url)) as typeof import("../src/channel");
+    const topic = channel<{ id: number }>("ergonomics");
+    const before = topic.get();
+    topic.publish({ id: 1 }, { retain: true });
+    const snapshot = topic.get();
+    if (snapshot) snapshot.id = 999;
+    const afterMutation = topic.get();
+
+    const controller = new AbortController();
+    const seen: number[] = [];
+    topic.subscribe(
+      (value) => {
+        seen.push(value.id);
+        if (value.id === 1) {
+          // Synchronous publish during initial replay must not re-enter this listener.
+          topic.publish({ id: 2 }, { retain: true });
+        }
+      },
+      { signal: controller.signal },
+    );
+    topic.publish({ id: 3 }, { retain: true });
+    controller.abort();
+    topic.publish({ id: 4 }, { retain: true });
+    topic.clear();
+    const afterClear = topic.get();
+
+    const loop = channel<number>("loop");
+    let loopError = "";
+    loop.subscribe((count) => {
+      try {
+        loop.publish(count + 1);
+      } catch (error) {
+        loopError = (error as Error).name;
+      }
+    });
+    loop.publish(0);
+
+    return { before, afterMutation, seen, afterClear, loopError };
+  }, fixture.origin + "/channel.js");
+
+  expect(result).toEqual({
+    before: undefined,
+    afterMutation: { id: 1 },
+    seen: [1, 3],
+    afterClear: undefined,
+    loopError: "RangeError",
+  });
+});
+
+test("routes guest subscriber errors to the guest realm instead of host window.onerror", async ({
+  page,
+}) => {
+  await installBundle(page, fixture.origin);
+  await page.evaluate(() => {
+    (window as typeof window & { __hostWindowErrors: string[] }).__hostWindowErrors = [];
+    window.addEventListener("error", (event) => {
+      (
+        window as typeof window & { __hostWindowErrors: string[] }
+      ).__hostWindowErrors.push(event.message);
+    });
+  });
+
+  const frame = await mountFrame(page, { src: fixture.origin + "/reader" });
+  await page.evaluate(async (url) => {
+    const { channel } = (await import(url)) as typeof import("../src/channel");
+    const topic = channel<string>("errors.v1");
+    (window as typeof window & { __hostSeen: string[] }).__hostSeen = [];
+    topic.subscribe((value) =>
+      (window as typeof window & { __hostSeen: string[] }).__hostSeen.push(value),
+    );
+  }, fixture.origin + "/channel.js?host-err");
+
+  await frame.evaluate((element: VFrameElement) => {
+    element.addEventListener("v-frame-error", (event) => {
+      const detail = (event as CustomEvent<{ phase: string; error: Error }>).detail;
+      (window as typeof window & { __frameErrors?: string[] }).__frameErrors = [
+        ...((window as typeof window & { __frameErrors?: string[] }).__frameErrors ?? []),
+        `${detail.phase}:${detail.error.message}`,
+      ];
+    });
+  });
+
+  await frame.evaluate(async (element: VFrameElement) => {
+    const child = element.contentWindow! as Window & typeof globalThis;
+    const mod = (await child.eval(
+      'import("/channel.js?guest-err")',
+    )) as typeof import("../src/channel");
+    mod.channel<string>("errors.v1").subscribe(() => {
+      throw new Error("guest subscriber boom");
+    });
+  });
+
+  await page.evaluate(async (url) => {
+    const { channel } = (await import(url)) as typeof import("../src/channel");
+    channel<string>("errors.v1").publish("ping");
+  }, fixture.origin + "/channel.js?host-err");
+
+  const outcome = await page.evaluate(() => ({
+    hostSeen: (window as typeof window & { __hostSeen: string[] }).__hostSeen,
+    frameErrors:
+      (window as typeof window & { __frameErrors?: string[] }).__frameErrors ?? [],
+    hostWindowErrors: (window as typeof window & { __hostWindowErrors: string[] })
+      .__hostWindowErrors,
+  }));
+  expect(outcome.hostSeen).toEqual(["ping"]);
+  expect(outcome.frameErrors).toEqual(["runtime:guest subscriber boom"]);
+  expect(outcome.hostWindowErrors).toEqual([]);
 });

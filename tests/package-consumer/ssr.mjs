@@ -18,6 +18,19 @@ import {
   createStylesheetContext,
   rewriteStylesheet,
 } from "@mewhhaha/v-frame/server";
+import {
+  activeShadowElement,
+  prettyShadowDOM,
+  resetChannels,
+  shadowScreen,
+  waitFor,
+} from "@mewhhaha/v-frame/testing";
+
+assert.equal(typeof shadowScreen.getByRole, "function");
+assert.equal(prettyShadowDOM(), "");
+assert.equal(activeShadowElement(), null);
+resetChannels();
+assert.equal(await waitFor(() => "ok"), "ok");
 
 assert.equal(typeof channel("orders.selection.v1").subscribe, "function");
 assert.equal(typeof defineVFrame, "function");

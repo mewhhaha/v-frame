@@ -7,6 +7,7 @@ import {
   type RealmFailure,
   type VFrameRealm,
 } from "./realm/index.js";
+import type { StylesheetFetchOptions } from "./css.js";
 import { type DocumentHistoryMode, VirtualHistorySession } from "./history.js";
 import { parseEntryURL } from "./url.js";
 import { isHTMLDocumentResponse, readHTMLDocument } from "./html-response.js";
@@ -149,6 +150,11 @@ export class VFrameElement extends HTMLElementBase {
   #adoptionConsumed = false;
   #nonce = "";
   #trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null = null;
+  #lastFatalError: unknown = null;
+  readonly #readyWaiters: Array<{
+    resolve(): void;
+    reject(error: unknown): void;
+  }> = [];
 
   constructor() {
     super();
@@ -287,6 +293,30 @@ export class VFrameElement extends HTMLElementBase {
 
   get canGoForward(): boolean {
     return this.#realm?.navigation.canGoForward ?? false;
+  }
+
+  /** Resolves once the frame is ready, or rejects on a fatal load failure or disconnect. */
+  whenReady(): Promise<void> {
+    if (this.#status === VFrameStatus.Ready) {
+      return Promise.resolve();
+    }
+    if (this.#status === VFrameStatus.Error) {
+      return Promise.reject(
+        this.#lastFatalError ??
+          new DOMException("v-frame failed to load", "InvalidStateError"),
+      );
+    }
+    return new Promise<void>((resolve, reject) => {
+      this.#readyWaiters.push({ resolve, reject });
+    });
+  }
+
+  #settleReadyWaiters(error?: unknown): void {
+    const waiters = this.#readyWaiters.splice(0);
+    for (const waiter of waiters) {
+      if (error === undefined) waiter.resolve();
+      else waiter.reject(error);
+    }
   }
 
   /**
@@ -525,8 +555,10 @@ export class VFrameElement extends HTMLElementBase {
   #resetToIdle(): void {
     this.#generation += 1;
     this.#pendingGuestLoad = null;
+    this.#lastFatalError = null;
     this.#setStatus(VFrameStatus.Idle);
     this.#releaseGuest(true);
+    this.#settleReadyWaiters(abortError());
   }
 
   addEventListener<K extends keyof VFrameEventMap>(
@@ -717,6 +749,7 @@ export class VFrameElement extends HTMLElementBase {
         controller.signal,
         url,
         this.#effectiveTrustedTypesPolicy(),
+        this.#trustedTypesPolicy !== null,
       )
         .then((connection) => {
           pendingRealm.iframe = connection.iframe;
@@ -818,7 +851,7 @@ export class VFrameElement extends HTMLElementBase {
         signal: controller.signal,
         getNonce: () => this.nonce,
         fetchStylesheet: (url, options) =>
-          this.#fetchStylesheet(url, controller.signal, options?.integrity),
+          this.#fetchStylesheet(url, controller.signal, options),
         ...this.#realmCallbacks(
           load.boundNavigation,
           historySession,
@@ -866,6 +899,7 @@ export class VFrameElement extends HTMLElementBase {
         return false;
       }
       this.#loadController = null;
+      this.#lastFatalError = null;
       this.#setStatus(VFrameStatus.Ready);
       // Lifecycle listeners now see a fully committed guest.
       const loadedURL = this.#currentURL ?? progress.finalURL;
@@ -876,6 +910,7 @@ export class VFrameElement extends HTMLElementBase {
       if (this.#generation !== generation || controller.signal.aborted) {
         return true;
       }
+      this.#settleReadyWaiters();
       this.#dispatch<VFrameLoadEventDetail>("v-frame-load", { url: loadedURL });
       return true;
     } catch (error) {
@@ -904,13 +939,29 @@ export class VFrameElement extends HTMLElementBase {
   async #fetchStylesheet(
     url: string,
     signal: AbortSignal,
-    integrity = "",
+    options?: StylesheetFetchOptions,
   ): Promise<{ text: string; url: string }> {
-    const response = await fetch(url, {
-      credentials: this.credentials,
+    const crossOrigin = options?.crossOrigin?.toLowerCase() ?? null;
+    const sameOrigin =
+      URL.parse(url, this.ownerDocument.baseURI)?.origin ===
+      this.ownerDocument.location.origin;
+    const credentials: RequestCredentials =
+      crossOrigin === "use-credentials"
+        ? "include"
+        : crossOrigin === "anonymous" || crossOrigin === ""
+          ? "same-origin"
+          : sameOrigin
+            ? this.credentials
+            : "omit";
+    const init: RequestInit = {
+      credentials,
       signal,
-      integrity,
-    });
+      integrity: options?.integrity ?? "",
+    };
+    if (options?.referrerPolicy) {
+      init.referrerPolicy = options.referrerPolicy;
+    }
+    const response = await fetch(url, init);
     if (!response.ok || response.type === "opaque") {
       throw new TypeError(
         `v-frame stylesheet ${url} returned ${response.status} ${response.statusText}`,
@@ -999,12 +1050,21 @@ export class VFrameElement extends HTMLElementBase {
         }
         if (boundNavigation) {
           const hostLocation = this.ownerDocument.defaultView?.location;
-          if (mode === "replace") {
-            hostLocation?.replace(detail.to);
-          } else if (mode === "reload") {
+          if (mode === "reload") {
             hostLocation?.reload();
+            return;
+          }
+          const destination = URL.parse(detail.to);
+          if (
+            destination === null ||
+            (destination.protocol !== "http:" && destination.protocol !== "https:")
+          ) {
+            return;
+          }
+          if (mode === "replace") {
+            hostLocation?.replace(destination.href);
           } else {
-            hostLocation?.assign(detail.to);
+            hostLocation?.assign(destination.href);
           }
           return;
         }
@@ -1059,6 +1119,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#historySession = previous.historySession;
     this.#currentURL = previous.url;
     this.#setStatus(VFrameStatus.Ready);
+    this.#settleReadyWaiters();
     controller.abort();
     if (this.#generation === generation) {
       this.#dispatchError({ ...failure, fatal: false });
@@ -1077,10 +1138,12 @@ export class VFrameElement extends HTMLElementBase {
     }
 
     this.#generation = generation + 1;
+    this.#lastFatalError = failure.error;
     // A failed first load leaves whatever the shadow root holds, such as adopted
     // preview markup, for the host to keep showing.
     this.#setStatus(VFrameStatus.Error);
     this.#releaseGuest(false);
+    this.#settleReadyWaiters(failure.error);
     if (this.#generation === generation + 1) {
       this.#dispatchError({ ...failure, fatal: true });
     }

@@ -1,5 +1,11 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { bundleRoute, type HTTPFixture, startHTTPFixture } from "./support/http-fixture";
+import type * as TestingModule from "../src/testing";
+import {
+  bundleRoute,
+  type HTTPFixture,
+  startHTTPFixture,
+  testingBundleRoute,
+} from "./support/http-fixture";
 import { bundleKobalteLab } from "./support/kobalte-bundle";
 import { frameFailures, installBundle, mountFrame } from "./support/mount-frame";
 
@@ -169,6 +175,7 @@ async function startFixture(): Promise<HTTPFixture> {
     routes: {
       "/": '<!doctype html><div id="host"></div>',
       "/dist/index.js": bundleRoute,
+      "/dist/testing.js": testingBundleRoute,
       "/documents/overlay-lab.html": overlayLabDocument,
       "/documents/kobalte-lab.html": kobalteLabDocument,
       "/assets/kobalte-overlay-lab.js": {
@@ -252,13 +259,13 @@ test("a body portal stays inside the frame's clipping boundary", async ({ page }
   await frame.locator('[data-testid="tooltip-trigger"]').hover();
   await expect(frame.locator('[data-testid="tooltip-content"]')).toBeVisible();
 
-  const containment = await frame.evaluate((element) => {
+  const containment = await frame.evaluate(async (element, origin) => {
+    const { withinFrame } = (await import(
+      `${origin}/dist/testing.js`
+    )) as typeof TestingModule;
     // Guest nodes carry the child realm's prototypes, so the host realm cannot
-    // `instanceof` them — only a presence check is meaningful here.
-    const portal = element.shadowRoot?.querySelector('[data-testid="tooltip-content"]');
-    if (portal === null || portal === undefined) {
-      throw new Error("The tooltip portal is missing from the frame's shadow tree");
-    }
+    // `instanceof` them — dogfooding withinFrame().getByTestId locates the portal cleanly.
+    const portal = withinFrame(element).getByTestId("tooltip-content");
     // The guest realm's prototypes report frame-local rects, so physical comparisons
     // have to go through the host realm's own implementation.
     const portalRect = Element.prototype.getBoundingClientRect.call(portal);
@@ -271,7 +278,7 @@ test("a body portal stays inside the frame's clipping boundary", async ({ page }
         portalRect.top >= frameRect.top &&
         portalRect.bottom <= frameRect.bottom,
     };
-  });
+  }, fixture.origin);
 
   expect(containment.parent).toBe("v-body");
   expect(containment.insideFrameBox).toBe(true);

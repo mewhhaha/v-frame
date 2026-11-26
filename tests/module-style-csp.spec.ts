@@ -11,7 +11,7 @@ import { mountFrame } from "./support/mount-frame";
 const nonce = "module-style-csp-nonce";
 const nextNonce = "module-style-csp-next-nonce";
 const contentSecurityPolicy = `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'nonce-${nextNonce}'; object-src 'none'`;
-const trustedTypesContentSecurityPolicy = `${contentSecurityPolicy}; trusted-types v-frame-test; require-trusted-types-for 'script'`;
+const trustedTypesContentSecurityPolicy = `${contentSecurityPolicy}; trusted-types v-frame-test guest-safe; require-trusted-types-for 'script'`;
 let fixture: HTTPFixture;
 
 const hostPage = html(
@@ -64,6 +64,26 @@ function startFixtureServer(): Promise<HTTPFixture> {
           <button id="trusted-handler" onclick="this.dataset.inlineHandler = 'ran'">Run handler</button>
           <script src="../modules/trusted-types.js"></script>
           <script>document.body.insertAdjacentHTML("beforeend", '<output id="trusted-fragment">Trusted source</output>');</script>`,
+      ),
+      "/documents/trusted-types-named.html": html(
+        `<output id="trusted-html">Trusted source</output>
+          <button id="trusted-handler" onclick="this.dataset.inlineHandler = 'ran'">Run handler</button>
+          <script src="../modules/trusted-types.js"></script>
+          <script>
+            try {
+              document.body.insertAdjacentHTML("beforeend", '<output id="raw-fragment">Raw</output>');
+              window.__rawHTMLRejected = false;
+            } catch (error) {
+              window.__rawHTMLRejected = error instanceof TypeError;
+            }
+            const guestPolicy = window.trustedTypes.createPolicy("guest-safe", {
+              createHTML: (value) => value,
+            });
+            document.body.insertAdjacentHTML(
+              "beforeend",
+              guestPolicy.createHTML('<output id="guest-trusted-fragment">Guest trusted</output>'),
+            );
+          </script>`,
       ),
       "/modules/entry.js": javascript(`import { dependencyRealm } from "./dependency.js";
 window.__externalModuleEvents = ["entry-start:" + document.readyState];
@@ -234,7 +254,7 @@ test("loads documents and scripts through an explicit Trusted Types policy", asy
   });
 });
 
-test("uses a named identity Trusted Types policy without callback boilerplate", async ({
+test("named Trusted Types policy boots the frame without weakening guest HTML sinks", async ({
   browserName,
   page,
 }) => {
@@ -259,7 +279,7 @@ test("uses a named identity Trusted Types policy without callback boilerplate", 
     },
     {
       frameNonce: nonce,
-      source: `${fixture.origin}/documents/trusted-types.html`,
+      source: `${fixture.origin}/documents/trusted-types-named.html`,
     },
   );
 
@@ -269,7 +289,67 @@ test("uses a named identity Trusted Types policy without callback boilerplate", 
     )
     .toBe("ready");
   await expect(frame.locator("#trusted-html")).toHaveText("Trusted source");
-  await expect(frame.locator("#trusted-fragment")).toHaveText("Trusted source");
+  await expect(frame.locator("#raw-fragment")).toHaveCount(0);
+  await expect(frame.locator("#guest-trusted-fragment")).toHaveText("Guest trusted");
+  expect(
+    await childValue(
+      frame,
+      (window) =>
+        (window as typeof window & { __rawHTMLRejected?: boolean }).__rawHTMLRejected,
+    ),
+  ).toBe(true);
+});
+
+test("does not stamp the host CSP nonce onto styles or inline handlers parsed from innerHTML", async ({
+  page,
+}) => {
+  await installBundle(page);
+  const frame = await mountNonceFrame(page, "/documents/nonce-styles.html");
+  await expect
+    .poll(() =>
+      frame.evaluate((element: HTMLElement & { status: string }) => element.status),
+    )
+    .toBe("ready");
+
+  await childValue(frame, (window) => {
+    const container = window.document.createElement("div");
+    window.document.body.append(container);
+    container.innerHTML =
+      '<style id="injected-style">#injected-target{color:rgb(222,11,22)}</style>' +
+      '<p id="injected-target">target</p>' +
+      '<button id="injected-handler" onclick="window.__injectedHandlerRan = true">Click</button>' +
+      '<template id="injected-tpl"><style id="cloned-style">#cloned-target{color:rgb(222,11,22)}</style><p id="cloned-target">cloned</p></template>';
+    const tpl = window.document.querySelector("#injected-tpl") as HTMLTemplateElement;
+    window.document.body.append(tpl.content.cloneNode(true));
+  });
+
+  await frame.locator("#injected-handler").click();
+  await expect(frame.locator("#injected-target")).not.toHaveCSS(
+    "color",
+    "rgb(222, 11, 22)",
+  );
+  await expect(frame.locator("#cloned-target")).not.toHaveCSS(
+    "color",
+    "rgb(222, 11, 22)",
+  );
+  expect(
+    await childValue(frame, (window) => ({
+      handlerRan: Boolean(
+        (window as typeof window & { __injectedHandlerRan?: boolean })
+          .__injectedHandlerRan,
+      ),
+      styleNonce: (
+        window.document.querySelector("#injected-style") as HTMLStyleElement | null
+      )?.nonce,
+      clonedStyleNonce: (
+        window.document.querySelector("#cloned-style") as HTMLStyleElement | null
+      )?.nonce,
+    })),
+  ).toEqual({
+    handlerRan: false,
+    styleNonce: "",
+    clonedStyleNonce: "",
+  });
 });
 
 test("reports a fatal bootstrap error when Trusted Types enforcement has no policy", async ({

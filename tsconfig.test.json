@@ -18,7 +18,8 @@
     // the name to the sources instead of to the declarations built there.
     "paths": {
       "@mewhhaha/v-frame": ["./src/index.ts"],
-      "@mewhhaha/v-frame/register": ["./src/register.ts"]
+      "@mewhhaha/v-frame/register": ["./src/register.ts"],
+      "@mewhhaha/v-frame/testing": ["./src/testing.ts"]
     }
   },
   "include": [

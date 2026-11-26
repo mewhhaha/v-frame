@@ -12,7 +12,7 @@ import type { AttributeFacade } from "./attributes.js";
 import type { FacadeContext } from "./context.js";
 import type { NodeMarking } from "./marking.js";
 import type { NodeArguments } from "./node-arguments.js";
-import { toDOMString, toLegacyNullToEmptyString } from "./webidl.js";
+import { toDOMString } from "./webidl.js";
 
 export interface MarkupFacade {
   installPatches(): void;
@@ -40,12 +40,22 @@ export function installMarkupFacade(
     isElementNode,
     isHTMLTemplateElement,
     virtualNodes,
+    fragmentNodes,
     patch,
     nativeFragmentQuerySelectorAll,
   } = context;
   const { markVirtualNode, adoptAndMark } = marking;
   const { isNodeValue } = nodeArguments;
   const { getVirtualAttribute, getVirtualAttributeNames } = attributes;
+
+  const markFragmentElements = (root: DocumentFragment): void => {
+    for (const element of nativeFragmentQuerySelectorAll.call(root, "*")) {
+      fragmentNodes.add(element);
+      if (isHTMLTemplateElement(element)) {
+        markFragmentElements(element.content);
+      }
+    }
+  };
 
   // Parse in an inert document, but use the destination's context: a template
   // alone loses table insertion modes, foreign namespaces and raw-text parsing.
@@ -69,7 +79,7 @@ export function installMarkupFacade(
       destination === null || shellName !== null
         ? fragmentDocument.createElement(shellName ?? "body")
         : (nativeImportNode.call(fragmentDocument, destination, false) as Element);
-    nativeInnerHTML.set?.call(parserContext, options.createHTML(markup));
+    nativeInnerHTML.set?.call(parserContext, markup);
     const fragment = fragmentDocument.createDocumentFragment();
     const parsedRoot = isHTMLTemplateElement(parserContext)
       ? parserContext.content
@@ -109,6 +119,7 @@ export function installMarkupFacade(
       }
       nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
     }
+    markFragmentElements(fragment);
     return adoptAndMark(fragment);
   };
 
@@ -239,8 +250,8 @@ export function installMarkupFacade(
       value(this: Element, position: InsertPosition, text: string) {
         // Both arguments convert, and the position is checked, before any
         // markup is parsed: parsing runs custom element constructors.
-        const markup = toDOMString(text);
         const where = insertionPosition(position);
+        const markup = options.createGuestHTML(text, false);
         const outside = where === "beforebegin" || where === "afterend";
         if (
           outside &&
@@ -316,13 +327,14 @@ export function installMarkupFacade(
       set(this: Element, value: string | null) {
         // [LegacyNullToEmptyString]: null clears, and must not reach
         // createHTML as the text "null".
-        const markup = toLegacyNullToEmptyString(value);
+        const markup = options.createGuestHTML(value, true);
         if (!virtualNodes.has(this)) {
-          nativeInnerHTML.set?.call(this, options.createHTML(markup));
+          nativeInnerHTML.set?.call(this, markup);
           return;
         }
         if (isHTMLTemplateElement(this)) {
-          nativeInnerHTML.set?.call(this, options.createHTML(markup));
+          nativeInnerHTML.set?.call(this, markup);
+          markFragmentElements(this.content);
           markVirtualNode(this.content);
           return;
         }
@@ -339,9 +351,9 @@ export function installMarkupFacade(
           ) as string;
         },
         set(this: Element, value: string | null) {
-          const markup = toLegacyNullToEmptyString(value);
+          const markup = options.createGuestHTML(value, true);
           if (!virtualNodes.has(this)) {
-            nativeOuterHTML.set?.call(this, options.createHTML(markup));
+            nativeOuterHTML.set?.call(this, markup);
             return;
           }
           if (this.parentNode === null) {

@@ -7,17 +7,18 @@ other than what the guest asked for.
 Everything on this page was read out of the current source and is covered by the
 test suite. Each entry says what throws, why it has to, and what to do instead.
 
-| API                                                                                                 | Result                                 |
-| --------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)            | `NotSupportedError`                    |
-| [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets)            | `NotSupportedError`                    |
-| [Direct child mutation of `document`](#direct-child-mutation-of-document)                           | `NotSupportedError`                    |
-| [`Selection.modify()`](#selectionmodify)                                                            | `NotSupportedError`                    |
-| [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late |
-| [CSSOM `@import` rules](#cssom-import-rules)                                                        | `NotSupportedError`                    |
-| [Non-`GET` form submission](#non-get-form-submission)                                               | `v-frame-error`, navigation dropped    |
-| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)      | Navigation dropped                     |
-| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                   | Navigation dropped                     |
+| API                                                                                                 | Result                                        |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)            | `NotSupportedError`                           |
+| [`document.adoptedStyleSheets`](#documentadoptedstylesheets-and-constructed-stylesheets)            | `NotSupportedError` (guest shadow roots work) |
+| [Direct child mutation of `document`](#direct-child-mutation-of-document)                           | `NotSupportedError`                           |
+| [`Selection.modify()`](#selectionmodify)                                                            | `NotSupportedError`                           |
+| [`insertAdjacentText`, `setHTMLUnsafe`, `textContent`](#node-identity-after-an-unintercepted-write) | Node identity settles a microtask late        |
+| [CSSOM `@import` rules](#cssom-import-rules)                                                        | `NotSupportedError`                           |
+| [Cross-origin linked stylesheets without CORS](#cross-origin-stylesheets-require-cors)              | `v-frame-error`, stylesheet dropped           |
+| [Non-`GET` form submission](#non-get-form-submission)                                               | `v-frame-error`, navigation dropped           |
+| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)      | Navigation dropped                            |
+| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                   | Navigation dropped                            |
 
 During server-rendered adoption the browser starts a fresh undo history when
 the live input, textarea, or rich-text editor takes over. The visitor can
@@ -78,22 +79,16 @@ would bypass the rewriting every other guest stylesheet goes through, so its
 and its relative `url()` references would resolve against the host document
 instead of the guest's URL.
 
-Constructed stylesheets do not work on shadow roots the _guest itself_ creates
-either, and that failure comes from the browser rather than from `v-frame`:
+Constructed stylesheets (`new CSSStyleSheet()`) **do** work on shadow roots
+that guest components create themselves (`element.attachShadow()`): the runtime
+bridges `window.CSSStyleSheet` to construct host-document stylesheets whose
+default `baseURL` is the guest's base URL, so component libraries such as Lit
+and Shoelace can assign `shadowRoot.adoptedStyleSheets` without hitting a
+cross-document `NotAllowedError`.
 
-```text
-NotAllowedError: Failed to set the 'adoptedStyleSheets' property on 'ShadowRoot':
-Sharing constructed stylesheets in multiple documents is not allowed
-```
-
-A guest node is created in the execution realm but rendered in the host
-document, so a `CSSStyleSheet` built from the guest's own `CSSStyleSheet`
-constructor belongs to a different document than the shadow root it is being
-adopted into.
-
-**Instead.** Ship guest CSS as `<style>` elements, or as `<link
-rel="stylesheet">`. Both go through the runtime's stylesheet pipeline, which
-rewrites shell selectors and rebases URLs, and both are live: mutating
+**Instead.** For document-level guest CSS, ship `<style>` elements or
+`<link rel="stylesheet">`. Both go through the runtime's stylesheet pipeline,
+which rewrites shell selectors and rebases URLs, and both are live: mutating
 `style.textContent` or `link.href` re-runs the rewrite, while `link.media` and
 `link.disabled` update the existing sheet in place. The link stays connected,
 exposes its rewritten `sheet`, and removing it removes its rendered CSS.
@@ -102,12 +97,27 @@ are rewritten in place.
 
 ```ts
 const style = document.createElement("style");
-style.textContent = ":host-ish { color: rebeccapurple; }";
+style.textContent = "body { color: rebeccapurple; }";
 document.head.append(style);
 ```
 
-For a component library, this usually means selecting its `<style>`-tag CSS
-delivery mode rather than its constructed-stylesheet mode.
+## Cross-origin stylesheets require CORS
+
+**Does not throw in the guest.** A cross-origin `<link rel="stylesheet">` or
+`@import` whose server does not send `Access-Control-Allow-Origin` fails to
+load, emits a non-fatal `v-frame-error` (`phase: "stylesheet"`), and fires an
+`error` event on the `<link>`.
+
+**Why.** `v-frame` must read stylesheet source text to rewrite selectors and
+rebase relative URLs, so it loads linked sheets through `fetch()` rather than
+letting the browser fetch an opaque stylesheet directly. Cross-origin links
+without `crossorigin` default to `credentials: "omit"` (compatible with
+`Access-Control-Allow-Origin: *` CDNs without leaking cookies);
+`crossorigin="anonymous"` uses `"same-origin"`, and
+`crossorigin="use-credentials"` uses `"include"`.
+
+**Instead.** Serve cross-origin stylesheets with CORS headers, or proxy them
+through the host origin.
 
 ## Direct child mutation of `document`
 
@@ -480,8 +490,11 @@ password)` forwards all five arguments to the native implementation. Synchronous
   above is refused.
 - **`<link rel="stylesheet">`.** Supported, including `media`, `disabled`, and
   `href` changes at runtime.
-- **Guest-created shadow roots.** `attachShadow()` works and the shadow tree is
-  tracked by the facade; only _constructed_ stylesheets on it are unavailable.
+- **Guest-created shadow roots.** `attachShadow()` works, the shadow tree is
+  tracked by the facade, and `new CSSStyleSheet()` is bridged so
+  `shadowRoot.adoptedStyleSheets` works inside guest components.
+- **Page visibility.** `document.hidden`, `document.visibilityState`, and
+  `visibilitychange` mirror the host document.
 - **Dialogs, popovers, and the top layer.** Supported, including coordinate
   translation back into frame-local space; this is the main thing `v-frame` buys
   over an `<iframe>`. See [`tests/overlays.spec.ts`](../tests/overlays.spec.ts).

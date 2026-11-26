@@ -158,8 +158,8 @@ export function installDocumentProperties(
     URL: { configurable: true, get: options.getCurrentURL },
     documentURI: { configurable: true, get: options.getCurrentURL },
     baseURI: { configurable: true, get: options.getBaseURL },
-    hidden: { configurable: true, get: () => false },
-    visibilityState: { configurable: true, get: () => "visible" },
+    hidden: { configurable: true, get: () => hostDocument.hidden },
+    visibilityState: { configurable: true, get: () => hostDocument.visibilityState },
     styleSheets: { configurable: true, get: () => styleSheetCollection },
     adoptedStyleSheets: {
       configurable: true,
@@ -621,10 +621,20 @@ export function installDocumentProperties(
     return nativeDispatchEvent.call(document, event);
   };
 
+  const visibilityController = new AbortController();
+  hostDocument.addEventListener(
+    "visibilitychange",
+    () => {
+      dispatchDocumentEvent("visibilitychange");
+    },
+    { signal: visibilityController.signal },
+  );
+
   return {
     setReadyState,
     dispatchDocumentEvent,
     dispose() {
+      visibilityController.abort();
       for (const release of releases.splice(0)) release();
       handlerValues.clear();
     },

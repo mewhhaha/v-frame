@@ -6,7 +6,8 @@
     ".": "./src/index.ts",
     "./channel": "./src/channel.ts",
     "./register": "./src/register.ts",
-    "./server": "./src/server/index.ts"
+    "./server": "./src/server/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "publish": {
     "include": [

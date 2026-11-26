@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   createStylesheetContext,
   CSSOMImportRuleError,
+  extractFontFaces,
   rewriteCSSOMAddRule,
   rewriteCSSOMInsertRule,
   rewriteCSSOMSelectorText,
@@ -497,4 +498,68 @@ test("fetches receive the context signal, and failures after an abort are not re
   );
   await rewriteStylesheet('@import "a.css";', BASE, live);
   assert.equal(failures.length, 1);
+});
+
+test("rewriteStylesheet rewrites CSS Nesting Level 1 rules without leading &", async () => {
+  const harness = stylesheetHarness();
+  const rewritten = await rewriteStylesheet(
+    `.card {
+      .inner { background: url(icon.png); }
+      body & { color: red; }
+      :is(&, :host) { outline: 1px solid red; }
+      > body { background: url(sub.png); }
+      .a { .b { :host-context(.dark) { color: blue; } } }
+    }`,
+    MAIN,
+    harness.context,
+  );
+  assert.ok(rewritten.includes("url(https://host.test/app/icon.png)"));
+  assert.ok(rewritten.includes("url(https://host.test/app/sub.png)"));
+  assert.ok(rewritten.includes("v-body &{color:red}"));
+  assert.ok(rewritten.includes(">v-body{"));
+  assert.ok(!rewritten.includes(":host"));
+  assert.ok(rewritten.includes(":not(*)"));
+});
+
+test("rewriteCSSOMInsertRule rewrites nested CSS rules and neuters nested :host", () => {
+  const rewritten = rewriteCSSOMInsertRule(
+    ".card { :host { color: red; } .icon { background: url(a.png); } }",
+    BASE,
+  );
+  assert.ok(!rewritten.includes(":host"));
+  assert.ok(rewritten.includes(":not(*)"));
+  assert.ok(rewritten.includes("url(https://host.test/app/a.png)"));
+});
+
+test("extractFontFaces strips statement-form @layer and empty conditional wrappers", () => {
+  const extracted = extractFontFaces(
+    `@layer reset, host, guest;
+     @layer empty { body { color: red; } }
+     @media screen { p { color: blue; } }
+     @media screen { @layer fonts { @font-face { font-family: Brand; src: url(https://host.test/f.woff2); } } }`,
+    MAIN,
+  );
+  assert.ok(!extracted.includes("reset"));
+  assert.ok(!extracted.includes("empty"));
+  assert.ok(extracted.includes("@font-face"));
+  assert.ok(extracted.includes("@layer fonts{"));
+});
+
+test("rewriteStylesheet enforces maxImportDepth and reports deep imports", async () => {
+  const failures: StylesheetImportFailure[] = [];
+  const context = createStylesheetContext(
+    async (url) => {
+      const step = Number(url.match(/s(\d+)\.css$/)?.[1] ?? 0);
+      return `@import "s${step + 1}.css"; .s${step}{color:red}`;
+    },
+    (failure) => failures.push(failure),
+    undefined,
+    2,
+  );
+  const css = await rewriteStylesheet('@import "s1.css";', BASE, context);
+  assert.ok(css.includes(".s1{color:red}"));
+  assert.ok(css.includes(".s2{color:red}"));
+  assert.ok(!css.includes(".s3{color:red}"));
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0]!.error instanceof RangeError);
 });

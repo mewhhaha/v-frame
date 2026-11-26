@@ -22,6 +22,21 @@ import {
   type HTMLRewriterConstructor,
   type MaterializeStylesheetOptions,
 } from "@mewhhaha/v-frame/server";
+import {
+  activeShadowElement,
+  defineMockVFrame,
+  prettyShadowDOM,
+  queryAllShadow,
+  queryShadow,
+  resetChannels,
+  shadowScreen,
+  waitFor,
+  withinFrame,
+  withinShadow,
+  type FrameQueries,
+  type MockVFrameController,
+  type ShadowQueries,
+} from "@mewhhaha/v-frame/testing";
 
 const order: FragmentChannel<{ id: string }> = channel("orders.selection.v1");
 const unsubscribe = order.subscribe(({ id }) => id.toUpperCase());
@@ -80,3 +95,21 @@ const composed: Response = await composeFrames(new Response(null, { status: 204 
   fetchGuest: async (guest) => new Response(guest.url),
 });
 void composed;
+
+const scopedFrame: FrameQueries = withinFrame(frame);
+const scopedShadow: ShadowQueries = withinShadow(document.body);
+const mockController: MockVFrameController = defineMockVFrame({
+  "/mock": "<button>Mock</button>",
+});
+mockController.setRoutes({ "/mock": "<p>Updated</p>" });
+mockController.clearRequests();
+mockController.restore();
+void scopedFrame.ready;
+void scopedShadow.getByRole;
+void shadowScreen.findByText;
+void queryShadow(document, "v-frame");
+void queryAllShadow(document, "button");
+void activeShadowElement();
+void prettyShadowDOM(document.body);
+void waitFor(() => true);
+resetChannels();

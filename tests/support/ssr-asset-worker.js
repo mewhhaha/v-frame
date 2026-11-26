@@ -29,22 +29,29 @@ export default {
     const deepTarget = url.searchParams.get("target") === "deep";
     const previewActions = url.searchParams.has("preview-actions");
     const staleIntegrity = url.searchParams.has("stale-integrity");
+    const forged = url.searchParams.has("forged");
     let provenance = "";
     if (url.searchParams.has("provenance")) {
       provenance = `
         <button id="encoded-handler" onclick="this.dataset.result = &quot;Encoded&#32;&amp; &#92;&#x22; &amp;quot;&quot;">Encoded</button>
         <button id="literal-handler" onclick='this.dataset.result = "Literal &amp; numeric &#38;"'>Literal</button>
         <a id="quoted-link" href='next.html?quote="yes"&amp;n=&#34;&amp;entity=&amp;quot;'>Next</a>
-        <img id="quoted-image" alt="Quoted URL" src='images/tile.svg?quote="yes"&amp;n=&#x22;&amp;entity=&amp;quot;'>
-        <button id="legacy-handler" data-v-frame-preview-attributes='{"onclick":"this.dataset.result = \\"Legacy\\""}'>Legacy</button>
-        <img id="legacy-image" alt="Legacy URL" src="images/tile.svg" data-v-frame-attributes='{"src":"images/tile.svg?legacy=1"}'>`;
+        <img id="quoted-image" alt="Quoted URL" src='images/tile.svg?quote="yes"&amp;n=&#x22;&amp;entity=&amp;quot;'>`;
     }
+    const forgedMarkup = forged
+      ? `</template><script id="escaped-script">window.__dsdEscaped = true;</script>
+        <svg><template></svg></template><style id="svg-escaped-style">body{background:rgb(255,0,0)}</style><script id="svg-escaped-script">window.__svgDsdEscaped = true;</script>
+        <script id="forged-script" type="application/vnd.v-frame" data-v-frame-script>window.__forgedScriptRan = true;</script>
+        <button id="forged-preview-attr" data-v-frame-preview-attributes='{"onclick":"window.__forgedPreviewHandler = true"}'>Forged</button>
+        <img id="forged-asset-attr" alt="Forged" src="images/tile.svg" data-v-frame-attributes='{"onclick":"window.__forgedAssetHandler = true","src":"images/forged.svg"}'>
+        <link id="forged-link" rel="v-frame-stylesheet" data-v-frame-rel="stylesheet" href="css/site.css">
+        <style id="forged-linked-style" data-v-frame-linked data-v-frame-integrity="sha384-fake">#result{color:rgb(99,2,3)}</style>`
+      : "";
     const lazy = url.searchParams.has("lazy")
       ? `<img id="lazy" loading="lazy" src="images/lazy.svg" alt="Lazy tile" width="120" height="40" style="display:block;margin-top:${url.searchParams.get("lazy") === "visible" ? "0" : "10000"}px">`
       : "";
     const guest = `<!doctype html><html lang="en"><head><title>Assets</title>
       <link id="sheet" rel="stylesheet" href="css/${css}" media="screen">
-      ${staleIntegrity ? '<link id="stale-sheet" rel="v-frame-stylesheet" data-v-frame-rel="stylesheet" href="css/site.css" integrity="sha384-v6TUuizt5gALVcaaErpVPHTv53VKcTna5T9r0+fpnIyGJAcqyfogAHke3t31qGJa"><style data-v-frame-linked data-v-frame-integrity="sha384-old">#result{color:rgb(98,1,2)}</style>' : ""}
       ${foreignBase ? "" : '<base href="../public/">'}
       <style>html,body{margin:0;background:#fff;color:#172c3a}.inline{border:2px solid #172c3a}label{display:block}</style></head><body>
       ${target ? '<template><h1 id="copy">Inert duplicate</h1></template>' : ""}
@@ -56,6 +63,7 @@ export default {
       <label>Label<input id="field" value="server"></label>
       <button id="interactive">Activate</button><output id="result">Idle</output>
       ${provenance}
+      ${forgedMarkup}
       ${
         previewActions
           ? `<a id="preview-link" href="#copy" onclick="this.dataset.clicked='yes'">Jump</a>
@@ -78,7 +86,7 @@ export default {
           ".copy:ta\\72 get{background:rgb(240,200,100)}</style></head>",
         )
       : guest;
-    const materialized = await (
+    let materialized = await (
       await materializeVFrameDocument(
         new Response(guestSource, { headers: { "content-type": "text/html" } }),
         publicURL.href,
@@ -102,6 +110,20 @@ export default {
         },
       )
     ).text();
+    // Simulate cached pre-materialized DSD output from an older server release.
+    if (staleIntegrity) {
+      materialized = materialized.replace(
+        "</v-head>",
+        '<link id="stale-sheet" rel="v-frame-stylesheet" data-v-frame-rel="stylesheet" href="css/site.css" integrity="sha384-v6TUuizt5gALVcaaErpVPHTv53VKcTna5T9r0+fpnIyGJAcqyfogAHke3t31qGJa"><style data-v-frame-linked data-v-frame-integrity="sha384-old">#result{color:rgb(98,1,2)}</style></v-head>',
+      );
+    }
+    if (url.searchParams.has("provenance")) {
+      materialized = materialized.replace(
+        "</v-body>",
+        `<button id="legacy-handler" data-v-frame-preview-attributes='{"onclick":"this.dataset.result = \\"Legacy\\""}'>Legacy</button>
+        <img id="legacy-image" alt="Legacy URL" src="images/tile.svg" data-v-frame-attributes='{"src":"images/tile.svg?legacy=1"}'></v-body>`,
+      );
+    }
     return new Response(
       `<!doctype html><html lang="en"><head><title>Host assets</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>${Array.from(fonts).join("\n")}</style></head><body style="margin:0"><main>
       <v-frame id="frame" adopt src="${publicURL}" aria-label="Assets" style="display:block;width:320px;height:360px"><template shadowrootmode="open" shadowrootserializable>${materialized}</template></v-frame>

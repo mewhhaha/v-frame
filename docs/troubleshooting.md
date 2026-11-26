@@ -23,10 +23,14 @@ scripts that carry `data-v-frame-script` and a parser-time type of
 
 ## The guest script ran in the host page
 
-Same cause, opposite symptom: an ordinary `<script>` in Declarative Shadow DOM
-is not executed by the parser, but one composed anywhere else in the host
-document is. Materialize the guest response; it should keep returning its normal
-executable scripts.
+An ordinary `<script>` inside Declarative Shadow DOM executes in the host
+document during HTML parsing. Always run the guest response through
+`@mewhhaha/v-frame/server` (`composeFrames` or `materializeVFrameDocument`)
+before embedding it in `<template shadowrootmode="open">`: the materializer
+neutralizes guest scripts for the preview, strips forged `data-v-frame-*`
+markers, and prevents stray `</template>` tags from closing the shadow root
+wrapper early. The guest service itself keeps returning ordinary executable
+scripts.
 
 ## Adoption falls back to a network request
 
@@ -62,22 +66,27 @@ and client rendering produce the same application markup. The guest stylesheet
 should keep using normal document selectors — `html`, `body`, `:root` — and both
 the materializer and the browser runtime rewrite them to the shell elements.
 
-If a component's styles are missing entirely and its code calls
-`new CSSStyleSheet()`, see
-[constructed stylesheets](./limitations.md#documentadoptedstylesheets-and-constructed-stylesheets).
+If document-level styles fail when calling `document.adoptedStyleSheets`, see
+[constructed stylesheets](./limitations.md#documentadoptedstylesheets-and-constructed-stylesheets)
+(constructed stylesheets are supported on guest-created shadow roots, not on
+`document`).
 
 ## Relative assets resolve against the wrong application
 
-Pass the public `src` URL — not an internal service URL — to the materializer. It
-uses that URL when rebasing stylesheet resources. The adapter does not rebase
-markup attributes, so use root-relative or absolute asset URLs in the server
-preview.
+Pass the public `src` URL — not an internal service URL — to the materializer.
+The adapter uses that URL (and any guest `<base href>`) to rebase both
+stylesheets and markup asset attributes (`src`, `href`, `srcset`, inline
+`style`) for the server preview, while restoring the authored values at
+activation.
 
 ## Form input, focus, or scroll changes disappear during activation
 
-The live guest is prepared separately and then swapped with the preview. Changes
-a user makes to the inert server preview before activation are not preserved.
-Load the registration bundle early when that interval matters.
+Preview edits, `contenteditable` drafts, focus, text selection, and scroll
+positions are preserved across SSR handoff. If a draft does not transfer, check
+whether the guest framework replaced an unkeyed control during hydration: give
+replaced controls a unique `id` or `name` within their form and shadow scope
+(see [SSR](./ssr.md)). Browser undo history still resets on the live control at
+handoff.
 
 ## The frame is zero pixels tall
 

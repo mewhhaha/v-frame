@@ -28,8 +28,9 @@ export interface DocumentFacadeOptions {
   inlineStyleSheet: HTMLStyleElement;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   createHTML(source: string): string;
+  createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
-  updateTopLayerViewport(x: number, y: number): void;
+  updateTopLayerViewport(x: number | null, y?: number): void;
   getNonce(): string;
   getBaseURL(): string;
   getCurrentURL(): string;
@@ -268,6 +269,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const isInVirtualDocumentTree = (node: Node): boolean =>
     nativeGetRootNode.call(node) === options.shadowRoot;
   const virtualNodes = new WeakSet<Node>();
+  const fragmentNodes = new WeakSet<Node>();
   const createdScripts = new WeakSet<HTMLScriptElement>();
   const protectedScriptAttributes = new WeakMap<
     HTMLScriptElement,
@@ -336,29 +338,78 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   };
 
   const hostWindow = hostDocument.defaultView;
-  let topLayerViewportActivated = false;
+  const openPopovers = new Set<EventTarget>();
+  let activeTopLayerTracking: AbortController | null = null;
+  let hostResizeObserver: ResizeObserver | null = null;
   const refreshTopLayerViewportStyle = (): void => {
-    if (!topLayerViewportActivated) return;
     const origin = viewportOrigin();
     // Promotion changes the CSS viewport to the host page; translate it back
     // to the child viewport while preserving the browser's top-layer clipping escape.
     options.updateTopLayerViewport(origin.x, origin.y);
   };
-  const refreshOpeningTopLayer: EventListener = (event) => {
-    if ((event as Event & { newState?: string }).newState === "open") {
-      topLayerViewportActivated = true;
-      refreshTopLayerViewportStyle();
+  const stopTopLayerTracking = (): void => {
+    activeTopLayerTracking?.abort();
+    activeTopLayerTracking = null;
+    hostResizeObserver?.disconnect();
+    hostResizeObserver = null;
+    options.updateTopLayerViewport(null);
+  };
+  const startTopLayerTracking = (): void => {
+    if (activeTopLayerTracking === null) {
+      activeTopLayerTracking = new AbortController();
+      const { signal } = activeTopLayerTracking;
+      hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle, { signal });
+      hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, {
+        capture: true,
+        signal,
+      });
+      if (typeof hostWindow?.ResizeObserver === "function") {
+        hostResizeObserver = new hostWindow.ResizeObserver(refreshTopLayerViewportStyle);
+        hostResizeObserver.observe(options.host);
+      }
+    }
+    refreshTopLayerViewportStyle();
+  };
+  const pruneOpenPopovers = (): void => {
+    for (const target of openPopovers) {
+      if (
+        !(target instanceof hostWindow!.Element) &&
+        !(target instanceof window.Element)
+      ) {
+        openPopovers.delete(target);
+        continue;
+      }
+      const element = target as Element;
+      if (!element.isConnected || !element.matches(":popover-open")) {
+        openPopovers.delete(target);
+      }
+    }
+    if (openPopovers.size === 0) {
+      stopTopLayerTracking();
+    }
+  };
+  const handleBeforeToggle: EventListener = (event) => {
+    const toggle = event as Event & { newState?: string };
+    if (toggle.newState === "open" && event.target !== null) {
+      openPopovers.add(event.target);
+      startTopLayerTracking();
+      // If a listener canceled beforetoggle, the popover never opens.
+      queueMicrotask(pruneOpenPopovers);
+    }
+  };
+  const handleToggle: EventListener = (event) => {
+    const toggle = event as Event & { newState?: string };
+    if (toggle.newState === "closed" && event.target !== null) {
+      openPopovers.delete(event.target);
+      pruneOpenPopovers();
     }
   };
   const topLayerListenerLifetime = new AbortController();
-  options.html.addEventListener("beforetoggle", refreshOpeningTopLayer, {
+  options.html.addEventListener("beforetoggle", handleBeforeToggle, {
     capture: true,
     signal: topLayerListenerLifetime.signal,
   });
-  hostWindow?.addEventListener("resize", refreshTopLayerViewportStyle, {
-    signal: topLayerListenerLifetime.signal,
-  });
-  hostWindow?.addEventListener("scroll", refreshTopLayerViewportStyle, {
+  options.html.addEventListener("toggle", handleToggle, {
     capture: true,
     signal: topLayerListenerLifetime.signal,
   });
@@ -450,6 +501,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     connectedBaseElementChanged,
     guestShadowRoots: new EnumerableWeakSet<ShadowRoot>(),
     virtualNodes,
+    fragmentNodes,
     createdScripts,
     protectedScriptAttributes,
     eventAttributeValues,
@@ -463,6 +515,8 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     toHostViewportPoint,
     dispose(): void {
       topLayerListenerLifetime.abort();
+      openPopovers.clear();
+      stopTopLayerTracking();
     },
   };
 }

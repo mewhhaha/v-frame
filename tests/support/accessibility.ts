@@ -11,8 +11,10 @@ export async function auditAccessibility(page: Page) {
   await page.evaluate(() => {
     const restore: Array<() => void> = [];
     const visit = (root: Document | ShadowRoot) => {
+      const insideShadow = root !== document;
       for (const element of root.querySelectorAll("*")) {
-        if (root instanceof ShadowRoot) {
+        if (element.hasAttribute("data-v-frame-staged")) continue;
+        if (insideShadow) {
           for (const name of ["getBoundingClientRect", "getClientRects"] as const) {
             const descriptor = Object.getOwnPropertyDescriptor(element, name);
             Object.defineProperty(element, name, {

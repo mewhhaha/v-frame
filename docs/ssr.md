@@ -99,11 +99,20 @@ still carry their original headers.
 For adoption without a second entry request, return a full guest document with
 explicit `<html>`, `<head>`, and `<body>` tags.
 
-A failed slot retains its `src` for a browser load. Other guests can render and
-activate normally. Canceling the request or the returned body cancels pending
-work. A `nonce` on the slot also applies to preview styles and generated font
-styles. Runtimes without a global `HTMLRewriter` can pass its constructor as
-`options.HTMLRewriter`.
+A failed, timed-out, or over-budget slot retains its `src` for a browser load
+and is reported to `options.onSlotError?.({ src, error })`. By default each slot
+times out after `timeoutMs` (10,000 ms), and composition-wide budgets (`maxSlots`
+defaults to 32, `maxTotalFetches` to 256, `maxConcurrency` to 8) alongside
+per-document limits (`maxDocumentBytes`, `maxStylesheetBytes`, `maxStylesheets`,
+`maxImportDepth`) cap shell, guest, and stylesheet work. Pass
+`allowNestedComposition: false` for leaf-only shells that should strip all
+incoming `data-v-frame-*` markers even inside nested `<v-frame adopt>` elements.
+Other guests can render and activate normally. Canceling the request or the
+returned body cancels pending work. A `nonce` on the slot applies to
+materialized preview styles, nested `<v-frame>` slots, and generated font styles
+(which are deduplicated across sibling frames); unmaterialized styles that
+failed rewriting are left without the nonce. Runtimes without a global
+`HTMLRewriter` can pass its constructor as `options.HTMLRewriter`.
 
 Each composing team processes its own response. The composer leaves inert templates
 and frames with an existing declarative shadow root alone. A nested guest can
@@ -259,20 +268,32 @@ argument, `fetchText(url, { signal })`; honour it to stop your own request. An
 aborted materialization reports nothing to `onImportFailure`, since the failures
 are the cancellation itself.
 
-A third argument configures the stylesheet stage. By default, the adapter uses
-the server's `fetch` for the stylesheet URLs specified by the guest markup and
-CSS, including nested imports and redirects. Use a `fetchText` resolver such as
-the one above to limit where the server sends those requests. If your resolver
-supports redirects, check every destination before following it. Supply the
-final **public** URL so nested imports and assets resolve relative to that
-stylesheet. A resolver can return CSS text, `{ text, url }`, or the original
-`{ bytes, url }`. A link with a supported integrity hash requires the original
-bytes, which are verified before any CSS is applied. `onFontFace(css)` receives rewritten, HTML-safe font
-declarations. Put the collected CSS in a host `<style>` before the frame: browsers
-do not consistently register `@font-face` rules inside shadow trees. Use
-application-specific font-family names to avoid conflicts between guests. This
-host step is required for webfont fidelity before JavaScript; it is not necessary
-for system fonts.
+A third argument configures the stylesheet stage and resource budgets
+(`maxDocumentBytes` defaults to 10 MiB, `maxStylesheetBytes` to 2 MiB,
+`maxStylesheets` to 64, `maxImportDepth` to 8, and `maxConcurrency` to 8). By
+default, the adapter's built-in stylesheet fetcher only allows same-origin
+HTTP(S) URLs without embedded credentials and uses `redirect: "manual"`
+(rejecting redirects and non-200 responses). Pass a custom `fetchText` resolver
+such as the one above for cross-origin sheets or internal service routing. If
+your resolver supports redirects, check every destination before following it
+and supply the final **public** URL so nested imports and assets resolve
+relative to that stylesheet. Stylesheets inside inert `<template>` elements are
+not fetched on the server. All SSR wire-format attributes (`data-v-frame-*`) are
+server-owned: by default `materializeVFrameDocument` strips every guest-authored
+copy across the document (pass `preserveNestedFrames: true` only when composing
+output from an inner trusted composer that emits same-origin
+`<v-frame adopt src="...">` declarative shadow roots), and stray `</template>`
+tags (including across SVG/MathML foreign-content transitions) are balanced so
+guest HTML cannot break out of the enclosing Declarative Shadow DOM wrapper. A resolver can return CSS text, `{ text, url }`,
+or the original `{ bytes, url }`. A link with a supported integrity hash
+requires the original bytes, which are verified before any CSS is applied.
+`onFontFace(css)` receives rewritten, HTML-safe font declarations (with
+non-font `@layer` statements stripped so guest layers cannot reorder host
+cascade layers). Put the collected CSS in a host `<style>` before the frame:
+browsers do not consistently register `@font-face` rules inside shadow trees.
+Use application-specific font-family names to avoid conflicts between guests.
+This host step is required for webfont fidelity before JavaScript; it is not
+necessary for system fonts.
 
 `onImportFailure` observes every stylesheet the preview could not materialize,
 and recovery is the same for each: a failed `@import` is dropped from its sheet;
@@ -313,16 +334,17 @@ restore.
 The remaining export list, which [the API reference](./api.md#server-entry) defers
 to, is:
 
-| Export                                                                                                                                                                                                                                                                                                                                                                                                                            | Kind      | Purpose                                                                                                                                                    |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `materializeVFrameDocument(response, documentURL, options?)`                                                                                                                                                                                                                                                                                                                                                                      | adapter   | The `HTMLRewriter` transform above. Adds `HTMLRewriter` and `requireDocument` to the stylesheet options.                                                   |
-| `isVFrameDocumentResponse(response)`                                                                                                                                                                                                                                                                                                                                                                                              | predicate | Checks whether the adapter can transform the response. Use the adapter's `requireDocument` option when the output is going directly into an HTML response. |
-| `fragmentIdentifiers(documentURL)`, `fragmentTargetRank(element, identifiers)`                                                                                                                                                                                                                                                                                                                                                    | fragment  | Select the initial `:target` element for a custom materializer.                                                                                            |
-| `FRAGMENT_TARGET_ATTRIBUTE`                                                                                                                                                                                                                                                                                                                                                                                                       | constant  | The reserved marker set on that element.                                                                                                                   |
-| `escapeStylesheetText(source)`                                                                                                                                                                                                                                                                                                                                                                                                    | core      | The `</style` escape on its own.                                                                                                                           |
-| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SSR_LINK_REL`, `SSR_LINK_STYLE`, `SSR_LINK_SOURCE`, `SSR_LINK_INTEGRITY`, `SSR_PREVIEW_ATTRIBUTES`, `SSR_STYLE`, `NEUTRALIZED_STYLESHEET_REL`, `SHELL_DISPLAY_STYLE`                                                                                                                                                                                    | constants | The wire format between materializer and runtime.                                                                                                          |
-| `createStylesheetContext(fetchText, onImportFailure?, signal?)`, `rewriteStylesheet(source, url, ctx)`                                                                                                                                                                                                                                                                                                                            | CSS       | The pure stylesheet rewriter the browser runtime also uses.                                                                                                |
-| Types: `ComposeFramesOptions`, `HTMLRewriterConstructor`, `MaterializeDocumentOptions`, `MaterializeStylesheetOptions`, `AttributeAssignment`, `AssetElementAttributes`, `ScriptElementAttributes`, `ScriptElementRewrite`, `ShellElementRewrite`, `FragmentElement`, `StylesheetContext`, `StylesheetFetch`, `ServerStylesheetFetch`, `StylesheetBytes`, `StylesheetFetchOptions`, `StylesheetImportFailure`, `StylesheetSource` | types     | Shapes of the above.                                                                                                                                       |
+| Export                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Kind      | Purpose                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `materializeVFrameDocument(response, documentURL, options?)`                                                                                                                                                                                                                                                                                                                                                                                                                             | adapter   | The `HTMLRewriter` transform above. Adds `HTMLRewriter` and `requireDocument` to the stylesheet options.                                                   |
+| `isVFrameDocumentResponse(response)`                                                                                                                                                                                                                                                                                                                                                                                                                                                     | predicate | Checks whether the adapter can transform the response. Use the adapter's `requireDocument` option when the output is going directly into an HTML response. |
+| `fragmentIdentifiers(documentURL)`, `fragmentTargetRank(element, identifiers)`                                                                                                                                                                                                                                                                                                                                                                                                           | fragment  | Select the initial `:target` element for a custom materializer.                                                                                            |
+| `FRAGMENT_TARGET_ATTRIBUTE`                                                                                                                                                                                                                                                                                                                                                                                                                                                              | constant  | The reserved marker set on that element.                                                                                                                   |
+| `balanceTemplateTags(html)`                                                                                                                                                                                                                                                                                                                                                                                                                                                              | core      | Balances `<template>`, comments, raw-text elements, and `<plaintext>` so guest HTML cannot close or swallow a DSD wrapper.                                 |
+| `escapeStylesheetText(source)`                                                                                                                                                                                                                                                                                                                                                                                                                                                           | core      | The `</style` escape on its own.                                                                                                                           |
+| `INERT_SCRIPT_TYPE`, `SCRIPT_MARKER_ATTRIBUTE`, `SCRIPT_TYPE_ATTRIBUTE`, `SSR_LINK_REL`, `SSR_LINK_STYLE`, `SSR_LINK_SOURCE`, `SSR_LINK_INTEGRITY`, `SSR_PREVIEW_ATTRIBUTES`, `SSR_STYLE`, `NEUTRALIZED_STYLESHEET_REL`, `SHELL_DISPLAY_STYLE`                                                                                                                                                                                                                                           | constants | The wire format between materializer and runtime.                                                                                                          |
+| `createStylesheetContext(fetchText, onImportFailure?, signal?, maxImportDepth?)`, `rewriteStylesheet(source, url, ctx)`                                                                                                                                                                                                                                                                                                                                                                  | CSS       | The pure stylesheet rewriter the browser runtime also uses.                                                                                                |
+| Types: `ComposeFramesOptions`, `ComposeSlotFailure`, `HTMLRewriterConstructor`, `MaterializeDocumentOptions`, `MaterializeStylesheetOptions`, `RewriteAssetAttributesOptions`, `AttributeAssignment`, `AssetElementAttributes`, `ScriptElementAttributes`, `ScriptElementRewrite`, `ShellElementRewrite`, `FragmentElement`, `StylesheetContext`, `StylesheetFetch`, `ServerStylesheetFetch`, `StylesheetBytes`, `StylesheetFetchOptions`, `StylesheetImportFailure`, `StylesheetSource` | types     | Shapes of the above.                                                                                                                                       |
 
 The preview and asset helpers put a JSON array of authored attribute names in
 `data-v-frame-preview-attributes` or `data-v-frame-attributes`. Numbered

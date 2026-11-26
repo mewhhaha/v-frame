@@ -286,3 +286,58 @@ test("marks materialized styles, strips forged markers, and disables alternate p
     'media="not all"',
   );
 });
+
+test("blocks DSD template breakout, strips forged markers, skips template stylesheets, and decodes entities", async () => {
+  const { body, nestedBody, templateFetches, templateFonts } = await run<{
+    body: string;
+    nestedBody: string;
+    templateFetches: string[];
+    templateFonts: string[];
+  }>("securityHardening");
+  // Inert template styles and links never trigger server fetches or host font extraction.
+  expect(templateFetches).toEqual(["https://guest.test/apps/orders/titled.css"]);
+  expect(templateFonts).toEqual([]);
+  // Entity-encoded attributes are decoded once (no double-escaping in preview style title, and &#x2f; resolves to root).
+  expect(body).toContain('title="A &amp; B"');
+  expect(body).not.toContain("A &amp;amp; B");
+  expect(body).toContain('src="https://guest.test/admin?x=1&amp;y=2"');
+  // Stray </template> (both direct and via SVG) was dropped, forged outer script got recorded as inert application/vnd.v-frame.
+  expect(body).not.toContain('</template><script id="escaped"');
+  expect(body).not.toContain("</svg></template>");
+  expect(body).toMatch(
+    /<script id="forged"[^>]*data-v-frame-type="application\/vnd\.v-frame"/,
+  );
+  // By default (preserveNestedFrames: false), even nested <v-frame adopt> markers are stripped.
+  expect(body).toMatch(
+    /<script id="nested-ok"[^>]*data-v-frame-type="application\/vnd\.v-frame"/,
+  );
+  // With preserveNestedFrames: true, same-origin nested adopting frames preserve their materialized script while neutralizing live scripts.
+  expect(nestedBody).toMatch(
+    /<script id="nested-ok"[^>]*data-v-frame-script[^>]*data-v-frame-type="module"/,
+  );
+  expect(nestedBody).toMatch(
+    /<script id="nested-live"[^>]*type="application\/vnd\.v-frame"[^>]*data-v-frame-script/,
+  );
+});
+
+test("composeFrames deduplicates fonts, applies composition-wide slot/concurrency budgets and per-slot timeouts, and reports slot errors", async () => {
+  const { markup, slotErrors, maxInFlight } = await run<{
+    markup: string;
+    slotErrors: Array<{ src: string; name: string }>;
+    maxInFlight: number;
+  }>("composeHardening");
+  expect(markup).toContain("<p>One</p>");
+  expect(markup).toContain("<p>Two</p>");
+  expect(maxInFlight).toBeLessThanOrEqual(2);
+  // Identical @font-face rules across sibling frames are emitted once.
+  expect(markup.match(/data-v-frame-fonts/g)).toHaveLength(1);
+  // Slow, oversized, and over-budget slots fall back to client loading and report their errors.
+  expect(markup).toContain('<v-frame id="slow" src="/apps/slow"></v-frame>');
+  expect(markup).toContain('<v-frame id="huge" src="/apps/huge"></v-frame>');
+  expect(markup).toContain('<v-frame id="overflow" src="/apps/overflow"></v-frame>');
+  expect(slotErrors.sort((a, b) => a.src.localeCompare(b.src))).toEqual([
+    { src: "/apps/huge", name: "RangeError" },
+    { src: "/apps/overflow", name: "RangeError" },
+    { src: "/apps/slow", name: "TimeoutError" },
+  ]);
+});

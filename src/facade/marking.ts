@@ -53,6 +53,7 @@ export function installNodeMarking(
     isInVirtualDocumentTree,
     virtualGetRootNode,
     virtualNodes,
+    fragmentNodes,
     createdScripts,
     protectedScriptAttributes,
     eventAttributeValues,
@@ -210,7 +211,12 @@ export function installNodeMarking(
           }
           attributes.set(attributeName, attribute.value);
           nativeRemoveAttribute.call(node, attribute.name);
-          compileEventAttribute(node, attributeName, attribute.value);
+          compileEventAttribute(
+            node,
+            attributeName,
+            attribute.value,
+            !fragmentNodes.has(node),
+          );
         }
         markURLProperties(node);
         markSVGURLProperty(node);
