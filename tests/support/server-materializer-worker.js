@@ -575,6 +575,83 @@ const cases = {
     });
     return { markup: await composed.text(), slotErrors, maxInFlight };
   },
+  async securityAuditHardening() {
+    // M1 (--!>), M4 (iframe/object/embed preview deferral), Hardening #3 (data-v-frame-* prefix & credentialed nested v-frame)
+    const guestDoc = `<!doctype html><html><body>
+      <!-- bang comment --!></template><script id="after-bang">1</script>
+      <div id="forged-prefix" data-v-frame-custom="evil" data-keep="ok"></div>
+      <iframe id="guest-iframe" src="https://guest.test/embed" srcdoc="<p>hi</p>"></iframe>
+      <object id="guest-obj" data="/plugin.swf"></object>
+      <embed id="guest-embed" src="/media.bin">
+      <v-frame id="cred-nested" adopt src="https://user:pass@guest.test/child"><template shadowrootmode="open"><v-html><v-head></v-head><v-body><script id="cred-script" type="application/vnd.v-frame" data-v-frame-script>2</script></v-body></v-html></template></v-frame>
+    </body></html>`;
+    const materialized = await (
+      await materializeVFrameDocument(html(guestDoc), guestURL, {
+        preserveNestedFrames: true,
+      })
+    ).text();
+
+    // L1 (preserve adopt="interaction" / adopt="visible"), M7 (non-cooperative upstream timeout),
+    // Hardening #2 (font CSS byte cap), Hardening #3 (allowNestedComposition predicate)
+    const slotErrors = [];
+    const shell = html(`<!doctype html><html><body>
+      <v-frame id="deferred" adopt="interaction" src="/apps/fast"></v-frame>
+      <v-frame id="visible" adopt="visible" src="/apps/nested-host"></v-frame>
+      <v-frame id="eager" src="/apps/nested-denied"></v-frame>
+      <v-frame id="hang-fetch" src="/apps/hang-fetch"></v-frame>
+      <v-frame id="hang-body" src="/apps/hang-body"></v-frame>
+    </body></html>`);
+    const startedAt = Date.now();
+    const composed = await composeFrames(shell, {
+      request: new Request("https://host.test/"),
+      timeoutMs: 60,
+      maxStylesheetBytes: 120,
+      allowNestedComposition: ({ url }) => url.pathname === "/apps/nested-host",
+      onSlotError(failure) {
+        slotErrors.push({
+          src: failure.src,
+          name: failure.error?.name ?? String(failure.error),
+        });
+      },
+      async fetchGuest(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/apps/fast") {
+          return html(
+            "<html><head><style>@font-face{font-family:F1;src:url(/f1.woff2)}</style></head><body><p>Fast</p></body></html>",
+          );
+        }
+        if (path === "/apps/nested-host") {
+          return html(
+            '<html><head><style>@font-face{font-family:F2;src:url(/very-long-font-name-that-exceeds-budget-12345678901234567890.woff2)}</style></head><body><v-frame adopt src="/apps/child"><template shadowrootmode="open"><v-html><v-head></v-head><v-body><script id="allowed-nested" type="application/vnd.v-frame" data-v-frame-script>3</script></v-body></v-html></template></v-frame></body></html>',
+          );
+        }
+        if (path === "/apps/nested-denied") {
+          return html(
+            '<html><body><v-frame adopt src="/apps/child"><template shadowrootmode="open"><v-html><v-head></v-head><v-body><script id="denied-nested" type="application/vnd.v-frame" data-v-frame-script>4</script></v-body></v-html></template></v-frame></body></html>',
+          );
+        }
+        if (path === "/apps/hang-fetch") {
+          // Intentionally ignores request.signal!
+          return await new Promise(() => {});
+        }
+        if (path === "/apps/hang-body") {
+          // Intentionally returns a stream that ignores signal and never closes!
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("<html><body>partial"));
+              },
+            }),
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    });
+    const markup = await composed.text();
+    const elapsedMs = Date.now() - startedAt;
+    return { materialized, markup, slotErrors, elapsedMs };
+  },
 };
 
 // A host page that embeds the materialized output the way a server would, for

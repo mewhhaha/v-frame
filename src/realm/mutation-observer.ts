@@ -413,6 +413,7 @@ export function observeRealmMutations(
     attributeFilter: [
       "action",
       "cite",
+      "crossorigin",
       "data",
       FRAGMENT_TARGET_ATTRIBUTE,
       "disabled",
@@ -421,6 +422,7 @@ export function observeRealmMutations(
       "integrity",
       "media",
       "poster",
+      "referrerpolicy",
       "rel",
       "src",
       "srcset",

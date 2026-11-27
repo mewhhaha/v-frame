@@ -1,6 +1,7 @@
 import {
   createStylesheetContext,
   fetchStylesheet,
+  normalizeCrossOrigin,
   rewriteStyleAttribute,
   rewriteStylesheet,
   type StylesheetContext,
@@ -780,6 +781,13 @@ async function prepareInlineStyle(
   }
 }
 
+interface VerifiedSSRLinkedStyle {
+  style: HTMLStyleElement;
+  href: string;
+  integrity: string;
+  sourceURL: string;
+}
+
 async function prepareLinkedStyle(
   link: HTMLLinkElement,
   nonce: string,
@@ -787,20 +795,25 @@ async function prepareLinkedStyle(
   document: Document,
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>,
   onError: PrepareMarkupOptions["onError"],
+  verifiedSSRLink?: VerifiedSSRLinkedStyle,
 ): Promise<void> {
   const href = link.href;
   const integrity = link.integrity.trim();
+  const crossOrigin = normalizeCrossOrigin(link.getAttribute("crossorigin"));
+  const referrerPolicy = link.referrerPolicy as ReferrerPolicy | "";
   // An alternate sheet is not applied until the guest selects it.
   const disabled = link.disabled || link.relList.contains("alternate");
 
   try {
-    const materialized = link.nextElementSibling;
     if (
-      materialized?.localName === "style" &&
-      materialized.hasAttribute(SSR_LINK_STYLE)
+      verifiedSSRLink !== undefined &&
+      link.nextElementSibling === verifiedSSRLink.style
     ) {
-      const style = materialized as HTMLStyleElement;
-      if (integrity === "" || style.getAttribute(SSR_LINK_INTEGRITY) === integrity) {
+      const style = verifiedSSRLink.style;
+      if (
+        verifiedSSRLink.href === href &&
+        (integrity === "" || verifiedSSRLink.integrity === integrity)
+      ) {
         style.removeAttribute(SSR_LINK_STYLE);
         style.removeAttribute(SSR_LINK_INTEGRITY);
         style.media = link.media;
@@ -811,16 +824,18 @@ async function prepareLinkedStyle(
           style,
           href,
           integrity,
-          url: style.dataset.vFrameSource ?? href,
+          url: verifiedSSRLink.sourceURL,
           disabled,
+          crossOrigin,
+          referrerPolicy,
         });
         return;
       }
       style.remove();
     }
     const source = await fetchStylesheet(href, context, integrity, {
-      crossOrigin: link.getAttribute("crossorigin"),
-      referrerPolicy: link.referrerPolicy as ReferrerPolicy | "",
+      crossOrigin,
+      referrerPolicy,
     });
     const rewritten = await rewriteStylesheet(source.text, source.url, context);
     const style = createGeneratedStyle(document, rewritten, nonce, source.url);
@@ -829,7 +844,15 @@ async function prepareLinkedStyle(
     if (link.hasAttribute("title")) {
       style.title = link.title;
     }
-    linkedStyles.set(link, { style, href, integrity, url: source.url, disabled });
+    linkedStyles.set(link, {
+      style,
+      href,
+      integrity,
+      url: source.url,
+      disabled,
+      crossOrigin,
+      referrerPolicy,
+    });
     link.after(style);
   } catch (error) {
     onError({ phase: "stylesheet", url: href, error });
@@ -867,6 +890,7 @@ interface MarkupParts {
   rewriteInlineStyles: boolean;
   hasPhysicalStyleAttributes: boolean;
   hasRestoredStyles?: boolean;
+  verifiedSSRLinks?: Map<HTMLLinkElement, VerifiedSSRLinkedStyle>;
 }
 
 /** What parsed and adopted markup share once their tree and authored values exist. */
@@ -922,10 +946,12 @@ async function finishMarkup(
     // page until rewritten here. A linked preview is prepared with its link.
     const materialized = style.hasAttribute(SSR_STYLE);
     style.removeAttribute(SSR_STYLE);
-    if (
-      !parts.rewriteInlineStyles &&
-      (materialized || style.hasAttribute(SSR_LINK_STYLE))
-    ) {
+    const ssrLinked = style.hasAttribute(SSR_LINK_STYLE);
+    if (parts.rewriteInlineStyles && ssrLinked) {
+      style.removeAttribute(SSR_LINK_STYLE);
+      style.removeAttribute(SSR_LINK_INTEGRITY);
+    }
+    if (!parts.rewriteInlineStyles && (materialized || ssrLinked)) {
       continue;
     }
     stylesheetJobs.push(
@@ -962,6 +988,7 @@ async function finishMarkup(
         options.document,
         linkedStyles,
         options.onError,
+        parts.verifiedSSRLinks?.get(link),
       ),
     );
   }
@@ -1116,7 +1143,21 @@ function canRestoreAuthoredAttribute(
 ): boolean {
   const lower = name.toLowerCase();
   if (marker === SSR_PREVIEW_ATTRIBUTES) {
-    return lower.startsWith("on") || PREVIEW_RESTORE_NAMES.has(lower);
+    if (lower.startsWith("on") || PREVIEW_RESTORE_NAMES.has(lower)) {
+      return true;
+    }
+    if (element.namespaceURI === HTML_NAMESPACE) {
+      if (element.localName === "iframe") {
+        return lower === "src" || lower === "srcdoc";
+      }
+      if (element.localName === "object") {
+        return lower === "data";
+      }
+      if (element.localName === "embed") {
+        return lower === "src";
+      }
+    }
+    return false;
   }
   const prefixed = lower.startsWith("xlink:");
   const local = prefixed ? lower.slice(6) : lower;
@@ -1319,6 +1360,29 @@ export async function prepareAdoptedMarkup(
       }
     }
   }
+  const verifiedSSRLinks = new Map<HTMLLinkElement, VerifiedSSRLinkedStyle>();
+  if (lowerSource.includes(SSR_LINK_STYLE)) {
+    for (const link of html.querySelectorAll<HTMLLinkElement>("link[href]")) {
+      if (link.namespaceURI !== HTML_NAMESPACE) continue;
+      const sibling = link.nextElementSibling;
+      if (
+        sibling?.localName === "style" &&
+        sibling.namespaceURI === HTML_NAMESPACE &&
+        sibling.hasAttribute(SSR_LINK_STYLE)
+      ) {
+        const style = sibling as HTMLStyleElement;
+        const resolvedHref = URL.parse(link.getAttribute("href") ?? "", baseURL)?.href;
+        if (resolvedHref !== undefined) {
+          verifiedSSRLinks.set(link, {
+            style,
+            href: resolvedHref,
+            integrity: (style.getAttribute(SSR_LINK_INTEGRITY) ?? "").trim(),
+            sourceURL: style.dataset.vFrameSource ?? resolvedHref,
+          });
+        }
+      }
+    }
+  }
   return finishMarkup(options, {
     html,
     head,
@@ -1331,5 +1395,6 @@ export async function prepareAdoptedMarkup(
     // those it could not materialize are rewritten like a fetched document's.
     rewriteInlineStyles: false,
     hasPhysicalStyleAttributes: true,
+    verifiedSSRLinks,
   });
 }

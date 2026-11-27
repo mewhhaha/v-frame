@@ -66,6 +66,9 @@ export function installMarkupFacade(
   const markFragmentElements = (root: DocumentFragment): void => {
     for (const element of nativeFragmentQuerySelectorAll.call(root, "*")) {
       fragmentNodes.add(element);
+      if (element.shadowRoot !== null) {
+        markFragmentElements(element.shadowRoot);
+      }
       if (isHTMLTemplateElement(element)) {
         markFragmentElements(element.content);
       }
@@ -191,6 +194,9 @@ export function installMarkupFacade(
           }
           if (readFirstChild(element) !== null) {
             scanFragment(element, inTemplate);
+          }
+          if (element.shadowRoot !== null) {
+            scanFragment(element.shadowRoot, inTemplate);
           }
           if (readLocalName(element) === "template" && isHTMLTemplateElement(element)) {
             scanFragment(element.content, true);
@@ -611,6 +617,30 @@ export function installMarkupFacade(
           const markup = options.createGuestHTML(html, false);
           nativeShadowSetHTMLUnsafe.call(this, markup);
           if (virtualNodes.has(this)) {
+            markFragmentElements(this);
+            for (let child = this.firstChild; child !== null; child = child.nextSibling) {
+              markVirtualNode(child);
+            }
+          }
+        },
+      });
+    }
+    const nativeShadowInnerHTML =
+      shadowRootPrototype !== undefined
+        ? Object.getOwnPropertyDescriptor(shadowRootPrototype, "innerHTML")
+        : undefined;
+    if (
+      shadowRootPrototype !== undefined &&
+      nativeShadowInnerHTML?.get !== undefined &&
+      nativeShadowInnerHTML.set !== undefined
+    ) {
+      patch(shadowRootPrototype, "innerHTML", {
+        get: nativeShadowInnerHTML.get,
+        set(this: ShadowRoot, value: string | null) {
+          const markup = options.createGuestHTML(value, true);
+          nativeShadowInnerHTML.set!.call(this, markup);
+          if (virtualNodes.has(this)) {
+            markFragmentElements(this);
             for (let child = this.firstChild; child !== null; child = child.nextSibling) {
               markVirtualNode(child);
             }

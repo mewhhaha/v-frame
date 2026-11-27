@@ -5,15 +5,20 @@ import {
   createDefaultStylesheetFetch,
   escapeStylesheetText,
   materializeStylesheet,
+  raceWithAbort,
+  readBoundedBytes,
   rewriteAssetAttributes,
+  rewritePreviewAttributes,
   rewriteScriptElement,
   rewriteShellElement,
   SHELL_DISPLAY_STYLE,
 } from "../../src/server/core.js";
 import {
   INERT_SCRIPT_TYPE,
+  isReservedSSRAttribute,
   SCRIPT_MARKER_ATTRIBUTE,
   SCRIPT_TYPE_ATTRIBUTE,
+  SSR_PREVIEW_ATTRIBUTES,
 } from "../../src/wire-format.js";
 
 const DOCUMENT = "https://guest.test/orders/";
@@ -242,4 +247,119 @@ test("rewriteAssetAttributes decodes entities before rebasing and tolerates malf
     assignments.find((entry) => entry.name === "data-v-frame-attributes-0"),
     { name: "data-v-frame-attributes-0", value: "&#x2f;admin?a=1&amp;b=2" },
   );
+});
+
+test("balanceTemplateTags handles HTML5 comment-end-bang (--!>) without prematurely closing <!--!>", () => {
+  // M1: --!> closes an HTML comment per HTML5 comment-end-bang-state, so a
+  // following </template> is real markup and must be neutralized.
+  assert.equal(
+    balanceTemplateTags("<!-- comment --!></template><script>1</script>"),
+    "<!-- comment --!><script>1</script>",
+  );
+  assert.equal(balanceTemplateTags("<!----!></template>ok"), "<!----!>ok");
+  // <!--!> and <!---!> are NOT abrupt comment closings in HTML5, so </template>
+  // inside them remains comment text and must not be stripped.
+  assert.equal(balanceTemplateTags("<!--!></template>-->ok"), "<!--!></template>-->ok");
+  assert.equal(balanceTemplateTags("<!---!></template>-->ok"), "<!---!></template>-->ok");
+});
+
+test("rewritePreviewAttributes defers iframe, object, and embed active resource attributes", () => {
+  const makeElement = (
+    tagName: string,
+    attrs: [string, string][],
+    namespaceURI = "http://www.w3.org/1999/xhtml",
+  ) => ({
+    tagName,
+    namespaceURI,
+    attributes: attrs,
+    getAttribute: (name: string) => attrs.find(([k]) => k === name)?.[1] ?? null,
+    hasAttribute: (name: string) => attrs.some(([k]) => k === name),
+  });
+
+  const iframe = rewritePreviewAttributes(
+    makeElement("iframe", [
+      ["src", "https://guest.test/embed"],
+      ["srcdoc", "<script>1</script>"],
+      ["title", "Demo"],
+    ]),
+  );
+  assert.deepEqual(iframe.removeAttributes, ["src", "srcdoc"]);
+  assert.equal(
+    iframe.setAttributes.find((a) => a.name === SSR_PREVIEW_ATTRIBUTES)?.value,
+    '["src","srcdoc"]',
+  );
+
+  const objectEl = rewritePreviewAttributes(
+    makeElement("object", [["data", "/plugin.swf"]]),
+  );
+  assert.deepEqual(objectEl.removeAttributes, ["data"]);
+  assert.equal(
+    objectEl.setAttributes.find((a) => a.name === SSR_PREVIEW_ATTRIBUTES)?.value,
+    '["data"]',
+  );
+
+  const embedEl = rewritePreviewAttributes(makeElement("embed", [["src", "/media.bin"]]));
+  assert.deepEqual(embedEl.removeAttributes, ["src"]);
+  assert.equal(
+    embedEl.setAttributes.find((a) => a.name === SSR_PREVIEW_ATTRIBUTES)?.value,
+    '["src"]',
+  );
+
+  // Non-HTML elements are not treated as HTML embedded frames/objects.
+  const svgEmbed = rewritePreviewAttributes(
+    makeElement("embed", [["src", "/media.bin"]], "http://www.w3.org/2000/svg"),
+  );
+  assert.deepEqual(svgEmbed.removeAttributes, []);
+});
+
+test("createDefaultStylesheetFetch fails closed on unparsable, non-HTTP, or credentialed documentURL", async () => {
+  for (const invalidDoc of [
+    "not a url",
+    "file:///etc/passwd",
+    "https://user:pass@guest.test/orders/",
+    "javascript:alert(1)",
+  ]) {
+    const fetcher = createDefaultStylesheetFetch(invalidDoc);
+    await assert.rejects(() => fetcher("https://guest.test/a.css"), TypeError);
+  }
+});
+
+test("raceWithAbort and readBoundedBytes reject promptly on abort even for non-cooperative upstreams", async () => {
+  const controller = new AbortController();
+  const never = new Promise<string>(() => {});
+  const raced = raceWithAbort(never, controller.signal);
+  const reason = new DOMException("timed out", "TimeoutError");
+  controller.abort(reason);
+  await assert.rejects(
+    () => raced,
+    (err) => err === reason,
+  );
+
+  let cancelled = false;
+  const streamController = new AbortController();
+  const stuckBody = new ReadableStream<Uint8Array>({
+    pull() {
+      return new Promise(() => {});
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const response = new Response(stuckBody);
+  const reading = readBoundedBytes(response, 1024, "test", streamController.signal);
+  const streamReason = new DOMException("slot timeout", "TimeoutError");
+  streamController.abort(streamReason);
+  await assert.rejects(
+    () => reading,
+    (err) => err === streamReason,
+  );
+  assert.equal(cancelled, true);
+});
+
+test("isReservedSSRAttribute matches the full data-v-frame-* namespace case-insensitively", () => {
+  assert.equal(isReservedSSRAttribute("data-v-frame-script"), true);
+  assert.equal(isReservedSSRAttribute("DATA-V-FRAME-CUSTOM"), true);
+  assert.equal(isReservedSSRAttribute("data-v-frame-future-marker"), true);
+  assert.equal(isReservedSSRAttribute("data-v-frame"), false);
+  assert.equal(isReservedSSRAttribute("data-other"), false);
 });

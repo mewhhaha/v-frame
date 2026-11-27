@@ -4,6 +4,8 @@ import {
   createStylesheetContext,
   CSSOMImportRuleError,
   extractFontFaces,
+  fetchStylesheet,
+  normalizeCrossOrigin,
   rewriteCSSOMAddRule,
   rewriteCSSOMInsertRule,
   rewriteCSSOMSelectorText,
@@ -600,4 +602,88 @@ test("rewriteStylesheet caches import-free stylesheets per base URL without cach
   assert.equal(firstImport, 'v-body{content:"v1"}');
   assert.equal(secondImport, 'v-body{content:"v2"}');
   assert.equal(escapedImport, 'v-body{content:"v3"}');
+});
+
+test("normalizeCrossOrigin and fetchStylesheet partition cache keys by normalized CORS and referrer policy", async () => {
+  assert.equal(normalizeCrossOrigin(null), null);
+  assert.equal(normalizeCrossOrigin(undefined), null);
+  assert.equal(normalizeCrossOrigin(""), "anonymous");
+  assert.equal(normalizeCrossOrigin("anonymous"), "anonymous");
+  assert.equal(normalizeCrossOrigin("invalid-value"), "anonymous");
+  assert.equal(normalizeCrossOrigin("USE-CREDENTIALS"), "use-credentials");
+
+  const calls: Array<{
+    url: string;
+    crossOrigin: string | null | undefined;
+    referrerPolicy: string | undefined;
+  }> = [];
+  const context = createStylesheetContext(async (url, options) => {
+    calls.push({
+      url,
+      crossOrigin: options?.crossOrigin,
+      referrerPolicy: options?.referrerPolicy,
+    });
+    return `/* ${calls.length} */`;
+  });
+
+  // No crossorigin vs anonymous vs use-credentials vs referrerPolicy get separate cache entries,
+  // while empty string and invalid crossorigin share the normalized "anonymous" entry.
+  await fetchStylesheet(MAIN, context, "", { crossOrigin: null, referrerPolicy: "" });
+  await fetchStylesheet(MAIN, context, "", { crossOrigin: "", referrerPolicy: "" });
+  await fetchStylesheet(MAIN, context, "", {
+    crossOrigin: "anonymous",
+    referrerPolicy: "",
+  });
+  await fetchStylesheet(MAIN, context, "", { crossOrigin: "bogus", referrerPolicy: "" });
+  await fetchStylesheet(MAIN, context, "", {
+    crossOrigin: "use-credentials",
+    referrerPolicy: "",
+  });
+  await fetchStylesheet(MAIN, context, "", {
+    crossOrigin: "anonymous",
+    referrerPolicy: "no-referrer",
+  });
+  assert.equal(calls.length, 4);
+});
+
+test("rewriteStylesheet enforces maxImportExpansions and maxExpandedBytes against diamond @import amplification", async () => {
+  const diamond: Record<string, string> = {
+    "https://host.test/app/d1.css": '@import "d2.css";@import "d2.css";',
+    "https://host.test/app/d2.css": '@import "d3.css";@import "d3.css";',
+    "https://host.test/app/d3.css": '@import "leaf.css";@import "leaf.css";',
+    "https://host.test/app/leaf.css": `.x{content:"${"a".repeat(50)}"}`,
+  };
+  const expansionFailures: StylesheetImportFailure[] = [];
+  const countLimited = createStylesheetContext(
+    async (url) => diamond[url] ?? "",
+    (failure) => expansionFailures.push(failure),
+  );
+  countLimited.maxImportExpansions = 4;
+  await rewriteStylesheet('@import "d1.css";', MAIN, countLimited);
+  assert.ok(expansionFailures.length > 0);
+  assert.ok(expansionFailures.every((f) => f.error instanceof RangeError));
+
+  const byteFailures: StylesheetImportFailure[] = [];
+  const byteLimited = createStylesheetContext(
+    async (url) => diamond[url] ?? "",
+    (failure) => byteFailures.push(failure),
+  );
+  byteLimited.maxExpandedBytes = 200;
+  // Oversized nested @import is dropped and reported as RangeError while keeping output bounded.
+  const boundedOutput = await rewriteStylesheet(
+    '@import "d1.css"; p { color: green }',
+    MAIN,
+    byteLimited,
+  );
+  assert.equal(boundedOutput, "p{color:green}");
+  assert.ok(byteFailures.length > 0);
+  assert.ok(byteFailures.every((f) => f.error instanceof RangeError));
+
+  // Combined root output exceeding maxExpandedBytes rejects directly with RangeError.
+  const rootLimited = createStylesheetContext(async (url) => diamond[url] ?? "");
+  rootLimited.maxExpandedBytes = 100;
+  await assert.rejects(
+    () => rewriteStylesheet('@import "leaf.css"; @import "leaf.css";', MAIN, rootLimited),
+    RangeError,
+  );
 });

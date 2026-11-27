@@ -109,7 +109,10 @@ close when the user interacts with the host or another frame without exposing
 foreign nodes as guest targets. Canceling or stopping these notifications does
 not cancel or stop the host's original event. Notifications do not cross the
 physical shadow boundary. Guest-origin events retain their ordinary logical
-path and remain confined to their frame.
+path and stop bubbling at the shadow root; note that host **capture** listeners
+on ancestors still observe composed browser events on the way down before the
+shadow root is reached, so shell-wide capture listeners that should ignore guest
+interactions must filter events whose target/path enters a `<v-frame>`.
 
 ## Configuration
 
@@ -132,6 +135,7 @@ forcing one.
 | `lazy-events`          | `lazyEvents`         | `false`          | Opt-in: eagerly patches only `Event` plus 24 core DOM/UI event interfaces and forwards exotic native Event subclasses lazily on first delivery.         |
 | `preload-scripts`      | `preloadScripts`     | `false`          | Opt-in: preloads blocking classic scripts concurrently (boolean `""`/`"auto"`), or space-separated URLs / `string[]` to emit early host preloads.       |
 | `content-visibility`   | `contentVisibility`  | `""`             | Opt-in: injects a zero-specificity `content-visibility: auto` rule for `"auto"` or a custom CSS selector; updates live without reloading.               |
+| `form-action`          | `formActionPolicy`   | none             | Optional host policy restricting virtual form submission targets (`'self'`, `'none'`, schemes/origins, or a JS predicate).                              |
 
 Attributes and properties treat invalid values differently, on purpose. An
 attribute follows the HTML convention that an unrecognised value falls back to
@@ -192,6 +196,23 @@ whose guest you do not trust buys you nothing; do not use it as one.
 The one place the setting reaches into guest requests is
 `credentials="include"`, which defaults `XMLHttpRequest.withCredentials` to
 `true` for requests that never assign it themselves.
+
+Because HTML `<link rel="preload" crossorigin="anonymous">` and `<script crossorigin="anonymous">`
+map to Fetch `credentials: "same-origin"` (still sending same-origin cookies and
+HTTP authentication), `credentials="omit"` skips optional script `<link rel="preload">` /
+`modulepreload` hints; companion `<script>` elements still follow HTML's native
+`crossorigin="anonymous"` semantics.
+
+### Restricting virtual form destinations (`form-action`)
+
+Because virtual form submissions cancel native submission and replay as `fetch`,
+a popup, or a host navigation, the browser's CSP `form-action` directive does not
+evaluate them (same-origin guest `POST` requests remain subject to `connect-src`).
+Hosts that need CSP-style form destination limits can set the `form-action`
+attribute (e.g. `form-action="'self'"`, `form-action="'none'"`, or a
+space-separated list of schemes/origins) or assign a predicate function to
+`frame.formActionPolicy`. Blocked submissions emit a non-fatal `v-frame-error`
+(`phase: "navigation"`, `SecurityError`) without issuing a request or navigation.
 
 ## Element properties
 

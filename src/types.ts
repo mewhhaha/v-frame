@@ -17,6 +17,17 @@ export type VFrameAdoptMode = "eager" | "visible" | "idle" | "interaction";
 
 export type VFramePreloadScripts = boolean | readonly string[];
 
+export interface VFrameFormActionCheck {
+  url: URL;
+  method: string;
+  target: string;
+}
+
+export type VFrameFormActionPolicy =
+  | string
+  | ((check: VFrameFormActionCheck) => boolean)
+  | null;
+
 export interface VFrameTrustedTypesPolicyDefinition {
   readonly name: string;
   createHTML(source: string): string;

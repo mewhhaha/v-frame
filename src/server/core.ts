@@ -344,13 +344,20 @@ export function balanceTemplateTags(source: string): string {
         cursor = tagStart + 6;
         continue;
       }
-      const commentEnd = source.indexOf("-->", tagStart + 4);
-      if (commentEnd === -1) {
+      // HTML5 comment-end-state (`-->`) and comment-end-bang-state (`--!>`) both
+      // close a comment once past the opening `<!--`.
+      const standardEnd = source.indexOf("-->", tagStart + 4);
+      const bangEnd = source.indexOf("--!>", tagStart + 4);
+      if (standardEnd === -1 && bangEnd === -1) {
         emitEdit(source.length, source.length, "-->");
         cursor = source.length;
         break;
       }
-      cursor = commentEnd + 3;
+      if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
+        cursor = bangEnd + 4;
+      } else {
+        cursor = standardEnd + 3;
+      }
       continue;
     }
 
@@ -642,12 +649,77 @@ export function limitResponseBytes(
   });
 }
 
+export function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) {
+    void promise.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      void promise.catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function readBoundedBytes(
   response: Response,
   maxBytes: number,
   label: string,
+  signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
-  return limitResponseBytes(response, maxBytes, label).arrayBuffer();
+  const limited = limitResponseBytes(response, maxBytes, label);
+  if (signal === undefined) {
+    return limited.arrayBuffer();
+  }
+  signal.throwIfAborted();
+  const body = limited.body;
+  if (body === null) {
+    return new ArrayBuffer(0);
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const onAbort = () => {
+    void reader.cancel(signal.reason).catch(() => {});
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    for (;;) {
+      const result = await raceWithAbort(reader.read(), signal);
+      if (result.done) break;
+      chunks.push(result.value);
+      total += result.value.byteLength;
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => {});
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined.buffer;
 }
 
 /**
@@ -738,8 +810,17 @@ export function rewritePreviewAttributes(element: AssetElementAttributes): {
   const anchor =
     (html && (element.tagName === "a" || element.tagName === "area")) ||
     (element.namespaceURI === SVG_NAMESPACE && element.tagName === "a");
+  const isIframe = html && element.tagName === "iframe";
+  const isObject = html && element.tagName === "object";
+  const isEmbed = html && element.tagName === "embed";
   for (const [name] of element.attributes) {
-    if (name.startsWith("on") || (anchor && (name === "href" || name === "xlink:href"))) {
+    if (
+      name.startsWith("on") ||
+      (anchor && (name === "href" || name === "xlink:href")) ||
+      (isIframe && (name === "src" || name === "srcdoc")) ||
+      (isObject && name === "data") ||
+      (isEmbed && name === "src")
+    ) {
       remember(name);
       removeAttributes.push(name);
     }
@@ -912,15 +993,23 @@ export function createDefaultStylesheetFetch(
   documentURL: string,
   maxBytes = DEFAULT_MAX_STYLESHEET_BYTES,
 ): ServerStylesheetFetch {
-  const allowedOrigin = URL.parse(documentURL)?.origin ?? null;
+  const parsedDocument = URL.parse(documentURL);
+  const allowedOrigin =
+    parsedDocument !== null &&
+    (parsedDocument.protocol === "http:" || parsedDocument.protocol === "https:") &&
+    parsedDocument.username === "" &&
+    parsedDocument.password === ""
+      ? parsedDocument.origin
+      : null;
   return async (url, { signal } = {}) => {
     const target = URL.parse(url);
     if (
+      allowedOrigin === null ||
       target === null ||
       (target.protocol !== "http:" && target.protocol !== "https:") ||
       target.username !== "" ||
       target.password !== "" ||
-      (allowedOrigin !== null && target.origin !== allowedOrigin)
+      target.origin !== allowedOrigin
     ) {
       throw new TypeError(
         `v-frame SSR stylesheet ${url} must be a same-origin HTTP(S) URL`,
@@ -936,7 +1025,12 @@ export function createDefaultStylesheetFetch(
       );
     }
     return {
-      bytes: await readBoundedBytes(response, maxBytes, `v-frame SSR stylesheet ${url}`),
+      bytes: await readBoundedBytes(
+        response,
+        maxBytes,
+        `v-frame SSR stylesheet ${url}`,
+        signal,
+      ),
       url: response.url || target.href,
     };
   };

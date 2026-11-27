@@ -42,6 +42,7 @@ import {
   installRealmNavigation,
   type DocumentNavigationRequest,
   type NativeLocationNavigationMode,
+  type ShellNavigationPolicy,
 } from "./navigation.js";
 import {
   installCSSStyleSheetBridge,
@@ -53,6 +54,7 @@ import {
 } from "./window-patches.js";
 import type {
   VFrameCredentials,
+  VFrameFormActionCheck,
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
   VFrameWindow,
@@ -65,7 +67,7 @@ export {
   type ConnectedRealmIframe,
   type RealmFailure,
 } from "./connect.js";
-export type { DocumentNavigationRequest } from "./navigation.js";
+export type { DocumentNavigationRequest, ShellNavigationPolicy } from "./navigation.js";
 
 export interface CreateRealmOptions {
   host: HTMLElement;
@@ -105,11 +107,15 @@ export interface CreateRealmOptions {
     request?: DocumentNavigationRequest,
   ): boolean;
   onDocumentTraversal(session: VirtualHistorySession): Promise<void>;
-  onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
+  onShellNavigation(
+    detail: VFrameNavigateEventDetail,
+    policy?: ShellNavigationPolicy,
+  ): boolean;
   onNativeLocationNavigation(
     detail: VFrameNavigateEventDetail,
     mode: NativeLocationNavigationMode,
   ): void;
+  allowFormAction?(check: VFrameFormActionCheck): boolean;
   onError(failure: RealmFailure): void;
 }
 
@@ -398,6 +404,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
+      createGuestScript: options.trustedTypes.createGuestScript,
       updateTopLayerViewport: internalStyles.updateTopLayerViewport,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
@@ -612,6 +619,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       onDocumentNavigation: options.onDocumentNavigation,
       onShellNavigation: options.onShellNavigation,
       onNativeLocationNavigation: options.onNativeLocationNavigation,
+      ...(options.allowFormAction !== undefined
+        ? { allowFormAction: options.allowFormAction }
+        : {}),
       onError: options.onError,
     });
     disposers.push(() => navigation.dispose());

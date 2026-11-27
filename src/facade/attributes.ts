@@ -568,7 +568,7 @@ export function installAttributeFacade(
     // The authored value; null when the guest has none. undefined means the
     // facade holds nothing for this name and the physical attribute answers.
     get(element: Element, name: string): string | null | undefined;
-    set(element: Element, name: string, value: string): void;
+    set(element: Element, name: string, value: string, rawValue?: unknown): void;
     remove(element: Element, name: string): void;
     // Brings the physical attribute names in line with the authored ones.
     names?(element: Element, names: string[]): void;
@@ -665,15 +665,24 @@ export function installAttributeFacade(
       get: (element, name) =>
         eventAttributeValues.get(element)?.get(eventAttributeName(element, name)!) ??
         null,
-      set(element, name, value) {
+      set(element, name, value, rawValue) {
         const eventName = eventAttributeName(element, name)!;
+        // Validate runtime event-handler writes through the realm's native
+        // attribute sink so Trusted Types `TrustedScript` enforcement applies.
+        const candidate = options.createGuestScript(
+          rawValue !== undefined ? rawValue : value,
+        );
+        const probe = nameProbe();
+        nativeSetAttribute.call(probe, eventName, candidate as string);
+        const source = nativeGetAttribute.call(probe, eventName) ?? value;
+        nativeRemoveAttribute.call(probe, eventName);
         let attributes = eventAttributeValues.get(element);
         if (attributes === undefined) {
           attributes = new Map();
           eventAttributeValues.set(element, attributes);
         }
-        attributes.set(eventName, value);
-        compileEventAttribute(element, eventName, value);
+        attributes.set(eventName, source);
+        compileEventAttribute(element, eventName, source);
       },
       remove(element, name) {
         const eventName = eventAttributeName(element, name)!;
@@ -974,7 +983,7 @@ export function installAttributeFacade(
       const name = isHTML ? attrName.toLowerCase() : attrName;
       const managed = managedAttributeFor(element, name, "write", isHTML);
       if (managed !== undefined) {
-        managed.set(element, name, nextValue);
+        managed.set(element, name, nextValue, value);
         return;
       }
     }
@@ -1052,7 +1061,6 @@ export function installAttributeFacade(
       namespace = null;
     }
     qualifiedName = toDOMString(qualifiedName);
-    const authoredValue = toDOMString(value);
     // Without a namespace and prefix the call names the same attribute
     // setAttribute would, minus its lowercasing, so only the lowercase spelling
     // can be one of the attributes the facade manages. A prefix with no
@@ -1063,9 +1071,10 @@ export function installAttributeFacade(
       !qualifiedName.includes(":") &&
       qualifiedName === qualifiedName.toLowerCase()
     ) {
-      setVirtualAttribute(element, qualifiedName, authoredValue);
+      setVirtualAttribute(element, qualifiedName, value);
       return;
     }
+    const authoredValue = toDOMString(value);
     const localName = qualifiedName.includes(":")
       ? qualifiedName.slice(qualifiedName.indexOf(":") + 1)
       : qualifiedName;

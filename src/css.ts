@@ -33,6 +33,17 @@ export interface StylesheetImportFailure {
   error: unknown;
 }
 
+export const DEFAULT_MAX_IMPORT_EXPANSIONS = 128;
+export const DEFAULT_MAX_EXPANDED_CSS_BYTES = 4 * 1024 * 1024;
+
+/** Normalizes an HTML `crossorigin` attribute per the CORS settings attribute spec. */
+export function normalizeCrossOrigin(
+  value: string | null | undefined,
+): "anonymous" | "use-credentials" | null {
+  if (value === null || value === undefined) return null;
+  return value.toLowerCase() === "use-credentials" ? "use-credentials" : "anonymous";
+}
+
 export interface StylesheetContext {
   fetchText: StylesheetFetch;
   requests: Map<string, Promise<StylesheetSource>>;
@@ -40,6 +51,10 @@ export interface StylesheetContext {
   signal?: AbortSignal;
   /** Maximum nested `@import` depth; deeper imports are dropped and reported. */
   maxImportDepth?: number;
+  /** Maximum total `@import` rule expansions per stylesheet rewrite. Defaults to 128. */
+  maxImportExpansions?: number;
+  /** Maximum expanded CSS output characters per stylesheet rewrite. Defaults to 4 MiB. */
+  maxExpandedBytes?: number;
   onImportFailure?(failure: StylesheetImportFailure): void;
 }
 
@@ -1321,7 +1336,7 @@ export function fetchStylesheet(
   integrity = "",
   requestOptions?: Pick<StylesheetFetchOptions, "crossOrigin" | "referrerPolicy">,
 ): Promise<StylesheetSource> {
-  const crossOrigin = requestOptions?.crossOrigin ?? null;
+  const crossOrigin = normalizeCrossOrigin(requestOptions?.crossOrigin);
   const referrerPolicy = requestOptions?.referrerPolicy ?? "";
   let key = url;
   if (integrity !== "" || crossOrigin !== null || referrerPolicy !== "") {
@@ -1510,13 +1525,22 @@ function rewriteScopePrelude(tokens: readonly Token[]): Token[] {
   return out;
 }
 
+interface StylesheetExpansionState {
+  hasImport: boolean;
+  importExpansions: number;
+  expandedBytes: number;
+}
+
 async function transformStylesheet(
   source: string,
   stylesheetURL: string,
   context: StylesheetContext,
   ancestors: ReadonlySet<string>,
-  state?: { hasImport: boolean },
+  state?: StylesheetExpansionState,
 ): Promise<string> {
+  const maxImportExpansions =
+    context.maxImportExpansions ?? DEFAULT_MAX_IMPORT_EXPANSIONS;
+  const maxExpandedBytes = context.maxExpandedBytes ?? DEFAULT_MAX_EXPANDED_CSS_BYTES;
   const tokens = tokenizeCSS(source);
   const statements = splitBlockStatements(tokens, 0, tokens.length, false);
   const parts: Array<string | Promise<string>> = [];
@@ -1568,6 +1592,14 @@ async function transformStylesheet(
                   `Stylesheet @import depth exceeded limit of ${context.maxImportDepth}`,
                 );
               }
+              if (state !== undefined) {
+                state.importExpansions += 1;
+                if (state.importExpansions > maxImportExpansions) {
+                  throw new RangeError(
+                    `Stylesheet @import expansion count exceeded limit of ${maxImportExpansions}`,
+                  );
+                }
+              }
               const fetched = await fetchStylesheet(importSpec.url, context);
               if (ancestors.has(fetched.url)) {
                 return "";
@@ -1580,6 +1612,7 @@ async function transformStylesheet(
                 fetched.url,
                 context,
                 importedAncestors,
+                state,
               );
               return wrapImportedStylesheet(transformed, importSpec);
             } catch (error) {
@@ -1683,7 +1716,25 @@ async function transformStylesheet(
     }
   }
 
-  return (await Promise.all(parts)).join("");
+  const resolvedParts = await Promise.all(parts);
+  let outputLength = 0;
+  for (let i = 0; i < resolvedParts.length; i += 1) {
+    outputLength += resolvedParts[i]!.length;
+    if (outputLength > maxExpandedBytes) {
+      throw new RangeError(
+        `Stylesheet expanded output exceeded limit of ${maxExpandedBytes} characters`,
+      );
+    }
+  }
+  if (state !== undefined) {
+    state.expandedBytes = Math.max(state.expandedBytes, outputLength);
+    if (state.expandedBytes > maxExpandedBytes) {
+      throw new RangeError(
+        `Stylesheet expanded output exceeded limit of ${maxExpandedBytes} characters`,
+      );
+    }
+  }
+  return resolvedParts.join("");
 }
 
 const MAX_CSS_CACHE_ENTRIES = 128;
@@ -1733,7 +1784,11 @@ export async function rewriteStylesheet(
     const cached = readRewrittenCSSCache(cacheKey);
     if (cached !== undefined) return cached;
   }
-  const state = cacheKey !== null ? { hasImport: false } : undefined;
+  const state: StylesheetExpansionState = {
+    hasImport: false,
+    importExpansions: 0,
+    expandedBytes: 0,
+  };
   const result = await transformStylesheet(
     source,
     stylesheetURL,
@@ -1741,7 +1796,7 @@ export async function rewriteStylesheet(
     new Set([stylesheetURL]),
     state,
   );
-  if (cacheKey !== null && !state!.hasImport) {
+  if (cacheKey !== null && !state.hasImport) {
     writeRewrittenCSSCache(cacheKey, result);
   }
   return result;

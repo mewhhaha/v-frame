@@ -11,6 +11,7 @@
 import {
   CSSOMImportRuleError,
   fetchStylesheet,
+  normalizeCrossOrigin,
   rewriteCSSOMAddRule,
   rewriteCSSOMInsertRule,
   rewriteCSSOMSelectorText,
@@ -44,7 +45,7 @@ interface DynamicStyleUpdate {
 interface DynamicLinkSnapshot {
   href: string;
   integrity: string;
-  crossOrigin: string | null;
+  crossOrigin: "anonymous" | "use-credentials" | null;
   referrerPolicy: ReferrerPolicy | "";
   media: string;
   disabled: boolean;
@@ -646,7 +647,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
       NEUTRALIZED_STYLESHEET_REL &&
     link.href === snapshot.href &&
     link.integrity.trim() === snapshot.integrity &&
-    link.getAttribute("crossorigin") === snapshot.crossOrigin &&
+    normalizeCrossOrigin(link.getAttribute("crossorigin")) === snapshot.crossOrigin &&
     link.referrerPolicy === snapshot.referrerPolicy &&
     link.media === snapshot.media &&
     linkDisabled(link, snapshot.authoredRel) === snapshot.disabled;
@@ -686,7 +687,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     const snapshot: DynamicLinkSnapshot = {
       href: link.href,
       integrity: link.integrity.trim(),
-      crossOrigin: link.getAttribute("crossorigin"),
+      crossOrigin: normalizeCrossOrigin(link.getAttribute("crossorigin")),
       referrerPolicy: link.referrerPolicy as ReferrerPolicy | "",
       media: link.media,
       disabled: linkDisabled(link, authoredRelValue),
@@ -706,7 +707,12 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     const revision = update.revision;
 
     const previous = options.linkedStyles.get(link);
-    if (previous?.href === snapshot.href && previous.integrity === snapshot.integrity) {
+    if (
+      previous?.href === snapshot.href &&
+      previous.integrity === snapshot.integrity &&
+      (previous.crossOrigin ?? null) === snapshot.crossOrigin &&
+      (previous.referrerPolicy ?? "") === snapshot.referrerPolicy
+    ) {
       const style = previous.style;
       linkedStyleOwners.set(style, link);
       style.media = snapshot.media;
@@ -755,6 +761,8 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
           integrity: snapshot.integrity,
           url: source.url,
           disabled: snapshot.disabled,
+          crossOrigin: snapshot.crossOrigin,
+          referrerPolicy: snapshot.referrerPolicy,
         });
         link.after(style);
         // disabled only reaches a sheet once the style is connected; on a

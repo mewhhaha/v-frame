@@ -428,7 +428,14 @@ export async function materializeVFrameDocument(
     encode: encodeRewriterAttribute,
   };
   const preserveNestedFrames = options.preserveNestedFrames === true;
-  const documentOrigin = URL.parse(documentURL)?.origin ?? null;
+  const parsedDocument = URL.parse(documentURL);
+  const documentOrigin =
+    parsedDocument !== null &&
+    (parsedDocument.protocol === "http:" || parsedDocument.protocol === "https:") &&
+    parsedDocument.username === "" &&
+    parsedDocument.password === ""
+      ? parsedDocument.origin
+      : null;
   let eligibleNestedHost = false;
   const transformedRewriter = new Rewriter();
   if (preserveNestedFrames) {
@@ -441,9 +448,12 @@ export async function materializeVFrameDocument(
           if (rawSrc === "") return;
           const resolved = URL.parse(rawSrc, baseURL);
           if (
+            documentOrigin !== null &&
             resolved !== null &&
             (resolved.protocol === "http:" || resolved.protocol === "https:") &&
-            (documentOrigin === null || resolved.origin === documentOrigin)
+            resolved.username === "" &&
+            resolved.password === "" &&
+            resolved.origin === documentOrigin
           ) {
             eligibleNestedHost = true;
           }

@@ -14,6 +14,7 @@ import {
   VirtualHistory,
 } from "../history.js";
 import type {
+  VFrameFormActionCheck,
   VFrameNavigateEventDetail,
   VFrameNavigationKind,
   VFrameWindow,
@@ -25,10 +26,27 @@ import { captureNativeDOM } from "./native-dom.js";
 export type NativeLocationNavigationMode = "push" | "replace" | "reload";
 
 export interface DocumentNavigationRequest {
-  method: "POST";
-  body: BodyInit;
+  method?: "GET" | "POST";
+  body?: BodyInit;
   headers?: HeadersInit;
+  referrerPolicy?: ReferrerPolicy;
 }
+
+export interface ShellNavigationPolicy {
+  referrerPolicy?: ReferrerPolicy;
+  noReferrer?: boolean;
+}
+
+const VALID_REFERRER_POLICIES: ReadonlySet<string> = new Set([
+  "no-referrer",
+  "no-referrer-when-downgrade",
+  "origin",
+  "origin-when-cross-origin",
+  "same-origin",
+  "strict-origin",
+  "strict-origin-when-cross-origin",
+  "unsafe-url",
+]);
 
 type NavigateInterceptOptions = Parameters<NavigateEvent["intercept"]>[0];
 
@@ -89,11 +107,15 @@ interface RealmNavigationOptions {
     mode: DocumentHistoryMode,
     request?: DocumentNavigationRequest,
   ): boolean;
-  onShellNavigation(detail: VFrameNavigateEventDetail): boolean;
+  onShellNavigation(
+    detail: VFrameNavigateEventDetail,
+    policy?: ShellNavigationPolicy,
+  ): boolean;
   onNativeLocationNavigation(
     detail: VFrameNavigateEventDetail,
     mode: NativeLocationNavigationMode,
   ): void;
+  allowFormAction?(check: VFrameFormActionCheck): boolean;
   onError(failure: RealmFailure): void;
 }
 
@@ -148,6 +170,36 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     window.Node.prototype,
     "isConnected",
   )!.get!;
+  const effectiveReferrerPolicy = (element: Element): ShellNavigationPolicy => {
+    const relTokens = (nativeDOM.getAttribute(element, "rel") ?? "")
+      .toLowerCase()
+      .split(/[\t\n\f\r ]+/);
+    if (relTokens.includes("noreferrer")) {
+      return { referrerPolicy: "no-referrer", noReferrer: true };
+    }
+    const raw = (nativeDOM.getAttribute(element, "referrerpolicy") ?? "")
+      .trim()
+      .toLowerCase();
+    return VALID_REFERRER_POLICIES.has(raw)
+      ? { referrerPolicy: raw as ReferrerPolicy, noReferrer: false }
+      : {};
+  };
+  const openPopup = (href: string, policy: ShellNavigationPolicy): void => {
+    if (policy.referrerPolicy !== undefined && !policy.noReferrer) {
+      const popupLink = options.host.ownerDocument.createElement("a");
+      popupLink.href = href;
+      popupLink.target = "_blank";
+      popupLink.rel = "noopener";
+      popupLink.referrerPolicy = policy.referrerPolicy;
+      popupLink.click();
+      return;
+    }
+    options.nativeWindowOpen(
+      href,
+      "_blank",
+      policy.noReferrer ? "noopener,noreferrer" : "noopener",
+    );
+  };
   const formSubmission = (form: HTMLFormElement, submitter: HTMLElement | null) => {
     if (!connected.call(form) || options.isDisposed()) return;
     const action = submissionAttribute(form, submitter, "action");
@@ -160,6 +212,21 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       options.getBaseURL(),
     );
     if (targetURL === null) return;
+    if (
+      options.allowFormAction !== undefined &&
+      !options.allowFormAction({ url: targetURL, method, target })
+    ) {
+      options.onError({
+        phase: "navigation",
+        url: targetURL.href,
+        error: new window.DOMException(
+          `v-frame blocked form submission to ${targetURL.href} under host form-action policy`,
+          "SecurityError",
+        ),
+      });
+      return;
+    }
+    const referrer = effectiveReferrerPolicy(form);
     // HTML defaults missing and invalid methods to GET.
     const isGet = method !== "post" && method !== "dialog";
     const isPost = method === "post";
@@ -215,6 +282,9 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         }
         postRequest = { method: "POST", body: parameters };
       }
+      if (referrer.referrerPolicy !== undefined) {
+        postRequest.referrerPolicy = referrer.referrerPolicy;
+      }
     }
 
     const detail: VFrameNavigateEventDetail = {
@@ -230,7 +300,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     if (target === "_blank") {
       const allowed = options.onNavigate(detail);
       if (allowed && isGet) {
-        options.nativeWindowOpen(targetURL.href, "_blank", "noopener");
+        openPopup(targetURL.href, referrer);
       } else if (allowed) {
         options.onError({
           phase: "navigation",
@@ -251,9 +321,15 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
 
     if (isGet) {
       if (options.boundNavigation) {
-        options.onShellNavigation(detail);
+        options.onShellNavigation(detail, referrer);
       } else {
-        options.onDocumentNavigation(detail, "push");
+        options.onDocumentNavigation(
+          detail,
+          "push",
+          referrer.referrerPolicy !== undefined
+            ? { referrerPolicy: referrer.referrerPolicy }
+            : undefined,
+        );
       }
       return;
     }
@@ -293,6 +369,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
     const target = nativeDOM.hasAttribute(anchor, "target")
       ? (nativeDOM.getAttribute(anchor, "target") ?? "").toLowerCase()
       : options.getBaseTarget();
+    const referrer = effectiveReferrerPolicy(anchor);
     const opensNewContext =
       event.type === "auxclick" || event.ctrlKey || event.metaKey || event.shiftKey;
     // Resolve download intent after guest listeners finish, just like the
@@ -324,7 +401,7 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         }) &&
         isHTTPURL(targetURL)
       ) {
-        options.nativeWindowOpen(targetURL.href, "_blank", "noopener");
+        openPopup(targetURL.href, referrer);
       }
       return;
     }
@@ -348,9 +425,15 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         state: null,
       } satisfies VFrameNavigateEventDetail;
       if (options.boundNavigation) {
-        options.onShellNavigation(detail);
+        options.onShellNavigation(detail, referrer);
       } else {
-        options.onDocumentNavigation(detail, "push");
+        options.onDocumentNavigation(
+          detail,
+          "push",
+          referrer.referrerPolicy !== undefined
+            ? { referrerPolicy: referrer.referrerPolicy }
+            : undefined,
+        );
       }
       return;
     }
@@ -646,6 +729,12 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
         state: null,
       };
       if (normalizedTarget === "_blank") {
+        // Only HTTP(S) and explicit about:blank popups open natively; other
+        // schemes still notify the host via onNavigate so it can decide explicitly.
+        if (!isHTTPURL(targetURL) && targetURL.href !== "about:blank") {
+          options.onNavigate(detail);
+          return null;
+        }
         return options.onNavigate(detail)
           ? // The popup never gets an opener: it would be the hidden realm window.
             options.nativeWindowOpen(

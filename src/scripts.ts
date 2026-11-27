@@ -715,6 +715,10 @@ export class ScriptRunner {
    * while execution stays ordered.
    */
   #preloadDeferred(pseudoScript: HTMLScriptElement): HTMLLinkElement[] {
+    // HTML link preload cannot represent Fetch credentials "omit" for same-origin URLs.
+    if (this.#credentials === "omit") {
+      return [];
+    }
     const module = scriptCategory(pseudoScript) === "module";
     const appendPreload = (href: string, asModule: boolean): HTMLLinkElement | null => {
       const link = this.#native.createElement("link");

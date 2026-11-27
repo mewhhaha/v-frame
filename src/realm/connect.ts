@@ -23,6 +23,7 @@ export interface RealmTrustedTypes {
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
+  createGuestScript(value: unknown): unknown;
   createScriptURL(source: string): string;
 }
 
@@ -40,6 +41,7 @@ export type NavigationWindow = VFrameWindow & {
 interface TrustedTypePolicyFactoryLike {
   readonly emptyHTML: unknown;
   isHTML?(value: unknown): boolean;
+  isScript?(value: unknown): boolean;
   createPolicy(
     name: string,
     policy: Omit<VFrameTrustedTypesPolicyDefinition, "name">,
@@ -341,6 +343,8 @@ export async function connectRealmIframe(
           ).trustedTypes;
           const isTrustedHTML = (value: unknown): boolean =>
             Boolean(factory?.isHTML?.(value) || hostTrustedTypes?.isHTML?.(value));
+          const isTrustedScript = (value: unknown): boolean =>
+            Boolean(factory?.isScript?.(value) || hostTrustedTypes?.isScript?.(value));
           const makeGuestHTML =
             (wrap: ((source: string) => string) | null) =>
             (value: unknown, legacyNull = false): string => {
@@ -350,11 +354,19 @@ export async function connectRealmIframe(
                 : toDOMString(value);
               return wrap ? wrap(text) : text;
             };
+          const makeGuestScript =
+            (wrap: ((source: string) => string) | null) =>
+            (value: unknown): unknown => {
+              if (isTrustedScript(value)) return value;
+              const text = toDOMString(value);
+              return wrap ? wrap(text) : text;
+            };
           if (trustedTypesPolicy === null) {
             realmTrustedTypes = {
               createHTML: (source) => source,
               createGuestHTML: makeGuestHTML(null),
               createScript: (source) => source,
+              createGuestScript: makeGuestScript(null),
               createScriptURL: (source) => source,
             };
           } else {
@@ -370,19 +382,26 @@ export async function connectRealmIframe(
                 createGuestHTML: makeGuestHTML(
                   isCustomPolicy ? policyRules.createHTML : null,
                 ),
+                createGuestScript: makeGuestScript(
+                  isCustomPolicy ? policyRules.createScript : null,
+                ),
               };
             } else {
               try {
                 const policy = factory.createPolicy(trustedTypesPolicy.name, policyRules);
                 const createHTML = (source: string) =>
                   policy.createHTML(source) as unknown as string;
+                const createScript = (source: string) =>
+                  policy.createScript(source) as unknown as string;
                 realmTrustedTypes = {
                   createHTML,
-                  // Only custom host-supplied policies transform raw guest HTML strings;
+                  // Only custom host-supplied policies transform raw guest strings;
                   // a string allowlist name keeps browser Trusted Types active on guest sinks.
                   createGuestHTML: makeGuestHTML(isCustomPolicy ? createHTML : null),
-                  createScript: (source) =>
-                    policy.createScript(source) as unknown as string,
+                  createScript,
+                  createGuestScript: makeGuestScript(
+                    isCustomPolicy ? createScript : null,
+                  ),
                   createScriptURL: (source) =>
                     policy.createScriptURL(source) as unknown as string,
                 };

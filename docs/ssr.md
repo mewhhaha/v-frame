@@ -104,10 +104,13 @@ and is reported to `options.onSlotError?.({ src, error })`. By default each slot
 times out after `timeoutMs` (10,000 ms), and composition-wide budgets (`maxSlots`
 defaults to 32, `maxTotalFetches` to 256, `maxConcurrency` to 8) alongside
 per-document limits (`maxDocumentBytes`, `maxStylesheetBytes`, `maxStylesheets`,
-`maxImportDepth`) cap shell, guest, and stylesheet work. Pass
-`allowNestedComposition: false` for leaf-only shells that should strip all
-incoming `data-v-frame-*` markers even inside nested `<v-frame adopt>` elements.
-Other guests can render and activate normally. Canceling the request or the
+`maxImportDepth`) cap shell, guest, and stylesheet work. Pass `allowNestedComposition: false` for leaf-only shells that should strip all
+incoming `data-v-frame-*` markers even inside nested `<v-frame adopt>` elements,
+or pass a predicate `(slot) => boolean` to preserve nested SSR provenance only
+for specific trusted upstreams. Composed slots preserve any host-authored
+deferred `adopt` mode (`adopt="visible"`, `"idle"`, `"interaction"`) and defer
+active preview embeds (`iframe`, `object`, `embed`) alongside scripts, handlers,
+links, and forms until activation. Other guests can render and activate normally. Canceling the request or the
 returned body cancels pending work. A `nonce` on the slot applies to
 materialized preview styles, nested `<v-frame>` slots, and generated font styles
 (which are deduplicated across sibling frames); unmaterialized styles that

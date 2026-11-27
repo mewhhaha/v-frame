@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_STYLESHEET_BYTES,
   DEFAULT_MAX_TOTAL_FETCHES,
   limitResponseBytes,
+  raceWithAbort,
   readBoundedBytes,
 } from "./core.js";
 import {
@@ -51,9 +52,11 @@ export interface ComposeFramesOptions {
   /**
    * Preserve already-materialized nested same-origin `<v-frame adopt src="...">`
    * shadow roots returned by inner composing services. Set `false` for leaf-only
-   * composition to strip every incoming `data-v-frame-*` marker. Defaults to `true`.
+   * composition to strip every incoming `data-v-frame-*` marker, or pass a
+   * predicate to allow nested provenance only for specific trusted upstreams.
+   * Defaults to `true`.
    */
-  allowNestedComposition?: boolean;
+  allowNestedComposition?: boolean | ((slot: { src: string; url: URL }) => boolean);
   /** Maximum byte length accepted for the shell or a guest HTML document. Defaults to 10 MiB. */
   maxDocumentBytes?: number;
   /** Maximum byte length accepted for a single stylesheet. Defaults to 2 MiB. */
@@ -181,16 +184,24 @@ export async function composeFrames(
           target.password
         )
           throw new TypeError("Guest URL must share the public shell origin");
-        const result = await compositionBudget(requestSignal, async () =>
-          fetchGuest(
+        // Keep non-cooperative upstreams accounted for in the concurrency
+        // budget while enforcing the slot deadline at this await boundary.
+        const upstreamPromise = compositionBudget(requestSignal, async () => {
+          const response = await fetchGuest(
             new Request(target, {
               headers: { Accept: accept },
               credentials: slot.credentials,
               redirect: "manual",
               signal: requestSignal,
             }),
-          ),
-        );
+          );
+          if (requestSignal.aborted) {
+            void response.body?.cancel().catch(() => {});
+            throw requestSignal.reason;
+          }
+          return response;
+        });
+        const result = await raceWithAbort(upstreamPromise, requestSignal);
         if (result.redirected || result.status !== 200) {
           void result.body?.cancel().catch(() => {});
           throw new TypeError(`Unexpected guest response (${result.status})`);
@@ -203,33 +214,42 @@ export async function composeFrames(
         throw new TypeError(`Expected a 200 text/html guest response for ${url.href}`);
       }
       const fonts = new Set<string>();
-      let materialized = await materializeVFrameDocument(guest, url.href, {
-        HTMLRewriter: Rewriter,
-        requireDocument: true,
-        preserveNestedFrames: allowNestedComposition,
-        signal: slotSignal,
-        maxDocumentBytes,
-        maxStylesheetBytes,
-        ...(options.maxStylesheets !== undefined
-          ? { maxStylesheets: options.maxStylesheets }
-          : {}),
-        ...(options.maxImportDepth !== undefined
-          ? { maxImportDepth: options.maxImportDepth }
-          : {}),
-        maxConcurrency,
-        onFontFace: (css) => fonts.add(css),
-        async fetchText(href, init) {
-          const sheet = await load(new URL(href), "text/css", init?.signal ?? slotSignal);
-          return {
-            bytes: await readBoundedBytes(
-              sheet,
-              maxStylesheetBytes,
-              `v-frame SSR stylesheet ${href}`,
-            ),
-            url: href,
-          };
-        },
-      });
+      const preserveNestedFrames =
+        typeof allowNestedComposition === "function"
+          ? allowNestedComposition({ src: slot.src, url })
+          : allowNestedComposition;
+      let materialized = await raceWithAbort(
+        materializeVFrameDocument(guest, url.href, {
+          HTMLRewriter: Rewriter,
+          requireDocument: true,
+          preserveNestedFrames,
+          signal: slotSignal,
+          maxDocumentBytes,
+          maxStylesheetBytes,
+          ...(options.maxStylesheets !== undefined
+            ? { maxStylesheets: options.maxStylesheets }
+            : {}),
+          ...(options.maxImportDepth !== undefined
+            ? { maxImportDepth: options.maxImportDepth }
+            : {}),
+          maxConcurrency,
+          onFontFace: (css) => fonts.add(css),
+          async fetchText(href, init) {
+            const fetchSignal = init?.signal ?? slotSignal;
+            const sheet = await load(new URL(href), "text/css", fetchSignal);
+            return {
+              bytes: await readBoundedBytes(
+                sheet,
+                maxStylesheetBytes,
+                `v-frame SSR stylesheet ${href}`,
+                fetchSignal,
+              ),
+              url: href,
+            };
+          },
+        }),
+        slotSignal,
+      );
       if (slot.nonce) {
         const encodedNonce = encodeRewriterAttribute(slot.nonce);
         materialized = new Rewriter()
@@ -240,7 +260,7 @@ export async function composeFrames(
           })
           .transform(materialized);
       }
-      const markup = await materialized.text();
+      const markup = await raceWithAbort(materialized.text(), slotSignal);
       return { markup, fonts, nonce: slot.nonce };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -269,6 +289,7 @@ export async function composeFrames(
     });
   });
   const emittedFonts = new Set<string>();
+  let emittedFontChars = 0;
   let index = 0;
   const composed = new Rewriter()
     .on("meta", charsetDeclarationHandlers)
@@ -277,15 +298,21 @@ export async function composeFrames(
         const result = await results[index++];
         signal.throwIfAborted();
         if (!result) return;
-        el.setAttribute("adopt", "");
+        if (!el.hasAttribute("adopt")) {
+          el.setAttribute("adopt", "");
+        }
         el.prepend(
           `<template shadowrootmode="open" shadowrootserializable>${result.markup}</template>`,
           { html: true },
         );
         const freshFonts: string[] = [];
         for (const css of result.fonts) {
-          if (!emittedFonts.has(css)) {
+          if (
+            !emittedFonts.has(css) &&
+            emittedFontChars + css.length <= maxStylesheetBytes
+          ) {
             emittedFonts.add(css);
+            emittedFontChars += css.length;
             freshFonts.push(css);
           }
         }

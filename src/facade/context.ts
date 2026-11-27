@@ -45,6 +45,7 @@ export interface DocumentFacadeOptions {
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
+  createGuestScript(value: unknown): unknown;
   updateTopLayerViewport(x: number | null, y?: number): void;
   getNonce(): string;
   getBaseURL(): string;

@@ -3,6 +3,94 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.11.0 - 2026-11-27
+
+### Added
+
+- **Host-configurable `form-action` policy (`src/types.ts`, `src/v-frame-element.ts`,
+  `src/realm/navigation.ts`, `docs/api.md`):** Added the `form-action` attribute
+  and `formActionPolicy` property (`VFrameFormActionPolicy`, supporting CSP-style
+  `'self'`, `'none'`, `*`, scheme/origin/path prefixes, or a
+  `(check: VFrameFormActionCheck) => boolean` predicate) enforced across virtual
+  GET, POST, `target="_blank"`, and host-mode form submissions, emitting a
+  non-fatal `SecurityError` `v-frame-error` on blocked targets.
+- **Per-slot nested composition predicate (`src/server/compose.ts`,
+  `docs/ssr.md`):** Extended `ComposeFramesOptions.allowNestedComposition` to
+  accept `(slot: { src: string; url: URL }) => boolean` in addition to boolean.
+- **CSS `@import` expansion caps (`src/css.ts`):** Added
+  `DEFAULT_MAX_IMPORT_EXPANSIONS` (`128`), `DEFAULT_MAX_EXPANDED_CSS_BYTES`
+  (`4 MiB`), `StylesheetContext.maxImportExpansions`, and
+  `StylesheetContext.maxExpandedBytes`, and bounded total emitted host font CSS
+  in `composeFrames()` by `maxStylesheetBytes`.
+
+### Security
+
+- **Prevented host CSP nonce inheritance through `ShadowRoot` HTML sinks
+  (`src/facade/markup.ts`):** Marked elements parsed by
+  `ShadowRoot.prototype.setHTMLUnsafe()`, `ShadowRoot.prototype.innerHTML`, and
+  nested declarative shadow trees in `fragmentNodes` before `markVirtualNode()`
+  so inline `on*` handlers and styles parsed inside shadow trees never inherit
+  the host CSP nonce.
+- **Hardened SSR template balancing against HTML5 comment-end-bang (`--!>`)
+  (`src/server/core.ts`):** Updated `balanceTemplateTags()` to recognize `--!>`
+  in `comment-end-bang-state` without mis-closing `<!--!>` or `<!---!>`.
+- **Bound SSR linked-stylesheet SRI markers to verified adoption only
+  (`src/markup.ts`):** Restricted SSR linked-style SRI reuse in
+  `prepareLinkedStyle()` to sibling `<style data-v-frame-linked>` elements
+  verified during `prepareAdoptedMarkup()` and stripped forged
+  `data-v-frame-linked` / `data-v-frame-integrity` markers from client-fetched
+  HTML.
+- **Preserved native Trusted Types `TrustedScript` checks on imperative `on*`
+  attribute writes (`src/realm/connect.ts`, `src/facade/context.ts`,
+  `src/facade/attributes.ts`):** Validated imperative `setAttribute("on...", v)`
+  and `setAttributeNS(null, "on...", v)` values against the browser's native
+  attribute sink before compiling handlers so raw strings are rejected in
+  named-policy Trusted Types mode while `TrustedScript` values and custom policy
+  objects continue to work.
+- **Deferred active embedded resources in SSR previews (`src/server/core.ts`,
+  `src/markup.ts`, `docs/ssr.md`):** Stripped `iframe[src]`, `iframe[srcdoc]`,
+  `object[data]`, and `embed[src]` into `data-v-frame-preview-attributes` during
+  SSR materialization so deferred previews stay inert until adoption restores
+  them.
+- **Avoided same-origin credential leaks on script preloads under
+  `credentials="omit"` (`src/v-frame-element.ts`, `src/scripts.ts`,
+  `docs/api.md`):** Skipped emitting `<link rel="preload">` /
+  `<link rel="modulepreload">` hints when `credentials="omit"` because HTML maps
+  `crossorigin="anonymous"` to Fetch `same-origin` credentials.
+- **Enforced independent SSR slot timeouts (`src/server/core.ts`,
+  `src/server/compose.ts`):** Raced `fetchGuest`, materialization, and bounded
+  body reads against the slot timeout `AbortSignal` (`raceWithAbort` and
+  abort-aware `readBoundedBytes`) so non-cooperative upstreams cannot stall
+  composition or sibling slots.
+- **Restricted `window.open(..., "_blank")` native popups to safe schemes
+  (`src/realm/navigation.ts`, `docs/limitations.md`):** Opened native `_blank`
+  popups only for `http:`, `https:`, and explicit `about:blank` while still
+  notifying `v-frame-navigate` for other schemes.
+- **Failed closed on invalid/credentialed SSR origins and full `data-v-frame-*`
+  marker namespace (`src/server/core.ts`, `src/server/html-rewriter.ts`,
+  `src/wire-format.ts`):** Made `createDefaultStylesheetFetch()` and nested
+  `<v-frame>` URL checks require valid credential-free `http:`/`https:` URLs,
+  and matched all `data-v-frame-*` attributes in `isReservedSSRAttribute()`.
+
+### Fixed
+
+- **Preserved deferred `adopt` modes in `composeFrames()`
+  (`src/server/compose.ts`):** Only set `adopt=""` when the slot does not
+  already carry an `adopt` attribute (`visible`, `idle`, `interaction`).
+- **Tracked `<link>` `crossorigin` and `referrerpolicy` mutations and cache
+  keys (`src/css.ts`, `src/linked-styles.ts`, `src/markup.ts`,
+  `src/realm/mutation-observer.ts`, `src/realm/dynamic-styles.ts`):** Observed
+  `crossorigin` and `referrerpolicy` mutations on dynamic stylesheet `<link>`
+  elements and partitioned fetch/reuse keys by normalized CORS and referrer
+  policy.
+- **Propagated authored `rel="noreferrer"` and `referrerpolicy` on virtual
+  navigations (`src/realm/navigation.ts`, `src/v-frame-element.ts`):** Forwarded
+  link and form referrer controls to guest document fetches, `_blank` popups,
+  and host-mode shell promotions.
+- **Clarified capture-phase event boundary behavior (`docs/limitations.md`):**
+  Documented that host capture-phase listeners on ancestor elements still run
+  before the shadow boundary stops guest bubbling.
+
 ## 0.10.0 - 2026-11-27
 
 ### Changed

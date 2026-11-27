@@ -9,6 +9,8 @@ export type {
   VFrameErrorEventDetail,
   VFrameErrorPhase,
   VFrameEventMap,
+  VFrameFormActionCheck,
+  VFrameFormActionPolicy,
   VFrameLoadEventDetail,
   VFrameNavigatedEventDetail,
   VFrameNavigateEventDetail,

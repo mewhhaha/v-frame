@@ -341,3 +341,71 @@ test("composeFrames deduplicates fonts, applies composition-wide slot/concurrenc
     { src: "/apps/slow", name: "TimeoutError" },
   ]);
 });
+
+test("enforces --!> balancing, iframe/object/embed deferral, adopt preservation, non-cooperative timeouts, and nested predicates", async () => {
+  const { materialized, markup, slotErrors, elapsedMs } = await run<{
+    materialized: string;
+    markup: string;
+    slotErrors: Array<{ src: string; name: string }>;
+    elapsedMs: number;
+  }>("securityAuditHardening");
+
+  // M1: </template> after --!> was neutralized.
+  expect(materialized).not.toContain("--!></template>");
+  // Hardening #3: arbitrary data-v-frame-* markers are stripped, normal data-* kept.
+  expect(materialized).not.toContain("data-v-frame-custom");
+  expect(materialized).toContain('data-keep="ok"');
+  // M4: iframe/object/embed active attributes are stripped into preview-attributes.
+  expect(materialized).toMatch(
+    /<iframe id="guest-iframe"[^>]*data-v-frame-preview-attributes="\[&quot;src&quot;,&quot;srcdoc&quot;\]"/,
+  );
+  expect(materialized).not.toMatch(/<iframe id="guest-iframe"[^>]*\ssrc="/);
+  expect(materialized).not.toMatch(/<iframe id="guest-iframe"[^>]*\ssrcdoc="/);
+  expect(materialized).toMatch(
+    /<object id="guest-obj"[^>]*data-v-frame-preview-attributes="\[&quot;data&quot;\]"/,
+  );
+  expect(materialized).not.toMatch(/<object id="guest-obj"[^>]*\sdata="/);
+  expect(materialized).toMatch(
+    /<embed id="guest-embed"[^>]*data-v-frame-preview-attributes="\[&quot;src&quot;\]"/,
+  );
+  expect(materialized).not.toMatch(/<embed id="guest-embed"[^>]*\ssrc="/);
+  // Hardening #3: credentialed nested v-frame src is never preserved.
+  expect(materialized).toMatch(
+    /<script id="cred-script"[^>]*data-v-frame-type="application\/vnd\.v-frame"/,
+  );
+
+  // L1: deferred adopt modes are preserved; omitted adopt becomes eager adopt="".
+  expect(markup).toContain(
+    '<v-frame id="deferred" adopt="interaction" src="/apps/fast">',
+  );
+  expect(markup).toContain(
+    '<v-frame id="visible" adopt="visible" src="/apps/nested-host">',
+  );
+  expect(markup).toContain('<v-frame id="eager" src="/apps/nested-denied" adopt="">');
+
+  // Hardening #3: allowNestedComposition predicate selectively preserves nested markers.
+  expect(markup).toMatch(/<script id="allowed-nested"[^>]*data-v-frame-script/);
+  expect(markup).not.toMatch(
+    /<script id="allowed-nested"[^>]*data-v-frame-type="application\/vnd\.v-frame"/,
+  );
+  expect(markup).toMatch(
+    /<script id="denied-nested"[^>]*data-v-frame-type="application\/vnd\.v-frame"/,
+  );
+
+  // Hardening #2: emitted host font CSS is capped by maxStylesheetBytes (F1 emitted, F2 dropped).
+  const hostFontStyles = [
+    ...markup.matchAll(/<style data-v-frame-fonts[^>]*>([\s\S]*?)<\/style>/g),
+  ].map((match) => match[1]!);
+  expect(hostFontStyles).toEqual([
+    "@font-face{font-family:F1;src:url(https://host.test/f1.woff2)}",
+  ]);
+
+  // M7: non-cooperative fetch and hanging stream both hit timeoutMs without stalling composition.
+  expect(elapsedMs).toBeLessThan(2000);
+  expect(markup).toContain('<v-frame id="hang-fetch" src="/apps/hang-fetch"></v-frame>');
+  expect(markup).toContain('<v-frame id="hang-body" src="/apps/hang-body"></v-frame>');
+  expect(slotErrors.sort((a, b) => a.src.localeCompare(b.src))).toEqual([
+    { src: "/apps/hang-body", name: "TimeoutError" },
+    { src: "/apps/hang-fetch", name: "TimeoutError" },
+  ]);
+});

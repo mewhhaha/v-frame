@@ -5,4 +5,6 @@ export interface LinkedStyle {
   integrity: string;
   url: string;
   disabled: boolean;
+  crossOrigin?: "anonymous" | "use-credentials" | null;
+  referrerPolicy?: ReferrerPolicy | "";
 }

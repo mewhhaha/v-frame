@@ -174,10 +174,13 @@ Post-Redirect-Get (303/302) for idempotent reloads.
 ## `window.open` popups have no opener
 
 **Does not throw.** `window.open(url, "_blank")` opens a real new browsing
-context, but always with `noopener` added to the features, so the popup's
-`window.opener` is `null` and the guest receives `null` back instead of a
-`Window`. Arguments are coerced like the native signature (`null` is the string
-`"null"`, `""` is `about:blank`), and an unparsable URL throws a `SyntaxError`.
+context for `http:`, `https:`, and explicit `about:blank` URLs, always with
+`noopener` added to the features, so the popup's `window.opener` is `null` and
+the guest receives `null` back instead of a `Window`. Arguments are coerced like
+the native signature (`null` is the string `"null"`, `""` is `about:blank`), and
+an unparsable URL throws a `SyntaxError`. Other non-HTTP schemes report through
+`v-frame-navigate` and return `null` without opening natively unless the host
+handles the event explicitly.
 
 **Why.** The guest's `window` is the hidden realm window. A popup holding it as
 `opener` could reach the realm's real, unvirtualized globals.

@@ -20,6 +20,8 @@ import type {
   VFrameCredentials,
   VFrameErrorEventDetail,
   VFrameEventMap,
+  VFrameFormActionCheck,
+  VFrameFormActionPolicy,
   VFrameLoadEventDetail,
   VFrameNavigatedEventDetail,
   VFrameNavigateEventDetail,
@@ -227,6 +229,7 @@ export class VFrameElement extends HTMLElementBase {
   #deferredAdoption: { source: string; cleanup: () => void } | null = null;
   #nonce = "";
   #trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null = null;
+  #formActionPolicy: ((check: VFrameFormActionCheck) => boolean) | null = null;
   #lastFatalError: unknown = null;
   readonly #readyWaiters: Array<{
     resolve(): void;
@@ -339,6 +342,35 @@ export class VFrameElement extends HTMLElementBase {
     } else {
       this.setAttribute("content-visibility", normalized);
     }
+  }
+
+  get formActionPolicy(): VFrameFormActionPolicy {
+    return this.#formActionPolicy ?? this.getAttribute("form-action");
+  }
+
+  set formActionPolicy(value: VFrameFormActionPolicy) {
+    if (value === null || value === undefined) {
+      this.#formActionPolicy = null;
+      this.removeAttribute("form-action");
+      return;
+    }
+    if (typeof value === "function") {
+      this.#formActionPolicy = value;
+      return;
+    }
+    if (typeof value === "string") {
+      this.#formActionPolicy = null;
+      const trimmed = value.trim();
+      if (trimmed === "") {
+        this.removeAttribute("form-action");
+      } else {
+        this.setAttribute("form-action", trimmed);
+      }
+      return;
+    }
+    throw new TypeError(
+      `v-frame formActionPolicy must be a string, function, or null, received ${String(value)}`,
+    );
   }
 
   get credentials(): VFrameCredentials {
@@ -602,6 +634,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#upgradeProperty("lazyEvents");
     this.#upgradeProperty("preloadScripts");
     this.#upgradeProperty("contentVisibility");
+    this.#upgradeProperty("formActionPolicy");
     this.#connected = true;
     const source = this.#loadSource();
     if (source === null) {
@@ -644,7 +677,8 @@ export class VFrameElement extends HTMLElementBase {
       | "lazyAttributes"
       | "lazyEvents"
       | "preloadScripts"
-      | "contentVisibility",
+      | "contentVisibility"
+      | "formActionPolicy",
   ): void {
     if (!Object.prototype.hasOwnProperty.call(this, property)) {
       return;
@@ -1051,6 +1085,9 @@ export class VFrameElement extends HTMLElementBase {
           ...(load.request?.headers !== undefined
             ? { headers: load.request.headers }
             : {}),
+          ...(load.request?.referrerPolicy !== undefined
+            ? { referrerPolicy: load.request.referrerPolicy }
+            : {}),
           mode: "same-origin",
           credentials: this.credentials,
           signal: controller.signal,
@@ -1283,6 +1320,7 @@ export class VFrameElement extends HTMLElementBase {
     | "onDocumentTraversal"
     | "onShellNavigation"
     | "onNativeLocationNavigation"
+    | "allowFormAction"
     | "onError"
   > {
     return {
@@ -1333,16 +1371,29 @@ export class VFrameElement extends HTMLElementBase {
             }),
           traversalSupersededError,
         ),
-      onShellNavigation: (detail) => {
+      onShellNavigation: (detail, policy) => {
         if (!ownsController()) {
           return false;
         }
         const allowed = this.#dispatchNavigate(detail) && ownsController();
         if (allowed) {
-          this.ownerDocument.defaultView?.location.assign(detail.to);
+          if (policy?.referrerPolicy !== undefined || policy?.noReferrer === true) {
+            const link = this.ownerDocument.createElement("a");
+            link.href = detail.to;
+            if (policy.noReferrer) {
+              link.rel = "noreferrer";
+            }
+            if (policy.referrerPolicy !== undefined) {
+              link.referrerPolicy = policy.referrerPolicy;
+            }
+            link.click();
+          } else {
+            this.ownerDocument.defaultView?.location.assign(detail.to);
+          }
         }
         return allowed;
       },
+      allowFormAction: (check) => this.#allowsFormAction(check),
       onNativeLocationNavigation: (detail, mode) => {
         if (!ownsController()) {
           return;
@@ -1631,6 +1682,54 @@ export class VFrameElement extends HTMLElementBase {
     return () => guardAbort.abort();
   }
 
+  #allowsFormAction(check: VFrameFormActionCheck): boolean {
+    if (this.#formActionPolicy !== null) {
+      return Boolean(this.#formActionPolicy(check));
+    }
+    const rawPolicy = this.getAttribute("form-action");
+    if (rawPolicy === null) {
+      return true;
+    }
+    const tokens = rawPolicy
+      .trim()
+      .split(/[\t\n\f\r ]+/)
+      .filter((token) => token !== "");
+    if (tokens.length === 0) {
+      return true;
+    }
+    const hostOrigin = this.ownerDocument.location.origin;
+    const url = check.url;
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      if (lower === "'none'" || lower === "none") {
+        return false;
+      }
+      if (lower === "'self'" || lower === "self") {
+        if (url.origin === hostOrigin) return true;
+        continue;
+      }
+      if (lower === "*") {
+        if (url.protocol === "http:" || url.protocol === "https:") return true;
+        continue;
+      }
+      if (lower === "http:" || lower === "https:") {
+        if (url.protocol === lower) return true;
+        continue;
+      }
+      const allowed = URL.parse(token);
+      if (allowed !== null && allowed.origin === url.origin) {
+        if (
+          allowed.pathname === "/" ||
+          url.pathname === allowed.pathname ||
+          (allowed.pathname.endsWith("/") && url.pathname.startsWith(allowed.pathname))
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   #installHostScriptPreloads(requestedURL: URL): () => void {
     const preload = this.preloadScripts;
     if (!Array.isArray(preload) || preload.length === 0) {
@@ -1642,6 +1741,12 @@ export class VFrameElement extends HTMLElementBase {
     }
     const hostOrigin = this.ownerDocument.location.origin;
     const credentials = this.credentials;
+    // HTML <link rel="preload" crossorigin="anonymous"> maps to Fetch
+    // credentials "same-origin", which still sends same-origin cookies/auth.
+    // Skip optional preload hints when the frame explicitly requested "omit".
+    if (credentials === "omit") {
+      return () => {};
+    }
     const nonce = this.nonce;
     const links: HTMLLinkElement[] = [];
     for (const specifier of preload) {
@@ -1658,7 +1763,7 @@ export class VFrameElement extends HTMLElementBase {
       const crossOrigin =
         credentials === "include"
           ? "use-credentials"
-          : credentials === "omit" || parsed.origin !== hostOrigin
+          : parsed.origin !== hostOrigin
             ? "anonymous"
             : null;
       if (crossOrigin !== null) {
