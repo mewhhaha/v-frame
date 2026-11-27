@@ -83,7 +83,10 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
 
   const foreignElement = createForeignElementFacade(context, style, attributes);
   const marking = installNodeMarking(context, style, events, attributes, foreignElement);
-  attributes.setAttributeMarker(marking.markVirtualAttribute);
+  attributes.setAttributeMarker(
+    marking.markVirtualAttribute,
+    marking.evictDirtyDetachedWatches,
+  );
   marking.markShell();
 
   const nodeArguments = createNodeArguments(context);

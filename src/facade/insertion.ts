@@ -132,6 +132,8 @@ export function createNodeInsertion(
   const emptyScan = createScan();
   const scratchScan = createScan();
   let scratchInUse = false;
+  const singleNodeScratch: [Node] = [null as unknown as Node];
+  let singleNodeScratchInUse = false;
 
   const isSettledMovePostCandidate = (node: Node): boolean => {
     if (isElementNode(node)) {
@@ -406,10 +408,9 @@ export function createNodeInsertion(
     const scan = prepareInsertion(node, undefined, wasConnected);
     const isFragment = node.nodeType === 11;
     // Fragments empty their childNodes during insertion so must be snapshotted
-    // beforehand; single nodes into a disconnected parent need no array unless
-    // a custom-element callback connects the parent during insertion.
-    const nodes =
-      isFragment || wasConnected || scan === undefined ? insertedNodes(node) : null;
+    // beforehand; single nodes avoid allocating a fresh [node] wrapper array
+    // on the common clean-subtree append path.
+    const nodes = isFragment || scan === undefined ? insertedNodes(node) : null;
     const skippedScan = !wasConnected && scan === emptyScan;
     let baseElementChanged = false;
     if (scan === undefined) {
@@ -424,13 +425,30 @@ export function createNodeInsertion(
         : nativeInsertBefore.call(parent, node, reference)
     ) as T;
     if (parent.isConnected) {
-      finishDirectInsertion(
-        parent,
-        nodes ?? [node],
-        scan,
-        skippedScan,
-        baseElementChanged,
-      );
+      if (nodes === null && !singleNodeScratchInUse) {
+        singleNodeScratchInUse = true;
+        singleNodeScratch[0] = node;
+        try {
+          finishDirectInsertion(
+            parent,
+            singleNodeScratch,
+            scan,
+            skippedScan,
+            baseElementChanged,
+          );
+        } finally {
+          singleNodeScratch[0] = null as unknown as Node;
+          singleNodeScratchInUse = false;
+        }
+      } else {
+        finishDirectInsertion(
+          parent,
+          nodes ?? [node],
+          scan,
+          skippedScan,
+          baseElementChanged,
+        );
+      }
     }
     return result;
   };

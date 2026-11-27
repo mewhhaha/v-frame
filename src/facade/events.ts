@@ -192,6 +192,7 @@ export function installEventFacade(
     nativeAddEventListener,
     nativeRemoveEventListener,
     nativeDispatchEvent,
+    nativeContains,
     nativeGetRootNode,
     reachesVirtualDocument,
     virtualNodes,
@@ -201,15 +202,23 @@ export function installEventFacade(
   let eventHandlerSequence = 0;
   const abortSignal = captureAbortSignalMethods(window);
   const eventPrototype = window.Event.prototype;
-  const nativeDefaultPrevented = Object.getOwnPropertyDescriptor(
-    eventPrototype,
-    "defaultPrevented",
-  )!.get!;
+  const eventGetter = (name: string) =>
+    Object.getOwnPropertyDescriptor(eventPrototype, name)!.get!;
+  const nativeDefaultPrevented = eventGetter("defaultPrevented");
   const nativePreventDefault = eventPrototype.preventDefault;
   const nativeReturnValue = Object.getOwnPropertyDescriptor(
     eventPrototype,
     "returnValue",
   )!;
+  const nativeEventTarget = eventGetter("target");
+  const nativeEventCurrentTarget = eventGetter("currentTarget");
+  const nativeEventPhase = eventGetter("eventPhase");
+  const nativeEventType = eventGetter("type");
+  const nativeEventBubbles = eventGetter("bubbles");
+  const nativeEventCancelBubble = eventGetter("cancelBubble");
+  const nativeEventTimeStamp = eventGetter("timeStamp");
+  const nativeComposedPath = eventPrototype.composedPath;
+  const nativeStopPropagation = eventPrototype.stopPropagation;
   const nativeRemoveAttributeNode = window.Element.prototype.removeAttributeNode;
   const nativeSetAttributeNodeNS = window.Element.prototype.setAttributeNodeNS;
   const nativeGetAttributeNodeNS = window.Element.prototype.getAttributeNodeNS;
@@ -230,8 +239,8 @@ export function installEventFacade(
   const mirroredEvents = new WeakMap<Event, Event>();
   const mirroredEventSources = new WeakMap<Event, Event>();
   const listenerEventSources = new WeakMap<Event, Event>();
-  const listenerEvents = new WeakMap<Event, Event>();
   const nativeEventMembers = new WeakMap<object, PropertyDescriptorMap>();
+  let eventPrototypeMembers: PropertyDescriptorMap | undefined;
   const hostWindow = hostDocument.defaultView!;
   const hostEventPrototype = hostWindow.Event.prototype;
   const lazyEvents = options.lazyEvents === true;
@@ -358,6 +367,9 @@ export function installEventFacade(
       }
     }
     nativeEventMembers.set(prototype, snapshot);
+    if (prototype === eventPrototype) {
+      eventPrototypeMembers = snapshot;
+    }
   };
   const ensureLazyEventPrototypes = (mirrored: Event, source: Event): void => {
     let guestProto = Object.getPrototypeOf(mirrored) as object | null;
@@ -426,7 +438,8 @@ export function installEventFacade(
       owner !== null;
       owner = Object.getPrototypeOf(owner) as object | null
     ) {
-      const map = nativeEventMembers.get(owner);
+      const map =
+        owner === eventPrototype ? eventPrototypeMembers : nativeEventMembers.get(owner);
       if (map !== undefined) {
         const native = map[property];
         if (native !== undefined) {
@@ -456,6 +469,9 @@ export function installEventFacade(
   const stoppedEventDefaults = new WeakMap<Event, () => void>();
   const resumedEventDefaults = new WeakMap<Event, () => void>();
   // Boolean latches skip empty WeakMap/WeakSet probes on the hot dispatch path.
+  let hasMirroredEvents = false;
+  let hasBoundaryStopped = false;
+  let hasLogicalCurrentTargets = false;
   let hasLogicalEventPhases = false;
   let hasPassiveListeners = false;
   let hasImmediateStops = false;
@@ -482,8 +498,11 @@ export function installEventFacade(
       : null;
   };
 
+  const dispatchedEventSource = (event: Event): Event =>
+    hasMirroredEvents ? (mirroredEventSources.get(event) ?? event) : event;
+
   const listenerEventSource = (event: Event): Event =>
-    listenerEventSources.get(event) ?? mirroredEventSources.get(event) ?? event;
+    listenerEventSources.get(event) ?? dispatchedEventSource(event);
 
   const isGuestVisibleTarget = (target: EventTarget): boolean => {
     if (target === document || target === window) {
@@ -539,13 +558,14 @@ export function installEventFacade(
         composed: source.composed,
       });
     }
+    hasMirroredEvents = true;
     mirroredEvents.set(source, mirrored);
     mirroredEventSources.set(mirrored, source);
     return mirrored;
   };
 
   const logicalComposedPath = (source: Event): EventTarget[] => {
-    const path = source.composedPath();
+    const path = nativeComposedPath.call(source);
     const rootIndex = path.indexOf(options.html);
     if (rootIndex === -1) {
       return path;
@@ -618,31 +638,40 @@ export function installEventFacade(
       switch (property) {
         case "target":
         case "srcElement":
-          return logicalEventTargets.get(source) ?? source.target;
-        case "currentTarget":
-          return source.currentTarget === null
+          return logicalEventTargets.get(source) ?? nativeEventTarget.call(source);
+        case "currentTarget": {
+          const nativeCurrent = nativeEventCurrentTarget.call(source);
+          return nativeCurrent === null
             ? null
-            : (logicalCurrentTargets.get(source) ?? source.currentTarget);
+            : hasLogicalCurrentTargets
+              ? (logicalCurrentTargets.get(source) ?? nativeCurrent)
+              : nativeCurrent;
+        }
         case "eventPhase":
-          return source.currentTarget === null
+          return nativeEventCurrentTarget.call(source) === null
             ? 0
             : hasLogicalEventPhases
-              ? (logicalEventPhases.get(source) ?? source.eventPhase)
-              : source.eventPhase;
+              ? (logicalEventPhases.get(source) ?? nativeEventPhase.call(source))
+              : nativeEventPhase.call(source);
         case "view":
           // Only UIEvents have a view, and a null one stays null.
           return "view" in source ? (source.view === null ? null : window) : undefined;
         case "defaultPrevented":
-          return wasEventDefaultPrevented(source);
+          return hasSuppressedDefaults
+            ? wasEventDefaultPrevented(source)
+            : nativeDefaultPrevented.call(source);
         case "cancelBubble":
-          return boundaryPropagationStopped.has(source) &&
+          return hasBoundaryStopped &&
+            boundaryPropagationStopped.has(source) &&
             !virtualPropagationStopped.has(source)
             ? false
-            : source.cancelBubble;
+            : nativeEventCancelBubble.call(source);
         case "returnValue":
-          return !wasEventDefaultPrevented(source);
+          return !(hasSuppressedDefaults
+            ? wasEventDefaultPrevented(source)
+            : nativeDefaultPrevented.call(source));
         case "timeStamp":
-          return source.timeStamp;
+          return nativeEventTimeStamp.call(source);
         case "relatedTarget": {
           // The browser retargets relatedTarget against the current target,
           // which still leaves a node of the host page visible to a listener
@@ -731,13 +760,12 @@ export function installEventFacade(
     },
   };
 
-  const eventForListener = (
-    event: Event,
+  const eventForSource = (
+    source: Event,
     currentTarget: EventTarget,
     eventPhase?: number,
     passive = false,
   ): Event => {
-    const source = listenerEventSource(event);
     if (hasLinkDefaultSuppressors) {
       resumedEventDefaults.get(source)?.();
     }
@@ -747,18 +775,30 @@ export function installEventFacade(
     } else if (hasPassiveListeners) {
       passiveListeners.delete(source);
     }
-    logicalCurrentTargets.set(source, currentTarget);
+    if (currentTarget !== nativeEventCurrentTarget.call(source)) {
+      hasLogicalCurrentTargets = true;
+      logicalCurrentTargets.set(source, currentTarget);
+    } else if (hasLogicalCurrentTargets) {
+      logicalCurrentTargets.delete(source);
+    }
     if (eventPhase !== undefined) {
       hasLogicalEventPhases = true;
       logicalEventPhases.set(source, eventPhase);
     } else if (hasLogicalEventPhases) {
       logicalEventPhases.delete(source);
     }
-    const existing = listenerEvents.get(source);
-    if (existing !== undefined) {
-      return existing;
+    const existingState = listenerEventStates.get(source);
+    if (existingState !== undefined) {
+      return existingState.proxy;
     }
-    const mirrored = event instanceof window.Event ? event : createMirroredEvent(source);
+    const mirrored =
+      source instanceof window.Event ? source : createMirroredEvent(source);
+    if (mirrored !== source) {
+      const mirroredState = listenerEventStates.get(mirrored);
+      if (mirroredState !== undefined) {
+        return mirroredState.proxy;
+      }
+    }
     if (lazyEvents) {
       ensureLazyEventPrototypes(mirrored, source);
     }
@@ -771,20 +811,31 @@ export function installEventFacade(
     state.proxy = listenerEvent;
     listenerEventStates.set(mirrored, state);
     listenerEventSources.set(listenerEvent, source);
-    listenerEvents.set(source, listenerEvent);
     return listenerEvent;
+  };
+
+  const eventForListener = (
+    event: Event,
+    currentTarget: EventTarget,
+    eventPhase?: number,
+    passive = false,
+  ): Event =>
+    eventForSource(listenerEventSource(event), currentTarget, eventPhase, passive);
+
+  const finishDispatchedEventListener = (source: Event): void => {
+    if (
+      nativeEventCancelBubble.call(source) ||
+      (nativeEventCurrentTarget.call(source) === options.shadowRoot &&
+        nativeEventPhase.call(source) === 3)
+    )
+      stoppedEventDefaults.get(source)?.();
   };
 
   const finishEventListener = (event: Event): void => {
     if (!hasLinkDefaultSuppressors) {
       return;
     }
-    const source = listenerEventSource(event);
-    if (
-      source.cancelBubble ||
-      (source.currentTarget === options.shadowRoot && source.eventPhase === 3)
-    )
-      stoppedEventDefaults.get(source)?.();
+    finishDispatchedEventListener(listenerEventSource(event));
   };
 
   // Document listeners run from the root relay rather than from the document
@@ -797,14 +848,29 @@ export function installEventFacade(
     type: string,
   ): EventListener => {
     const passive = listenerPassive(listenerOptions, type, true);
+    const phase = capture ? 1 : 3;
+    if (typeof listener === "function") {
+      return (event) => {
+        const source = dispatchedEventSource(event);
+        const eventPhase =
+          nativeEventCurrentTarget.call(source) === document ? undefined : phase;
+        const listenerEvent = eventForSource(source, document, eventPhase, passive);
+        try {
+          listener.call(document, listenerEvent);
+        } finally {
+          if (hasLinkDefaultSuppressors) finishDispatchedEventListener(source);
+        }
+      };
+    }
     return (event) => {
-      const eventPhase = event.currentTarget === document ? undefined : capture ? 1 : 3;
-      const listenerEvent = eventForListener(event, document, eventPhase, passive);
+      const source = dispatchedEventSource(event);
+      const eventPhase =
+        nativeEventCurrentTarget.call(source) === document ? undefined : phase;
+      const listenerEvent = eventForSource(source, document, eventPhase, passive);
       try {
-        if (typeof listener === "function") listener.call(document, listenerEvent);
-        else listener.handleEvent(listenerEvent);
+        listener.handleEvent(listenerEvent);
       } finally {
-        finishEventListener(event);
+        if (hasLinkDefaultSuppressors) finishDispatchedEventListener(source);
       }
     };
   };
@@ -874,7 +940,8 @@ export function installEventFacade(
       if (current === null || current === undefined) {
         return;
       }
-      const listenerEvent = eventForListener(event, element);
+      const source = dispatchedEventSource(event);
+      const listenerEvent = eventForSource(source, element);
       try {
         const result = (current as (this: unknown, event: Event) => unknown).call(
           element,
@@ -886,7 +953,7 @@ export function installEventFacade(
       } catch (error) {
         options.onEventHandlerError(error);
       } finally {
-        finishEventListener(event);
+        if (hasLinkDefaultSuppressors) finishDispatchedEventListener(source);
       }
     };
     let wrappers = elementHandlerWrappers.get(element);
@@ -1004,9 +1071,16 @@ export function installEventFacade(
 
   // One shared boundary listener serves every relayed event type.
   const boundaryRelay: EventListener = (event) => {
-    if (event.composedPath().includes(options.html)) {
-      boundaryPropagationStopped.add(listenerEventSource(event));
-      event.stopPropagation();
+    const target = nativeEventTarget.call(event) as Node | null;
+    if (
+      (target !== null &&
+        (target === options.html ||
+          ("nodeType" in target && nativeContains.call(options.html, target)))) ||
+      nativeComposedPath.call(event).includes(options.html)
+    ) {
+      hasBoundaryStopped = true;
+      boundaryPropagationStopped.add(dispatchedEventSource(event));
+      nativeStopPropagation.call(event);
     }
   };
 
@@ -1019,7 +1093,7 @@ export function installEventFacade(
   };
 
   const listenerCanContinue = (event: Event): boolean =>
-    !hasImmediateStops || !immediatePropagationStopped.has(listenerEventSource(event));
+    !hasImmediateStops || !immediatePropagationStopped.has(dispatchedEventSource(event));
 
   const invokeRootListeners = (event: Event, capture: boolean): void => {
     virtualListeners
@@ -1033,16 +1107,22 @@ export function installEventFacade(
     }
     ensureOutsideEventRelay(type);
     const capture: EventListener = (event) => {
-      immediatePropagationStopped.delete(listenerEventSource(event));
+      if (hasImmediateStops) {
+        immediatePropagationStopped.delete(dispatchedEventSource(event));
+      }
       documentListeners.invoke(event, true, () => listenerCanContinue(event));
-      if (event.cancelBubble || !listenerCanContinue(event)) {
+      if (nativeEventCancelBubble.call(event) || !listenerCanContinue(event)) {
         return;
       }
       invokeRootListeners(event, true);
     };
     const bubble: EventListener = (event) => {
       invokeRootListeners(event, false);
-      if (!event.bubbles || event.cancelBubble || !listenerCanContinue(event)) {
+      if (
+        !nativeEventBubbles.call(event) ||
+        nativeEventCancelBubble.call(event) ||
+        !listenerCanContinue(event)
+      ) {
         return;
       }
       documentListeners.invoke(event, false, () => listenerCanContinue(event));
@@ -1063,13 +1143,24 @@ export function installEventFacade(
             type,
             target === options.html || target === options.body,
           );
+          if (typeof listener === "function") {
+            return (event) => {
+              const source = dispatchedEventSource(event);
+              const listenerEvent = eventForSource(source, target, undefined, passive);
+              try {
+                listener.call(target, listenerEvent);
+              } finally {
+                if (hasLinkDefaultSuppressors) finishDispatchedEventListener(source);
+              }
+            };
+          }
           return (event) => {
-            const listenerEvent = eventForListener(event, target, undefined, passive);
+            const source = dispatchedEventSource(event);
+            const listenerEvent = eventForSource(source, target, undefined, passive);
             try {
-              if (typeof listener === "function") listener.call(target, listenerEvent);
-              else listener.handleEvent(listenerEvent);
+              listener.handleEvent(listenerEvent);
             } finally {
-              finishEventListener(event);
+              if (hasLinkDefaultSuppressors) finishDispatchedEventListener(source);
             }
           };
         },
@@ -1374,8 +1465,10 @@ export function installEventFacade(
         const previousTarget =
           source === null ? undefined : logicalEventTargets.get(source);
         if (source !== null) {
-          ensureBoundaryEventRelay(source.type);
-          logicalEventTargets.delete(source);
+          ensureBoundaryEventRelay(nativeEventType.call(source));
+          if (previousTarget !== undefined) {
+            logicalEventTargets.delete(source);
+          }
         }
         let result: boolean;
         try {
@@ -1391,7 +1484,9 @@ export function installEventFacade(
         if (hasLinkDefaultSuppressors) {
           dispatchFinalizers.get(unwrapped)?.();
         }
-        return virtual ? !wasEventDefaultPrevented(unwrapped) : result;
+        return virtual && hasSuppressedDefaults
+          ? !wasEventDefaultPrevented(unwrapped)
+          : result;
       },
     });
   };

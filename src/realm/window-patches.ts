@@ -568,6 +568,7 @@ export function installWindowEventBridge(
 ): () => void {
   const nativeAddEventListener = window.addEventListener.bind(window);
   const nativeRemoveEventListener = window.removeEventListener.bind(window);
+  const nativeContains = window.Node.prototype.contains;
   const eventHandlers = new Map<string, WindowEventHandler>();
   const patchedDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
   const shadowListeners = new WeakMap<EventListener, EventListener>();
@@ -610,7 +611,15 @@ export function installWindowEventBridge(
       // Two guests can share this shadow root during replacement. Filter
       // before invoking the registry wrapper, which consumes once listeners.
       const shadowListener: EventListener = (event) => {
-        if (event.composedPath().includes(guestRoot)) wrapper(event);
+        const target = event.target as Node | null;
+        if (
+          (target !== null &&
+            (target === guestRoot ||
+              ("nodeType" in target && nativeContains.call(guestRoot, target)))) ||
+          event.composedPath().includes(guestRoot)
+        ) {
+          wrapper(event);
+        }
       };
       shadowListeners.set(wrapper, shadowListener);
       nativeAddEventListener(type, wrapper, listenerOptions);

@@ -3,6 +3,62 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0 - 2026-11-27
+
+### Changed
+
+- Optimized bubbling event dispatch, link interception, attribute writes,
+  detached-watch lifecycle, and single-node tree insertion by default (Round 9,
+  zero opt-ins required):
+  - **Zero-allocation bubbling event boundary & link interception
+    (`src/facade/events.ts`, `src/realm/window-patches.ts`,
+    `src/realm/navigation.ts`):** Avoided allocating `event.composedPath()` on
+    ordinary bubbling events in `boundaryRelay`, window shadow listeners, and
+    `suppressLinkDefault` by walking `parentNode` / checking `nativeContains`
+    directly to the guest root (falling back to `composedPath()` only when
+    crossing a shadow host, nested `<v-frame>`, or detached path). Captured
+    native `Event.prototype` getters directly, merged `listenerEvents` into
+    `listenerEventStates`, added latches for mirrored events / boundary stops /
+    logical `currentTarget`, split monomorphic function vs `EventListenerObject`
+    wrappers, and returned `nativeDispatchEvent` directly when no host defaults
+    were suppressed.
+  - **Monomorphic hot attribute patches & `observedAttributeElements` latch
+    (`src/facade/attributes.ts`):** Replaced the shared megamorphic trampoline
+    for `getAttribute`, `hasAttribute`, `setAttribute`, and `removeAttribute`
+    with direct monomorphic wrappers and gated `observedAttributeElements.has()`
+    behind a boolean latch in `lazy-attributes` mode.
+  - **Synchronous eviction of dirtied `detachedWatch` observers
+    (`src/facade/marking.ts`, `src/facade/attributes.ts`,
+    `src/facade/index.ts`):** Disconnected clean-subtree `MutationObserver`
+    watches synchronously on the first attribute write inside a re-attached
+    subtree (using a GC-safe `WeakRef` negative cache for unrelated elements) so
+    subsequent synchronous `setAttribute` loops no longer queue thousands of
+    unused `MutationRecord`s before the next microtask.
+  - **Single-node `append`/`prepend` & zero-array connected insertion
+    (`src/facade/tree-patches.ts`, `src/facade/insertion.ts`,
+    `src/realm/index.ts`):** Fast-pathed single-`Node` `append(node)` and
+    `prepend(node)` via `arguments.length === 1` without rest-array allocation,
+    reused a reentrancy-safe single-node tuple in `insertDirect`, and guarded
+    the `HTMLStyleElement` `instanceof` check in `onConnectedNodes` with a
+    `nodeType`/`localName` check.
+  - In idle `pnpm bench` runs on an AMD Ryzen 7 7800X3D (`0.8.0 → 0.9.0`):
+    - **Chromium 153:** `setAttribute` (50k×) sped up **2.0x** default
+      (`15.7 → 7.9 ms`, `2.3x` host) and **2.5x** with `lazy-attributes`
+      (`13.7 → 5.4 ms`, **`1.5x` of host DOM**), `getAttribute` (50k×) dropped
+      `2.7 → 2.3 ms` (**`1.5x` host**), `events` click dispatch (10k×) dropped
+      `35.0 → 30.2 ms` (`27.2 ms` with `lazy-events`, **`2.7x` host**), 1k
+      insertion with `lazy-attributes + lazy-events` reached **`6.4 ms`**, and
+      marginal activation cost dropped to **`4.83 µs/element`**.
+    - **Firefox 155:** `setAttribute` (50k×) sped up **1.6x** default
+      (`22.0 → 14.0 ms`) and **2.25x** with `lazy-attributes`
+      (`18.0 → 8.0 ms`, **`1.6x` of host DOM**), `getAttribute` (50k×) dropped
+      `3.0 → 2.0 ms`, `events` click dispatch (10k×) dropped **`54.0 → 37.0 ms`**
+      (**`-31%`**, **`2.6x` host**), 1k insertion with `lazy-attributes + lazy-events`
+      dropped to **`12.0 ms`** (`1k` activation **`17.0 ms`**), and marginal
+      activation cost dropped below `5 µs` to **`4.92 µs/element`**.
+    - **Bundle size:** `80,245 B / 82,000 B` gzip (`98%` of budget; `+607 B` vs
+      `0.8.0`).
+
 ## 0.8.0 - 2026-11-27
 
 ### Changed

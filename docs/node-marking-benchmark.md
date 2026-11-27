@@ -744,6 +744,61 @@ Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
 
 - **Bundle size** is `79,638 B / 80,000 B` gzip (`100%` of budget).
 
+## Round 9 — bubbling events, monomorphic attributes, single-node insertion, and synchronous watch eviction (`0.9.0`)
+
+Measuring `0.8.0` against bare-platform architectural floors exposed five
+remaining default steady-state overheads:
+
+- **Zero-allocation bubbling event boundary & link interception
+  (`src/facade/events.ts`, `src/realm/window-patches.ts`,
+  `src/realm/navigation.ts`):** `boundaryRelay`, window shadow listeners, and
+  `suppressLinkDefault` previously called `event.composedPath()` on every
+  bubbling event / click, allocating an array on every dispatch. All three now
+  check `nativeContains` or walk `parentNode` directly to the guest root and
+  fall back to `composedPath()` only when crossing a shadow host, nested
+  `<v-frame>`, or detached path. `installEventFacade` also captures native
+  `Event.prototype` getters directly, merges `listenerEvents` into
+  `listenerEventStates`, adds latches for mirrored events / boundary stops /
+  logical `currentTarget`, splits monomorphic function vs `EventListenerObject`
+  wrappers, and returns `nativeDispatchEvent` directly when no host defaults
+  were suppressed.
+- **Monomorphic hot attribute patches & `observedAttributeElements` latch
+  (`src/facade/attributes.ts`):** Patch `getAttribute`, `hasAttribute`,
+  `setAttribute`, and `removeAttribute` with direct monomorphic wrappers instead
+  of sharing one 12-method trampoline, and gate `observedAttributeElements.has`
+  behind a boolean latch in `lazy-attributes` mode.
+- **Synchronous `detachedWatch` eviction (`src/facade/marking.ts`,
+  `src/facade/attributes.ts`, `src/facade/index.ts`):** Disconnect a
+  clean-subtree `MutationObserver` synchronously on the first attribute write
+  inside a re-attached subtree (with a GC-safe `WeakRef` negative cache for
+  unrelated elements) instead of waiting for the next microtask while
+  synchronous `setAttribute` loops queue thousands of `MutationRecord`s.
+- **Single-node `append`/`prepend` & zero-array connected insertion
+  (`src/facade/tree-patches.ts`, `src/facade/insertion.ts`,
+  `src/realm/index.ts`):** Fast-path single-`Node` `append(node)` and
+  `prepend(node)` via `arguments.length === 1`, reuse a reentrancy-safe
+  single-node tuple in `insertDirect`, and guard the `HTMLStyleElement`
+  `instanceof` check in `onConnectedNodes` with `nodeType`/`localName`.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-27 (`pnpm bench` on 5,000-element guest, `0.8.0 → 0.9.0`):
+
+| Operation                                         | Chromium `0.8.0 → 0.9.0` (host)                           | Firefox `0.8.0 → 0.9.0` (host)                |
+| ------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------- |
+| `setAttribute` (50k×) default                     | **`15.7 → 7.9 ms`** (`3.5 ms`, **`2.3x`**)                | **`22.0 → 14.0 ms`** (`5.0 ms`, **`2.8x`**)   |
+| `setAttribute` (50k×) `[lazy-attributes]`         | **`13.7 → 5.4 ms`** (`3.5 ms`, **`1.5x`**)                | **`18.0 → 8.0 ms`** (`5.0 ms`, **`1.6x`**)    |
+| `getAttribute` (50k×)                             | **`2.7 → 2.3 ms`** (`1.5 ms`, **`1.5x`**)                 | **`3.0 → 2.0 ms`** (`1.0 ms`, **`2.0x`**)     |
+| `events` click dispatch (10k×)                    | **`35.0 → 30.2 ms`** (`27.2 ms` `lazy-events`, `10.1 ms`) | **`54.0 → 37.0 ms`** (`14.0 ms`, **`2.6x`**)  |
+| `insertion` (1k×) `[lazy-attrs + lazy-events]`    | **`7.1 → 6.4 ms`** (`1.6 ms`)                             | **`15–16 → 12–13 ms`** (`2.0 ms`)             |
+| `1k lazy-attrs + lazy-events` activation          | **`27.2 ms`**                                             | **`17.0 ms`**                                 |
+| `50k lazy-attrs + lazy-events + cv="auto"` (geom) | **`96.7 ms`** (`141.4 ms` host, **`0.68x`**)              | **`132.0 ms`** (`167.0 ms` host, **`0.79x`**) |
+| Marginal activation cost (default)                | **`4.83 µs/element`** (`0.58 µs` host)                    | **`4.92 µs/element`** (`0.67 µs` host)        |
+
+- **Bundle size** is `80,245 B / 82,000 B` gzip (`98%` of budget; `+607 B` over
+  `0.8.0`).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

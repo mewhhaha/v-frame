@@ -108,6 +108,15 @@ interface RealmNavigation {
 
 export function installRealmNavigation(options: RealmNavigationOptions): RealmNavigation {
   const window = options.window;
+  const hostWindow = options.host.ownerDocument.defaultView! as NavigationWindow;
+  const nativeParent = Object.getOwnPropertyDescriptor(
+    hostWindow.Node.prototype,
+    "parentNode",
+  )!.get!;
+  const hostEventTarget = Object.getOwnPropertyDescriptor(
+    hostWindow.Event.prototype,
+    "target",
+  )!.get!;
   const nativeDOM = captureNativeDOM(window);
   guestMarkupRoots.add(options.guestRoot);
   let navigationInstalled = false;
@@ -371,20 +380,45 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
 
   const scheduledNavigationEvents = new WeakSet<Event>();
   const suppressLinkDefault = (event: Event) => {
-    const path = event.composedPath();
-    const ownerIndex = ownedGuestRootIndex(path);
-    if (ownerIndex === -1) return;
     let anchor: HTMLAnchorElement | HTMLAreaElement | SVGAElement | undefined;
-    for (let index = 0; index < ownerIndex; index += 1) {
-      const candidate = path[index];
-      if (
-        isElementNode(candidate) &&
-        (candidate.localName === "a" || candidate.localName === "area") &&
-        (candidate.hasAttribute("href") ||
-          candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href"))
-      ) {
-        anchor = candidate as HTMLAnchorElement | HTMLAreaElement | SVGAElement;
-        break;
+    // Fast path: walk parentNode directly to guestRoot without allocating
+    // composedPath() unless a shadow root or nested <v-frame> is encountered.
+    let node = hostEventTarget.call(event) as Node | null;
+    while (node !== null && node !== options.guestRoot) {
+      if (guestMarkupRoots.has(node)) return;
+      if (node.nodeType === 1) {
+        const element = node as Element;
+        if (element.shadowRoot !== null || element.localName === "v-frame") {
+          node = null;
+          break;
+        }
+        if (
+          anchor === undefined &&
+          (element.localName === "a" || element.localName === "area") &&
+          (nativeDOM.hasAttribute(element, "href") ||
+            element.hasAttributeNS("http://www.w3.org/1999/xlink", "href"))
+        ) {
+          anchor = element as HTMLAnchorElement | HTMLAreaElement | SVGAElement;
+        }
+      }
+      node = nativeParent.call(node) as Node | null;
+    }
+    if (node !== options.guestRoot) {
+      const path = event.composedPath();
+      const ownerIndex = ownedGuestRootIndex(path);
+      if (ownerIndex === -1) return;
+      anchor = undefined;
+      for (let index = 0; index < ownerIndex; index += 1) {
+        const candidate = path[index];
+        if (
+          isElementNode(candidate) &&
+          (candidate.localName === "a" || candidate.localName === "area") &&
+          (nativeDOM.hasAttribute(candidate, "href") ||
+            candidate.hasAttributeNS("http://www.w3.org/1999/xlink", "href"))
+        ) {
+          anchor = candidate as HTMLAnchorElement | HTMLAreaElement | SVGAElement;
+          break;
+        }
       }
     }
     if (anchor === undefined) return;
@@ -465,11 +499,6 @@ export function installRealmNavigation(options: RealmNavigationOptions): RealmNa
       return;
     }
     navigationInstalled = true;
-    const hostWindow = options.host.ownerDocument.defaultView! as NavigationWindow;
-    const nativeParent = Object.getOwnPropertyDescriptor(
-      hostWindow.Node.prototype,
-      "parentNode",
-    )!.get!;
     hostWindow.navigation.addEventListener(
       "navigate",
       (event) => {

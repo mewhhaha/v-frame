@@ -34,6 +34,8 @@ export interface NodeMarking {
   armDetachedWatchIfCandidate(element: Element): void;
   /** Checks a clean-subtree watch; returns true only when zero mutations occurred since the last walk. */
   consumeDetachedWatch(node: Node, keepAlive: boolean): boolean;
+  /** Synchronously disconnects any clean-subtree watch dirtied by an attribute write. */
+  evictDirtyDetachedWatches(element: Element): void;
   /** Marks that a template or guest shadow root exists, invalidating detached watches. */
   noteOpaqueSubtree(): void;
   virtualDoctype: DocumentType;
@@ -506,17 +508,44 @@ export function installNodeMarking(
   const DETACHED_WATCH_CAP = 16;
   const detachedCandidates = new WeakSet<Element>();
   const detachedWatches = new WeakMap<Element, DetachedWatch>();
-  const activeDetachedObservers = new Set<MutationObserver>();
-  const detachedWatchFinalizer = new FinalizationRegistry<MutationObserver>((obs) => {
-    obs.disconnect();
-    activeDetachedObservers.delete(obs);
+  const activeDetachedWatches = new Set<DetachedWatch>();
+  let cleanFromWatchesRef: WeakRef<Element> | null = null;
+  const detachedWatchFinalizer = new FinalizationRegistry<DetachedWatch>((watch) => {
+    watch.observer.disconnect();
+    activeDetachedWatches.delete(watch);
   });
 
   const teardownDetachedWatch = (element: Element, watch: DetachedWatch): void => {
     detachedWatches.delete(element);
     watch.observer.disconnect();
-    activeDetachedObservers.delete(watch.observer);
+    activeDetachedWatches.delete(watch);
+    if (activeDetachedWatches.size === 0) {
+      cleanFromWatchesRef = null;
+    }
     detachedWatchFinalizer.unregister(element);
+  };
+
+  const evictDirtyDetachedWatches = (element: Element): void => {
+    if (activeDetachedWatches.size === 0) {
+      return;
+    }
+    if (cleanFromWatchesRef !== null && cleanFromWatchesRef.deref() === element) {
+      return;
+    }
+    let evicted = false;
+    for (const watch of activeDetachedWatches) {
+      if (watch.dirty || watch.observer.takeRecords().length > 0) {
+        watch.dirty = true;
+        watch.observer.disconnect();
+        activeDetachedWatches.delete(watch);
+        evicted = true;
+      }
+    }
+    if (activeDetachedWatches.size === 0) {
+      cleanFromWatchesRef = null;
+    } else if (!evicted) {
+      cleanFromWatchesRef = new WeakRef(element);
+    }
   };
 
   const noteDetachedCandidate = (element: Element): void => {
@@ -538,7 +567,7 @@ export function installNodeMarking(
     if (
       realmHasShadowRoots ||
       detachedWatches.has(element) ||
-      activeDetachedObservers.size >= DETACHED_WATCH_CAP
+      activeDetachedWatches.size >= DETACHED_WATCH_CAP
     ) {
       return;
     }
@@ -562,7 +591,10 @@ export function installNodeMarking(
       // accumulate records or occupy a watch slot; re-attach takes the full walk.
       watch.dirty = true;
       observer.disconnect();
-      activeDetachedObservers.delete(observer);
+      activeDetachedWatches.delete(watch);
+      if (activeDetachedWatches.size === 0) {
+        cleanFromWatchesRef = null;
+      }
     });
     watch.observer = observer;
     observer.observe(element, {
@@ -571,8 +603,9 @@ export function installNodeMarking(
       attributes: true,
     });
     detachedWatches.set(element, watch);
-    activeDetachedObservers.add(observer);
-    detachedWatchFinalizer.register(element, observer, element);
+    activeDetachedWatches.add(watch);
+    cleanFromWatchesRef = null;
+    detachedWatchFinalizer.register(element, watch, element);
   };
 
   const consumeDetachedWatch = (node: Node, keepAlive: boolean): boolean => {
@@ -831,10 +864,11 @@ export function installNodeMarking(
   };
 
   const dispose = (): void => {
-    for (const observer of activeDetachedObservers) {
-      observer.disconnect();
+    for (const watch of activeDetachedWatches) {
+      watch.observer.disconnect();
     }
-    activeDetachedObservers.clear();
+    activeDetachedWatches.clear();
+    cleanFromWatchesRef = null;
     compactForeignNodes.drain((node) => {
       const record = node as unknown as Record<PropertyKey, unknown>;
       delete record.ownerDocument;
@@ -861,6 +895,7 @@ export function installNodeMarking(
     noteDetachedCandidate,
     armDetachedWatchIfCandidate,
     consumeDetachedWatch,
+    evictDirtyDetachedWatches,
     noteOpaqueSubtree() {
       realmHasShadowRoots = true;
       opaqueGeneration += 1;

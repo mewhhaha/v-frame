@@ -116,7 +116,10 @@ export interface AttributeFacade {
     namespaceURI: string | null,
   ): void;
   /** Marking is built from this facade, so it hands its marker back afterwards. */
-  setAttributeMarker(mark: (attribute: Attr) => void): void;
+  setAttributeMarker(
+    mark: (attribute: Attr) => void,
+    evictDetachedWatches?: (element: Element) => void,
+  ): void;
   installPatches(): void;
 }
 
@@ -176,6 +179,7 @@ export function installAttributeFacade(
   // Attr to the node document the element was adopted into. So every physical
   // write on a virtual element hands the node it produced back to marking.
   let markVirtualAttribute: ((attribute: Attr) => void) | undefined;
+  let evictDirtyDetachedWatches: ((element: Element) => void) | undefined;
   const markAttributeNode = (element: Element, attribute: Attr | null): Attr | null => {
     if (attribute !== null && virtualNodes.has(element)) {
       // Marking exists before any guest code can write an attribute.
@@ -206,6 +210,7 @@ export function installAttributeFacade(
   // out a node the realm never sees.
   const lazyAttributes = options.lazyAttributes === true;
   const observedAttributeElements = new WeakSet<Element>();
+  let hasObservedAttributeElements = false;
   const nativeAttrOwnerElement = Object.getOwnPropertyDescriptor(
     window.Attr.prototype,
     "ownerElement",
@@ -217,6 +222,7 @@ export function installAttributeFacade(
   ): NamedNodeMap => {
     if (virtualNodes.has(element)) {
       if (lazyAttributes) {
+        hasObservedAttributeElements = true;
         observedAttributeElements.add(element);
       }
       for (let index = 0; index < attributeNodes.length; index += 1) {
@@ -310,7 +316,9 @@ export function installAttributeFacade(
     attributeName: string,
     value: string,
   ): void => {
-    const shouldMark = !lazyAttributes || observedAttributeElements.has(element);
+    const shouldMark =
+      !lazyAttributes ||
+      (hasObservedAttributeElements && observedAttributeElements.has(element));
     if (attributeName === "xlink:href") {
       nativeSetAttributeNS.call(element, XLINK_NAMESPACE, attributeName, value);
       if (shouldMark) {
@@ -947,8 +955,10 @@ export function installAttributeFacade(
     const nextValue = typeof value === "string" ? value : toDOMString(value);
     if (!couldBeManagedAttributeName(attrName)) {
       nativeSetAttribute.call(element, attrName, nextValue);
+      evictDirtyDetachedWatches?.(element);
       if (
-        (!lazyAttributes || observedAttributeElements.has(element)) &&
+        (!lazyAttributes ||
+          (hasObservedAttributeElements && observedAttributeElements.has(element))) &&
         virtualNodes.has(element)
       ) {
         const attribute = nativeGetAttributeNode.call(element, attrName);
@@ -969,7 +979,11 @@ export function installAttributeFacade(
       }
     }
     nativeSetAttribute.call(element, attrName, nextValue);
-    if (virtual && (!lazyAttributes || observedAttributeElements.has(element))) {
+    if (
+      virtual &&
+      (!lazyAttributes ||
+        (hasObservedAttributeElements && observedAttributeElements.has(element)))
+    ) {
       const attribute = nativeGetAttributeNode.call(element, attrName);
       if (attribute !== null) {
         markVirtualAttribute!(attribute);
@@ -1063,7 +1077,8 @@ export function installAttributeFacade(
     nativeSetAttributeNS.call(element, namespace, qualifiedName, authoredValue);
     if (
       virtualNodes.has(element) &&
-      (!lazyAttributes || observedAttributeElements.has(element))
+      (!lazyAttributes ||
+        (hasObservedAttributeElements && observedAttributeElements.has(element)))
     ) {
       getVirtualAttributeNodeNS(element, namespace, localName);
     }
@@ -1156,16 +1171,38 @@ export function installAttributeFacade(
           : nativeGetClientRects.call(this);
       },
     });
+    // Monomorphic direct patches for the hottest attribute methods so V8/Gecko
+    // inline them without a shared megamorphic trampoline call site.
+    patch(elementPrototype, "getAttribute", {
+      writable: true,
+      value(this: Element, qualifiedName: string): string | null {
+        return getVirtualAttribute(this, qualifiedName);
+      },
+    });
+    patch(elementPrototype, "hasAttribute", {
+      writable: true,
+      value(this: Element, qualifiedName: string): boolean {
+        return hasVirtualAttribute(this, qualifiedName);
+      },
+    });
+    patch(elementPrototype, "setAttribute", {
+      writable: true,
+      value(this: Element, qualifiedName: string, value: string): void {
+        setVirtualAttribute(this, qualifiedName, value);
+      },
+    });
+    patch(elementPrototype, "removeAttribute", {
+      writable: true,
+      value(this: Element, qualifiedName: string): void {
+        removeVirtualAttribute(this, qualifiedName);
+      },
+    });
     for (const [name, fn] of [
-      ["getAttribute", getVirtualAttribute],
       ["getAttributeNS", getVirtualAttributeNS],
-      ["hasAttribute", hasVirtualAttribute],
       ["hasAttributeNS", hasVirtualAttributeNS],
       ["getAttributeNames", getVirtualAttributeNames],
       ["getAttributeNode", getVirtualAttributeNode],
       ["getAttributeNodeNS", getVirtualAttributeNodeNS],
-      ["setAttribute", setVirtualAttribute],
-      ["removeAttribute", removeVirtualAttribute],
       ["removeAttributeNS", removeVirtualAttributeNS],
       ["toggleAttribute", toggleVirtualAttribute],
       ["setAttributeNS", setVirtualAttributeNS],
@@ -1297,8 +1334,9 @@ export function installAttributeFacade(
     setVirtualAttributeNS,
     removeVirtualAttributeNS,
     synchronizeURLAttribute,
-    setAttributeMarker(mark) {
+    setAttributeMarker(mark, evictDetachedWatches) {
       markVirtualAttribute = mark;
+      evictDirtyDetachedWatches = evictDetachedWatches;
     },
     installPatches,
   };

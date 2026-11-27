@@ -35,6 +35,7 @@ export function createTreePatches(
     nativeImportNode,
     nativeElementRemove,
     isInVirtualDocumentTree,
+    isHTMLStyleElement,
     subtreeHasBaseElement,
     virtualNodes,
     patch,
@@ -51,7 +52,7 @@ export function createTreePatches(
   } = insertion;
   const { finishVirtualClone } = cloning;
   const { executeConnectedScript } = scripts;
-  const { requireNode, toNodes } = nodeArguments;
+  const { isNodeValue, requireNode, toNodes } = nodeArguments;
 
   const maybeNoteDetached = (node: Node): void => {
     if (node.nodeType !== 1 || !isInVirtualDocumentTree(node)) {
@@ -173,14 +174,32 @@ export function createTreePatches(
     for (const prototype of [elementPrototype, documentFragmentPrototype]) {
       patch(prototype, "append", {
         writable: true,
-        value(this: Node, ...values: Array<Node | string>) {
-          appendValues(this, values, false);
+        value(this: Node) {
+          if (
+            arguments.length === 1 &&
+            isNodeValue(arguments[0]) &&
+            virtualNodes.has(this) &&
+            !(this.nodeType === 1 && isHTMLStyleElement(this as Element))
+          ) {
+            insertDirect(this, arguments[0], "append", undefined, true, true);
+            return;
+          }
+          appendValues(this, Array.from(arguments) as Array<Node | string>, false);
         },
       });
       patch(prototype, "prepend", {
         writable: true,
-        value(this: Node, ...values: Array<Node | string>) {
-          appendValues(this, values, true);
+        value(this: Node) {
+          if (
+            arguments.length === 1 &&
+            isNodeValue(arguments[0]) &&
+            virtualNodes.has(this) &&
+            !(this.nodeType === 1 && isHTMLStyleElement(this as Element))
+          ) {
+            insertDirect(this, arguments[0], "prepend", this.firstChild, true, true);
+            return;
+          }
+          appendValues(this, Array.from(arguments) as Array<Node | string>, true);
         },
       });
       const nativeReplaceChildren = prototype.replaceChildren;

@@ -447,9 +447,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
           scan.links.length === 0 &&
           !scan.hasTarget
         ) {
-          for (const node of nodes) {
-            if (node.parentNode instanceof window.HTMLStyleElement) {
-              styles.scheduleDynamicStyleContent(node.parentNode);
+          for (let index = 0; index < nodes.length; index += 1) {
+            const parent = nodes[index]!.parentNode;
+            if (
+              parent !== null &&
+              parent.nodeType === 1 &&
+              (parent as Element).localName === "style" &&
+              parent instanceof window.HTMLStyleElement
+            ) {
+              styles.scheduleDynamicStyleContent(parent);
             }
           }
           staged?.partsConnected(nodes);
