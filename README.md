@@ -18,7 +18,7 @@ contained in an open shadow root, its JavaScript running with normal `document`,
   realm with virtualized `Document`, `History`, `Location`, CSSOM
   (including `document.adoptedStyleSheets`), same-origin `GET`/`POST` forms,
   and base-URL-aware networking. Guest styles stay scoped to the shadow tree,
-  and the browser runtime is ~79 KB gzipped with zero runtime dependencies.
+  and the browser runtime is ~80 KB gzipped with zero runtime dependencies.
 
 Try the live demo: **[Contact Sheet](https://contact-sheet.jactor.dev/)** — an
 Apollo 11 photo desk composing three independently deployed sites on one page

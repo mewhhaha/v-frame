@@ -17,6 +17,11 @@ import { toDOMString, toLegacyNullToEmptyString } from "./webidl.js";
 
 const INLINE_STYLE_SELECTOR_ID_COUNT = 32;
 const STYLE_URL_PATTERN = /(?:url|image-set|src)\s*\(/i;
+const SIMPLE_STYLE_SELECTOR_VALUE = /^[0-9A-Za-z_-]+$/;
+
+function mayContainStyleURL(value: string): boolean {
+  return value.includes("(") && STYLE_URL_PATTERN.test(value);
+}
 
 function stylePropertyKey(property: string): string {
   return property.startsWith("--") ? property : property.toLowerCase();
@@ -111,6 +116,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
 
   const physicalStyleAttributeValues = new WeakMap<Element, string | null>();
   const styleSelectorValues = new WeakMap<Element, string>();
+  const attachedStyleSelectors = new WeakSet<Element>();
   const styleDeclarations = new WeakMap<Element, CSSStyleDeclaration>();
   const styleFacades = new WeakMap<Element, CSSStyleDeclaration>();
   const linkRelLists = new WeakMap<HTMLLinkElement, DOMTokenList>();
@@ -149,6 +155,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       continue;
     }
     styleSelectorValues.set(element, selectorValue);
+    attachedStyleSelectors.add(element);
     initialStyleSelectorValues.add(selectorValue);
     if (/^\d+$/.test(selectorValue)) {
       nextStyleSelectorValue = Math.max(
@@ -181,20 +188,39 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     return declaration;
   };
 
+  const clearPhysicalStyleAttribute = (element: Element): void => {
+    if (nativeHasAttribute.call(element, "style")) {
+      nativeRemoveAttribute.call(element, "style");
+      physicalStyleAttributeValues.set(element, null);
+    } else if (physicalStyleAttributeValues.get(element) !== null) {
+      physicalStyleAttributeValues.set(element, null);
+    }
+  };
+
   const removeStyleSelector = (element: Element): void => {
-    nativeRemoveAttribute.call(element, options.inlineStyleSelectorAttribute);
+    if (
+      attachedStyleSelectors.has(element) ||
+      nativeHasAttribute.call(element, options.inlineStyleSelectorAttribute)
+    ) {
+      attachedStyleSelectors.delete(element);
+      nativeRemoveAttribute.call(element, options.inlineStyleSelectorAttribute);
+    }
   };
 
   const ensureStyleSelector = (element: Element): string => {
     const existing = styleSelectorValues.get(element);
     if (existing !== undefined) {
-      nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, existing);
+      if (!attachedStyleSelectors.has(element)) {
+        nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, existing);
+        attachedStyleSelectors.add(element);
+      }
       return existing;
     }
 
     const selectorValue = String(nextStyleSelectorValue++);
     styleSelectorValues.set(element, selectorValue);
     nativeSetAttribute.call(element, options.inlineStyleSelectorAttribute, selectorValue);
+    attachedStyleSelectors.add(element);
     return selectorValue;
   };
 
@@ -227,8 +253,13 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     }
     pendingDeletedRules.add(rule);
   });
+  let appliedInlineStyleNonce: string | undefined;
   const applyInlineStyleNonce = (): void => {
     const nonce = options.getNonce();
+    if (nonce === appliedInlineStyleNonce) {
+      return;
+    }
+    appliedInlineStyleNonce = nonce;
     if (nonce === "") {
       nativeRemoveAttribute.call(options.inlineStyleSheet, "nonce");
     } else {
@@ -259,21 +290,63 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       }
       return;
     }
-    const selectorValue = window.CSS.escape(ensureStyleSelector(element));
+    const rawSelectorValue = ensureStyleSelector(element);
     if (sheet === null) {
       return; // A CSP-blocked sheet must stay blocked.
     }
     if (rule === undefined || rule.parentStyleSheet !== sheet) {
-      const index = sheet.insertRule(
-        `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}{}`,
-        sheet.cssRules.length,
-      );
+      const selectorValue = SIMPLE_STYLE_SELECTOR_VALUE.test(rawSelectorValue)
+        ? rawSelectorValue
+        : window.CSS.escape(rawSelectorValue);
+      const selectorHeader = `[${options.inlineStyleSelectorAttribute}="${selectorValue}"]${inlineStyleSpecificity}`;
+      let index: number;
+      let parsedInInsert = false;
+      if (!rewritten.includes("{") && !rewritten.includes("}")) {
+        try {
+          index = sheet.insertRule(
+            `${selectorHeader}{${rewritten}}`,
+            sheet.cssRules.length,
+          );
+          parsedInInsert = true;
+        } catch {
+          index = sheet.insertRule(`${selectorHeader}{}`, sheet.cssRules.length);
+        }
+      } else {
+        index = sheet.insertRule(`${selectorHeader}{}`, sheet.cssRules.length);
+      }
       rule = sheet.cssRules[index] as CSSStyleRule;
       inlineStyleRules.set(element, rule);
       collectedInlineStyles.unregister(element);
       collectedInlineStyles.register(element, rule, element);
+      if (!parsedInInsert) {
+        rule.style.cssText = rewritten;
+      }
+      return;
     }
     rule.style.cssText = rewritten;
+  };
+  const syncDirectRuleUpdate = (
+    element: Element,
+    logicalValue: string,
+    applyToRule: (ruleStyle: CSSStyleDeclaration) => void,
+  ): void => {
+    options.authoredStyleAttributes.set(element, logicalValue);
+    cssomMutatedStyleElements.add(element);
+    clearPhysicalStyleAttribute(element);
+    applyInlineStyleNonce();
+    const sheet = options.inlineStyleSheet.sheet;
+    const rule = inlineStyleRules.get(element);
+    if (
+      logicalValue !== "" &&
+      sheet !== null &&
+      rule !== undefined &&
+      rule.parentStyleSheet === sheet
+    ) {
+      ensureStyleSelector(element);
+      applyToRule(rule.style);
+      return;
+    }
+    updateInlineStyle(element);
   };
   const refreshInlineStyleSheet = (): void => {
     for (const element of options.authoredStyleAttributes.keys()) {
@@ -286,11 +359,12 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     value: string,
     normalize: boolean,
   ): void => {
-    const declaration = nativeStyleDeclaration(element);
-    declaration.cssText = value;
+    const existingDeclaration = styleDeclarations.get(element);
     let logicalValue = value;
     if (normalize) {
-      if (!STYLE_URL_PATTERN.test(value)) {
+      const declaration = existingDeclaration ?? nativeStyleDeclaration(element);
+      declaration.cssText = value;
+      if (!mayContainStyleURL(value)) {
         logicalValue = declaration.cssText;
       } else {
         try {
@@ -301,11 +375,13 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       }
       cssomMutatedStyleElements.add(element);
     } else {
+      if (existingDeclaration !== undefined) {
+        existingDeclaration.cssText = value;
+      }
       cssomMutatedStyleElements.delete(element);
     }
     options.authoredStyleAttributes.set(element, logicalValue);
-    nativeRemoveAttribute.call(element, "style");
-    physicalStyleAttributeValues.set(element, null);
+    clearPhysicalStyleAttribute(element);
     updateInlineStyle(element);
   };
 
@@ -316,8 +392,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       declaration.cssText = "";
     }
     cssomMutatedStyleElements.delete(element);
-    nativeRemoveAttribute.call(element, "style");
-    physicalStyleAttributeValues.set(element, null);
+    clearPhysicalStyleAttribute(element);
     removeStyleSelector(element);
     updateInlineStyle(element);
   };
@@ -349,8 +424,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     const synchronizeDeclaration = (logicalValue: string): void => {
       options.authoredStyleAttributes.set(element, logicalValue);
       cssomMutatedStyleElements.add(element);
-      nativeRemoveAttribute.call(element, "style");
-      physicalStyleAttributeValues.set(element, null);
+      clearPhysicalStyleAttribute(element);
       updateInlineStyle(element);
     };
     const setProperty = (
@@ -358,10 +432,16 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       value: string | null,
       priority?: string,
     ): void => {
-      const propertyName = toDOMString(property);
-      const nextValue = toLegacyNullToEmptyString(value);
+      const propertyName =
+        typeof property === "string" ? property : toDOMString(property);
+      const nextValue =
+        typeof value === "string" ? value : toLegacyNullToEmptyString(value);
       const requestedPriority =
-        priority === undefined ? "" : toLegacyNullToEmptyString(priority);
+        priority === undefined
+          ? ""
+          : typeof priority === "string"
+            ? priority
+            : toLegacyNullToEmptyString(priority);
       if (requestedPriority !== "" && requestedPriority.toLowerCase() !== "important") {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
         return;
@@ -372,11 +452,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         declaration.setProperty(propertyName, nextValue, requestedPriority);
       }
       const previousAuthored = options.authoredStyleAttributes.get(element) ?? "";
-      if (
-        !STYLE_URL_PATTERN.test(previousAuthored) &&
-        !STYLE_URL_PATTERN.test(nextValue)
-      ) {
-        synchronizeDeclaration(declaration.cssText);
+      if (!mayContainStyleURL(previousAuthored) && !mayContainStyleURL(nextValue)) {
+        syncDirectRuleUpdate(element, declaration.cssText, (ruleStyle) => {
+          if (priority === undefined) {
+            ruleStyle.setProperty(propertyName, nextValue);
+          } else {
+            ruleStyle.setProperty(propertyName, nextValue, requestedPriority);
+          }
+        });
         return;
       }
       if (nextValue !== "") {
@@ -418,11 +501,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       synchronizeDeclaration(logicalValue);
     };
     const removeProperty = (property: string): string => {
-      const propertyName = toDOMString(property);
+      const propertyName =
+        typeof property === "string" ? property : toDOMString(property);
       const previous = declaration.removeProperty(propertyName);
       const previousAuthored = options.authoredStyleAttributes.get(element) ?? "";
-      if (!STYLE_URL_PATTERN.test(previousAuthored)) {
-        synchronizeDeclaration(declaration.cssText);
+      if (!mayContainStyleURL(previousAuthored)) {
+        syncDirectRuleUpdate(element, declaration.cssText, (ruleStyle) => {
+          ruleStyle.removeProperty(propertyName);
+        });
         return previous;
       }
       let logicalValue: string;
@@ -489,11 +575,14 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
         }
         let logicalValue = options.authoredStyleAttributes.get(element) ?? "";
         // CSS properties are [LegacyNullToEmptyString]: null clears, not "null".
-        const assigned = toLegacyNullToEmptyString(value);
-        if (!STYLE_URL_PATTERN.test(logicalValue) && !STYLE_URL_PATTERN.test(assigned)) {
+        const assigned =
+          typeof value === "string" ? value : toLegacyNullToEmptyString(value);
+        if (!mayContainStyleURL(logicalValue) && !mayContainStyleURL(assigned)) {
           const updated = Reflect.set(target, property, value, target);
           if (updated) {
-            synchronizeDeclaration(target.cssText);
+            syncDirectRuleUpdate(element, target.cssText, (ruleStyle) => {
+              Reflect.set(ruleStyle, property, value, ruleStyle);
+            });
           }
           return updated;
         }
@@ -690,10 +779,12 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     }
     if (!options.authoredStyleAttributes.has(element)) {
       options.authoredStyleAttributes.set(element, authoredStyle);
-      nativeStyleDeclaration(element).cssText = authoredStyle;
+      const existingDeclaration = styleDeclarations.get(element);
+      if (existingDeclaration !== undefined) {
+        existingDeclaration.cssText = authoredStyle;
+      }
     }
-    nativeRemoveAttribute.call(element, "style");
-    physicalStyleAttributeValues.set(element, null);
+    clearPhysicalStyleAttribute(element);
     updateInlineStyle(element);
   };
 
@@ -726,11 +817,13 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       return;
     }
 
-    nativeStyleDeclaration(element).cssText = physicalValue;
+    const existingDeclaration = styleDeclarations.get(element);
+    if (existingDeclaration !== undefined) {
+      existingDeclaration.cssText = physicalValue;
+    }
     options.authoredStyleAttributes.set(element, physicalValue);
     cssomMutatedStyleElements.delete(element);
-    nativeRemoveAttribute.call(element, "style");
-    physicalStyleAttributeValues.set(element, null);
+    clearPhysicalStyleAttribute(element);
     updateInlineStyle(element);
   }
 

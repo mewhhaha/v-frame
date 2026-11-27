@@ -689,6 +689,61 @@ _\*Default Firefox 1k baseline from the clean main table above (`33.0 ms` / `21.
   default `0.7.0` numbers unchanged (`4.99 µs/element` Chromium, `5.29 µs/element`
   Firefox).
 
+## Round 8 — default DOM hot paths and SSR template balancing (`0.8.0`)
+
+Profiling `0.7.0` revealed seven default steady-state hot paths that still paid
+avoidable per-call overhead with zero opt-ins required:
+
+- **Single-selector shell queries (`src/facade/collections.ts`,
+  `src/facade/context.ts`, `src/facade/document.ts`, `src/facade/marking.ts`):**
+  Track `hasLiteralShellElements()` so translated queries (`body .row`) pass a
+  single native selector (`v-body .row`) instead of a comma-separated union
+  whenever no literal `<html>`/`<head>`/`<body>` element exists inside the guest.
+- **Direct `CSSStyleRule` inline-style updates (`src/facade/style.ts`):**
+  Apply URL-free `el.style.*`, `setProperty`, and `removeProperty` updates
+  directly to the element's live `CSSStyleRule.style` instead of re-parsing
+  `rule.style.cssText`, skip redundant nonce/selector/style-attr mutations and
+  `CSS.escape` on alphanumeric selector IDs, and defer scratch `<span>`
+  allocation when `setAttribute("style", ...)` is called without touching
+  `el.style`.
+- **Shared Event `ProxyHandler` & latch guards (`src/facade/events.ts`):**
+  Replace per-event proxy closure allocations with one shared `ProxyHandler`
+  per realm, gate empty bookkeeping tables with boolean latches, and streamline
+  `nativeEventMember()` prototype lookups.
+- **O(1) `document.getElementById()` & fast `document.title`
+  (`src/facade/document.ts`):** Use `ShadowRoot.prototype.getElementById()`
+  with a containment check (falling back to `[id="..."]` only when shadowed by
+  an external sibling), and query a single `title` first in
+  `documentTitleElement()`.
+- **Attribute fast-reject & multi-child subtree insertion
+  (`src/facade/attributes.ts`, `src/facade/insertion.ts`):** Reject ordinary
+  unmanaged attribute names (`class`, `id`, `data-*`, `aria-*`, `title`, etc.)
+  by length and first character before DOM/Set lookups, and extend the O(1)
+  insertion fast path to freshly constructed plain multi-child subtrees.
+- **Copy-on-edit SSR `balanceTemplateTags()` (`src/server/core.ts`):** Return
+  clean HTML untouched without a full-document lowercase copy, jump across
+  `<script>` bodies with precompiled RegExp state transitions, and fast-path
+  `findTagEnd()` and non-special HTML tags.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-27 (`pnpm bench` on 5,000-element guest, `0.7.0 → 0.8.0`):
+
+| Operation                                            | Chromium `0.7.0 → 0.8.0` (host)                              | Firefox `0.7.0 → 0.8.0` (host)                               |
+| ---------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `querySelectorAll("body .row")` (100×)               | **`30.2 → 1.8 ms`** (`1.8 ms`, **`1.0x`**)                   | **`25.0 → 12.0 ms`** (`11.0 ms`, **`1.1x`**)                 |
+| `querySelector("body .row")` (2k×)                   | **`2.2 → 0.8 ms`** (`0.2 ms`)                                | **`3.0 → 1.0 ms`** (`<1 ms`)                                 |
+| `getElementById` (2k×)                               | **`0.8 ms`** (`0.1 ms`)                                      | **`1.0 ms`** (`<1 ms`)                                       |
+| `el.style.opacity` update (500×)                     | **`16.4 → 1.5 ms`** (`0.2 ms`)                               | **`5.0 → 2.0 ms`** (`<1 ms`)                                 |
+| `getAttribute` (50k×)                                | **`7.2 → 2.7 ms`** (`1.8 ms`, **`1.5x`**)                    | **`8.0 → 3.0 ms`** (`<1 ms`)                                 |
+| `setAttribute` (50k×)                                | **`20.0 → 15.7 ms`** (`13.7 ms` `lazy-attrs`, `3.9 ms` host) | **`28.0 → 22.0 ms`** (`18.0 ms` `lazy-attrs`, `5.0 ms` host) |
+| `events` click dispatch (10k×)                       | **`38.3 → 35.0 ms`** (`10.3 ms`)                             | **`66.0 → 54.0 ms`** (`13.0 ms`)                             |
+| `50k lazy-attrs + lazy-events + cv="auto"` (geom)    | **`106.3 ms`** (`156.4 ms` host, `0.68x`)                    | **`135.0 ms`** (`163.0 ms` host, `0.83x`)                    |
+| SSR `balanceTemplateTags` (2 MB + 200 KB `<script>`) | Node: **`27.6 → 8.2 ms`** (**3.4x**, zero-copy)              | —                                                            |
+
+- **Bundle size** is `79,638 B / 80,000 B` gzip (`100%` of budget).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

@@ -5,6 +5,7 @@
 // tree-patches.ts, the Range overrides in selection.ts and innerHTML all go
 // through here.
 
+import { canHaveURLAttributes } from "../asset-urls.js";
 import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { FacadeContext, SubtreeScan } from "./context.js";
 import type { NodeMarking } from "./marking.js";
@@ -152,24 +153,61 @@ export function createNodeInsertion(
     return false;
   };
 
-  const isPlainMarkedLeafElement = (element: Element): boolean => {
+  const lazyAttributes = options.lazyAttributes === true;
+  const isPlainMarkedElement = (element: Element): boolean => {
     if (
       !virtualNodes.has(element) ||
-      nativeHasAttributes.call(element) ||
       options.authoredURLAttributes.has(element) ||
+      canHaveURLAttributes(element) ||
       isHTMLStyleElement(element) ||
       isHTMLLinkElement(element) ||
       isHTMLScriptElement(element) ||
       isBaseElement(element) ||
-      isHTMLTemplateElement(element)
+      isHTMLTemplateElement(element) ||
+      (options.onShadowRoot !== undefined && element.shadowRoot !== null)
     ) {
       return false;
     }
-    const first = element.firstChild;
-    return (
-      first === null ||
-      (first.nextSibling === null && first.nodeType === 3 && virtualNodes.has(first))
-    );
+    if (nativeHasAttributes.call(element)) {
+      if (
+        !lazyAttributes ||
+        nativeHasAttribute.call(element, FRAGMENT_TARGET_ATTRIBUTE)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Bounded O(1) fast path for freshly constructed plain subtrees (e.g. a row
+  // container with a few child spans/text nodes) that are already marked.
+  const isPlainMarkedSubtree = (root: Element): boolean => {
+    if (!isPlainMarkedElement(root)) {
+      return false;
+    }
+    let budget = 8;
+    const checkChildren = (parent: Element, depth: number): boolean => {
+      for (let child = parent.firstChild; child !== null; child = child.nextSibling) {
+        if ((budget -= 1) < 0) {
+          return false;
+        }
+        const type = child.nodeType;
+        if (type === 3 || type === 8) {
+          if (!virtualNodes.has(child)) return false;
+          continue;
+        }
+        if (type !== 1 || depth >= 2) {
+          return false;
+        }
+        const el = child as Element;
+        if (!isPlainMarkedElement(el)) return false;
+        if (el.firstChild !== null && !checkChildren(el, depth + 1)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return root.firstChild === null || checkChildren(root, 0);
   };
 
   const prepareInsertion = (
@@ -186,7 +224,7 @@ export function createNodeInsertion(
     if (alreadyVirtual && isInVirtualDocumentTree(node)) {
       return scan === undefined ? undefined : undefined;
     }
-    if (nodeType === 1 && alreadyVirtual && isPlainMarkedLeafElement(node as Element)) {
+    if (nodeType === 1 && alreadyVirtual && isPlainMarkedSubtree(node as Element)) {
       return scan ?? emptyScan;
     }
     if (

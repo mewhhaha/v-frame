@@ -131,8 +131,12 @@ export function installDocumentProperties(
     nativeCreateAttribute,
     nativeCreateAttributeNS,
     nativeDispatchEvent,
+    nativeContains,
     nativeHasAttribute,
     nativeQuerySelector,
+    nativeQuerySelectorAll,
+    nativeShadowGetElementById,
+    noteLiteralShellElement,
     nativeCurrentScript,
     virtualNodes,
     logicalEventTargets,
@@ -168,7 +172,10 @@ export function installDocumentProperties(
   const activeElement = () => guestElement(options.shadowRoot.activeElement);
   // The first HTML title in the document, wherever it sits, not only in head.
   const documentTitleElement = (): Element | null => {
-    for (const candidate of Array.from(options.html.querySelectorAll("title"))) {
+    const first = nativeQuerySelector.call(options.html, "title");
+    if (first === null) return null;
+    if (first.namespaceURI === HTML_NAMESPACE) return first;
+    for (const candidate of nativeQuerySelectorAll.call(options.html, "title")) {
       if (candidate.namespaceURI === HTML_NAMESPACE) return candidate;
     }
     return null;
@@ -559,7 +566,7 @@ export function installDocumentProperties(
       configurable: true,
       writable: true,
       value(id: string) {
-        const identifier = toDOMString(id);
+        const identifier = typeof id === "string" ? id : toDOMString(id);
         // An empty id attribute means the element has no ID.
         if (identifier === "") {
           return null;
@@ -569,6 +576,18 @@ export function installDocumentProperties(
           nativeHasAttribute.call(options.html, "id")
         ) {
           return options.html;
+        }
+        if (
+          nativeShadowGetElementById !== undefined &&
+          options.html.parentNode === options.shadowRoot
+        ) {
+          const found = nativeShadowGetElementById.call(options.shadowRoot, identifier);
+          if (found === null) {
+            return null;
+          }
+          if (nativeContains.call(options.html, found)) {
+            return found;
+          }
         }
         return nativeQuerySelector.call(
           options.html,
@@ -617,7 +636,13 @@ export function installDocumentProperties(
       ): HTMLElementTagNameMap[K] {
         // Convert before creating: the name is read again below, and a value that
         // cannot become a string has to fail before an element exists.
-        const localName = toDOMString(name);
+        const localName = typeof name === "string" ? name : toDOMString(name);
+        if (localName.length === 4) {
+          const lower = localName.toLowerCase();
+          if (lower === "body" || lower === "head" || lower === "html") {
+            noteLiteralShellElement();
+          }
+        }
         const element = adoptCreatedElement(
           nativeCreateElement.call(
             document,
@@ -652,6 +677,10 @@ export function installDocumentProperties(
           qualifiedName,
           creationOptions,
         );
+        const tag = element.localName;
+        if (tag.length === 4 && (tag === "body" || tag === "head" || tag === "html")) {
+          noteLiteralShellElement();
+        }
         return adoptCreatedElement(element);
       },
     },

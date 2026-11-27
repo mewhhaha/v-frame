@@ -81,6 +81,7 @@ export function installNodeMarking(
     createdScripts,
     protectedScriptAttributes,
     eventAttributeValues,
+    noteLiteralShellElement,
     patch,
   } = context;
   const nativeAttributesGetter = nativeAttributes?.get;
@@ -347,6 +348,10 @@ export function installNodeMarking(
         }
       }
       if (newlyVirtual) {
+        const tag = element.localName;
+        if (tag.length === 4 && (tag === "body" || tag === "head" || tag === "html")) {
+          noteLiteralShellElement();
+        }
         if (attrCount > 0) {
           rememberAuthoredStyleAttribute(element);
         }
@@ -752,6 +757,9 @@ export function installNodeMarking(
       }
       if (initialFlags & MARKUP_FLAG_SVG) {
         for (const svg of query("a,feImage,image,use")) markSVGURLProperty(svg);
+        if (nativeQuerySelector.call(options.html, "html,head,body") !== null) {
+          noteLiteralShellElement();
+        }
       }
       for (const element of options.authoredURLAttributes.keys()) {
         syncInitialPhysicalURLs(element);

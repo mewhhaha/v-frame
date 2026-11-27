@@ -729,6 +729,48 @@ export function installAttributeFacade(
     },
   ];
 
+  const inlineStyleSelectorAttrLen = options.inlineStyleSelectorAttribute.length;
+  const fragmentTargetAttrLen = FRAGMENT_TARGET_ATTRIBUTE.length;
+  // Fast-reject ordinary unmanaged attribute names (class, id, data-*, aria-*,
+  // role, title, name, value, etc.) using length and first character alone,
+  // before touching virtualNodes, namespaceURI, toLowerCase(), or Set lookups.
+  const couldBeManagedAttributeName = (name: string): boolean => {
+    const len = name.length;
+    if (len < 3) return false;
+    const c0 = name.charCodeAt(0) | 32;
+    if (c0 === 111 /* 'o' */) {
+      return (name.charCodeAt(1) | 32) === 110; /* 'n' */
+    }
+    switch (len) {
+      case 3:
+        return c0 === 114 /* 'r' rel */ || c0 === 115; /* 's' src */
+      case 4:
+        return (
+          c0 === 104 /* 'h' href */ ||
+          c0 === 99 /* 'c' cite */ ||
+          c0 === 100 /* 'd' data */ ||
+          c0 === 116 /* 't' type */
+        );
+      case 5:
+        return c0 === 115; /* 's' style */
+      case 6:
+        return (
+          c0 === 97 /* 'a' action */ ||
+          c0 === 112 /* 'p' poster */ ||
+          c0 === 115 /* 's' srcset */
+        );
+      case 10:
+        return c0 === 102 /* 'f' formaction */ || c0 === 120; /* 'x' xlink:href */
+      case 11:
+        return c0 === 105; /* 'i' imagesrcset */
+      default:
+        return (
+          c0 === 100 /* 'd' */ &&
+          (len === fragmentTargetAttrLen || len === inlineStyleSelectorAttrLen)
+        );
+    }
+  };
+
   const managedAttributeFor = (
     element: Element,
     name: string,
@@ -775,11 +817,13 @@ export function installAttributeFacade(
   };
 
   function getVirtualAttribute(element: Element, qualifiedName: string): string | null {
-    qualifiedName = toDOMString(qualifiedName);
-    const logical = logicalAttribute(element, qualifiedName);
-    return logical === undefined
-      ? nativeGetAttribute.call(element, qualifiedName)
-      : logical;
+    const attrName =
+      typeof qualifiedName === "string" ? qualifiedName : toDOMString(qualifiedName);
+    if (!couldBeManagedAttributeName(attrName)) {
+      return nativeGetAttribute.call(element, attrName);
+    }
+    const logical = logicalAttribute(element, attrName);
+    return logical === undefined ? nativeGetAttribute.call(element, attrName) : logical;
   }
 
   const logicalAttributeNS = (
@@ -823,10 +867,14 @@ export function installAttributeFacade(
   }
 
   function hasVirtualAttribute(element: Element, qualifiedName: string): boolean {
-    qualifiedName = toDOMString(qualifiedName);
-    const logical = logicalAttribute(element, qualifiedName);
+    const attrName =
+      typeof qualifiedName === "string" ? qualifiedName : toDOMString(qualifiedName);
+    if (!couldBeManagedAttributeName(attrName)) {
+      return nativeHasAttribute.call(element, attrName);
+    }
+    const logical = logicalAttribute(element, attrName);
     return logical === undefined
-      ? nativeHasAttribute.call(element, qualifiedName)
+      ? nativeHasAttribute.call(element, attrName)
       : logical !== null;
   }
 
@@ -894,21 +942,35 @@ export function installAttributeFacade(
     qualifiedName: string,
     value: string,
   ): void {
-    qualifiedName = toDOMString(qualifiedName);
-    const nextValue = toDOMString(value);
+    const attrName =
+      typeof qualifiedName === "string" ? qualifiedName : toDOMString(qualifiedName);
+    const nextValue = typeof value === "string" ? value : toDOMString(value);
+    if (!couldBeManagedAttributeName(attrName)) {
+      nativeSetAttribute.call(element, attrName, nextValue);
+      if (
+        (!lazyAttributes || observedAttributeElements.has(element)) &&
+        virtualNodes.has(element)
+      ) {
+        const attribute = nativeGetAttributeNode.call(element, attrName);
+        if (attribute !== null) {
+          markVirtualAttribute!(attribute);
+        }
+      }
+      return;
+    }
     const virtual = virtualNodes.has(element);
     if (virtual) {
       const isHTML = element.namespaceURI === HTML_NAMESPACE;
-      const name = isHTML ? qualifiedName.toLowerCase() : qualifiedName;
+      const name = isHTML ? attrName.toLowerCase() : attrName;
       const managed = managedAttributeFor(element, name, "write", isHTML);
       if (managed !== undefined) {
         managed.set(element, name, nextValue);
         return;
       }
     }
-    nativeSetAttribute.call(element, qualifiedName, nextValue);
+    nativeSetAttribute.call(element, attrName, nextValue);
     if (virtual && (!lazyAttributes || observedAttributeElements.has(element))) {
-      const attribute = nativeGetAttributeNode.call(element, qualifiedName);
+      const attribute = nativeGetAttributeNode.call(element, attrName);
       if (attribute !== null) {
         markVirtualAttribute!(attribute);
       }
@@ -916,17 +978,22 @@ export function installAttributeFacade(
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
-    qualifiedName = toDOMString(qualifiedName);
+    const attrName =
+      typeof qualifiedName === "string" ? qualifiedName : toDOMString(qualifiedName);
+    if (!couldBeManagedAttributeName(attrName)) {
+      nativeRemoveAttribute.call(element, attrName);
+      return;
+    }
     if (virtualNodes.has(element)) {
       const isHTML = element.namespaceURI === HTML_NAMESPACE;
-      const name = isHTML ? qualifiedName.toLowerCase() : qualifiedName;
+      const name = isHTML ? attrName.toLowerCase() : attrName;
       const managed = managedAttributeFor(element, name, "write", isHTML);
       if (managed !== undefined) {
         managed.remove(element, name);
         return;
       }
     }
-    nativeRemoveAttribute.call(element, qualifiedName);
+    nativeRemoveAttribute.call(element, attrName);
   }
 
   let nameProbeElement: Element | undefined;

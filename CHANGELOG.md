@@ -3,6 +3,70 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0 - 2026-11-27
+
+### Changed
+
+- Optimized steady-state DOM selectors, inline styles, event proxies,
+  `getElementById`/`title`, attributes, subtree insertion, and SSR template
+  balancing by default (Round 8, zero opt-ins required):
+  - **Single-selector shell queries (`src/facade/collections.ts`,
+    `src/facade/context.ts`, `src/facade/document.ts`, `src/facade/marking.ts`):**
+    Tracked whether any literal `<html>`/`<head>`/`<body>` element exists inside
+    `<v-html>` (`hasLiteralShellElements()`) so `querySelector`,
+    `querySelectorAll`, `matches`, and `closest` send a single translated
+    selector (`v-body .row`) instead of a comma-separated union when no literal
+    shell tags exist.
+  - **Direct `CSSStyleRule` inline-style updates (`src/facade/style.ts`):**
+    Updated live `CSSStyleRule` declarations directly on URL-free `el.style.*`,
+    `setProperty`, and `removeProperty` calls instead of re-parsing full
+    `rule.style.cssText`, combined safe initial `insertRule` parsing into a
+    single pass, cached applied nonce and attached selector state, avoided
+    `CSS.escape` for alphanumeric selector IDs, and deferred scratch `<span>`
+    declaration allocation when `setAttribute("style", ...)` is called without
+    accessing `el.style`.
+  - **Shared Event `ProxyHandler` & latch guards (`src/facade/events.ts`):**
+    Replaced per-event proxy closure allocations with a single shared
+    `ProxyHandler` per realm, added boolean latches to skip empty bookkeeping
+    `WeakMap`/`WeakSet` lookups on the hot dispatch path, and shortened
+    `nativeEventMember()` prototype lookups.
+  - **O(1) `document.getElementById()` & fast `document.title`
+    (`src/facade/document.ts`):** Routed `document.getElementById()` through
+    `ShadowRoot.prototype.getElementById()` with containment verification
+    (falling back to attribute selector lookup only if shadowed by an external
+    sibling), and replaced `querySelectorAll("title")` with a targeted first
+    match in `documentTitleElement()`.
+  - **Fast-reject attribute access & bounded multi-child subtree insertion
+    (`src/facade/attributes.ts`, `src/facade/insertion.ts`):** Rejected ordinary
+    unmanaged attribute names (`class`, `id`, `data-*`, `aria-*`, `title`,
+    `role`, etc.) by length and first character before `virtualNodes`,
+    `namespaceURI`, `.toLowerCase()`, or Set lookups, and expanded the O(1)
+    insertion fast path to cover freshly created plain multi-child subtrees.
+  - **Copy-on-edit SSR `balanceTemplateTags()` (`src/server/core.ts`):**
+    Switched `balanceTemplateTags()` to copy-on-edit (returning clean documents
+    untouched without a full-document lowercase copy), replaced byte-by-byte
+    `<script>` scanning with precompiled RegExp state transitions, and fast-pathed
+    `findTagEnd()` and ordinary HTML tag names.
+  - In idle `pnpm bench` runs on an AMD Ryzen 7 7800X3D (plus Node SSR):
+    - **Chromium 153:** `querySelectorAll("body .row")` sped up **16.8x**
+      (`30.2 → 1.8 ms`, **`1.0x`** of host DOM), `querySelector("body .row")`
+      sped up **2.8x** (`2.2 → 0.8 ms`), `el.style.opacity` updates (500×)
+      dropped to **`1.5 ms`** (**10.9x** faster), `getAttribute` (50k×) sped up
+      **2.7x** (`7.2 → 2.7 ms`, **`1.5x`** of host), `setAttribute` (50k×)
+      dropped `20.0 → 15.7 ms` (`13.7 ms` with `lazy-attributes`), and `events`
+      click dispatch (10k×) dropped `38.3 → 35.0 ms` (`49 → 29 ms` no-read,
+      `56 → 44 ms` property-read).
+    - **Firefox 155:** `querySelectorAll("body .row")` sped up **2.1x**
+      (`25.0 → 12.0 ms`, **`1.1x`** of host), `querySelector` dropped
+      `3.0 → 1.0 ms`, `getAttribute` (50k×) sped up **2.7x** (`8.0 → 3.0 ms`),
+      `setAttribute` (50k×) dropped `28.0 → 22.0 ms` (`18.0 ms` with
+      `lazy-attributes`), `events` click dispatch (10k×) dropped
+      `66.0 → 54.0 ms`, and 50k `lazy-attributes + lazy-events + content-visibility="auto"`
+      reached **`135.0 ms`** through geometry (`0.83x` of host DOM `163.0 ms`).
+    - **Node SSR:** `balanceTemplateTags()` on 2 MB HTML + 200 KB inline script
+      sped up **3.4x** (`27.6 → 8.2 ms`, zero-copy on clean HTML).
+    - **Bundle size:** `79,638 B / 80,000 B` gzip (`100%` of budget).
+
 ## 0.7.0 - 2026-11-27
 
 ### Added

@@ -170,6 +170,16 @@ test("balanceTemplateTags neutralizes DSD breakout, unclosed templates, abrupt c
     balanceTemplateTags('<script>"<!-- <script></script> -->"</script></template>ok'),
     '<script>"<!-- <script></script> -->"</script>ok',
   );
+  assert.equal(
+    balanceTemplateTags("<script><!--<!--></script></template>ok"),
+    "<script><!--<!--></script>ok",
+  );
+  assert.equal(
+    balanceTemplateTags("<SCRIPT>1</SCRIPT></template>ok"),
+    "<SCRIPT>1</SCRIPT>ok",
+  );
+  const clean = "<div><span>hello</span><script>1+1</script></div>";
+  assert.strictEqual(balanceTemplateTags(clean), clean);
   assert.equal(balanceTemplateTags("<p>hi<!-- open"), "<p>hi<!-- open-->");
   assert.equal(balanceTemplateTags('<div title="unclosed'), "");
   assert.equal(

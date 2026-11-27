@@ -145,6 +145,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     nativeQuerySelectorAll,
     nativeGetElementsByTagName,
     nativeGetElementsByTagNameNS,
+    hasLiteralShellElements,
     isInVirtualDocumentTree,
     virtualNodes,
     documentFragmentPrototype,
@@ -207,8 +208,8 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     });
 
   // The browser's own list is returned whenever no selector translation was
-  // needed, or when the original and shell-translated selectors can be queried
-  // together as a single native union in tree order.
+  // needed, when no literal html/head/body elements exist so the translated
+  // single selector is exact, or when both can be queried as one native union.
   const querySelectorAllPrepared = (
     root: Element,
     selectors: string,
@@ -216,6 +217,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   ): NodeListOf<Element> => {
     if (translated === selectors) {
       return nativeQuerySelectorAll.call(root, selectors);
+    }
+    if (!hasLiteralShellElements()) {
+      return nativeQuerySelectorAll.call(root, translated);
     }
     if (canCombineSelector(selectors)) {
       return nativeQuerySelectorAll.call(root, `${selectors}, ${translated}`);
@@ -236,7 +240,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     root: Element,
     selectors: string,
   ): NodeListOf<Element> => {
-    const normalized = targetSelector(toDOMString(selectors));
+    const normalized = targetSelector(
+      typeof selectors === "string" ? selectors : toDOMString(selectors),
+    );
     return querySelectorAllPrepared(root, normalized, translateSelector(normalized));
   };
 
@@ -247,6 +253,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   ): Element | null => {
     if (translated === selectors) {
       return nativeQuerySelector.call(root, selectors);
+    }
+    if (!hasLiteralShellElements()) {
+      return nativeQuerySelector.call(root, translated);
     }
     if (canCombineSelector(selectors)) {
       return nativeQuerySelector.call(root, `${selectors}, ${translated}`);
@@ -263,7 +272,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   };
 
   const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
-    const normalized = targetSelector(toDOMString(selectors));
+    const normalized = targetSelector(
+      typeof selectors === "string" ? selectors : toDOMString(selectors),
+    );
     return querySelectorPrepared(root, normalized, translateSelector(normalized));
   };
 
@@ -274,6 +285,9 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
   ): boolean => {
     if (translated === selectors) {
       return nativeMatches.call(element, selectors);
+    }
+    if (!hasLiteralShellElements()) {
+      return nativeMatches.call(element, translated);
     }
     if (canCombineSelector(selectors)) {
       return nativeMatches.call(element, `${selectors}, ${translated}`);
@@ -573,6 +587,10 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
         const translated = translateSelector(targeted);
         if (translated === targeted) {
           const hit = nativeClosest.call(this, targeted);
+          return hit !== null && nativeContains.call(options.html, hit) ? hit : null;
+        }
+        if (!hasLiteralShellElements()) {
+          const hit = nativeClosest.call(this, translated);
           return hit !== null && nativeContains.call(options.html, hit) ? hit : null;
         }
         if (canCombineSelector(targeted)) {

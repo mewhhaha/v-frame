@@ -108,67 +108,70 @@ function isRawTextBoundary(character: string | undefined): boolean {
   );
 }
 
-function findScriptEnd(lowerSource: string, cursor: number): number {
+const SCRIPT_DATA_PATTERN = /<!--|<\/script(?=[\t\n\f\r />]|$)/gi;
+const SCRIPT_ESCAPED_PATTERN = /-->|<\/?script(?=[\t\n\f\r />]|$)/gi;
+const RAW_TEXT_END_PATTERNS = new Map<string, RegExp>([
+  ["iframe", /<\/iframe(?=[\t\n\f\r />]|$)/gi],
+  ["noembed", /<\/noembed(?=[\t\n\f\r />]|$)/gi],
+  ["noframes", /<\/noframes(?=[\t\n\f\r />]|$)/gi],
+  ["noscript", /<\/noscript(?=[\t\n\f\r />]|$)/gi],
+  ["style", /<\/style(?=[\t\n\f\r />]|$)/gi],
+  ["textarea", /<\/textarea(?=[\t\n\f\r />]|$)/gi],
+  ["title", /<\/title(?=[\t\n\f\r />]|$)/gi],
+  ["xmp", /<\/xmp(?=[\t\n\f\r />]|$)/gi],
+]);
+
+function findScriptEnd(source: string, cursor: number): number {
   let pos = cursor;
   let state: "data" | "escaped" | "double-escaped" = "data";
-  while (pos < lowerSource.length) {
+  while (pos < source.length) {
     if (state === "data") {
-      if (lowerSource.startsWith("<!--", pos)) {
+      SCRIPT_DATA_PATTERN.lastIndex = pos;
+      const match = SCRIPT_DATA_PATTERN.exec(source);
+      if (match === null) return -1;
+      if (match[0] === "<!--") {
         state = "escaped";
-        pos += 4;
+        pos = match.index + 4;
         continue;
       }
-      if (
-        lowerSource.startsWith("</script", pos) &&
-        isRawTextBoundary(lowerSource[pos + 8])
-      ) {
-        return pos;
-      }
-      pos += 1;
-      continue;
+      return match.index;
     }
-    if (lowerSource.startsWith("-->", pos)) {
+    SCRIPT_ESCAPED_PATTERN.lastIndex = pos;
+    const match = SCRIPT_ESCAPED_PATTERN.exec(source);
+    if (match === null) return -1;
+    const token = match[0];
+    if (token === "-->") {
       state = "data";
-      pos += 3;
+      pos = match.index + 3;
       continue;
     }
     if (state === "escaped") {
-      if (
-        lowerSource.startsWith("<script", pos) &&
-        isRawTextBoundary(lowerSource[pos + 7])
-      ) {
-        state = "double-escaped";
-        pos += 7;
-        continue;
+      if (token.charCodeAt(1) === 47 /* '/' */) {
+        return match.index;
       }
-      if (
-        lowerSource.startsWith("</script", pos) &&
-        isRawTextBoundary(lowerSource[pos + 8])
-      ) {
-        return pos;
-      }
-      pos += 1;
+      state = "double-escaped";
+      pos = match.index + 7;
       continue;
     }
-    if (
-      lowerSource.startsWith("</script", pos) &&
-      isRawTextBoundary(lowerSource[pos + 8])
-    ) {
+    if (token.charCodeAt(1) === 47 /* '/' */) {
       state = "escaped";
-      pos += 8;
+      pos = match.index + 8;
       continue;
     }
-    pos += 1;
+    pos = match.index + token.length;
   }
   return -1;
 }
 
-function findRawTextEnd(
-  lowerSource: string,
-  cursor: number,
-  elementName: string,
-): number {
-  if (elementName === "script") return findScriptEnd(lowerSource, cursor);
+function findRawTextEnd(source: string, cursor: number, elementName: string): number {
+  if (elementName === "script") return findScriptEnd(source, cursor);
+  const pattern = RAW_TEXT_END_PATTERNS.get(elementName);
+  if (pattern !== undefined) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(source);
+    return match === null ? -1 : match.index;
+  }
+  const lowerSource = source.toLowerCase();
   const endTagPrefix = `</${elementName}`;
   let candidate = lowerSource.indexOf(endTagPrefix, cursor);
   while (candidate !== -1) {
@@ -180,53 +183,100 @@ function findRawTextEnd(
   return -1;
 }
 
+function isASCIIWhitespaceCode(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 12 || code === 13;
+}
+
 function findTagEnd(
   source: string,
   startAfterName: number,
 ): { end: number; selfClosing: boolean } | null {
+  const len = source.length;
   let cursor = startAfterName;
+  if (cursor < len && source.charCodeAt(cursor) === 62 /* '>' */) {
+    return { end: cursor + 1, selfClosing: false };
+  }
   let selfClosing = false;
-  while (cursor < source.length) {
-    while (isASCIIWhitespace(source[cursor])) cursor += 1;
-    if (cursor >= source.length) return null;
-    if (source[cursor] === ">") {
+  while (cursor < len) {
+    let code = source.charCodeAt(cursor);
+    while (isASCIIWhitespaceCode(code)) {
+      cursor += 1;
+      if (cursor >= len) return null;
+      code = source.charCodeAt(cursor);
+    }
+    if (code === 62 /* '>' */) {
       return { end: cursor + 1, selfClosing };
     }
-    if (source[cursor] === "/") {
+    if (code === 47 /* '/' */) {
       selfClosing = true;
       cursor += 1;
       continue;
     }
     selfClosing = false;
     while (
-      cursor < source.length &&
-      !isASCIIWhitespace(source[cursor]) &&
-      source[cursor] !== "/" &&
-      source[cursor] !== ">" &&
-      source[cursor] !== "="
+      cursor < len &&
+      !isASCIIWhitespaceCode(code) &&
+      code !== 47 /* '/' */ &&
+      code !== 62 /* '>' */ &&
+      code !== 61 /* '=' */
     ) {
       cursor += 1;
+      code = source.charCodeAt(cursor);
     }
-    while (isASCIIWhitespace(source[cursor])) cursor += 1;
-    if (source[cursor] !== "=") continue;
+    while (cursor < len && isASCIIWhitespaceCode(code)) {
+      cursor += 1;
+      code = source.charCodeAt(cursor);
+    }
+    if (cursor >= len) return null;
+    if (code !== 61 /* '=' */) continue;
     cursor += 1;
-    while (isASCIIWhitespace(source[cursor])) cursor += 1;
-    const quote = source[cursor];
-    if (quote === '"' || quote === "'") {
-      const close = source.indexOf(quote, cursor + 1);
+    while (cursor < len && isASCIIWhitespaceCode(source.charCodeAt(cursor))) {
+      cursor += 1;
+    }
+    if (cursor >= len) return null;
+    const quote = source.charCodeAt(cursor);
+    if (quote === 34 /* '"' */ || quote === 39 /* "'" */) {
+      const close = source.indexOf(quote === 34 ? '"' : "'", cursor + 1);
       if (close === -1) return null;
       cursor = close + 1;
       continue;
     }
-    while (
-      cursor < source.length &&
-      !isASCIIWhitespace(source[cursor]) &&
-      source[cursor] !== ">"
-    ) {
+    while (cursor < len) {
+      code = source.charCodeAt(cursor);
+      if (isASCIIWhitespaceCode(code) || code === 62 /* '>' */) break;
       cursor += 1;
     }
   }
   return null;
+}
+
+// Fast-check whether a tag name outside foreign content could be one of the
+// tags balanceTemplateTags tracks (template, svg, math, plaintext, or raw-text).
+function mayBeSpecialHTMLTag(
+  source: string,
+  nameStart: number,
+  nameLen: number,
+): boolean {
+  if (nameLen < 3 || nameLen > 9) return false;
+  const c0 = source.charCodeAt(nameStart) | 32;
+  switch (nameLen) {
+    case 3:
+      return c0 === 115 /* svg */ || c0 === 120; /* xmp */
+    case 4:
+      return c0 === 109; /* math */
+    case 5:
+      return c0 === 115 /* style */ || c0 === 116; /* title */
+    case 6:
+      return c0 === 115 /* script */ || c0 === 105; /* iframe */
+    case 7:
+      return c0 === 110; /* noembed */
+    case 8:
+      return c0 === 116 /* template, textarea */ || c0 === 110; /* noscript, noframes */
+    case 9:
+      return c0 === 112; /* plaintext */
+    default:
+      return false;
+  }
 }
 
 function hasForeignFontBreakoutAttribute(tagText: string): boolean {
@@ -251,8 +301,17 @@ function isHTMLAnnotationXML(tagText: string): boolean {
  * truncated tags at EOF, and neutralizes `<plaintext>`.
  */
 export function balanceTemplateTags(source: string): string {
-  const lower = source.toLowerCase();
+  // Copy-on-edit: clean documents avoid slicing every tag and return `source`
+  // untouched without allocating a full-document lowercase copy.
   const out: string[] = [];
+  let edited = false;
+  let lastEmit = 0;
+  const emitEdit = (from: number, to: number, replacement?: string): void => {
+    edited = true;
+    if (from > lastEmit) out.push(source.slice(lastEmit, from));
+    if (replacement !== undefined && replacement !== "") out.push(replacement);
+    lastEmit = to;
+  };
   let cursor = 0;
   let templateDepth = 0;
   interface ForeignScope {
@@ -272,30 +331,25 @@ export function balanceTemplateTags(source: string): string {
   while (cursor < source.length) {
     const tagStart = source.indexOf("<", cursor);
     if (tagStart === -1) {
-      out.push(source.slice(cursor));
       cursor = source.length;
       break;
     }
-    out.push(source.slice(cursor, tagStart));
 
     if (source.startsWith("<!--", tagStart)) {
       if (source.startsWith("<!-->", tagStart)) {
-        out.push("<!-->");
         cursor = tagStart + 5;
         continue;
       }
       if (source.startsWith("<!--->", tagStart)) {
-        out.push("<!--->");
         cursor = tagStart + 6;
         continue;
       }
       const commentEnd = source.indexOf("-->", tagStart + 4);
       if (commentEnd === -1) {
-        out.push(source.slice(tagStart), "-->");
+        emitEdit(source.length, source.length, "-->");
         cursor = source.length;
         break;
       }
-      out.push(source.slice(tagStart, commentEnd + 3));
       cursor = commentEnd + 3;
       continue;
     }
@@ -303,66 +357,69 @@ export function balanceTemplateTags(source: string): string {
     if (inForeignContent() && source.startsWith("<![CDATA[", tagStart)) {
       const cdataEnd = source.indexOf("]]>", tagStart + 9);
       if (cdataEnd === -1) {
-        out.push(source.slice(tagStart), "]]>");
+        emitEdit(source.length, source.length, "]]>");
         cursor = source.length;
         break;
       }
-      out.push(source.slice(tagStart, cdataEnd + 3));
       cursor = cdataEnd + 3;
       continue;
     }
 
-    if (source[tagStart + 1] === "!" || source[tagStart + 1] === "?") {
+    const nextChar = source[tagStart + 1];
+    if (nextChar === "!" || nextChar === "?") {
       const declarationEnd = source.indexOf(">", tagStart + 2);
       if (declarationEnd === -1) {
-        out.push(source.slice(tagStart), ">");
+        emitEdit(source.length, source.length, ">");
         cursor = source.length;
         break;
       }
-      out.push(source.slice(tagStart, declarationEnd + 1));
       cursor = declarationEnd + 1;
       continue;
     }
 
-    const isEndTag = source[tagStart + 1] === "/";
+    const isEndTag = nextChar === "/";
     const nameStart = tagStart + (isEndTag ? 2 : 1);
     if (!isASCIIAlpha(source[nameStart])) {
       if (isEndTag) {
         // HTML5 bogus comment for `</...` without ASCII alpha: runs to next `>`.
         const bogusEnd = source.indexOf(">", nameStart);
         if (bogusEnd === -1) {
-          out.push(source.slice(tagStart), ">");
+          emitEdit(source.length, source.length, ">");
           cursor = source.length;
           break;
         }
-        out.push(source.slice(tagStart, bogusEnd + 1));
         cursor = bogusEnd + 1;
         continue;
       }
-      out.push("<");
       cursor = tagStart + 1;
       continue;
     }
 
     let nameEnd = nameStart + 1;
-    while (
-      nameEnd < source.length &&
-      !isASCIIWhitespace(source[nameEnd]) &&
-      source[nameEnd] !== "/" &&
-      source[nameEnd] !== ">"
-    ) {
+    while (nameEnd < source.length) {
+      const code = source.charCodeAt(nameEnd);
+      if (isASCIIWhitespaceCode(code) || code === 47 /* '/' */ || code === 62 /* '>' */) {
+        break;
+      }
       nameEnd += 1;
     }
-    const tagName = lower.slice(nameStart, nameEnd);
     const parsedTag = findTagEnd(source, nameEnd);
     if (parsedTag === null) {
       // Truncated tag or unclosed attribute quote at EOF: discard it so it
       // cannot swallow the host's closing `</template>`.
+      emitEdit(tagStart, source.length);
       cursor = source.length;
       break;
     }
     const { end: tagEnd, selfClosing } = parsedTag;
-    const rawTag = source.slice(tagStart, tagEnd);
+    if (
+      foreignStack.length === 0 &&
+      !mayBeSpecialHTMLTag(source, nameStart, nameEnd - nameStart)
+    ) {
+      cursor = tagEnd;
+      continue;
+    }
+    const tagName = source.slice(nameStart, nameEnd).toLowerCase();
     let foreign = inForeignContent();
 
     if (isEndTag) {
@@ -370,13 +427,13 @@ export function balanceTemplateTags(source: string): string {
         const top = foreignStack[foreignStack.length - 1];
         if (foreign && top !== undefined && top.foreignTemplateDepth > 0) {
           top.foreignTemplateDepth -= 1;
-          out.push(rawTag);
           cursor = tagEnd;
           continue;
         }
         if (templateDepth === 0) {
           // Stray `</template>` with no open HTML `<template>` would close the
           // host's DSD wrapper (including from inside foreign content).
+          emitEdit(tagStart, tagEnd);
           cursor = tagEnd;
           continue;
         }
@@ -402,7 +459,6 @@ export function balanceTemplateTags(source: string): string {
           }
         }
       }
-      out.push(rawTag);
       cursor = tagEnd;
       continue;
     }
@@ -410,7 +466,8 @@ export function balanceTemplateTags(source: string): string {
     if (
       foreign &&
       (FOREIGN_BREAKOUT_TAGS.has(tagName) ||
-        (tagName === "font" && hasForeignFontBreakoutAttribute(rawTag)))
+        (tagName === "font" &&
+          hasForeignFontBreakoutAttribute(source.slice(tagStart, tagEnd))))
     ) {
       while (inForeignContent()) {
         foreignStack.pop();
@@ -422,7 +479,7 @@ export function balanceTemplateTags(source: string): string {
       // `<plaintext>` has no closing tag in HTML5 and would swallow the host
       // document after the DSD wrapper. Render its remainder safely inside `<pre>`.
       const rest = source.slice(tagEnd).replaceAll("&", "&amp;").replaceAll("<", "&lt;");
-      out.push("<pre>", rest, "</pre>");
+      emitEdit(tagStart, source.length, `<pre>${rest}</pre>`);
       cursor = source.length;
       break;
     }
@@ -445,7 +502,8 @@ export function balanceTemplateTags(source: string): string {
         (top.kind === "svg" && SVG_HTML_INTEGRATION_POINTS.has(tagName)) ||
         (top.kind === "math" &&
           (MATH_TEXT_INTEGRATION_POINTS.has(tagName) ||
-            (tagName === "annotation-xml" && isHTMLAnnotationXML(rawTag))))
+            (tagName === "annotation-xml" &&
+              isHTMLAnnotationXML(source.slice(tagStart, tagEnd)))))
       ) {
         top.integrationTag = tagName;
         top.integrationDepth = 1;
@@ -464,30 +522,33 @@ export function balanceTemplateTags(source: string): string {
       templateDepth += 1;
     }
 
-    out.push(rawTag);
     cursor = tagEnd;
 
     if (!foreign && RAW_TEXT_ELEMENTS.has(tagName)) {
-      const rawEnd = findRawTextEnd(lower, cursor, tagName);
+      const rawEnd = findRawTextEnd(source, cursor, tagName);
       if (rawEnd === -1) {
-        out.push(source.slice(cursor), `</${tagName}>`);
+        emitEdit(source.length, source.length, `</${tagName}>`);
         cursor = source.length;
         break;
       }
-      out.push(source.slice(cursor, rawEnd));
       const closeTag = findTagEnd(source, rawEnd + 2 + tagName.length);
       if (closeTag === null) {
-        out.push(`</${tagName}>`);
+        emitEdit(rawEnd, source.length, `</${tagName}>`);
         cursor = source.length;
         break;
       }
-      out.push(source.slice(rawEnd, closeTag.end));
       cursor = closeTag.end;
     }
   }
 
   if (templateDepth > 0) {
-    out.push("</template>".repeat(templateDepth));
+    emitEdit(source.length, source.length, "</template>".repeat(templateDepth));
+  }
+  if (!edited) {
+    return source;
+  }
+  if (lastEmit < source.length) {
+    out.push(source.slice(lastEmit));
   }
   return out.join("");
 }

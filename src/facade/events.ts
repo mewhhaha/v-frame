@@ -418,20 +418,29 @@ export function installEventFacade(
     event: Event,
     property: PropertyKey,
   ): PropertyDescriptor | undefined => {
+    if (Object.hasOwn(event, property)) {
+      return undefined;
+    }
     for (
-      let owner: object | null = event;
+      let owner = Object.getPrototypeOf(event) as object | null;
       owner !== null;
       owner = Object.getPrototypeOf(owner) as object | null
     ) {
-      if (!Object.hasOwn(owner, property)) continue;
-      const native = nativeEventMembers.get(owner)?.[property];
-      if (native === undefined) return undefined;
-      const descriptor = Object.getOwnPropertyDescriptor(owner, property);
-      return descriptor !== undefined &&
-        native.value === descriptor.value &&
-        native.get === descriptor.get
-        ? native
-        : undefined;
+      const map = nativeEventMembers.get(owner);
+      if (map !== undefined) {
+        const native = map[property];
+        if (native !== undefined) {
+          const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+          return descriptor !== undefined &&
+            native.value === descriptor.value &&
+            native.get === descriptor.get
+            ? native
+            : undefined;
+        }
+        if (Object.hasOwn(owner, property)) return undefined;
+        continue;
+      }
+      if (Object.hasOwn(owner, property)) return undefined;
     }
     return undefined;
   };
@@ -446,6 +455,12 @@ export function installEventFacade(
   const dispatchFinalizers = new WeakMap<Event, () => void>();
   const stoppedEventDefaults = new WeakMap<Event, () => void>();
   const resumedEventDefaults = new WeakMap<Event, () => void>();
+  // Boolean latches skip empty WeakMap/WeakSet probes on the hot dispatch path.
+  let hasLogicalEventPhases = false;
+  let hasPassiveListeners = false;
+  let hasImmediateStops = false;
+  let hasSuppressedDefaults = false;
+  let hasLinkDefaultSuppressors = false;
 
   const eventAttributeName = (element: Element, attributeName: string): string | null => {
     const normalizedName = attributeName.toLowerCase();
@@ -538,6 +553,184 @@ export function installEventFacade(
     return [...path.slice(0, rootIndex + 1), document, window];
   };
 
+  interface ListenerEventState {
+    readonly source: Event;
+    readonly sameSource: boolean;
+    proxy: Event;
+    ownMethods?: Map<string, Function>;
+    targetMethods?: WeakMap<Function, Function>;
+    sourceMethods?: WeakMap<Function, Function>;
+  }
+  const listenerEventStates = new WeakMap<Event, ListenerEventState>();
+  const ownEventMethod = (
+    state: ListenerEventState,
+    name: string,
+    create: () => () => unknown,
+  ): Function => {
+    let method = state.ownMethods?.get(name);
+    if (method === undefined) {
+      method = create();
+      Object.defineProperty(method, "name", { value: name });
+      (state.ownMethods ??= new Map()).set(name, method);
+    }
+    return method;
+  };
+  const forwardEventMethod = (
+    state: ListenerEventState,
+    isSource: boolean,
+    method: Function,
+    receiver: Event,
+  ): Function => {
+    const cache = isSource
+      ? (state.sourceMethods ??= new WeakMap())
+      : (state.targetMethods ??= new WeakMap());
+    let forwarded = cache.get(method);
+    if (forwarded === undefined) {
+      const listenerEvent = state.proxy;
+      forwarded = new Proxy(method, {
+        apply: (original, thisArgument, args) =>
+          Reflect.apply(
+            original,
+            thisArgument === listenerEvent ? receiver : thisArgument,
+            args,
+          ),
+      });
+      cache.set(method, forwarded);
+    }
+    return forwarded;
+  };
+  const eventProxyHandler: ProxyHandler<Event> = {
+    get(target, property) {
+      const state = listenerEventStates.get(target)!;
+      const source = state.source;
+      if (property === "isTrusted") {
+        // isTrusted is the browser's unforgeable instance accessor; trust belongs to source.
+        return source.isTrusted;
+      }
+      const fromSource = !state.sameSource && !(property in target) && property in source;
+      const receiver = fromSource ? source : target;
+      const nativeMember = nativeEventMember(receiver, property);
+      // Guest fields, getters and class methods keep their identity and see
+      // the logical event as `this`. Only browser members need a raw receiver.
+      if (nativeMember === undefined) {
+        return Reflect.get(receiver, property, state.proxy);
+      }
+      switch (property) {
+        case "target":
+        case "srcElement":
+          return logicalEventTargets.get(source) ?? source.target;
+        case "currentTarget":
+          return source.currentTarget === null
+            ? null
+            : (logicalCurrentTargets.get(source) ?? source.currentTarget);
+        case "eventPhase":
+          return source.currentTarget === null
+            ? 0
+            : hasLogicalEventPhases
+              ? (logicalEventPhases.get(source) ?? source.eventPhase)
+              : source.eventPhase;
+        case "view":
+          // Only UIEvents have a view, and a null one stays null.
+          return "view" in source ? (source.view === null ? null : window) : undefined;
+        case "defaultPrevented":
+          return wasEventDefaultPrevented(source);
+        case "cancelBubble":
+          return boundaryPropagationStopped.has(source) &&
+            !virtualPropagationStopped.has(source)
+            ? false
+            : source.cancelBubble;
+        case "returnValue":
+          return !wasEventDefaultPrevented(source);
+        case "timeStamp":
+          return source.timeStamp;
+        case "relatedTarget": {
+          // The browser retargets relatedTarget against the current target,
+          // which still leaves a node of the host page visible to a listener
+          // inside the shadow tree. The guest has no such page.
+          if (!(property in source)) {
+            return undefined;
+          }
+          const related = Reflect.get(source, property, source) as EventTarget | null;
+          return related === null || isGuestVisibleTarget(related) ? related : null;
+        }
+        case "composedPath":
+          return ownEventMethod(
+            state,
+            "composedPath",
+            () => () => logicalComposedPath(source),
+          );
+        case "preventDefault":
+          return ownEventMethod(state, "preventDefault", () => () => {
+            if (
+              hasPassiveListeners &&
+              passiveListeners.has(source) &&
+              source.currentTarget !== null
+            ) {
+              return;
+            }
+            // preventDefault is a spec no-op on non-cancelable events.
+            if (source.cancelable) {
+              virtualDefaultsPrevented.add(source);
+            }
+            source.preventDefault();
+            target.preventDefault();
+          });
+        case "stopPropagation":
+          return ownEventMethod(state, "stopPropagation", () => () => {
+            virtualPropagationStopped.add(source);
+            source.stopPropagation();
+            target.stopPropagation();
+          });
+        case "stopImmediatePropagation":
+          return ownEventMethod(state, "stopImmediatePropagation", () => () => {
+            virtualPropagationStopped.add(source);
+            hasImmediateStops = true;
+            immediatePropagationStopped.add(source);
+            source.stopImmediatePropagation();
+            target.stopImmediatePropagation();
+          });
+        default: {
+          const value = Reflect.get(receiver, property, receiver);
+          // `constructor` is the event's class, not a method of it.
+          return typeof value === "function" &&
+            nativeMember?.value === value &&
+            property !== "constructor"
+            ? forwardEventMethod(state, fromSource, value, receiver)
+            : value;
+        }
+      }
+    },
+    set(target, property, value) {
+      const state = listenerEventStates.get(target)!;
+      const source = state.source;
+      if (property === "cancelBubble") {
+        if (value) {
+          virtualPropagationStopped.add(source);
+        }
+        source.cancelBubble = Boolean(value);
+        target.cancelBubble = Boolean(value);
+        return true;
+      }
+      if (property === "returnValue") {
+        if (
+          !value &&
+          source.cancelable &&
+          !(
+            hasPassiveListeners &&
+            passiveListeners.has(source) &&
+            source.currentTarget !== null
+          )
+        ) {
+          virtualDefaultsPrevented.add(source);
+          source.preventDefault();
+          target.preventDefault();
+        }
+        return true;
+      }
+      return Reflect.set(target, property, value, target);
+    },
+  };
+
   const eventForListener = (
     event: Event,
     currentTarget: EventTarget,
@@ -545,17 +738,21 @@ export function installEventFacade(
     passive = false,
   ): Event => {
     const source = listenerEventSource(event);
-    resumedEventDefaults.get(source)?.();
+    if (hasLinkDefaultSuppressors) {
+      resumedEventDefaults.get(source)?.();
+    }
     if (passive) {
+      hasPassiveListeners = true;
       passiveListeners.add(source);
-    } else {
+    } else if (hasPassiveListeners) {
       passiveListeners.delete(source);
     }
     logicalCurrentTargets.set(source, currentTarget);
-    if (eventPhase === undefined) {
-      logicalEventPhases.delete(source);
-    } else {
+    if (eventPhase !== undefined) {
+      hasLogicalEventPhases = true;
       logicalEventPhases.set(source, eventPhase);
+    } else if (hasLogicalEventPhases) {
+      logicalEventPhases.delete(source);
     }
     const existing = listenerEvents.get(source);
     if (existing !== undefined) {
@@ -565,161 +762,23 @@ export function installEventFacade(
     if (lazyEvents) {
       ensureLazyEventPrototypes(mirrored, source);
     }
-    const sameSource = mirrored === source;
-    // Members the proxy hands out are created once per proxy: a native method
-    // is the same function on every read, and the guest compares them.
-    let ownMethods: Map<string, Function> | undefined;
-    const ownMethod = (name: string, create: () => () => unknown): Function => {
-      let method = ownMethods?.get(name);
-      if (method === undefined) {
-        method = create();
-        Object.defineProperty(method, "name", { value: name });
-        (ownMethods ??= new Map()).set(name, method);
-      }
-      return method;
+    const state: ListenerEventState = {
+      source,
+      sameSource: mirrored === source,
+      proxy: mirrored,
     };
-    let targetMethods: WeakMap<Function, Function> | undefined;
-    let sourceMethods: WeakMap<Function, Function> | undefined;
-    // A native method refuses the proxy as its receiver, so reading one hands
-    // out a stand-in that swaps the proxy for the event behind it. Unlike a
-    // bound function the stand-in keeps the name, length and statics of the
-    // original, and a call with any other receiver reaches the original as is.
-    const forwardMethod = (isSource: boolean, method: Function, receiver: Event) => {
-      const cache = isSource
-        ? (sourceMethods ??= new WeakMap())
-        : (targetMethods ??= new WeakMap());
-      let forwarded = cache.get(method);
-      if (forwarded === undefined) {
-        forwarded = new Proxy(method, {
-          apply: (original, thisArgument, args) =>
-            Reflect.apply(
-              original,
-              thisArgument === listenerEvent ? receiver : thisArgument,
-              args,
-            ),
-        });
-        cache.set(method, forwarded);
-      }
-      return forwarded;
-    };
-    const listenerEvent: Event = new Proxy(mirrored, {
-      get(target, property) {
-        if (property === "isTrusted") {
-          // isTrusted is the browser's unforgeable instance accessor; trust belongs to source.
-          return source.isTrusted;
-        }
-        const fromSource = !sameSource && !(property in target) && property in source;
-        const receiver = fromSource ? source : target;
-        const nativeMember = nativeEventMember(receiver, property);
-        // Guest fields, getters and class methods keep their identity and see
-        // the logical event as `this`. Only browser members need a raw receiver.
-        if (nativeMember === undefined) {
-          return Reflect.get(receiver, property, listenerEvent);
-        }
-        switch (property) {
-          case "target":
-          case "srcElement":
-            return logicalEventTargets.get(source) ?? source.target;
-          case "currentTarget":
-            return source.currentTarget === null
-              ? null
-              : (logicalCurrentTargets.get(source) ?? source.currentTarget);
-          case "eventPhase":
-            return source.currentTarget === null
-              ? 0
-              : (logicalEventPhases.get(source) ?? source.eventPhase);
-          case "view":
-            // Only UIEvents have a view, and a null one stays null.
-            return "view" in source ? (source.view === null ? null : window) : undefined;
-          case "defaultPrevented":
-            return wasEventDefaultPrevented(source);
-          case "cancelBubble":
-            return boundaryPropagationStopped.has(source) &&
-              !virtualPropagationStopped.has(source)
-              ? false
-              : source.cancelBubble;
-          case "returnValue":
-            return !wasEventDefaultPrevented(source);
-          case "timeStamp":
-            return source.timeStamp;
-          case "relatedTarget": {
-            // The browser retargets relatedTarget against the current target,
-            // which still leaves a node of the host page visible to a listener
-            // inside the shadow tree. The guest has no such page.
-            if (!(property in source)) {
-              return undefined;
-            }
-            const related = Reflect.get(source, property, source) as EventTarget | null;
-            return related === null || isGuestVisibleTarget(related) ? related : null;
-          }
-          case "composedPath":
-            return ownMethod("composedPath", () => () => logicalComposedPath(source));
-          case "preventDefault":
-            return ownMethod("preventDefault", () => () => {
-              if (passiveListeners.has(source) && source.currentTarget !== null) {
-                return;
-              }
-              // preventDefault is a spec no-op on non-cancelable events.
-              if (source.cancelable) {
-                virtualDefaultsPrevented.add(source);
-              }
-              source.preventDefault();
-              target.preventDefault();
-            });
-          case "stopPropagation":
-            return ownMethod("stopPropagation", () => () => {
-              virtualPropagationStopped.add(source);
-              source.stopPropagation();
-              target.stopPropagation();
-            });
-          case "stopImmediatePropagation":
-            return ownMethod("stopImmediatePropagation", () => () => {
-              virtualPropagationStopped.add(source);
-              immediatePropagationStopped.add(source);
-              source.stopImmediatePropagation();
-              target.stopImmediatePropagation();
-            });
-          default: {
-            const value = Reflect.get(receiver, property, receiver);
-            // `constructor` is the event's class, not a method of it.
-            return typeof value === "function" &&
-              nativeMember?.value === value &&
-              property !== "constructor"
-              ? forwardMethod(fromSource, value, receiver)
-              : value;
-          }
-        }
-      },
-      set(target, property, value) {
-        if (property === "cancelBubble") {
-          if (value) {
-            virtualPropagationStopped.add(source);
-          }
-          source.cancelBubble = Boolean(value);
-          target.cancelBubble = Boolean(value);
-          return true;
-        }
-        if (property === "returnValue") {
-          if (
-            !value &&
-            source.cancelable &&
-            !(passiveListeners.has(source) && source.currentTarget !== null)
-          ) {
-            virtualDefaultsPrevented.add(source);
-            source.preventDefault();
-            target.preventDefault();
-          }
-          return true;
-        }
-        return Reflect.set(target, property, value, target);
-      },
-    });
+    const listenerEvent: Event = new Proxy(mirrored, eventProxyHandler);
+    state.proxy = listenerEvent;
+    listenerEventStates.set(mirrored, state);
     listenerEventSources.set(listenerEvent, source);
     listenerEvents.set(source, listenerEvent);
     return listenerEvent;
   };
 
   const finishEventListener = (event: Event): void => {
+    if (!hasLinkDefaultSuppressors) {
+      return;
+    }
     const source = listenerEventSource(event);
     if (
       source.cancelBubble ||
@@ -960,7 +1019,7 @@ export function installEventFacade(
   };
 
   const listenerCanContinue = (event: Event): boolean =>
-    !immediatePropagationStopped.has(listenerEventSource(event));
+    !hasImmediateStops || !immediatePropagationStopped.has(listenerEventSource(event));
 
   const invokeRootListeners = (event: Event, capture: boolean): void => {
     virtualListeners
@@ -1329,7 +1388,9 @@ export function installEventFacade(
         }
         // The browser's activation has finished, but the virtual default action
         // is still queued. Restore any temporarily inert link before returning.
-        dispatchFinalizers.get(unwrapped)?.();
+        if (hasLinkDefaultSuppressors) {
+          dispatchFinalizers.get(unwrapped)?.();
+        }
         return virtual ? !wasEventDefaultPrevented(unwrapped) : result;
       },
     });
@@ -1368,6 +1429,7 @@ export function installEventFacade(
     if (wasEventDefaultPrevented(source)) {
       virtualDefaultsPrevented.add(source);
     }
+    hasSuppressedDefaults = true;
     hostDefaultsSuppressed.add(source);
     nativePreventDefault.call(source);
   };
@@ -1375,11 +1437,17 @@ export function installEventFacade(
   const wasEventDefaultPrevented = (event: Event): boolean => {
     const source = listenerEventSource(event);
     if (!nativeDefaultPrevented.call(source)) {
+      if (!hasSuppressedDefaults) {
+        return false;
+      }
       // Legacy event initializers reset the native canceled flag. Do not let
       // bookkeeping from an earlier dispatch outlive that reset.
       virtualDefaultsPrevented.delete(source);
       hostDefaultsSuppressed.delete(source);
       return false;
+    }
+    if (!hasSuppressedDefaults) {
+      return true;
     }
     return virtualDefaultsPrevented.has(source) || !hostDefaultsSuppressed.has(source);
   };
@@ -1387,6 +1455,7 @@ export function installEventFacade(
   const suppressNativeLinkDefault = (event: Event, anchor: Element): void => {
     const source = listenerEventSource(event);
     if (source.cancelable || dispatchFinalizers.has(source)) return;
+    hasLinkDefaultSuppressors = true;
     // A non-cancelable click cannot suppress native activation. Make its link
     // inert only after guest listeners finish, then restore the same Attr nodes
     // once native dispatch returns. This also covers new tabs and downloads,

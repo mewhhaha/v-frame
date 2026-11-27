@@ -906,3 +906,145 @@ test("selects inside a shadow root the guest attached", async ({ page }) => {
   expect(result.contains).toBe(true);
   expect(result.selected).toBe("shadow");
 });
+
+test("fast paths preserve literal shell elements, getElementById shadowing, SVG titles, inline style transitions, and mixed-case managed attributes", async ({
+  page,
+}) => {
+  await mountFacadeFrame(page);
+
+  const result = await inChild(page, (child) => {
+    const doc = child.document;
+    const frame = document.querySelector("v-frame")!;
+
+    // 1. Single-selector shell query -> flips cleanly when a literal <body> is created.
+    const item = doc.createElement("div");
+    item.className = "fast-item";
+    doc.body.append(item);
+    const beforeLiteralCount = doc.querySelectorAll("body .fast-item").length;
+    const bodyNotBodyBefore = doc.body.matches(":not(body)");
+    const literalBody = doc.createElement("body");
+    doc.body.append(literalBody);
+    const bodiesAfterLiteral = doc.querySelectorAll("body").length;
+    literalBody.remove();
+
+    // 2. O(1) getElementById handles special chars and host-injected shadow siblings.
+    const target = doc.createElement("span");
+    target.id = "a:b.c[0]";
+    doc.body.append(target);
+    const foundSpecial = doc.getElementById("a:b.c[0]") === target;
+    const missingId = doc.getElementById("does-not-exist");
+    const emptyId = doc.getElementById("");
+    const hostShadow = document.createElement("div");
+    hostShadow.id = "a:b.c[0]";
+    frame.shadowRoot!.prepend(hostShadow);
+    const shadowedStillReturnsGuest = doc.getElementById("a:b.c[0]") === target;
+    hostShadow.remove();
+
+    // 3. document.title skips a preceding SVG <title> to return the HTML <title>.
+    const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const svgTitle = doc.createElementNS("http://www.w3.org/2000/svg", "title");
+    svgTitle.textContent = "SVG Title";
+    svg.append(svgTitle);
+    doc.head.prepend(svg);
+    const htmlTitle = doc.title;
+    svg.remove();
+
+    // 4. Direct CSSStyleRule updates, URL transition, lazy setAttribute("style"), and brace safety.
+    const styled = doc.createElement("div");
+    doc.body.append(styled);
+    styled.setAttribute("style", "color: rgb(9, 8, 7)");
+    const lazyReadColor = styled.style.color;
+    styled.style.opacity = "0.5";
+    styled.style.setProperty("margin-top", "4px", "important");
+    const computedAfterUpdates = {
+      color: child.getComputedStyle(styled).color,
+      opacity: child.getComputedStyle(styled).opacity,
+      marginTop: child.getComputedStyle(styled).marginTop,
+      parentRuleIsNull: styled.style.parentRule === null,
+    };
+    styled.style.removeProperty("opacity");
+    const opacityAfterRemove = child.getComputedStyle(styled).opacity;
+    styled.style.backgroundImage = 'url("img/bg.png")';
+    const authoredBg = styled.style.backgroundImage;
+    const computedBgHasOrigin = child
+      .getComputedStyle(styled)
+      .backgroundImage.includes("/img/bg.png");
+
+    // Brace injection in style attribute stays safely contained.
+    const braceBox = doc.createElement("div");
+    doc.body.append(braceBox);
+    braceBox.setAttribute("style", "color: rgb(1, 2, 3)} v-body { display: none");
+    const bodyStillVisible = child.getComputedStyle(doc.body).display !== "none";
+
+    // 5. Mixed-case managed attributes still go through managed handlers.
+    const anchor = doc.createElement("a");
+    doc.body.append(anchor);
+    anchor.setAttribute("HREF", "nested/path.html");
+    const mixedCaseHrefAuthored = anchor.getAttribute("href");
+    const mixedCaseHrefResolved = anchor.href.endsWith("/nested/path.html");
+    anchor.setAttribute("ONCLICK", "window.__mixedClick = true");
+    anchor.dispatchEvent(new child.MouseEvent("click"));
+    const mixedClickRan =
+      (child as unknown as { __mixedClick?: boolean }).__mixedClick === true;
+
+    // 6. Freshly created multi-child subtree marks descendants cleanly.
+    const row = doc.createElement("div");
+    row.className = "row-fast";
+    row.setAttribute("data-k", "v");
+    const childSpan = doc.createElement("span");
+    childSpan.textContent = "ok";
+    row.append(childSpan);
+    doc.body.append(row);
+    const subtreeMarked =
+      row.ownerDocument === doc &&
+      childSpan.ownerDocument === doc &&
+      childSpan.firstChild!.ownerDocument === doc;
+
+    return {
+      beforeLiteralCount,
+      bodyNotBodyBefore,
+      bodiesAfterLiteral,
+      foundSpecial,
+      missingId,
+      emptyId,
+      shadowedStillReturnsGuest,
+      htmlTitleIsNonSVG: htmlTitle !== "SVG Title",
+      lazyReadColor,
+      computedAfterUpdates,
+      opacityAfterRemove,
+      authoredBg,
+      computedBgHasOrigin,
+      bodyStillVisible,
+      mixedCaseHrefAuthored,
+      mixedCaseHrefResolved,
+      mixedClickRan,
+      subtreeMarked,
+    };
+  });
+
+  expect(result).toEqual({
+    beforeLiteralCount: 1,
+    bodyNotBodyBefore: false,
+    bodiesAfterLiteral: 2,
+    foundSpecial: true,
+    missingId: null,
+    emptyId: null,
+    shadowedStillReturnsGuest: true,
+    htmlTitleIsNonSVG: true,
+    lazyReadColor: "rgb(9, 8, 7)",
+    computedAfterUpdates: {
+      color: "rgb(9, 8, 7)",
+      opacity: "0.5",
+      marginTop: "4px",
+      parentRuleIsNull: true,
+    },
+    opacityAfterRemove: "1",
+    authoredBg: "url(img/bg.png)",
+    computedBgHasOrigin: true,
+    bodyStillVisible: true,
+    mixedCaseHrefAuthored: "nested/path.html",
+    mixedCaseHrefResolved: true,
+    mixedClickRan: true,
+    subtreeMarked: true,
+  });
+});

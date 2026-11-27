@@ -58,7 +58,9 @@ interface RealWorldTimings {
   innerHTMLGet: number;
   querySelector: number;
   querySelectorAll: number;
+  getElementById: number;
   sheetRead: number;
+  inlineStyleUpdate: number;
   events: number;
   detachedReattach: number;
   getAttribute: number;
@@ -232,6 +234,14 @@ window.benchRealWorld = () => {
   }
   const querySelectorAll = performance.now() - t0;
 
+  firstRow.id = "bench-target-row";
+  t0 = performance.now();
+  for (let i = 0; i < 2_000; i += 1) {
+    if (document.getElementById("bench-target-row") !== null) found += 1;
+  }
+  const getElementById = performance.now() - t0;
+  firstRow.removeAttribute("id");
+
   const styleEl = document.createElement("style");
   let rulesText = "";
   for (let i = 0; i < 500; i += 1) {
@@ -245,6 +255,19 @@ window.benchRealWorld = () => {
   }
   const sheetRead = performance.now() - t0;
   styleEl.remove();
+
+  const styleRows = Array.from(root.querySelectorAll(".row")).slice(0, 500);
+  for (let i = 0; i < styleRows.length; i += 1) {
+    styleRows[i].style.color = "rgb(10, 20, 30)";
+  }
+  t0 = performance.now();
+  for (let i = 0; i < styleRows.length; i += 1) {
+    styleRows[i].style.opacity = String((i % 10) / 10);
+  }
+  const inlineStyleUpdate = performance.now() - t0;
+  for (let i = 0; i < styleRows.length; i += 1) {
+    styleRows[i].removeAttribute("style");
+  }
 
   let clicks = 0;
   const onClick = () => {
@@ -283,7 +306,9 @@ window.benchRealWorld = () => {
     innerHTMLGet,
     querySelector,
     querySelectorAll,
+    getElementById,
     sheetRead,
+    inlineStyleUpdate,
     events,
     detachedReattach,
     getAttribute,
@@ -764,7 +789,9 @@ function medianRealWorld(samples: RealWorldTimings[]): RealWorldTimings {
     innerHTMLGet: median(samples.map((sample) => sample.innerHTMLGet)),
     querySelector: median(samples.map((sample) => sample.querySelector)),
     querySelectorAll: median(samples.map((sample) => sample.querySelectorAll)),
+    getElementById: median(samples.map((sample) => sample.getElementById)),
     sheetRead: median(samples.map((sample) => sample.sheetRead)),
+    inlineStyleUpdate: median(samples.map((sample) => sample.inlineStyleUpdate)),
     events: median(samples.map((sample) => sample.events)),
     detachedReattach: median(samples.map((sample) => sample.detachedReattach)),
     getAttribute: median(samples.map((sample) => sample.getAttribute)),
@@ -889,7 +916,9 @@ function report(measurements: Measurement[], realWorld: RealWorldMeasurement): v
     ["innerHTML get (500x)", "innerHTMLGet"],
     ['querySelector("body .row") (2k)', "querySelector"],
     ['querySelectorAll("body .row") (100x)', "querySelectorAll"],
+    ["getElementById (2k)", "getElementById"],
     [".sheet 500-rule read (200x)", "sheetRead"],
+    ["el.style.opacity update (500x)", "inlineStyleUpdate"],
     ["events click dispatch (10k)", "events"],
     ["detached 100-node re-attach (200x)", "detachedReattach"],
     ["getAttribute (50k)", "getAttribute"],

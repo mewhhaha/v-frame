@@ -244,6 +244,13 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeQuerySelectorAll = elementPrototype.querySelectorAll;
   const nativeFragmentQuerySelector = documentFragmentPrototype.querySelector;
   const nativeFragmentQuerySelectorAll = documentFragmentPrototype.querySelectorAll;
+  const nativeShadowGetElementById =
+    options.host.ownerDocument.defaultView?.ShadowRoot?.prototype.getElementById;
+  let literalShellElementsPresent = false;
+  const hasLiteralShellElements = (): boolean => literalShellElementsPresent;
+  const noteLiteralShellElement = (): void => {
+    literalShellElementsPresent = true;
+  };
   const nativeGetElementsByTagName = elementPrototype.getElementsByTagName;
   const nativeGetElementsByTagNameNS = elementPrototype.getElementsByTagNameNS;
   const nativeAttachShadow = elementPrototype.attachShadow;
@@ -540,6 +547,9 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeQuerySelectorAll,
     nativeFragmentQuerySelector,
     nativeFragmentQuerySelectorAll,
+    nativeShadowGetElementById,
+    hasLiteralShellElements,
+    noteLiteralShellElement,
     nativeGetElementsByTagName,
     nativeGetElementsByTagNameNS,
     nativeAttachShadow,
