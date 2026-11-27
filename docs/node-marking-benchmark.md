@@ -799,6 +799,49 @@ Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
 - **Bundle size** is `80,245 B / 82,000 B` gzip (`98%` of budget; `+607 B` over
   `0.8.0`).
 
+## Round 10 — `innerHTML` pooling, plain-`Event` fast path, and single-node insertion polish (`0.10.0`)
+
+The final micro-optimization pass targets the remaining default overhead in
+`innerHTML =`, element event dispatch, and single-node tree insertion:
+
+- **Pooled `innerHTML` parser contexts, single-child replacement & tracked-link
+  latch (`src/facade/markup.ts`, `src/facade/insertion.ts`,
+  `src/realm/dynamic-styles.ts`, `src/realm/index.ts`):** Reuse up to 16 empty
+  inert HTML context elements in `parseFragment`, return a single parsed child
+  directly to `replaceElementChildren` (avoiding `DocumentFragment`,
+  `childNodes` snapshots, and `performStyleMutationBatch` closures on
+  non-`<style>` parents), and skip `dynamicLinksFrom()` in
+  `onDisconnectedNodes()` whenever no linked or dynamic stylesheet is tracked.
+- **Plain-`Event` prototype fast path & direct-listener `currentTarget` skip
+  (`src/facade/events.ts`):** Check `Object.getPrototypeOf(source) === eventPrototype`
+  before `instanceof` / `ensureLazyEventPrototypes`, and omit the
+  `nativeEventCurrentTarget` probe for direct element listeners and `on*`
+  handlers.
+- **Single-lookup plain-element check & insertion latches
+  (`src/facade/insertion.ts`, `src/facade/context.ts`):** Collapse six
+  tag/namespace predicates in `isPlainMarkedElement` into one
+  `NON_PLAIN_HTML_TAGS` lookup, short-circuit `isInVirtualDocumentTree` on
+  `parentNode === null`, gate `isBatchedStyleChild` behind an
+  `activeStyleBatches` counter, and skip the post-insert `parent.isConnected`
+  read on detached appends.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-27 (`pnpm bench` on 5,000-element guest, `0.9.0 → 0.10.0`):
+
+| Operation                                         | Chromium `0.9.0 → 0.10.0` (host)                    | Firefox `0.9.0 → 0.10.0` (host)                    |
+| ------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
+| `events` click dispatch (10k×)                    | **`30.2 → 26.9 ms`** (`10.1 ms`, **`2.7x`**)        | **`37.0 ms`** (`35.0 ms` `lazy-events`, `14.0 ms`) |
+| `innerHTML =` (500×)                              | **`11.1 → 9.6 ms`** (`2.8 ms`, **`3.4x`**)          | **`23.0 → 19.0 ms`** (`1.0 ms`)                    |
+| `insertion` (1k×) `[lazy-attrs + lazy-events]`    | **`6.4 → 5.8 ms`** (`1.5 ms`)                       | **`12.0 ms`** (`2.0 ms`)                           |
+| `insertion` (1k×) default                         | **`8.0 → 7.7 ms`** (`7.4–8.4 ms`, `1.3 ms`)         | **`19.0 → 18.0 ms`** (`2.0 ms`)                    |
+| `50k lazy-attrs + lazy-events + cv="auto"` (geom) | **`96.7 → 95.2 ms`** (`147.8 ms` host, **`0.64x`**) | **`139.0 ms`** (`164.0 ms` host, **`0.85x`**)      |
+| Marginal activation cost (default)                | **`4.77 µs/element`** (`0.57 µs` host)              | **`5.65 µs/element`** (`0.73 µs` host)             |
+
+- **Bundle size** is `80,569 B / 82,000 B` gzip (`98%` of budget; `+324 B` over
+  `0.9.0`).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

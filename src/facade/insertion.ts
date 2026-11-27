@@ -5,7 +5,7 @@
 // tree-patches.ts, the Range overrides in selection.ts and innerHTML all go
 // through here.
 
-import { canHaveURLAttributes } from "../asset-urls.js";
+import { canHaveURLAttributes, HTML_NAMESPACE } from "../asset-urls.js";
 import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { FacadeContext, SubtreeScan } from "./context.js";
 import type { NodeMarking } from "./marking.js";
@@ -13,6 +13,30 @@ import type { NodeArguments } from "./node-arguments.js";
 import type { ScriptExecution } from "./script-execution.js";
 
 const SETTLED_MOVE_POST_SELECTOR = "script,style,link,[data-v-frame-target]";
+const NON_PLAIN_HTML_TAGS = new Set([
+  "a",
+  "area",
+  "audio",
+  "base",
+  "blockquote",
+  "button",
+  "del",
+  "embed",
+  "form",
+  "iframe",
+  "img",
+  "input",
+  "ins",
+  "link",
+  "object",
+  "q",
+  "script",
+  "source",
+  "style",
+  "template",
+  "track",
+  "video",
+]);
 
 export interface NodeInsertion {
   collectElements(node: Node): Element[];
@@ -37,7 +61,7 @@ export interface NodeInsertion {
     parentVerifiedVirtual?: boolean,
     nodeVerified?: boolean,
   ): T;
-  replaceElementChildren(parent: Element, fragment: DocumentFragment | null): void;
+  replaceElementChildren(parent: Element, replacement: Node | null): void;
   replaceNodeWith<T extends Node>(parent: Node, node: Node, child: T): T;
   styleElementChanged(node: Node): void;
   performStyleMutationBatch(parent: Node, mutation: () => void): void;
@@ -63,8 +87,6 @@ export function createNodeInsertion(
     isHTMLStyleElement,
     isHTMLLinkElement,
     isHTMLScriptElement,
-    isBaseElement,
-    isHTMLTemplateElement,
     isInVirtualDocumentTree,
     subtreeHasBaseElement,
     virtualNodes,
@@ -91,6 +113,7 @@ export function createNodeInsertion(
   const { isNodeValue, requireNode, toNodes } = nodeArguments;
 
   const styleMutationBatches = new WeakSet<HTMLStyleElement>();
+  let activeStyleBatches = 0;
   const styleElementForMutation = (node: Node): HTMLStyleElement | null => {
     if (isElementNode(node) && isHTMLStyleElement(node)) {
       return isInVirtualDocumentTree(node) ? node : null;
@@ -157,15 +180,19 @@ export function createNodeInsertion(
 
   const lazyAttributes = options.lazyAttributes === true;
   const isPlainMarkedElement = (element: Element): boolean => {
+    if (!virtualNodes.has(element)) {
+      return false;
+    }
+    const ns = element.namespaceURI;
+    if (ns === HTML_NAMESPACE) {
+      if (NON_PLAIN_HTML_TAGS.has(element.localName)) {
+        return false;
+      }
+    } else if (canHaveURLAttributes(element)) {
+      return false;
+    }
     if (
-      !virtualNodes.has(element) ||
       options.authoredURLAttributes.has(element) ||
-      canHaveURLAttributes(element) ||
-      isHTMLStyleElement(element) ||
-      isHTMLLinkElement(element) ||
-      isHTMLScriptElement(element) ||
-      isBaseElement(element) ||
-      isHTMLTemplateElement(element) ||
       (options.onShadowRoot !== undefined && element.shadowRoot !== null)
     ) {
       return false;
@@ -333,6 +360,10 @@ export function createNodeInsertion(
     if (nodes.length === 0) {
       return;
     }
+    if (activeStyleBatches === 0) {
+      options.onConnectedNodes(nodes, scan, alreadyFlushed);
+      return;
+    }
     const isBatchedStyleChild = (node: Node): boolean => {
       const parent = node.parentNode;
       return (
@@ -381,8 +412,12 @@ export function createNodeInsertion(
     } else {
       finishInsertion(nodes, baseElementChanged, scan);
     }
-    if (isElementNode(parent) && isHTMLScriptElement(parent)) {
-      executeConnectedScript(parent);
+    if (
+      parent.nodeType === 1 &&
+      (parent as Element).localName === "script" &&
+      isHTMLScriptElement(parent as Element)
+    ) {
+      executeConnectedScript(parent as HTMLScriptElement);
     }
   };
 
@@ -424,7 +459,7 @@ export function createNodeInsertion(
         ? nativeAppendChild.call(parent, node)
         : nativeInsertBefore.call(parent, node, reference)
     ) as T;
-    if (parent.isConnected) {
+    if (wasConnected && parent.isConnected) {
       if (nodes === null && !singleNodeScratchInUse) {
         singleNodeScratchInUse = true;
         singleNodeScratch[0] = node;
@@ -513,23 +548,26 @@ export function createNodeInsertion(
     return result;
   };
 
-  const replaceElementChildren = (
-    parent: Element,
-    fragment: DocumentFragment | null,
-  ): void => {
-    const hadChildren = parent.firstChild !== null;
-    if (fragment === null && !hadChildren) {
+  const replaceElementChildren = (parent: Element, replacement: Node | null): void => {
+    const firstExisting = parent.firstChild;
+    if (replacement === null && firstExisting === null) {
       return;
     }
     const wasConnected = parent.isConnected;
-    const removed = hadChildren ? Array.from(parent.childNodes) : null;
+    const removed =
+      firstExisting === null
+        ? null
+        : firstExisting === parent.lastChild
+          ? [firstExisting]
+          : Array.from(parent.childNodes);
     const removedHasBase =
       wasConnected &&
       removed !== null &&
       options.settledSubtreeHas?.(parent, true) !== false &&
       removed.some(subtreeHasBaseElement);
-    if (fragment === null) {
-      performStyleMutationBatch(parent, () => {
+    const isStyleParent = parent.localName === "style" && isHTMLStyleElement(parent);
+    if (replacement === null) {
+      const clear = () => {
         nativeElementReplaceChildren.call(parent);
         if (removed !== null) {
           options.onDisconnectedNodes(removed);
@@ -537,29 +575,52 @@ export function createNodeInsertion(
         if (removedHasBase) {
           options.onBaseElementChange();
         }
-      });
+      };
+      if (isStyleParent) performStyleMutationBatch(parent, clear);
+      else clear();
       return;
     }
-    const scan = prepareInsertion(fragment, undefined, wasConnected);
-    const inserted = insertedNodes(fragment);
+    const scan = prepareInsertion(replacement, undefined, wasConnected);
+    const isFragment = replacement.nodeType === 11;
+    const inserted = isFragment ? Array.from(replacement.childNodes) : null;
     const baseElementChanged =
       wasConnected &&
       (removedHasBase ||
-        (scan !== undefined ? scan.hasBase : inserted.some(subtreeHasBaseElement)));
-    performStyleMutationBatch(parent, () => {
-      nativeElementReplaceChildren.call(parent, fragment);
+        (scan !== undefined
+          ? scan.hasBase
+          : inserted !== null
+            ? inserted.some(subtreeHasBaseElement)
+            : subtreeHasBaseElement(replacement)));
+    const commit = () => {
+      nativeElementReplaceChildren.call(parent, replacement);
       if (removed !== null) {
         options.onDisconnectedNodes(removed);
       }
-      if (parent.isConnected) {
-        finishInsertion(inserted, baseElementChanged, scan);
-        if (isHTMLScriptElement(parent)) {
+      if (wasConnected && parent.isConnected) {
+        if (inserted === null && !singleNodeScratchInUse) {
+          singleNodeScratchInUse = true;
+          singleNodeScratch[0] = replacement;
+          try {
+            finishInsertion(singleNodeScratch, baseElementChanged, scan);
+          } finally {
+            singleNodeScratch[0] = null as unknown as Node;
+            singleNodeScratchInUse = false;
+          }
+        } else {
+          finishInsertion(inserted ?? [replacement], baseElementChanged, scan);
+        }
+        if (parent.localName === "script" && isHTMLScriptElement(parent)) {
           executeConnectedScript(parent);
         }
       } else if (baseElementChanged) {
         options.onBaseElementChange();
       }
-    });
+    };
+    if (isStyleParent) {
+      performStyleMutationBatch(parent, commit);
+    } else {
+      commit();
+    }
   };
 
   // One batch per style element: however many nodes a method inserts, the
@@ -567,16 +628,22 @@ export function createNodeInsertion(
   // open belongs to an outer caller and is left for it to close.
   const performStyleMutationBatch = (parent: Node, mutation: () => void): void => {
     const parentStyle =
-      isElementNode(parent) && isHTMLStyleElement(parent) ? parent : null;
+      parent.nodeType === 1 &&
+      (parent as Element).localName === "style" &&
+      isHTMLStyleElement(parent as Element)
+        ? (parent as HTMLStyleElement)
+        : null;
     if (parentStyle === null || styleMutationBatches.has(parentStyle)) {
       mutation();
       return;
     }
 
     styleMutationBatches.add(parentStyle);
+    activeStyleBatches += 1;
     try {
       mutation();
     } finally {
+      activeStyleBatches -= 1;
       styleMutationBatches.delete(parentStyle);
       styleElementChanged(parentStyle);
     }

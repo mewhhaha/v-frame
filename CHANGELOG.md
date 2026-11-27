@@ -3,6 +3,50 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.0 - 2026-11-27
+
+### Changed
+
+- Applied final micro-optimizations to `innerHTML` parsing/replacement, element
+  event dispatch, and single-node tree insertion (Round 10, all default):
+  - **Pooled `innerHTML` parser contexts, single-child replacement & tracked-link
+    latch (`src/facade/markup.ts`, `src/facade/insertion.ts`,
+    `src/realm/dynamic-styles.ts`, `src/realm/index.ts`):** Added a capped,
+    reentrancy-safe pool of inert HTML parser context elements in
+    `parseFragment`, returned single root children directly for `innerHTML` /
+    `setHTMLUnsafe` without allocating a `DocumentFragment` or `childNodes`
+    snapshot, avoided `performStyleMutationBatch` closures on non-`<style>`
+    parents, and latched `styles.hasTrackedLinks()` so `onDisconnectedNodes()`
+    skips `querySelectorAll("link")` when no dynamic or linked stylesheets are
+    tracked.
+  - **Plain-`Event` prototype fast path & direct-listener `currentTarget` skip
+    (`src/facade/events.ts`):** Checked `Object.getPrototypeOf(source) === eventPrototype`
+    before `instanceof` and `ensureLazyEventPrototypes`, and skipped reading
+    `nativeEventCurrentTarget` for direct element listeners and `on*` handlers
+    whose native `currentTarget` already matches.
+  - **Single-lookup plain-element check & detached/style latches
+    (`src/facade/insertion.ts`, `src/facade/context.ts`):** Replaced six
+    separate WebIDL tag/namespace predicates in `isPlainMarkedElement` with a
+    single `NON_PLAIN_HTML_TAGS` lookup, short-circuited
+    `isInVirtualDocumentTree` when `node.parentNode === null`, gated
+    `isBatchedStyleChild` behind an `activeStyleBatches` counter, and avoided
+    the redundant post-insert `parent.isConnected` read on detached appends.
+  - In idle `pnpm bench` runs on an AMD Ryzen 7 7800X3D (`0.9.0 → 0.10.0`):
+    - **Chromium 153:** `events` click dispatch (10k×) dropped
+      **`30.2 → 26.9 ms`** (**`-11%`**, **`2.7x`** of host `10.1 ms`),
+      `innerHTML =` (500×) dropped **`11.1 → 9.6 ms`** (**`-14%`**), `1k`
+      insertion with `lazy-attributes + lazy-events` dropped **`6.4 → 5.8 ms`**
+      (default `7.4–8.4 ms`), `50k` activation through geometry with
+      `lazy-attributes + lazy-events + content-visibility="auto"` reached
+      **`95.2 ms`** (**`0.64x`** of host DOM `147.8 ms`), and marginal
+      activation cost dropped to **`4.77 µs/element`**.
+    - **Firefox 155:** `innerHTML =` (500×) dropped **`23.0 → 19.0 ms`**
+      (**`-17%`**), `events` click dispatch (10k×) with `lazy-events` dropped
+      **`38.0 → 35.0 ms`** (**`2.5x`** of host `14.0 ms`), and `1k` / `50k`
+      insertion with `lazy-attributes + lazy-events` held at **`12.0 ms`**.
+    - **Bundle size:** `80,569 B / 82,000 B` gzip (`98%` of budget; `+324 B` vs
+      `0.9.0`).
+
 ## 0.9.0 - 2026-11-27
 
 ### Changed

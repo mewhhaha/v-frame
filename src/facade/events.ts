@@ -762,7 +762,7 @@ export function installEventFacade(
 
   const eventForSource = (
     source: Event,
-    currentTarget: EventTarget,
+    currentTarget: EventTarget | undefined,
     eventPhase?: number,
     passive = false,
   ): Event => {
@@ -775,7 +775,10 @@ export function installEventFacade(
     } else if (hasPassiveListeners) {
       passiveListeners.delete(source);
     }
-    if (currentTarget !== nativeEventCurrentTarget.call(source)) {
+    if (
+      currentTarget !== undefined &&
+      currentTarget !== nativeEventCurrentTarget.call(source)
+    ) {
       hasLogicalCurrentTargets = true;
       logicalCurrentTargets.set(source, currentTarget);
     } else if (hasLogicalCurrentTargets) {
@@ -791,16 +794,20 @@ export function installEventFacade(
     if (existingState !== undefined) {
       return existingState.proxy;
     }
-    const mirrored =
-      source instanceof window.Event ? source : createMirroredEvent(source);
-    if (mirrored !== source) {
-      const mirroredState = listenerEventStates.get(mirrored);
-      if (mirroredState !== undefined) {
-        return mirroredState.proxy;
+    let mirrored: Event;
+    if (Object.getPrototypeOf(source) === eventPrototype) {
+      mirrored = source;
+    } else {
+      mirrored = source instanceof window.Event ? source : createMirroredEvent(source);
+      if (mirrored !== source) {
+        const mirroredState = listenerEventStates.get(mirrored);
+        if (mirroredState !== undefined) {
+          return mirroredState.proxy;
+        }
       }
-    }
-    if (lazyEvents) {
-      ensureLazyEventPrototypes(mirrored, source);
+      if (lazyEvents) {
+        ensureLazyEventPrototypes(mirrored, source);
+      }
     }
     const state: ListenerEventState = {
       source,
@@ -941,7 +948,7 @@ export function installEventFacade(
         return;
       }
       const source = dispatchedEventSource(event);
-      const listenerEvent = eventForSource(source, element);
+      const listenerEvent = eventForSource(source, undefined);
       try {
         const result = (current as (this: unknown, event: Event) => unknown).call(
           element,
@@ -1146,7 +1153,7 @@ export function installEventFacade(
           if (typeof listener === "function") {
             return (event) => {
               const source = dispatchedEventSource(event);
-              const listenerEvent = eventForSource(source, target, undefined, passive);
+              const listenerEvent = eventForSource(source, undefined, undefined, passive);
               try {
                 listener.call(target, listenerEvent);
               } finally {
@@ -1156,7 +1163,7 @@ export function installEventFacade(
           }
           return (event) => {
             const source = dispatchedEventSource(event);
-            const listenerEvent = eventForSource(source, target, undefined, passive);
+            const listenerEvent = eventForSource(source, undefined, undefined, passive);
             try {
               listener.handleEvent(listenerEvent);
             } finally {

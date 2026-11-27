@@ -333,6 +333,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       nativeDOM,
       stylesheetContext: markup.stylesheetContext,
       linkedStyles: markup.linkedStyles,
+      hasInitialLinkedStyles: markup.links.length > 0,
       signal: options.signal,
       getNonce: options.getNonce,
       getBaseURL: getDocumentBaseURL,
@@ -426,6 +427,9 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.scheduleDynamicLink(link, true, authoredRel);
       },
       onDisconnectedNodes(nodes) {
+        if (!styles.hasTrackedLinks()) {
+          return;
+        }
         for (const link of styles.dynamicLinksFrom(nodes)) {
           if (!isConnectedToRealm(link)) {
             styles.invalidateDynamicLink(link);

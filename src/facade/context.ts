@@ -326,7 +326,9 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     return document;
   };
   const isInVirtualDocumentTree = (node: Node): boolean =>
-    nativeGetRootNode.call(node) === options.shadowRoot;
+    node.parentNode !== null
+      ? nativeGetRootNode.call(node) === options.shadowRoot
+      : node === options.shadowRoot;
   const virtualNodes = new WeakSet<Node>();
   const fragmentNodes = new WeakSet<Node>();
   const createdScripts = new WeakSet<HTMLScriptElement>();

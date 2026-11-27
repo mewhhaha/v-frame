@@ -83,6 +83,7 @@ interface DynamicStyleOptions {
   nativeDOM?: NativeDOM;
   stylesheetContext: StylesheetContext;
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
+  hasInitialLinkedStyles?: boolean;
   signal: AbortSignal;
   getNonce(): string;
   getBaseURL(): string;
@@ -126,6 +127,7 @@ export interface DynamicStyles {
    */
   claimAwaitedStyle(style: HTMLStyleElement): boolean;
   claimAwaitedLink(link: HTMLLinkElement): boolean;
+  hasTrackedLinks(): boolean;
 }
 
 export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles {
@@ -139,6 +141,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
   const processedStyles = new WeakMap<HTMLStyleElement, string>();
   const dynamicStyleUpdates = new WeakMap<HTMLStyleElement, DynamicStyleUpdate>();
   const dynamicLinkUpdates = new WeakMap<HTMLLinkElement, DynamicLinkUpdate>();
+  let hasTrackedDynamicLinks = options.hasInitialLinkedStyles === true;
   const generatedStyleWrites = new WeakSet<HTMLStyleElement>();
   const connectedStylesAwaitingObservation = new WeakSet<HTMLStyleElement>();
   const connectedLinksAwaitingObservation = new WeakSet<HTMLLinkElement>();
@@ -652,6 +655,7 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     forceRevision = false,
     authoredRelOverride?: string | null,
   ): void => {
+    hasTrackedDynamicLinks = true;
     let update = dynamicLinkUpdates.get(link);
     const authoredRel =
       authoredRelOverride !== undefined
@@ -800,10 +804,15 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     }
 
     for (const node of nodes) {
-      const parentStyle =
-        node.parentNode instanceof window.HTMLStyleElement ? node.parentNode : null;
-      if (parentStyle !== null && !styles.includes(parentStyle)) {
-        scheduleDynamicStyleContent(parentStyle);
+      const parent = node.parentNode;
+      if (
+        parent !== null &&
+        parent.nodeType === 1 &&
+        (parent as Element).localName === "style" &&
+        parent instanceof window.HTMLStyleElement &&
+        !styles.includes(parent)
+      ) {
+        scheduleDynamicStyleContent(parent);
       }
     }
   };
@@ -833,6 +842,9 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     },
     claimAwaitedLink(link) {
       return connectedLinksAwaitingObservation.delete(link);
+    },
+    hasTrackedLinks() {
+      return hasTrackedDynamicLinks;
     },
   };
 }

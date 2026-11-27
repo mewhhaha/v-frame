@@ -39,6 +39,7 @@ export function installMarkupFacade(
     nativeReplaceChild,
     nativeImportNode,
     nativeSetAttributeNS,
+    nativeHasAttributes,
     nativeHasAttribute,
     nativeInnerHTML,
     nativeOuterHTML,
@@ -89,12 +90,30 @@ export function installMarkupFacade(
       ? (nativeNamespaceURI.call(element) as string | null)
       : element.namespaceURI;
 
-  const parseFragment = (
+  // Reentrancy-safe pool of empty inert HTML context elements for parseFragment.
+  const parserContextPool = new Map<string, Element>();
+
+  function parseFragment(
+    markup: string,
+    destination: Element | null,
+    unsafe?: boolean,
+    markImmediately?: boolean,
+    allowSingleChild?: false,
+  ): DocumentFragment;
+  function parseFragment(
+    markup: string,
+    destination: Element | null,
+    unsafe: boolean,
+    markImmediately: boolean,
+    allowSingleChild: true,
+  ): Node | null;
+  function parseFragment(
     markup: string,
     destination: Element | null,
     unsafe = false,
     markImmediately = true,
-  ): DocumentFragment => {
+    allowSingleChild = false,
+  ): Node | null {
     const fragmentDocument = getInertDocument();
     const shellName =
       destination === options.html
@@ -104,9 +123,10 @@ export function installMarkupFacade(
           : destination === options.body
             ? "body"
             : null;
+    let poolKey: string | null = null;
     let parserContext: Element;
     if (destination === null || shellName !== null) {
-      parserContext = nativeCreateElement.call(fragmentDocument, shellName ?? "body");
+      poolKey = shellName ?? "body";
     } else {
       const destLocalName = readLocalName(destination);
       if (
@@ -114,7 +134,11 @@ export function installMarkupFacade(
         !destLocalName.includes("-") &&
         destLocalName === destLocalName.toLowerCase()
       ) {
-        parserContext = nativeCreateElement.call(fragmentDocument, destLocalName);
+        if (destLocalName !== "template") {
+          poolKey = destLocalName;
+        } else {
+          parserContext = nativeCreateElement.call(fragmentDocument, destLocalName);
+        }
       } else {
         parserContext = nativeImportNode.call(
           fragmentDocument,
@@ -123,93 +147,135 @@ export function installMarkupFacade(
         ) as Element;
       }
     }
-    if (unsafe && nativeSetHTMLUnsafe !== undefined) {
-      nativeSetHTMLUnsafe.call(parserContext, markup);
-    } else {
-      nativeInnerHTML.set?.call(parserContext, markup);
-    }
-    const fragment = nativeCreateDocumentFragment.call(fragmentDocument);
-    const parsedRoot = isHTMLTemplateElement(parserContext)
-      ? parserContext.content
-      : parserContext;
-    for (
-      let child = readFirstChild(parsedRoot);
-      child !== null;
-      child = readFirstChild(parsedRoot)
-    ) {
-      nativeAppendChild.call(fragment, child);
-    }
-    // Single pass marks fragment provenance and collects custom-element upgrades
-    // only for tags with a hyphen or an `is` attribute (spec requirement).
-    let customCandidates: Element[] | undefined;
-    const scanFragment = (root: Node, inTemplate: boolean): void => {
-      for (let child = readFirstChild(root); child !== null; child = child.nextSibling) {
-        if (child.nodeType !== 1) continue;
-        const element = child as Element;
-        fragmentNodes.add(element);
-        if (
-          !inTemplate &&
-          readNamespaceURI(element) === HTML_NAMESPACE &&
-          (readLocalName(element).includes("-") || nativeHasAttribute.call(element, "is"))
-        ) {
-          (customCandidates ??= []).push(element);
-        }
-        if (readFirstChild(element) !== null) {
-          scanFragment(element, inTemplate);
-        }
-        if (isHTMLTemplateElement(element)) {
-          scanFragment(element.content, true);
-        }
+    if (poolKey !== null) {
+      const pooled = parserContextPool.get(poolKey);
+      if (pooled !== undefined) {
+        parserContextPool.delete(poolKey);
+        parserContext = pooled;
+      } else {
+        parserContext = nativeCreateElement.call(fragmentDocument, poolKey);
       }
-    };
-    scanFragment(fragment, false);
-    let upgradedCustom = false;
-    if (customCandidates !== undefined) {
-      for (let i = customCandidates.length - 1; i >= 0; i -= 1) {
-        const parsedElement = customCandidates[i]!;
-        const parsedLocalName = readLocalName(parsedElement);
-        const customizedName = parsedElement.getAttribute("is");
-        const customName =
-          customizedName !== null &&
-          window.customElements.get(customizedName) !== undefined
-            ? customizedName
-            : parsedLocalName;
-        if (window.customElements.get(customName) === undefined) {
-          continue;
-        }
-        upgradedCustom = true;
-        const creationOptions =
-          customName === customizedName ? { is: customName } : undefined;
-        const customElement = nativeCreateElement.call(
-          document,
-          parsedLocalName,
-          creationOptions,
-        );
-        fragmentNodes.add(customElement);
-        for (const attribute of Array.from(parsedElement.attributes)) {
-          nativeSetAttributeNS.call(
-            customElement,
-            attribute.namespaceURI,
-            attribute.name,
-            attribute.value,
-          );
-        }
+    }
+    try {
+      if (unsafe && nativeSetHTMLUnsafe !== undefined) {
+        nativeSetHTMLUnsafe.call(parserContext!, markup);
+      } else {
+        nativeInnerHTML.set?.call(parserContext!, markup);
+      }
+      const parsedRoot: Node =
+        poolKey === null && isHTMLTemplateElement(parserContext!)
+          ? (parserContext! as HTMLTemplateElement).content
+          : parserContext!;
+      if (allowSingleChild && readFirstChild(parsedRoot) === null) {
+        return null;
+      }
+      // Single pass marks fragment provenance and collects custom-element upgrades
+      // only for tags with a hyphen or an `is` attribute (spec requirement).
+      let customCandidates: Element[] | undefined;
+      const scanFragment = (root: Node, inTemplate: boolean): void => {
         for (
-          let child = readFirstChild(parsedElement);
+          let child = readFirstChild(root);
           child !== null;
-          child = readFirstChild(parsedElement)
+          child = child.nextSibling
         ) {
-          nativeAppendChild.call(customElement, child);
+          if (child.nodeType !== 1) continue;
+          const element = child as Element;
+          fragmentNodes.add(element);
+          if (
+            !inTemplate &&
+            readNamespaceURI(element) === HTML_NAMESPACE &&
+            (readLocalName(element).includes("-") ||
+              nativeHasAttribute.call(element, "is"))
+          ) {
+            (customCandidates ??= []).push(element);
+          }
+          if (readFirstChild(element) !== null) {
+            scanFragment(element, inTemplate);
+          }
+          if (readLocalName(element) === "template" && isHTMLTemplateElement(element)) {
+            scanFragment(element.content, true);
+          }
         }
-        nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
+      };
+      scanFragment(parsedRoot, false);
+      let upgradedCustom = false;
+      if (customCandidates !== undefined) {
+        for (let i = customCandidates.length - 1; i >= 0; i -= 1) {
+          const parsedElement = customCandidates[i]!;
+          const parsedLocalName = readLocalName(parsedElement);
+          const customizedName = parsedElement.getAttribute("is");
+          const customName =
+            customizedName !== null &&
+            window.customElements.get(customizedName) !== undefined
+              ? customizedName
+              : parsedLocalName;
+          if (window.customElements.get(customName) === undefined) {
+            continue;
+          }
+          upgradedCustom = true;
+          const creationOptions =
+            customName === customizedName ? { is: customName } : undefined;
+          const customElement = nativeCreateElement.call(
+            document,
+            parsedLocalName,
+            creationOptions,
+          );
+          fragmentNodes.add(customElement);
+          for (const attribute of Array.from(parsedElement.attributes)) {
+            nativeSetAttributeNS.call(
+              customElement,
+              attribute.namespaceURI,
+              attribute.name,
+              attribute.value,
+            );
+          }
+          for (
+            let child = readFirstChild(parsedElement);
+            child !== null;
+            child = readFirstChild(parsedElement)
+          ) {
+            nativeAppendChild.call(customElement, child);
+          }
+          nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
+        }
+      }
+      if (allowSingleChild) {
+        const first = readFirstChild(parsedRoot);
+        if (first === null) {
+          return null;
+        }
+        if (first.nextSibling === null) {
+          if (markImmediately || upgradedCustom) {
+            return adoptAndMark(first);
+          }
+          hostDocument.adoptNode(first);
+          return first;
+        }
+      }
+      const fragment = nativeCreateDocumentFragment.call(fragmentDocument);
+      for (
+        let child = readFirstChild(parsedRoot);
+        child !== null;
+        child = readFirstChild(parsedRoot)
+      ) {
+        nativeAppendChild.call(fragment, child);
+      }
+      if (markImmediately || upgradedCustom) {
+        return adoptAndMark(fragment);
+      }
+      hostDocument.adoptNode(fragment);
+      return fragment;
+    } finally {
+      if (
+        poolKey !== null &&
+        parserContextPool.size < 16 &&
+        readFirstChild(parserContext!) === null &&
+        !nativeHasAttributes.call(parserContext!)
+      ) {
+        parserContextPool.set(poolKey, parserContext!);
       }
     }
-    if (markImmediately || upgradedCustom) {
-      return adoptAndMark(fragment);
-    }
-    hostDocument.adoptNode(fragment);
-    return fragment;
-  };
+  }
 
   const elementHasVirtualOverride = (element: Element): boolean =>
     element === options.html ||
@@ -520,7 +586,7 @@ export function installMarkupFacade(
             nativeSetHTMLUnsafe.call(this, markup);
             return;
           }
-          if (isHTMLTemplateElement(this)) {
+          if (readLocalName(this) === "template" && isHTMLTemplateElement(this)) {
             nativeSetHTMLUnsafe.call(this, markup);
             markFragmentElements(this.content);
             markVirtualNode(this.content);
@@ -528,7 +594,7 @@ export function installMarkupFacade(
           }
           replaceElementChildren(
             this,
-            markup === "" ? null : parseFragment(markup, this, true, false),
+            markup === "" ? null : parseFragment(markup, this, true, false, true),
           );
         },
       });
@@ -562,7 +628,10 @@ export function installMarkupFacade(
         if (!virtualNodes.has(this)) {
           return getter.call(this) as string;
         }
-        const root: ParentNode = isHTMLTemplateElement(this) ? this.content : this;
+        const root: ParentNode =
+          readLocalName(this) === "template" && isHTMLTemplateElement(this)
+            ? this.content
+            : this;
         if (root.firstChild === null) {
           return "";
         }
@@ -579,7 +648,7 @@ export function installMarkupFacade(
           nativeInnerHTML.set?.call(this, markup);
           return;
         }
-        if (isHTMLTemplateElement(this)) {
+        if (readLocalName(this) === "template" && isHTMLTemplateElement(this)) {
           nativeInnerHTML.set?.call(this, markup);
           markFragmentElements(this.content);
           markVirtualNode(this.content);
@@ -587,7 +656,7 @@ export function installMarkupFacade(
         }
         replaceElementChildren(
           this,
-          markup === "" ? null : parseFragment(markup, this, false, false),
+          markup === "" ? null : parseFragment(markup, this, false, false, true),
         );
       },
     });
