@@ -271,7 +271,7 @@ the next microtask checkpoint. Guest code that writes through one of those APIs,
 ancestor and reads the new node's identity in the same synchronous turn now gets native
 answers where it used to get virtual ones. The re-parent case in
 `tests/dom-fidelity.spec.ts` reads after the observer for exactly this reason, and
-[`limitations.md`](./limitations.md#node-identity-after-an-unintercepted-write) states it
+[`limitations.md`](./limitations.md#node-identity-after-a-host-realm-write) states it
 as a limitation with the affected APIs. A detached subtree is unaffected: it is still
 walked in full on insertion, synchronously.
 

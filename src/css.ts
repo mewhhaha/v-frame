@@ -33,8 +33,8 @@ export interface StylesheetImportFailure {
   error: unknown;
 }
 
-export const DEFAULT_MAX_IMPORT_EXPANSIONS = 128;
-export const DEFAULT_MAX_EXPANDED_CSS_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_IMPORT_EXPANSIONS = 128;
+const DEFAULT_MAX_EXPANDED_CSS_BYTES = 4 * 1024 * 1024;
 
 /** Normalizes an HTML `crossorigin` attribute per the CORS settings attribute spec. */
 export function normalizeCrossOrigin(

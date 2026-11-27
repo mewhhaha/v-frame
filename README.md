@@ -18,7 +18,7 @@ contained in an open shadow root, its JavaScript running with normal `document`,
   realm with virtualized `Document`, `History`, `Location`, CSSOM
   (including `document.adoptedStyleSheets`), same-origin `GET`/`POST` forms,
   and base-URL-aware networking. Guest styles stay scoped to the shadow tree,
-  and the browser runtime is ~80 KB gzipped with zero runtime dependencies.
+  and the browser runtime is ~83 KB gzipped with zero runtime dependencies.
 
 Try the live demo: **[Contact Sheet](https://contact-sheet.jactor.dev/)** — an
 Apollo 11 photo desk composing three independently deployed sites on one page
@@ -306,16 +306,18 @@ cooperation—no host SDK import, no shared module graph, no build coupling, and
 no response contract. The trade-off is that DOM/browser emulation is never
 total; read [Limitations](./docs/limitations.md) before adopting.
 
-**Guest DOM size.** Emulation is paid per node. Activation costs about
-5.6 µs per element against 0.59 µs for putting the same markup straight into
-the host page, so a 1,000-element guest activates in ~39 ms, a 20,000-element
-one in ~144 ms, and a 50,000-element one in ~0.31 s; appending 1,000 rows to a
-settled guest costs about 9–12 ms whatever its size (chromium 153, Ryzen 7
-7800X3D, `pnpm bench`). Firefox is somewhat dearer on activation and insertion
-and its retained heap cannot be measured. That suits guests whose live DOM stays
-in the low thousands of elements (forms, dashboards, virtualized tables) and
-does not suit pages materializing tens of thousands of nodes at once, which are
-better served by an `<iframe>`. Full measurements are in
+**Guest DOM size.** Emulation is paid per node. Default activation costs about
+4.8 µs per element against 0.57 µs for putting the same markup straight into the
+host page, so a 1,000-element guest activates in ~36 ms, a 20,000-element one in
+~129 ms, and a 50,000-element one in ~0.27 s (or ~95 ms through first geometry
+with opt-in `lazy-attributes`, `lazy-events`, and `content-visibility="auto"`);
+appending 1,000 rows to a settled guest costs about 7–8 ms default (~6 ms with
+`lazy-attributes` + `lazy-events`) whatever its size (Chromium 153, Ryzen 7
+7800X3D, `pnpm bench`). Firefox is somewhat dearer on insertion (~18 ms default,
+~12 ms lazy) and its retained heap cannot be measured. That suits guests whose
+live DOM stays in the low thousands of elements (forms, dashboards, virtualized
+tables) and does not suit pages materializing tens of thousands of nodes at
+once, which are better served by an `<iframe>`. Full measurements are in
 [Guest size and activation cost](./docs/limitations.md#guest-size-and-activation-cost).
 
 ## Requirements

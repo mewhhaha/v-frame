@@ -8,6 +8,7 @@ import {
   type StylesheetFetch,
 } from "./css.js";
 import { EnumerableWeakMap } from "./enumerable-weak.js";
+import { findHTMLCommentEnd } from "./html-comments.js";
 import type { VFrameWindow } from "./types.js";
 import type { LinkedStyle } from "./linked-styles.js";
 import {
@@ -375,21 +376,8 @@ function neutralizeStyleMarkup(
     }
 
     if (source.startsWith("<!--", tagStart)) {
-      let end: number;
-      if (source.startsWith("<!-->", tagStart)) end = tagStart + 5;
-      else if (source.startsWith("<!--->", tagStart)) end = tagStart + 6;
-      else {
-        const standardEnd = source.indexOf("-->", tagStart + 4);
-        const bangEnd = source.indexOf("--!>", tagStart + 4);
-        if (standardEnd === -1 && bangEnd === -1) {
-          end = source.length;
-        } else if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
-          end = bangEnd + 4;
-        } else {
-          end = standardEnd + 3;
-        }
-      }
-      cursor = end;
+      const commentEnd = findHTMLCommentEnd(source, tagStart);
+      cursor = commentEnd === -1 ? source.length : commentEnd;
       continue;
     }
     if (foreignDepth > 0 && source.startsWith("<![CDATA[", tagStart)) {

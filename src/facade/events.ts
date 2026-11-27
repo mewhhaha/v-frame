@@ -17,7 +17,7 @@ import type { FacadeContext } from "./context.js";
 // Handler names are read off the realm's prototypes instead of listed: the
 // browser's own `on*` accessors are the authoritative set, and a hand-kept list
 // silently leaves every handler it forgot attached to the hidden document.
-export function eventHandlerNames(
+function eventHandlerNames(
   prototypes: readonly object[],
   eventTargetPrototype: object,
 ): string[] {
@@ -58,7 +58,7 @@ const HANDLERLESS_UI_EVENT_TYPES = [
 // Body (and frameset) handler properties that reflect the window's handlers
 // rather than the element's own: GlobalEventHandlers' onblur, onerror, onfocus,
 // onload, onresize and onscroll, plus every WindowEventHandlers member.
-export const WINDOW_REFLECTING_BODY_HANDLER_NAMES = new Set([
+const WINDOW_REFLECTING_BODY_HANDLER_NAMES = new Set([
   "blur",
   "error",
   "focus",

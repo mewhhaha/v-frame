@@ -1,4 +1,5 @@
 import type {
+  VFrameAdoptMode,
   VFrameCredentials,
   VFrameElement,
   VFrameNavigation,
@@ -15,10 +16,16 @@ declare module "react" {
     interface IntrinsicElements {
       "v-frame": DetailedHTMLProps<HTMLAttributes<VFrameElement>, VFrameElement> & {
         src?: string;
+        adopt?: boolean | VFrameAdoptMode;
         credentials?: VFrameCredentials;
         navigation?: VFrameNavigation;
         nonce?: string;
         "trusted-types-policy"?: string;
+        "form-action"?: string;
+        "lazy-attributes"?: boolean;
+        "lazy-events"?: boolean;
+        "preload-scripts"?: boolean | string;
+        "content-visibility"?: string;
       };
     }
   }

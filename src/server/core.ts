@@ -1,4 +1,5 @@
 import { createStylesheetContext, extractFontFaces, rewriteStylesheet } from "../css.js";
+import { findHTMLCommentEnd } from "../html-comments.js";
 import {
   HTML_NAMESPACE,
   isASCIIWhitespace,
@@ -24,7 +25,7 @@ import {
 
 export const DEFAULT_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_MAX_STYLESHEET_BYTES = 2 * 1024 * 1024;
-export const DEFAULT_MAX_STYLESHEETS = 64;
+const DEFAULT_MAX_STYLESHEETS = 64;
 export const DEFAULT_MAX_IMPORT_DEPTH = 8;
 export const DEFAULT_MAX_CONCURRENCY = 8;
 export const DEFAULT_MAX_SLOTS = 32;
@@ -336,28 +337,13 @@ export function balanceTemplateTags(source: string): string {
     }
 
     if (source.startsWith("<!--", tagStart)) {
-      if (source.startsWith("<!-->", tagStart)) {
-        cursor = tagStart + 5;
-        continue;
-      }
-      if (source.startsWith("<!--->", tagStart)) {
-        cursor = tagStart + 6;
-        continue;
-      }
-      // HTML5 comment-end-state (`-->`) and comment-end-bang-state (`--!>`) both
-      // close a comment once past the opening `<!--`.
-      const standardEnd = source.indexOf("-->", tagStart + 4);
-      const bangEnd = source.indexOf("--!>", tagStart + 4);
-      if (standardEnd === -1 && bangEnd === -1) {
+      const commentEnd = findHTMLCommentEnd(source, tagStart);
+      if (commentEnd === -1) {
         emitEdit(source.length, source.length, "-->");
         cursor = source.length;
         break;
       }
-      if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
-        cursor = bangEnd + 4;
-      } else {
-        cursor = standardEnd + 3;
-      }
+      cursor = commentEnd;
       continue;
     }
 
@@ -1034,16 +1020,6 @@ export function createDefaultStylesheetFetch(
       url: response.url || target.href,
     };
   };
-}
-
-export async function fetchStylesheetSource(
-  url: string,
-  { signal }: StylesheetFetchOptions = {},
-): Promise<StylesheetBytes> {
-  return createDefaultStylesheetFetch(url)(
-    url,
-    signal ? { signal } : undefined,
-  ) as Promise<StylesheetBytes>;
 }
 
 /** Wraps a stylesheet fetcher with total fetch budget, concurrency cap, and byte limit. */

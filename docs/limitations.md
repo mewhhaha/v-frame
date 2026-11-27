@@ -7,16 +7,16 @@ other than what the guest asked for.
 Everything on this page was read out of the current source and is covered by the
 test suite. Each entry says what throws, why it has to, and what to do instead.
 
-| API                                                                                                     | Result                              |
-| ------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)                | `NotSupportedError`                 |
-| [Direct child mutation of `document`](#direct-child-mutation-of-document)                               | `NotSupportedError`                 |
-| [`Selection.modify()`](#selectionmodify)                                                                | `NotSupportedError`                 |
-| [CSSOM `@import` rules](#cssom-import-rules)                                                            | `NotSupportedError`                 |
-| [Cross-origin linked stylesheets without CORS](#cross-origin-stylesheets-require-cors)                  | `v-frame-error`, stylesheet dropped |
-| [`POST` forms to `_blank`, cross-origin, or `navigation="host"`](#post-forms-outside-same-origin-guest) | `v-frame-error`, navigation dropped |
-| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)          | Navigation dropped                  |
-| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                       | Navigation dropped                  |
+| API                                                                                                          | Result                              |
+| ------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| [`document.write` / `writeln` / `open` / `close`](#documentwrite-writeln-open-and-close)                     | `NotSupportedError`                 |
+| [Direct child mutation of `document`](#direct-child-mutation-of-document)                                    | `NotSupportedError`                 |
+| [`Selection.modify()`](#selectionmodify)                                                                     | `NotSupportedError`                 |
+| [CSSOM `@import` rules](#cssom-import-rules)                                                                 | `NotSupportedError`                 |
+| [Cross-origin linked stylesheets without CORS](#cross-origin-stylesheets-require-cors)                       | `v-frame-error`, stylesheet dropped |
+| [`POST` forms to `_blank`, cross-origin, or `navigation="host"`](#post-forms-outside-same-origin-guest-mode) | `v-frame-error`, navigation dropped |
+| [`target` other than `_self` and `_blank`](#form-and-link-targets-other-than-_self-and-_blank)               | Navigation dropped                  |
+| [Non-HTTP link and form schemes](#non-http-link-and-form-schemes)                                            | Navigation dropped                  |
 
 During server-rendered adoption the browser starts a fresh undo history when
 the live input, textarea, or rich-text editor takes over. The visitor can
@@ -293,52 +293,49 @@ the fetch and the parse. "Plain host DOM" is the same markup fetched,
 
 | guest elements | `v-frame` | plain host DOM | overhead |
 | -------------- | --------- | -------------- | -------- |
-| 1,000          | 39.7 ms   | 2.5 ms         | 15.9x    |
-| 5,000          | 60.8 ms   | 4.3 ms         | 14.1x    |
-| 20,000         | 142.6 ms  | 12.7 ms        | 11.2x    |
-| 50,000         | 294.4 ms  | 32.1 ms        | 9.2x     |
+| 1,000          | 36.0 ms   | 1.8 ms         | 20.0x    |
+| 5,000          | 59.4 ms   | 4.2 ms         | 14.1x    |
+| 20,000         | 129.3 ms  | 12.4 ms        | 10.4x    |
+| 50,000         | 273.6 ms  | 29.7 ms        | 9.2x     |
 
-Chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D, 2026-11-26. Each
+Chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D, 2026-11-27. Each
 cell is the median of three runs and run-to-run spread is about ±10%, so read the
 slope rather than a cell; the overhead column is the noisiest of the four, because
 its denominator is a few milliseconds. The stable figure is the marginal cost:
-**5.20 µs per element for `v-frame`, 0.60 µs for host DOM** (`8.6x`). Reproduce
-with `pnpm bench`; the method, and the measurements across all five rounds of
-optimization, are in [`node-marking-benchmark.md`](./node-marking-benchmark.md).
+**4.77 µs per element for `v-frame`, 0.57 µs for host DOM** (`~8.4x` raw load;
+**`1.9x`** through first geometry read at 50k elements, or **`0.64x`** / `95 ms`
+with opt-in `lazy-attributes`, `lazy-events`, and `content-visibility="auto"`).
+Reproduce with `pnpm bench`; the method, and the measurements across all ten
+rounds of optimization, are in
+[`node-marking-benchmark.md`](./node-marking-benchmark.md).
 
-**Insertion into a settled guest** costs about 9–11 ms per 1,000 appended
-elements — roughly 10 µs each against 1.4–1.6 µs for host DOM (6–7x) — and is
-flat in the size of the tree already there, because marking is per inserted
-subtree rather than per document.
+**Insertion into a settled guest** costs about 7.4–8.4 ms per 1,000 appended
+elements default (~5.8 ms with `lazy-attributes` + `lazy-events`) — roughly
+7–8 µs each against 1.3–1.5 µs for host DOM (5–6x) — and is flat in the size of
+the tree already there, because marking is per inserted subtree rather than per
+document.
 
 **Re-parenting a settled subtree** — what a list does when it reorders rows —
-runs at roughly 3–4x the cost of plain host DOM for 1,000 moves of a hundred-node
-subtree (down from roughly 50–80x originally and 12–20x after Round 2). Marking
-does not run again for a subtree that is already marked and still connected, and
-the single realm mutation observer tracks connected special elements in a bounded
-index so pure single-node self-moves skip subtree scans and observer churn. The
-absolute milliseconds move with machine load — run `pnpm bench` for a figure on
-your own hardware; the ratio is what holds across runs.
+runs at roughly 1.8–2.6x the cost of plain host DOM for 1,000 moves of a
+hundred-node subtree (down from roughly 50–80x originally). Marking does not run
+again for a subtree that is already marked and still connected, and the single
+realm mutation observer tracks connected special elements in a bounded index so
+pure single-node self-moves skip subtree scans and observer churn. The absolute
+milliseconds move with machine load — run `pnpm bench` for a figure on your own
+hardware; the ratio is what holds across runs.
 
-**Retained JS heap** is about 7.5–8.5 MB for a 50,000-element guest against
-220–490 KB for the same markup in the host document, which never gets JS wrappers
-for its nodes at all. This one is chromium-only; see
-[below](#what-firefox-costs).
+**Retained JS heap** is about 8 MB default (`~3.7 MB` with `lazy-attributes` +
+`lazy-events`) for a 50,000-element guest against 114–490 KB for the same markup
+in the host document, which never gets JS wrappers for its nodes at all. This
+one is chromium-only; see [below](#what-firefox-costs).
 
-Five rounds of work produced the numbers above: moving `ownerDocument` and
-`baseURI` onto `Node.prototype` (Round 1), skipping marking for already-marked
-connected subtrees (Round 2), capturing native DOM walkers pre-facade, caching
-selector translations, collapsing insertion into a single-pass subtree scan,
-moving reflected URL properties onto HTML element prototypes, making CSSOM
-installation lazy, adding non-URL inline-style fast paths, and replacing
-`css-tree` with a zero-dependency CSS tokenizer/rewriter (Round 3), single-pass
-targeted markup preparation, tight initial `Attr` and leaf `Text` marking loops,
-unmanaged attribute fast-rejection, pooled subtree scans, overlapped HTML
-decoding + realm iframe connection, and pristine Event constructor caching
-(Round 4), and finally a bounded special-element index with pure self-move fast
-paths, ownership-only initial marking with `hasAttributes()` guards, synchronous
-`replaceState` on engines that complete `document.close()` synchronously, and
-opt-in `VFrameElement.prewarm()` via `moveBefore` (Round 5).
+Ten rounds of optimization produced the numbers above, culminating in pooled
+`innerHTML` parser contexts, zero-allocation bubbling event boundaries,
+monomorphic attribute patches, synchronous detached-watch eviction, native
+selector unions, zero-dependency CSS rewriting, and opt-in `lazy-attributes`,
+`lazy-events`, `content-visibility="auto"`, deferred `adopt`, and
+`VFrameElement.prewarm()`. See
+[`node-marking-benchmark.md`](./node-marking-benchmark.md) for the full round-by-round breakdown.
 
 What is left is the walk itself, and it is not going away: visiting every node
 once is irreducible for this design. No version of this runtime has activated a
@@ -346,19 +343,21 @@ large guest cheaply and none is planned.
 
 **What that means.** A guest whose rendered DOM is a few thousand elements pays
 tens of milliseconds once, which is below the noise of the network fetch in front
-of it. At 20,000 elements activation is ~0.14 seconds, and at 50,000 it is ~0.29
-seconds from `src` to `v-frame-load`, most of it synchronous work on the main
-thread — long enough that the choice of runtime is a major cost of the page. The
-[SSR path](./ssr.md) moves that cost rather than removing it: the server markup
-paints immediately, so the delay is before the guest is live rather than before
-anything is visible, but the realm still re-parses and marks the same tree.
+of it. At 20,000 elements activation is ~0.13 seconds, and at 50,000 it is ~0.27
+seconds from `src` to `v-frame-load` default (~95 ms through first geometry with
+`lazy-attributes`, `lazy-events`, and `content-visibility="auto"`), most of it
+synchronous work on the main thread — long enough that the choice of runtime is
+a major cost of the page. The [SSR path](./ssr.md) moves that cost rather than
+removing it: the server markup paints immediately, so the delay is before the
+guest is live rather than before anything is visible, but the realm still
+re-parses and marks the same tree.
 
 **Instead.** Render pages rather than datasets — virtualize or paginate long
 lists, which keeps the tree at the size the viewport implies instead of the size
 the data implies. For a guest that genuinely has to materialize tens of thousands
 of nodes at once, an `<iframe>` pays the browser's own parser and no facade at
 all, and is the cheaper tool; the overlay and layout advantages in [the
-README](../README.md#what-you-are-trading) are what you would be giving up.
+README](../README.md#trade-offs--when-to-use-v-frame) are what you would be giving up.
 
 ### What firefox costs
 
@@ -369,22 +368,23 @@ benchmarked).
 
 | guest elements | `v-frame` chromium | `v-frame` firefox | host DOM chromium | host DOM firefox |
 | -------------- | ------------------ | ----------------- | ----------------- | ---------------- |
-| 1,000          | 39.7 ms            | 32 ms             | 2.5 ms            | 2 ms             |
-| 5,000          | 60.8 ms            | 54 ms             | 4.3 ms            | 6 ms             |
-| 20,000         | 142.6 ms           | 148 ms            | 12.7 ms           | 17 ms            |
-| 50,000         | 294.4 ms           | 338 ms            | 32.1 ms           | 40 ms            |
+| 1,000          | 36.0 ms            | 31.0 ms           | 1.8 ms            | 2.0 ms           |
+| 5,000          | 59.4 ms            | 51.0 ms           | 4.2 ms            | 5.0 ms           |
+| 20,000         | 129.3 ms           | 127.0 ms          | 12.4 ms           | 16.0 ms          |
+| 50,000         | 273.6 ms           | 299.0 ms          | 29.7 ms           | 38.0 ms          |
 
 Firefox 155.0 and chromium 153.0.8010.12, headless, on an AMD Ryzen 7 7800X3D,
-2026-11-26. All four columns come from one `pnpm bench` run, so they are
-comparable to each other. Marginal activation cost is **6.24 µs/element** on
-firefox (`8.1x` host DOM's `0.78 µs/element`) vs **5.20 µs/element** on
-chromium (`8.6x` host DOM's `0.60 µs/element`) — about 1.2x chromium in absolute
-milliseconds and slightly lower relative overhead.
+2026-11-27. All four columns come from one `pnpm bench` run, so they are
+comparable to each other. Marginal activation cost is **~5.5 µs/element** on
+firefox (`~7.5x` host DOM; `1.8x` through first geometry, or `0.85x` / `139 ms`
+with opt-in `lazy-attributes`, `lazy-events`, and `content-visibility="auto"`)
+vs **4.77 µs/element** on chromium.
 
-Insertion is the wider gap: **25–26 ms per 1,000 appended elements on firefox
-against chromium's 9.4–10.8 ms** (down from 66–79 ms originally) — still flat in
-the size of the tree already there. Re-parenting tracks chromium closely at
-**14–37 ms** (`2.5–6.2x` host DOM, down from 66–96 ms originally), because the
+Insertion is the wider gap: **18 ms per 1,000 appended elements on firefox
+default (`12 ms` with `lazy-attributes` + `lazy-events`) against chromium's
+7.4–8.4 ms (`5.8 ms` lazy)** (down from 66–79 ms originally) — still flat in the
+size of the tree already there. Re-parenting tracks chromium closely at
+**11–25 ms** (`1.4–2.8x` host DOM, down from 66–96 ms originally), because the
 settled-move fast path skips the same work in both engines.
 
 Every firefox reading above is a whole millisecond, and that is the clock rather

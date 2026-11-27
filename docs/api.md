@@ -414,12 +414,14 @@ trusted-types orders-frame; require-trusted-types-for 'script'
 The string form only _names_ a policy the CSP already allows so `v-frame` itself
 can bootstrap the execution realm, parse the fetched guest entry document, and
 run guest scripts. It performs **no sanitization**, and it does **not** wrap raw
-strings passed by guest scripts to `innerHTML`, `outerHTML`, or
-`insertAdjacentHTML` — browser Trusted Types enforcement remains active on guest
-runtime HTML sinks, while genuine `TrustedHTML` objects created by a guest's own
-policy pass through unchanged. A host that wants `v-frame` to sanitize or
-transform raw guest strings can assign a full policy definition through the
-property instead:
+strings passed by guest scripts to `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+`setHTMLUnsafe`, `ShadowRoot.innerHTML`, or imperative `on*` event-handler
+attribute writes (`setAttribute`, `setAttributeNS`, `setAttributeNode`,
+`NamedNodeMap.setNamedItem`) — browser Trusted Types enforcement remains active
+on guest runtime HTML and `TrustedScript` sinks, while genuine `TrustedHTML` and
+`TrustedScript` objects created by a guest's own policy pass through unchanged. A
+host that wants `v-frame` to sanitize or transform raw guest strings can assign a
+full policy definition through the property instead:
 
 ```ts
 frame.trustedTypesPolicy = {
