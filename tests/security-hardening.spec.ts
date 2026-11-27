@@ -88,6 +88,31 @@ test.beforeAll(async () => {
       "/documents/shadow-dom-csp.html": html(
         `<div id="shadow-host"></div><div id="shadow-host-inner"></div><div id="dsd-host"></div>`,
       ),
+      "/documents/bang-comment-csp.html": html(
+        '<!-- comment --!><style id="after-bang-style">#after-bang-target{color:rgb(12,123,234)}</style><p id="after-bang-target" style="font-weight:700">Bang</p>',
+      ),
+      "/documents/set-attr-node-tt.html": html(
+        `<button id="btn-node">Node</button>
+         <button id="btn-node-ns">NodeNS</button>
+         <script>
+           const a1 = document.createAttribute("onclick");
+           a1.value = "window.__nodeRan = true";
+           try {
+             document.querySelector("#btn-node").setAttributeNode(a1);
+             window.__nodeRejected = false;
+           } catch (err) {
+             window.__nodeRejected = err instanceof TypeError;
+           }
+           const a2 = document.createAttributeNS(null, "onclick");
+           a2.value = "window.__nodeNSRan = true";
+           try {
+             document.querySelector("#btn-node-ns").setAttributeNodeNS(a2);
+             window.__nodeNSRejected = false;
+           } catch (err) {
+             window.__nodeNSRejected = err instanceof TypeError;
+           }
+         </script>`,
+      ),
       "/documents/forged-sri.html": html(
         '<p id="target">Hello</p>',
         '<link rel="stylesheet" href="/styles/real.css" integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=">' +
@@ -665,4 +690,281 @@ test("Hardening #4: window.open(_blank) blocks non-HTTP schemes while still noti
     "data:text/html,<p>x</p>",
     `${fixture.origin}/documents/referrer-target.html`,
   ]);
+});
+
+test("CSP nonce allowlist blocks Range, DOMParser, parseHTMLUnsafe, and createHTMLDocument while allowing createElement/createElementNS", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
+
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/shadow-dom-csp.html`,
+    nonce,
+  });
+
+  const result = await childValue(frame, (win) => {
+    const w = win as typeof win & {
+      __rangeRan?: boolean;
+      __parserRan?: boolean;
+      __unsafeRan?: boolean;
+      __implRan?: boolean;
+      __cloneParsedOverRan?: boolean;
+      __cloneImpClickRan?: boolean;
+    };
+
+    // 1. Range.createContextualFragment
+    const range = win.document.createRange();
+    range.selectNodeContents(win.document.body);
+    const frag = range.createContextualFragment(
+      '<style id="s-range">#t-range{color:rgb(222,11,22)}</style>' +
+        '<p id="t-range">r</p>' +
+        '<button id="b-range" onclick="window.__rangeRan = true">r</button>',
+    );
+    win.document.body.append(frag);
+    (win.document.querySelector("#b-range") as HTMLButtonElement).click();
+
+    // 2. DOMParser.parseFromString
+    const parsedDoc = new win.DOMParser().parseFromString(
+      '<style id="s-parser">#t-parser{color:rgb(222,11,22)}</style>' +
+        '<p id="t-parser">p</p>' +
+        '<button id="b-parser" onclick="window.__parserRan = true">p</button>',
+      "text/html",
+    );
+    win.document.body.append(...Array.from(parsedDoc.head.childNodes));
+    win.document.body.append(...Array.from(parsedDoc.body.childNodes));
+    (win.document.querySelector("#b-parser") as HTMLButtonElement).click();
+
+    // 3. Document.parseHTMLUnsafe (when available)
+    const DocCtor = win.Document as typeof Document & {
+      parseHTMLUnsafe?: (html: string) => Document;
+    };
+    let unsafeStyleNonce = "";
+    if (typeof DocCtor.parseHTMLUnsafe === "function") {
+      const unsafeDoc = DocCtor.parseHTMLUnsafe(
+        '<style id="s-unsafe">#t-unsafe{color:rgb(222,11,22)}</style>' +
+          '<button id="b-unsafe" onclick="window.__unsafeRan = true">u</button>',
+      );
+      win.document.body.append(...Array.from(unsafeDoc.head.childNodes));
+      win.document.body.append(...Array.from(unsafeDoc.body.childNodes));
+      (win.document.querySelector("#b-unsafe") as HTMLButtonElement).click();
+      unsafeStyleNonce =
+        (win.document.querySelector("#s-unsafe") as HTMLStyleElement | null)?.nonce ?? "";
+    }
+
+    // 4. document.implementation.createHTMLDocument()
+    const implDoc = win.document.implementation.createHTMLDocument("");
+    implDoc.body.innerHTML =
+      '<style id="s-impl">#t-impl{color:rgb(222,11,22)}</style>' +
+      '<button id="b-impl" onclick="window.__implRan = true">i</button>';
+    win.document.body.append(...Array.from(implDoc.body.childNodes));
+    (win.document.querySelector("#b-impl") as HTMLButtonElement).click();
+
+    // 5. Imperative overwrite of one event attribute on a parsed node does NOT upgrade another parsed event attribute on clone.
+    const box = win.document.createElement("div");
+    box.innerHTML =
+      '<button id="mixed" onclick="window.__parsedClick = true" onmouseover="window.__cloneParsedOverRan = true">M</button>';
+    const mixed = box.querySelector("#mixed") as HTMLButtonElement;
+    mixed.setAttribute("onclick", "window.__cloneImpClickRan = true");
+    const cloned = mixed.cloneNode(true) as HTMLButtonElement;
+    win.document.body.append(cloned);
+    cloned.click();
+    cloned.dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
+
+    // 6. Legitimate createElement("style") and createElementNS(HTML, "style") DO receive the host nonce.
+    const s1 = win.document.createElement("style");
+    s1.textContent = "#ok-el{color:rgb(11,22,33)}";
+    const s2 = win.document.createElementNS("http://www.w3.org/1999/xhtml", "style");
+    s2.textContent = "#ok-ns{color:rgb(44,55,66)}";
+    const p1 = win.document.createElement("p");
+    p1.id = "ok-el";
+    const p2 = win.document.createElement("p");
+    p2.id = "ok-ns";
+    win.document.head.append(s1, s2);
+    win.document.body.append(p1, p2);
+
+    return {
+      rangeNonce:
+        (win.document.querySelector("#s-range") as HTMLStyleElement | null)?.nonce ?? "",
+      parserNonce:
+        (win.document.querySelector("#s-parser") as HTMLStyleElement | null)?.nonce ?? "",
+      unsafeStyleNonce,
+      implNonce:
+        (win.document.querySelector("#s-impl") as HTMLStyleElement | null)?.nonce ?? "",
+      rangeRan: Boolean(w.__rangeRan),
+      parserRan: Boolean(w.__parserRan),
+      unsafeRan: Boolean(w.__unsafeRan),
+      implRan: Boolean(w.__implRan),
+      cloneParsedOverRan: Boolean(w.__cloneParsedOverRan),
+      cloneImpClickRan: Boolean(w.__cloneImpClickRan),
+      okElNonce: s1.nonce,
+      okNsNonce: s2.nonce,
+    };
+  });
+
+  expect(result).toEqual({
+    rangeNonce: "",
+    parserNonce: "",
+    unsafeStyleNonce: "",
+    implNonce: "",
+    rangeRan: false,
+    parserRan: false,
+    unsafeRan: false,
+    implRan: false,
+    cloneParsedOverRan: false,
+    cloneImpClickRan: true,
+    okElNonce: nonce,
+    okNsNonce: nonce,
+  });
+  await expect(frame.locator("#ok-el")).toHaveCSS("color", "rgb(11, 22, 33)");
+  await expect(frame.locator("#ok-ns")).toHaveCSS("color", "rgb(44, 55, 66)");
+  await expect(frame.locator("#t-range")).not.toHaveCSS("color", "rgb(222, 11, 22)");
+  await expect(frame.locator("#t-parser")).not.toHaveCSS("color", "rgb(222, 11, 22)");
+});
+
+test("setAttributeNode and setAttributeNodeNS intercept managed URL, style, and event attributes", async ({
+  browserName,
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
+
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/shadow-dom-csp.html`,
+    nonce,
+  });
+
+  const attrResult = await childValue(frame, (win) => {
+    const a = win.document.createElement("a");
+    a.id = "attr-node-link";
+    const hrefAttr = win.document.createAttribute("href");
+    hrefAttr.value = "relative/page.html";
+    a.setAttributeNode(hrefAttr);
+    win.document.body.append(a);
+    const authoredHref = a.getAttribute("href");
+    const resolvedHref = a.href;
+    const removedHref = a.removeAttributeNode(a.getAttributeNode("href")!);
+    const afterRemoveHref = a.getAttribute("href");
+
+    const styled = win.document.createElement("p");
+    styled.id = "attr-node-styled";
+    const styleAttr = win.document.createAttribute("style");
+    styleAttr.value = "color: rgb(33, 66, 99)";
+    styled.setAttributeNode(styleAttr);
+    win.document.body.append(styled);
+
+    return {
+      authoredHref,
+      resolvedHref,
+      removedName: removedHref.name,
+      afterRemoveHref,
+      styledAuthored: styled.getAttribute("style"),
+      styledComputed: win.getComputedStyle(styled).color,
+    };
+  });
+  const physicalStyleOnHost = await frame.evaluate((el) =>
+    Element.prototype.getAttribute.call(
+      el.shadowRoot!.querySelector("#attr-node-styled")!,
+      "style",
+    ),
+  );
+
+  expect(attrResult).toEqual({
+    authoredHref: "relative/page.html",
+    resolvedHref: `${fixture.origin}/documents/relative/page.html`,
+    removedName: "href",
+    afterRemoveHref: null,
+    styledAuthored: "color: rgb(33, 66, 99)",
+    styledComputed: "rgb(33, 66, 99)",
+  });
+  expect(physicalStyleOnHost).toBeNull();
+
+  if (browserName === "chromium") {
+    await page.goto(`${fixture.origin}/trusted-types`);
+    await expect
+      .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+      .toBe(true);
+
+    const ttFrame = page.locator("v-frame");
+    await page.evaluate(
+      ({ frameNonce, source }) => {
+        const el = document.createElement("v-frame") as HTMLElement & {
+          nonce: string;
+          src: string;
+          trustedTypesPolicy: string;
+        };
+        el.nonce = frameNonce;
+        el.trustedTypesPolicy = "v-frame-test";
+        el.src = source;
+        document.querySelector("#host")?.append(el);
+      },
+      { frameNonce: nonce, source: `${fixture.origin}/documents/set-attr-node-tt.html` },
+    );
+    await expect
+      .poll(() => ttFrame.evaluate((el: HTMLElement & { status: string }) => el.status))
+      .toBe("ready");
+    await ttFrame.locator("#btn-node").click();
+    await ttFrame.locator("#btn-node-ns").click();
+    expect(
+      await childValue(ttFrame, (win) => {
+        const w = win as typeof win & {
+          __nodeRejected?: boolean;
+          __nodeNSRejected?: boolean;
+          __nodeRan?: boolean;
+          __nodeNSRan?: boolean;
+        };
+        return {
+          nodeRejected: w.__nodeRejected,
+          nodeNSRejected: w.__nodeNSRejected,
+          nodeRan: Boolean(w.__nodeRan),
+          nodeNSRan: Boolean(w.__nodeNSRan),
+        };
+      }),
+    ).toEqual({
+      nodeRejected: true,
+      nodeNSRejected: true,
+      nodeRan: false,
+      nodeNSRan: false,
+    });
+  }
+});
+
+test("client style neutralization recognizes --!> comment closing under strict style-src CSP", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
+
+  await page.evaluate(() => {
+    const violations: string[] = [];
+    document.addEventListener("securitypolicyviolation", (event) => {
+      violations.push(event.violatedDirective);
+    });
+    (window as typeof window & { __bangViolations?: string[] }).__bangViolations =
+      violations;
+  });
+
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/bang-comment-csp.html`,
+    nonce,
+  });
+
+  await expect(frame.locator("#after-bang-target")).toHaveCSS(
+    "color",
+    "rgb(12, 123, 234)",
+  );
+  await expect(frame.locator("#after-bang-target")).toHaveCSS("font-weight", "700");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __bangViolations?: string[] }).__bangViolations ??
+        [],
+    ),
+  ).toEqual([]);
 });

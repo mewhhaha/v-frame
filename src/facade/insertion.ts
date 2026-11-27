@@ -90,7 +90,7 @@ export function createNodeInsertion(
     isInVirtualDocumentTree,
     subtreeHasBaseElement,
     virtualNodes,
-    fragmentNodes,
+    trustedStyleNodes,
     document,
     nativeAppendChild,
     nativeInsertBefore,
@@ -283,7 +283,7 @@ export function createNodeInsertion(
 
       if (nonce !== "" && targetScan.styles.length > 0) {
         for (const element of targetScan.styles) {
-          if (!fragmentNodes.has(element)) {
+          if (trustedStyleNodes.has(element)) {
             element.nonce = nonce;
           }
         }

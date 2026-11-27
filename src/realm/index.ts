@@ -397,6 +397,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       linkedStyles: markup.linkedStyles,
       constructedSheetBaseURLs,
       initialFlags: markup.flags,
+      initialStyles: markup.styles,
       initialScripts: markup.scripts,
       initialLinks: markup.links,
       lazyAttributes: options.lazyAttributes === true,

@@ -379,8 +379,15 @@ function neutralizeStyleMarkup(
       if (source.startsWith("<!-->", tagStart)) end = tagStart + 5;
       else if (source.startsWith("<!--->", tagStart)) end = tagStart + 6;
       else {
-        const commentEnd = source.indexOf("-->", tagStart + 4);
-        end = commentEnd === -1 ? source.length : commentEnd + 3;
+        const standardEnd = source.indexOf("-->", tagStart + 4);
+        const bangEnd = source.indexOf("--!>", tagStart + 4);
+        if (standardEnd === -1 && bangEnd === -1) {
+          end = source.length;
+        } else if (bangEnd !== -1 && (standardEnd === -1 || bangEnd < standardEnd)) {
+          end = bangEnd + 4;
+        } else {
+          end = standardEnd + 3;
+        }
       }
       cursor = end;
       continue;

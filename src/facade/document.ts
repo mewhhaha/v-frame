@@ -139,6 +139,8 @@ export function installDocumentProperties(
     noteLiteralShellElement,
     nativeCurrentScript,
     virtualNodes,
+    trustedStyleNodes,
+    isHTMLStyleElement,
     logicalEventTargets,
     toHostViewportPoint,
   } = context;
@@ -655,6 +657,7 @@ export function installDocumentProperties(
           localName === "style" ||
           (localName.length === 5 && localName.toLowerCase() === "style")
         ) {
+          trustedStyleNodes.add(element);
           const nonce = options.getNonce();
           if (nonce !== "") {
             nativeSetAttribute.call(element, "nonce", nonce);
@@ -681,7 +684,15 @@ export function installDocumentProperties(
         if (tag.length === 4 && (tag === "body" || tag === "head" || tag === "html")) {
           noteLiteralShellElement();
         }
-        return adoptCreatedElement(element);
+        const adopted = adoptCreatedElement(element);
+        if (isHTMLStyleElement(adopted)) {
+          trustedStyleNodes.add(adopted);
+          const nonce = options.getNonce();
+          if (nonce !== "") {
+            nativeSetAttribute.call(adopted, "nonce", nonce);
+          }
+        }
+        return adopted;
       },
     },
     createTextNode: {

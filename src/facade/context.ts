@@ -38,6 +38,7 @@ export interface DocumentFacadeOptions {
   linkedStyles: WeakMap<HTMLLinkElement, LinkedStyle>;
   constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>;
   initialFlags?: number;
+  initialStyles?: readonly HTMLStyleElement[];
   initialScripts?: readonly HTMLScriptElement[];
   initialLinks?: readonly HTMLLinkElement[];
   lazyAttributes?: boolean;
@@ -229,6 +230,8 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeHasAttributeNS = elementPrototype.hasAttributeNS;
   const nativeSetAttribute = elementPrototype.setAttribute;
   const nativeSetAttributeNS = elementPrototype.setAttributeNS;
+  const nativeSetAttributeNode = elementPrototype.setAttributeNode;
+  const nativeSetAttributeNodeNS = elementPrototype.setAttributeNodeNS;
   const nativeRemoveAttribute = elementPrototype.removeAttribute;
   const nativeRemoveAttributeNS = elementPrototype.removeAttributeNS;
   const nativeRemoveAttributeNode = elementPrototype.removeAttributeNode;
@@ -331,7 +334,21 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
       ? nativeGetRootNode.call(node) === options.shadowRoot
       : node === options.shadowRoot;
   const virtualNodes = new WeakSet<Node>();
-  const fragmentNodes = new WeakSet<Node>();
+  const trustedStyleNodes = new WeakSet<Node>();
+  const trustedEventAttributes = new WeakMap<Element, Set<string>>();
+  const trustEventAttribute = (element: Element, name: string): void => {
+    let trusted = trustedEventAttributes.get(element);
+    if (trusted === undefined) {
+      trusted = new Set();
+      trustedEventAttributes.set(element, trusted);
+    }
+    trusted.add(name);
+  };
+  const untrustEventAttribute = (element: Element, name: string): void => {
+    trustedEventAttributes.get(element)?.delete(name);
+  };
+  const isTrustedEventAttribute = (element: Element, name: string): boolean =>
+    trustedEventAttributes.get(element)?.has(name) === true;
   const createdScripts = new WeakSet<HTMLScriptElement>();
   const protectedScriptAttributes = new WeakMap<
     HTMLScriptElement,
@@ -538,6 +555,8 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeHasAttributeNS,
     nativeSetAttribute,
     nativeSetAttributeNS,
+    nativeSetAttributeNode,
+    nativeSetAttributeNodeNS,
     nativeRemoveAttribute,
     nativeRemoveAttributeNS,
     nativeRemoveAttributeNode,
@@ -585,7 +604,11 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     connectedBaseElementChanged,
     guestShadowRoots: new EnumerableWeakSet<ShadowRoot>(),
     virtualNodes,
-    fragmentNodes,
+    trustedStyleNodes,
+    trustedEventAttributes,
+    trustEventAttribute,
+    untrustEventAttribute,
+    isTrustedEventAttribute,
     createdScripts,
     protectedScriptAttributes,
     eventAttributeValues,

@@ -14,7 +14,8 @@ function decoderFor(label: string | null | undefined): TextDecoder | null {
 
 // Consume complete tags, including quoted attributes, so a meta-looking string
 // inside another tag or an HTML comment cannot declare the byte encoding.
-const HTML_TAG = /<!--[\s\S]*?(?:-->|$)|<([a-z][^\s/>]*)((?:[^"'>]|"[^"]*"|'[^']*')*)>/gi;
+const HTML_TAG =
+  /<!--(?:>|->|[\s\S]*?(?:--!?>|$))|<([a-z][^\s/>]*)((?:[^"'>]|"[^"]*"|'[^']*')*)>/gi;
 const META_ATTRIBUTE = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/g;
 const CONTENT_CHARSET = /(?:^|;)\s*charset\s*=\s*["']?\s*([^\s"';]+)/i;
 

@@ -44,7 +44,7 @@ export type { DocumentFacadeOptions, NativeDocumentHandles } from "./context.js"
 export interface DocumentFacade {
   native: NativeDocumentHandles;
   getSelection(): Selection;
-  isFragmentNode(node: Node): boolean;
+  isTrustedStyleNode(node: Node): boolean;
   markVirtualTree(node: Node): void;
   rebaseURLs(): void;
   synchronizeURLAttribute(
@@ -155,7 +155,7 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
       },
     },
     getSelection: () => selectionFacade.selection,
-    isFragmentNode: (node) => context.fragmentNodes.has(node),
+    isTrustedStyleNode: (node) => context.trustedStyleNodes.has(node),
     markVirtualTree: marking.markVirtualNode,
     rebaseURLs() {
       for (const element of options.authoredURLAttributes.keys()) {

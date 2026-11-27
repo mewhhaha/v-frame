@@ -144,6 +144,8 @@ export function installAttributeFacade(
     nativeHasAttributeNS,
     nativeSetAttribute,
     nativeSetAttributeNS,
+    nativeSetAttributeNode,
+    nativeSetAttributeNodeNS,
     nativeRemoveAttribute,
     nativeRemoveAttributeNS,
     nativeRemoveAttributeNode,
@@ -158,6 +160,8 @@ export function installAttributeFacade(
     isBaseElement,
     connectedBaseElementChanged,
     virtualNodes,
+    trustEventAttribute,
+    untrustEventAttribute,
     protectedScriptAttributes,
     eventAttributeValues,
     authoredLinkRelValues,
@@ -682,11 +686,13 @@ export function installAttributeFacade(
           eventAttributeValues.set(element, attributes);
         }
         attributes.set(eventName, source);
+        trustEventAttribute(element, eventName);
         compileEventAttribute(element, eventName, source);
       },
       remove(element, name) {
         const eventName = eventAttributeName(element, name)!;
         eventAttributeValues.get(element)?.delete(eventName);
+        untrustEventAttribute(element, eventName);
         setElementHandler(element, eventName.slice(2), null);
       },
       names(element, names) {
@@ -1236,19 +1242,98 @@ export function installAttributeFacade(
         },
       });
     }
+    const setVirtualAttributeNode = (
+      element: Element,
+      attr: Attr,
+      useNS: boolean,
+    ): Attr | null => {
+      const nativeMethod = useNS ? nativeSetAttributeNodeNS : nativeSetAttributeNode;
+      const candidate: unknown = attr;
+      if (
+        !virtualNodes.has(element) ||
+        (!(candidate instanceof window.Attr) &&
+          !(hostAttrCtor !== undefined && candidate instanceof hostAttrCtor))
+      ) {
+        return nativeMethod.call(element, attr);
+      }
+      const owner = nativeAttrOwnerElement?.call(attr) as Element | null | undefined;
+      if (owner === element) {
+        return attr;
+      }
+      if (owner != null) {
+        return nativeMethod.call(element, attr);
+      }
+      const rawNamespace = attr.namespaceURI;
+      const namespace = rawNamespace === "" ? null : rawNamespace;
+      const localName = attr.localName;
+      const qualifiedName = attr.name;
+      const isHTML = element.namespaceURI === HTML_NAMESPACE;
+      const managed =
+        namespace === null &&
+        !qualifiedName.includes(":") &&
+        localName === localName.toLowerCase()
+          ? managedAttributeFor(element, localName, "write", isHTML)
+          : undefined;
+      const urlKey =
+        managed === undefined && namespace !== null
+          ? urlAttributeKey(element, localName, namespace)
+          : null;
+      if (managed !== undefined || urlKey !== null) {
+        const previous = getVirtualAttributeNodeNS(element, namespace, localName);
+        if (previous !== null && previous !== attr) {
+          nativeRemoveAttributeNode.call(element, previous);
+        }
+        setVirtualAttributeNS(element, namespace, qualifiedName, attr.value);
+        return previous;
+      }
+      const replaced = nativeMethod.call(element, attr);
+      evictDirtyDetachedWatches?.(element);
+      markVirtualAttribute!(attr);
+      if (replaced !== null) {
+        markVirtualAttribute!(replaced);
+      }
+      return replaced;
+    };
+    patch(elementPrototype, "setAttributeNode", {
+      writable: true,
+      value(this: Element, attr: Attr): Attr | null {
+        return setVirtualAttributeNode(this, attr, false);
+      },
+    });
+    patch(elementPrototype, "setAttributeNodeNS", {
+      writable: true,
+      value(this: Element, attr: Attr): Attr | null {
+        return setVirtualAttributeNode(this, attr, true);
+      },
+    });
     patch(elementPrototype, "removeAttributeNode", {
       writable: true,
       value(this: Element, attr: Attr): Attr {
         const candidate: unknown = attr;
-        if (
+        const isOwnedVirtual =
           virtualNodes.has(this) &&
           (candidate instanceof window.Attr ||
             (hostAttrCtor !== undefined && candidate instanceof hostAttrCtor)) &&
-          nativeAttrOwnerElement?.call(attr) === this
-        ) {
+          nativeAttrOwnerElement?.call(attr) === this;
+        if (isOwnedVirtual) {
           markVirtualAttribute!(attr);
         }
-        return nativeRemoveAttributeNode.call(this, attr);
+        const removed = nativeRemoveAttributeNode.call(this, attr);
+        if (isOwnedVirtual) {
+          const rawNamespace = attr.namespaceURI;
+          const ns = rawNamespace === "" ? null : rawNamespace;
+          const localName = attr.localName;
+          if (ns === null && localName === "rel" && isHTMLLinkElement(this)) {
+            removeLogicalLinkRel(this);
+          } else {
+            const urlKey = urlAttributeKey(this, localName, ns);
+            if (urlKey !== null) {
+              removeAuthoredURLAttribute(this, urlKey);
+              connectedBaseElementChanged(this);
+            }
+          }
+        }
+        return removed;
       },
     });
     const isVirtualAttr = (attr: Attr): boolean => {

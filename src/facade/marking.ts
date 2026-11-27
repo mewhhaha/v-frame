@@ -11,6 +11,7 @@ import { EnumerableWeakMap, EnumerableWeakSet } from "../enumerable-weak.js";
 import {
   MARKUP_FLAG_INLINE_EVENTS,
   MARKUP_FLAG_LINKS,
+  MARKUP_FLAG_STYLES,
   MARKUP_FLAG_SVG,
   MARKUP_FLAG_TEMPLATES,
 } from "../markup.js";
@@ -79,7 +80,9 @@ export function installNodeMarking(
     isInVirtualDocumentTree,
     virtualGetRootNode,
     virtualNodes,
-    fragmentNodes,
+    trustedStyleNodes,
+    trustEventAttribute,
+    isTrustedEventAttribute,
     createdScripts,
     protectedScriptAttributes,
     eventAttributeValues,
@@ -94,6 +97,7 @@ export function installNodeMarking(
   let realmMayHaveTemplates = (initialFlags & MARKUP_FLAG_TEMPLATES) !== 0;
   let realmHasShadowRoots = false;
   let opaqueGeneration = 0;
+  let markingInitialShell = false;
   const { rememberAuthoredStyleAttribute, rememberAuthoredLinkRel } = style;
   const { eventAttributeName, compileEventAttribute } = events;
   const {
@@ -238,7 +242,15 @@ export function installNodeMarking(
     for (const [rawName, attributeName, value] of eventAttrs) {
       attributes.set(attributeName, value);
       nativeRemoveAttribute.call(element, rawName);
-      compileEventAttribute(element, attributeName, value, !fragmentNodes.has(element));
+      if (markingInitialShell) {
+        trustEventAttribute(element, attributeName);
+      }
+      compileEventAttribute(
+        element,
+        attributeName,
+        value,
+        markingInitialShell || isTrustedEventAttribute(element, attributeName),
+      );
     }
   };
   const collectInlineEventAttr = (
@@ -361,6 +373,8 @@ export function installNodeMarking(
           rememberAuthoredLinkRel(element);
         } else if (isHTMLScriptElement(element)) {
           protectScript(element);
+        } else if (markingInitialShell && isHTMLStyleElement(element)) {
+          trustedStyleNodes.add(element);
         }
         foreignElementFacade(element);
         if (eventAttrs !== undefined) {
@@ -751,54 +765,67 @@ export function installNodeMarking(
   const markShell = (): void => {
     const query = (selector: string) =>
       nativeQuerySelectorAll.call(options.html, selector);
-    if (
-      nodeIdentityIsPrototypeWide &&
-      urlPropertiesPrototypeWide &&
-      options.html instanceof window.Node
-    ) {
-      if (hasInitialInlineEvents) {
-        markInitialOwnershipWithEvents(options.html);
-      } else if (lazyAttributes) {
-        markInitialOwnershipLazyAttrs(options.html);
-      } else {
-        markInitialOwnershipFast(options.html);
-      }
-      if (initialFlags & MARKUP_FLAG_TEMPLATES) {
-        for (const template of query("template")) {
-          if (isHTMLTemplateElement(template)) markVirtualSubtree(template.content);
+    markingInitialShell = true;
+    try {
+      if (
+        nodeIdentityIsPrototypeWide &&
+        urlPropertiesPrototypeWide &&
+        options.html instanceof window.Node
+      ) {
+        if (hasInitialInlineEvents) {
+          markInitialOwnershipWithEvents(options.html);
+        } else if (lazyAttributes) {
+          markInitialOwnershipLazyAttrs(options.html);
+        } else {
+          markInitialOwnershipFast(options.html);
         }
-        if (onShadowRoot !== undefined) {
-          for (const nested of query("v-frame")) {
-            if (nested.shadowRoot !== null) {
-              realmHasShadowRoots = true;
-              opaqueGeneration += 1;
-              onShadowRoot(nested.shadowRoot);
+        if (
+          (initialFlags & MARKUP_FLAG_STYLES) !== 0 ||
+          options.initialStyles === undefined
+        ) {
+          for (const style of options.initialStyles ?? query("style")) {
+            if (isHTMLStyleElement(style)) trustedStyleNodes.add(style);
+          }
+        }
+        if (initialFlags & MARKUP_FLAG_TEMPLATES) {
+          for (const template of query("template")) {
+            if (isHTMLTemplateElement(template)) markVirtualSubtree(template.content);
+          }
+          if (onShadowRoot !== undefined) {
+            for (const nested of query("v-frame")) {
+              if (nested.shadowRoot !== null) {
+                realmHasShadowRoots = true;
+                opaqueGeneration += 1;
+                onShadowRoot(nested.shadowRoot);
+              }
             }
           }
         }
-      }
-      for (const element of options.authoredStyleAttributes.keys()) {
-        rememberAuthoredStyleAttribute(element);
-      }
-      if (initialFlags & MARKUP_FLAG_LINKS) {
-        for (const link of options.initialLinks ?? query("link")) {
-          if (isHTMLLinkElement(link)) rememberAuthoredLinkRel(link);
+        for (const element of options.authoredStyleAttributes.keys()) {
+          rememberAuthoredStyleAttribute(element);
         }
-      }
-      for (const script of options.initialScripts ?? query("script")) {
-        if (isHTMLScriptElement(script)) protectScript(script);
-      }
-      if (initialFlags & MARKUP_FLAG_SVG) {
-        for (const svg of query("a,feImage,image,use")) markSVGURLProperty(svg);
-        if (nativeQuerySelector.call(options.html, "html,head,body") !== null) {
-          noteLiteralShellElement();
+        if (initialFlags & MARKUP_FLAG_LINKS) {
+          for (const link of options.initialLinks ?? query("link")) {
+            if (isHTMLLinkElement(link)) rememberAuthoredLinkRel(link);
+          }
         }
+        for (const script of options.initialScripts ?? query("script")) {
+          if (isHTMLScriptElement(script)) protectScript(script);
+        }
+        if (initialFlags & MARKUP_FLAG_SVG) {
+          for (const svg of query("a,feImage,image,use")) markSVGURLProperty(svg);
+          if (nativeQuerySelector.call(options.html, "html,head,body") !== null) {
+            noteLiteralShellElement();
+          }
+        }
+        for (const element of options.authoredURLAttributes.keys()) {
+          syncInitialPhysicalURLs(element);
+        }
+      } else {
+        markVirtualSubtree(options.html);
       }
-      for (const element of options.authoredURLAttributes.keys()) {
-        syncInitialPhysicalURLs(element);
-      }
-    } else {
-      markVirtualSubtree(options.html);
+    } finally {
+      markingInitialShell = false;
     }
     virtualNodes.add(virtualDoctype);
     if (!nodeIdentityIsPrototypeWide) installForeignNodeFacade(virtualDoctype);

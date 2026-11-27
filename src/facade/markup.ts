@@ -51,29 +51,15 @@ export function installMarkupFacade(
     isElementNode,
     isHTMLTemplateElement,
     virtualNodes,
-    fragmentNodes,
     protectedScriptAttributes,
     eventAttributeValues,
     authoredLinkRelValues,
     patch,
-    nativeFragmentQuerySelectorAll,
   } = context;
   const { markVirtualNode, adoptAndMark } = marking;
   const { insertDirect, replaceElementChildren, replaceNodeWith } = insertion;
   const { isNodeValue } = nodeArguments;
   const { getVirtualAttribute, getVirtualAttributeNames } = attributes;
-
-  const markFragmentElements = (root: DocumentFragment): void => {
-    for (const element of nativeFragmentQuerySelectorAll.call(root, "*")) {
-      fragmentNodes.add(element);
-      if (element.shadowRoot !== null) {
-        markFragmentElements(element.shadowRoot);
-      }
-      if (isHTMLTemplateElement(element)) {
-        markFragmentElements(element.content);
-      }
-    }
-  };
 
   const nativeSetHTMLUnsafe = (
     elementPrototype as {
@@ -172,8 +158,8 @@ export function installMarkupFacade(
       if (allowSingleChild && readFirstChild(parsedRoot) === null) {
         return null;
       }
-      // Single pass marks fragment provenance and collects custom-element upgrades
-      // only for tags with a hyphen or an `is` attribute (spec requirement).
+      // Single pass collects custom-element upgrades only for tags with a hyphen
+      // or an `is` attribute (spec requirement).
       let customCandidates: Element[] | undefined;
       const scanFragment = (root: Node, inTemplate: boolean): void => {
         for (
@@ -183,7 +169,6 @@ export function installMarkupFacade(
         ) {
           if (child.nodeType !== 1) continue;
           const element = child as Element;
-          fragmentNodes.add(element);
           if (
             !inTemplate &&
             readNamespaceURI(element) === HTML_NAMESPACE &&
@@ -226,7 +211,6 @@ export function installMarkupFacade(
             parsedLocalName,
             creationOptions,
           );
-          fragmentNodes.add(customElement);
           for (const attribute of Array.from(parsedElement.attributes)) {
             nativeSetAttributeNS.call(
               customElement,
@@ -594,7 +578,6 @@ export function installMarkupFacade(
           }
           if (readLocalName(this) === "template" && isHTMLTemplateElement(this)) {
             nativeSetHTMLUnsafe.call(this, markup);
-            markFragmentElements(this.content);
             markVirtualNode(this.content);
             return;
           }
@@ -617,7 +600,6 @@ export function installMarkupFacade(
           const markup = options.createGuestHTML(html, false);
           nativeShadowSetHTMLUnsafe.call(this, markup);
           if (virtualNodes.has(this)) {
-            markFragmentElements(this);
             for (let child = this.firstChild; child !== null; child = child.nextSibling) {
               markVirtualNode(child);
             }
@@ -640,7 +622,6 @@ export function installMarkupFacade(
           const markup = options.createGuestHTML(value, true);
           nativeShadowInnerHTML.set!.call(this, markup);
           if (virtualNodes.has(this)) {
-            markFragmentElements(this);
             for (let child = this.firstChild; child !== null; child = child.nextSibling) {
               markVirtualNode(child);
             }
@@ -680,7 +661,6 @@ export function installMarkupFacade(
         }
         if (readLocalName(this) === "template" && isHTMLTemplateElement(this)) {
           nativeInnerHTML.set?.call(this, markup);
-          markFragmentElements(this.content);
           markVirtualNode(this.content);
           return;
         }

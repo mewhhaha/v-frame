@@ -3,6 +3,37 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.11.1 - 2026-11-27
+
+### Security
+
+- **Switched CSP nonce provenance from a denylist to an allowlist
+  (`src/facade/context.ts`, `src/facade/marking.ts`, `src/facade/insertion.ts`,
+  `src/facade/clone.ts`, `src/facade/document.ts`, `src/facade/markup.ts`,
+  `src/facade/index.ts`, `src/realm/index.ts`, `src/realm/dynamic-styles.ts`):**
+  Replaced `fragmentNodes` with `trustedStyleNodes` and per-attribute
+  `trustedEventAttributes`, granting the host CSP nonce exclusively to
+  initial-document elements, linked-style companions, `document.createElement` /
+  `createElementNS("http://www.w3.org/1999/xhtml", "style")`, imperative `on*`
+  writes, and their clones. Elements parsed via `Range.createContextualFragment`,
+  `DOMParser.parseFromString`, `Document.parseHTMLUnsafe`,
+  `document.implementation.createHTMLDocument()`, or any future HTML parser API
+  can no longer inherit the host CSP nonce.
+- **Intercepted `Element.prototype.setAttributeNode` and `setAttributeNodeNS`
+  (`src/facade/attributes.ts`, `src/facade/context.ts`):** Routed managed
+  attributes (`on*`, `style`, `rel`, URL/srcset attributes, and protected script
+  attributes) attached via `setAttributeNode` / `setAttributeNodeNS` through the
+  virtual attribute facade (including native Trusted Types validation for `on*`)
+  and cleaned up virtual URL/link state on `removeAttributeNode`.
+
+### Fixed
+
+- **HTML5 `--!>` comment-end-bang parity in client style neutralization and
+  charset prescan (`src/markup.ts`, `src/html-response.ts`):** Recognized
+  `--!>` (and abrupt `<!-->` / `<!--->` comments in the charset prescan) so
+  `<style>` tags, inline `style` attributes, and `<meta charset>` declarations
+  following `--!>` are handled consistently with HTML5 parsing.
+
 ## 0.11.0 - 2026-11-27
 
 ### Added

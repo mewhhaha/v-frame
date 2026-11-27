@@ -281,9 +281,12 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     });
   };
   const applyNonce = (style: HTMLStyleElement): void => {
-    // Styles parsed from HTML-string sinks (innerHTML/outerHTML/insertAdjacentHTML)
-    // must not be upgraded with the host's CSP nonce.
-    if (options.getFacade()?.isFragmentNode(style)) {
+    // Only styles from the initial document, imperative createElement("style"),
+    // linked-style companions, or clones thereof may receive the host CSP nonce.
+    if (
+      !linkedStyleOwners.has(style) &&
+      options.getFacade()?.isTrustedStyleNode(style) !== true
+    ) {
       return;
     }
     if (options.getNonce() === "") {
