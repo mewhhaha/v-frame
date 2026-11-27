@@ -2,6 +2,7 @@
 // window of the host page — viewport metrics, scrolling, the event bridge —
 // plus the constructed stylesheets v-frame owns for the host and guest.
 
+import { rewriteCSSOMSelectorText } from "../css.js";
 import {
   ListenerRegistry,
   captureAbortSignalMethods,
@@ -15,6 +16,26 @@ import type { VFrameWindow } from "../types.js";
 const HOST_CSS =
   ':host{contain:layout;display:block;position:relative;overflow:auto}:host([hidden]:not([hidden="until-found" i])){display:none!important}';
 const GUEST_CSS = "v-html,v-body{display:block}v-head{display:none!important}";
+const AUTO_CONTENT_VISIBILITY_SELECTOR =
+  "v-body > :not(script,style,link,template,dialog,[popover]):not(:is(div,main):first-of-type:last-of-type:has(> :not(script,style,link,template,dialog,[popover]))), v-body > :is(div,main):first-of-type:last-of-type > :not(script,style,link,template,dialog,[popover])";
+
+function contentVisibilityRuleText(value: string, hostDocument: Document): string {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  let selector: string;
+  if (trimmed.toLowerCase() === "auto") {
+    selector = AUTO_CONTENT_VISIBILITY_SELECTOR;
+  } else {
+    try {
+      selector = rewriteCSSOMSelectorText(trimmed);
+      if (selector === "") return "";
+      hostDocument.createElement("div").matches(selector);
+    } catch {
+      return "";
+    }
+  }
+  return `:where(${selector}){content-visibility:auto;contain-intrinsic-block-size:auto 300px}`;
+}
 
 interface WindowEventHandler {
   listener: EventListener;
@@ -59,6 +80,7 @@ const NATIVE_WINDOW_EVENT_HANDLER_TYPES = new Set([
 
 interface InternalStyles {
   updateTopLayerViewport(x: number | null, y?: number): void;
+  setContentVisibility(selector: string): void;
   dispose(): void;
 }
 
@@ -71,6 +93,7 @@ const cachedWindowHandlerNames = new WeakMap<Window, CachedWindowHandlers>();
 export function installInternalStyles(
   frameRoot: ShadowRoot,
   renderRoot: ShadowRoot,
+  initialContentVisibility = "",
 ): InternalStyles {
   // Without these rules v-html/v-body are inline and v-head is visible, so a
   // guest would render wrongly with no error. Constructable stylesheets are a
@@ -83,13 +106,33 @@ export function installInternalStyles(
 
   let hostSheet: CSSStyleSheet | null = null;
   const sheet = new view.CSSStyleSheet();
+  const baseGuestCSS = frameRoot === renderRoot ? HOST_CSS + GUEST_CSS : GUEST_CSS;
   if (frameRoot === renderRoot) {
-    sheet.replaceSync(HOST_CSS + GUEST_CSS);
+    sheet.replaceSync(baseGuestCSS);
   } else {
     hostSheet = new view.CSSStyleSheet();
     hostSheet.replaceSync(HOST_CSS);
     frameRoot.adoptedStyleSheets = [...frameRoot.adoptedStyleSheets, hostSheet];
     sheet.replaceSync(GUEST_CSS);
+  }
+  let appliedContentVisibility = "";
+  const setContentVisibility = (value: string): void => {
+    const normalized = value.trim();
+    if (normalized === appliedContentVisibility) return;
+    appliedContentVisibility = normalized;
+    sheet.replaceSync(baseGuestCSS);
+    const rule = contentVisibilityRuleText(normalized, hostDocument);
+    if (rule === "") {
+      return;
+    }
+    try {
+      sheet.insertRule(rule, sheet.cssRules.length);
+    } catch {
+      // Ignore syntactically invalid host-provided selectors without breaking base styles.
+    }
+  };
+  if (initialContentVisibility !== "") {
+    setContentVisibility(initialContentVisibility);
   }
   let topLayerSheet: CSSStyleSheet | null = null;
   let topLayerRule: CSSStyleRule | null = null;
@@ -125,6 +168,7 @@ export function installInternalStyles(
         topLayerRule.style.setProperty("translate", `${x}px ${y}px`);
       }
     },
+    setContentVisibility,
     dispose() {
       renderRoot.adoptedStyleSheets = renderRoot.adoptedStyleSheets.filter(
         (candidate) => candidate !== sheet && candidate !== topLayerSheet,

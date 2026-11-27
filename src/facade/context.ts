@@ -40,6 +40,8 @@ export interface DocumentFacadeOptions {
   initialFlags?: number;
   initialScripts?: readonly HTMLScriptElement[];
   initialLinks?: readonly HTMLLinkElement[];
+  lazyAttributes?: boolean;
+  lazyEvents?: boolean;
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
@@ -228,6 +230,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeSetAttributeNS = elementPrototype.setAttributeNS;
   const nativeRemoveAttribute = elementPrototype.removeAttribute;
   const nativeRemoveAttributeNS = elementPrototype.removeAttributeNS;
+  const nativeRemoveAttributeNode = elementPrototype.removeAttributeNode;
   const nativeToggleAttribute = elementPrototype.toggleAttribute;
   const nativeElementReplaceChildren = elementPrototype.replaceChildren;
   const nativeCreateHTMLDocument = window.DOMImplementation.prototype.createHTMLDocument;
@@ -527,6 +530,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeSetAttributeNS,
     nativeRemoveAttribute,
     nativeRemoveAttributeNS,
+    nativeRemoveAttributeNode,
     nativeToggleAttribute,
     nativeElementReplaceChildren,
     getInertDocument,

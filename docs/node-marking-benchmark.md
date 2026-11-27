@@ -627,6 +627,68 @@ Real-world DOM operations on the 5,000-element guest (`0.5.0` → `0.6.0`):
   JS heap at 50k elements is `10,052 KB` (`69 B/object`, varying ~8.5–10 MB
   across GC sweeps) and 2,000-row churn retention is `1,379 KB` (`706 B/row`).
 
+## Round 7 — opt-in Tier C performance modes (`0.7.0`)
+
+Default `0.6.0` behavior keeps full eager `Attr` marking, full eager `Event`
+subclass forwarding, synchronous SSR adoption, serial blocking script fetches,
+and uncontained layout. Round 7 adds five opt-in `<v-frame>` modes that trade
+narrow, explicit compatibility assumptions for substantial cold-boot, memory,
+and large-tree layout wins while leaving default behavior untouched:
+
+- **`lazy-attributes`** (`frame.lazyAttributes`): skips eager `NamedNodeMap` and
+  `Attr` materialization during initial marking, subtree walks, and
+  `setAttribute` writes; marks `Attr` nodes on demand when guest APIs
+  (`getAttributeNode`, `getAttributeNodeNS`, `attributes`,
+  `removeAttributeNode`, or observed live `NamedNodeMap`s) access them.
+- **`lazy-events`** (`frame.lazyEvents`): eagerly forwards `Event.prototype`
+  plus 24 core DOM/UI Event interfaces and lazily forwards exotic native
+  subclasses on first delivery.
+- **`content-visibility="auto"`** (or a custom CSS selector via
+  `frame.contentVisibility`): injects a zero-specificity `:where(...)` rule with
+  `content-visibility: auto; contain-intrinsic-block-size: auto 300px` into the
+  internal stylesheet (excluding metadata, `<dialog>`, `[popover]`, and single
+  app-root wrappers in `"auto"` mode), updatable live without reload.
+- **`adopt="visible" | "idle" | "interaction"`** + `frame.activate()`: keeps
+  Declarative Shadow DOM previews painted with zero iframe creation or JS boot
+  until visibility, browser idle, user interaction, or imperative activation.
+- **`preload-scripts`** (boolean or space-separated URLs): concurrently preloads
+  blocking classic external scripts while keeping strict document execution
+  order, and optionally emits host `<link rel="preload" as="script">` hints in
+  parallel with entry HTML fetch.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-27 (`pnpm bench`; heap is post-mount, pre-enumeration collected JS heap
+measured before `benchCountObjects()` or `benchInsert()`):
+
+| Mode (`v-frame` vs host DOM)                       | Chromium load | Chromium geom | Chromium 1k ins | Chromium heap (pre-enum) | Firefox load | Firefox geom | Firefox 1k ins |
+| -------------------------------------------------- | ------------- | ------------- | --------------- | ------------------------ | ------------ | ------------ | -------------- |
+| `1k default`                                       | 36.0 ms       | 36.0 ms       | 8.3 ms          | 3,840 KB                 | 33.0 ms\*    | 33.0 ms\*    | 21.0 ms\*      |
+| `1k lazy-events`                                   | 27.8 ms       | 27.8 ms       | 7.9 ms          | 1,628 KB (-58%)          | —            | —            | —              |
+| `1k lazy-attributes + lazy-events`                 | 27.5 ms       | 27.5 ms       | 6.9 ms          | 1,571 KB (-59%)          | 25.0 ms      | 25.0 ms      | 16.0 ms        |
+| `50k default`                                      | 273.6 ms      | 273.7 ms      | 8.7 ms          | 8,119 KB                 | 292–338 ms   | 292–338 ms   | 19–25 ms       |
+| `50k lazy-attributes + lazy-events`                | 225.0 ms      | 225.0 ms      | 7.1 ms          | 3,708 KB (-54%)          | 307.0 ms     | 307.0 ms     | 15.0 ms        |
+| `50k lazy-attributes + lazy-events + cv="auto"`    | **96.4 ms**   | **96.5 ms**   | **6.9 ms**      | **3,719 KB (-54%)**      | **166.0 ms** | **173.0 ms** | **16.0 ms**    |
+| `50k host DOM` (baseline, no `content-visibility`) | 29.7 ms       | 141.7 ms      | 1.5 ms          | 114 KB                   | 44.0 ms      | 189.0 ms     | 3.0 ms         |
+
+_\*Default Firefox 1k baseline from the clean main table above (`33.0 ms` / `21.0 ms`); the secondary 1k Tier C probe immediately after the 50k default runs hit a transient Gecko GC pause before settling to `25.0 ms` / `16.0 ms` on `lazy-attributes + lazy-events`._
+
+- **Cold boot & heap (`lazy-events` + `lazy-attributes`):** Skipping eager
+  patching of 100+ exotic Event subclass prototypes saves **8.2 ms (`-23%`)**
+  and **2.2 MB (`-58%`)** of JS heap on a 1k cold mount in Chromium. Skipping
+  eager `Attr` materialization cuts 50k pre-enumeration JS heap by **4.4 MB
+  (`-54%`)**, trims 50k Chromium activation by **48.6 ms (`-18%`)**, and trims
+  1k insertion by **17–21%** in Chromium and **21–40%** in Firefox.
+- **Large-tree rendering (`content-visibility="auto"`):** On the 50,000-element
+  guest, offscreen layout containment drops activation through first geometry
+  read to **`96.5 ms`** in Chromium (`-65%` vs default `v-frame`, `0.68x` of
+  uncontained host DOM geometry at `141.7 ms`) and **`173.0 ms`** in Firefox
+  (`0.92x` of uncontained host DOM geometry at `189.0 ms`).
+- **Bundle size** is `78.6 KB` gzipped (`98%` of the `80 KB` budget), with
+  default `0.7.0` numbers unchanged (`4.99 µs/element` Chromium, `5.29 µs/element`
+  Firefox).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and

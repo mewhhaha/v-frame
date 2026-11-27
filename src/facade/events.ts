@@ -134,6 +134,32 @@ const MIRRORED_EVENT_NAMES = [
   "FocusEvent",
   "CustomEvent",
 ] as const;
+const CORE_EVENT_CONSTRUCTOR_NAMES = [
+  "UIEvent",
+  "MouseEvent",
+  "PointerEvent",
+  "WheelEvent",
+  "DragEvent",
+  "KeyboardEvent",
+  "InputEvent",
+  "FocusEvent",
+  "SubmitEvent",
+  "CustomEvent",
+  "TouchEvent",
+  "CompositionEvent",
+  "ClipboardEvent",
+  "AnimationEvent",
+  "TransitionEvent",
+  "ToggleEvent",
+  "FormDataEvent",
+  "HashChangeEvent",
+  "PopStateEvent",
+  "ErrorEvent",
+  "MessageEvent",
+  "ProgressEvent",
+  "BeforeUnloadEvent",
+  "PageTransitionEvent",
+] as const;
 
 export function cachedDocumentEventHandlerNames(
   window: Window,
@@ -208,6 +234,186 @@ export function installEventFacade(
   const nativeEventMembers = new WeakMap<object, PropertyDescriptorMap>();
   const hostWindow = hostDocument.defaultView!;
   const hostEventPrototype = hostWindow.Event.prototype;
+  const lazyEvents = options.lazyEvents === true;
+  const emptyEventSkip = new Set<string>();
+  const forwardedGuestPrototypes = new WeakSet<object>();
+  const checkedGuestEventPrototypes = new WeakSet<object>();
+  const checkedHostEventPrototypes = new WeakSet<object>();
+  let memberNameCache = cachedEventMemberNames.get(hostWindow);
+  if (memberNameCache === undefined) {
+    memberNameCache = new Map();
+    cachedEventMemberNames.set(hostWindow, memberNameCache);
+  }
+  const makeMethodForwarder = (
+    name: string,
+    nativeMethod: (...args: unknown[]) => unknown,
+  ) => {
+    const arity = nativeMethod.length;
+    if (arity === 0) {
+      return {
+        value(this: Event) {
+          return listenerEventSources.has(this)
+            ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+            : Reflect.apply(nativeMethod, this, arguments);
+        },
+      }.value;
+    }
+    if (arity === 1) {
+      return {
+        value(this: Event, _a: unknown) {
+          return listenerEventSources.has(this)
+            ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+            : Reflect.apply(nativeMethod, this, arguments);
+        },
+      }.value;
+    }
+    if (arity === 2) {
+      return {
+        value(this: Event, _a: unknown, _b: unknown) {
+          return listenerEventSources.has(this)
+            ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+            : Reflect.apply(nativeMethod, this, arguments);
+        },
+      }.value;
+    }
+    return {
+      value(this: Event, ...args: unknown[]) {
+        return listenerEventSources.has(this)
+          ? Reflect.apply((this as never)[name] as () => unknown, this, args)
+          : Reflect.apply(nativeMethod, this, args);
+      },
+    }.value;
+  };
+  const forwardMembers = (
+    prototype: object,
+    cacheKey: string,
+    skip: ReadonlySet<string>,
+  ): void => {
+    forwardedGuestPrototypes.add(prototype);
+    const snapshot: PropertyDescriptorMap = Object.create(null);
+    const cachedMembers = cacheKey !== "" ? memberNameCache.get(cacheKey) : undefined;
+    const names = cachedMembers ?? Object.getOwnPropertyNames(prototype);
+    const discoveredMembers =
+      cacheKey !== "" && cachedMembers === undefined ? ([] as string[]) : null;
+    for (let index = 0; index < names.length; index += 1) {
+      const name = names[index]!;
+      if (name === "constructor" || skip.has(name)) {
+        const existing = Object.getOwnPropertyDescriptor(prototype, name);
+        if (existing !== undefined) snapshot[name] = existing;
+        continue;
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (descriptor === undefined) continue;
+      if (typeof descriptor.value === "function") {
+        discoveredMembers?.push(name);
+        const nativeMethod = descriptor.value as (...args: unknown[]) => unknown;
+        const patched: PropertyDescriptor = {
+          configurable: true,
+          writable: true,
+          value: makeMethodForwarder(name, nativeMethod),
+        };
+        patch(prototype, name, patched, descriptor);
+        snapshot[name] = patched;
+      } else if (descriptor.get !== undefined) {
+        discoveredMembers?.push(name);
+        const nativeGet = descriptor.get;
+        const nativeSet = descriptor.set;
+        const patched: PropertyDescriptor = {
+          configurable: true,
+          get(this: Event) {
+            return listenerEventSources.has(this)
+              ? (this as never)[name]
+              : nativeGet.call(this);
+          },
+          ...(nativeSet === undefined
+            ? {}
+            : {
+                set(this: Event, value: unknown) {
+                  if (listenerEventSources.has(this)) {
+                    (this as never)[name] = value as never;
+                  } else {
+                    nativeSet.call(this, value);
+                  }
+                },
+              }),
+        };
+        patch(prototype, name, patched, descriptor);
+        snapshot[name] = patched;
+      } else {
+        snapshot[name] = descriptor;
+      }
+    }
+    if (discoveredMembers !== null) {
+      for (const skipped of skip) {
+        if (Object.hasOwn(prototype, skipped)) discoveredMembers.push(skipped);
+      }
+      if (Object.hasOwn(prototype, "constructor")) {
+        discoveredMembers.push("constructor");
+      }
+      memberNameCache.set(cacheKey, discoveredMembers);
+    } else if (cachedMembers !== undefined) {
+      for (const name of ["NONE", "CAPTURING_PHASE", "AT_TARGET", "BUBBLING_PHASE"]) {
+        const existing = Object.getOwnPropertyDescriptor(prototype, name);
+        if (existing !== undefined) snapshot[name] = existing;
+      }
+    }
+    nativeEventMembers.set(prototype, snapshot);
+  };
+  const ensureLazyEventPrototypes = (mirrored: Event, source: Event): void => {
+    let guestProto = Object.getPrototypeOf(mirrored) as object | null;
+    while (
+      guestProto !== null &&
+      guestProto !== eventPrototype &&
+      !forwardedGuestPrototypes.has(guestProto) &&
+      !checkedGuestEventPrototypes.has(guestProto)
+    ) {
+      checkedGuestEventPrototypes.add(guestProto);
+      if (eventPrototype.isPrototypeOf(guestProto)) {
+        const ctor: unknown = Object.getOwnPropertyDescriptor(
+          guestProto,
+          "constructor",
+        )?.value;
+        const ctorName = typeof ctor === "function" ? ctor.name : "";
+        if (
+          ctorName !== "" &&
+          Object.getOwnPropertyDescriptor(window, ctorName)?.value === ctor &&
+          Function.prototype.toString.call(ctor).includes("[native code]")
+        ) {
+          forwardMembers(guestProto, ctorName, emptyEventSkip);
+        }
+      }
+      guestProto = Object.getPrototypeOf(guestProto) as object | null;
+    }
+    if (source !== mirrored) {
+      let hostProto = Object.getPrototypeOf(source) as object | null;
+      while (
+        hostProto !== null &&
+        hostProto !== hostEventPrototype &&
+        !nativeEventMembers.has(hostProto) &&
+        !checkedHostEventPrototypes.has(hostProto)
+      ) {
+        checkedHostEventPrototypes.add(hostProto);
+        if (hostEventPrototype.isPrototypeOf(hostProto)) {
+          const ctor: unknown = Object.getOwnPropertyDescriptor(
+            hostProto,
+            "constructor",
+          )?.value;
+          const ctorName = typeof ctor === "function" ? ctor.name : "";
+          if (
+            ctorName !== "" &&
+            Object.getOwnPropertyDescriptor(hostWindow, ctorName)?.value === ctor &&
+            Function.prototype.toString.call(ctor).includes("[native code]")
+          ) {
+            nativeEventMembers.set(
+              hostProto,
+              Object.getOwnPropertyDescriptors(hostProto),
+            );
+          }
+        }
+        hostProto = Object.getPrototypeOf(hostProto) as object | null;
+      }
+    }
+  };
   const nativeEventMember = (
     event: Event,
     property: PropertyKey,
@@ -356,6 +562,9 @@ export function installEventFacade(
       return existing;
     }
     const mirrored = event instanceof window.Event ? event : createMirroredEvent(source);
+    if (lazyEvents) {
+      ensureLazyEventPrototypes(mirrored, source);
+    }
     const sameSource = mirrored === source;
     // Members the proxy hands out are created once per proxy: a native method
     // is the same function on every read, and the guest compares them.
@@ -993,172 +1202,72 @@ export function installEventFacade(
     // Every other member is forwarded to the proxy itself, whose traps already
     // answer with the logical target, phase and path. The subclasses' own
     // accessors (MouseEvent.clientX, KeyboardEvent.key) refuse the proxy just the
-    // same, so every Event interface of the realm gets the forwarding.
-    let memberNameCache = cachedEventMemberNames.get(hostWindow);
-    if (memberNameCache === undefined) {
-      memberNameCache = new Map();
-      cachedEventMemberNames.set(hostWindow, memberNameCache);
-    }
-    const makeMethodForwarder = (
-      name: string,
-      nativeMethod: (...args: unknown[]) => unknown,
-    ) => {
-      const arity = nativeMethod.length;
-      if (arity === 0) {
-        return {
-          value(this: Event) {
-            return listenerEventSources.has(this)
-              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
-              : Reflect.apply(nativeMethod, this, arguments);
-          },
-        }.value;
-      }
-      if (arity === 1) {
-        return {
-          value(this: Event, _a: unknown) {
-            return listenerEventSources.has(this)
-              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
-              : Reflect.apply(nativeMethod, this, arguments);
-          },
-        }.value;
-      }
-      if (arity === 2) {
-        return {
-          value(this: Event, _a: unknown, _b: unknown) {
-            return listenerEventSources.has(this)
-              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
-              : Reflect.apply(nativeMethod, this, arguments);
-          },
-        }.value;
-      }
-      return {
-        value(this: Event, ...args: unknown[]) {
-          return listenerEventSources.has(this)
-            ? Reflect.apply((this as never)[name] as () => unknown, this, args)
-            : Reflect.apply(nativeMethod, this, args);
-        },
-      }.value;
-    };
-    const forwardMembers = (
-      prototype: object,
-      cacheKey: string,
-      skip: ReadonlySet<string>,
-    ): void => {
-      const snapshot: PropertyDescriptorMap = Object.create(null);
-      const cachedMembers = memberNameCache.get(cacheKey);
-      const names = cachedMembers ?? Object.getOwnPropertyNames(prototype);
-      const discoveredMembers = cachedMembers === undefined ? ([] as string[]) : null;
-      for (let index = 0; index < names.length; index += 1) {
-        const name = names[index]!;
-        if (name === "constructor" || skip.has(name)) {
-          const existing = Object.getOwnPropertyDescriptor(prototype, name);
-          if (existing !== undefined) snapshot[name] = existing;
-          continue;
-        }
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-        if (descriptor === undefined) continue;
-        if (typeof descriptor.value === "function") {
-          discoveredMembers?.push(name);
-          const nativeMethod = descriptor.value as (...args: unknown[]) => unknown;
-          const patched: PropertyDescriptor = {
-            configurable: true,
-            writable: true,
-            value: makeMethodForwarder(name, nativeMethod),
-          };
-          patch(prototype, name, patched, descriptor);
-          snapshot[name] = patched;
-        } else if (descriptor.get !== undefined) {
-          discoveredMembers?.push(name);
-          const nativeGet = descriptor.get;
-          const nativeSet = descriptor.set;
-          const patched: PropertyDescriptor = {
-            configurable: true,
-            get(this: Event) {
-              return listenerEventSources.has(this)
-                ? (this as never)[name]
-                : nativeGet.call(this);
-            },
-            ...(nativeSet === undefined
-              ? {}
-              : {
-                  set(this: Event, value: unknown) {
-                    if (listenerEventSources.has(this)) {
-                      (this as never)[name] = value as never;
-                    } else {
-                      nativeSet.call(this, value);
-                    }
-                  },
-                }),
-          };
-          patch(prototype, name, patched, descriptor);
-          snapshot[name] = patched;
-        } else {
-          snapshot[name] = descriptor;
-        }
-      }
-      if (discoveredMembers !== null) {
-        for (const skipped of skip) {
-          if (Object.hasOwn(prototype, skipped)) discoveredMembers.push(skipped);
-        }
-        if (Object.hasOwn(prototype, "constructor")) {
-          discoveredMembers.push("constructor");
-        }
-        memberNameCache.set(cacheKey, discoveredMembers);
-      } else {
-        // Non-callable own constants (e.g. Event.CAPTURING_PHASE) are not in the
-        // member patch plan; keep Event.prototype's snapshot complete via skip/consts.
-        for (const name of ["NONE", "CAPTURING_PHASE", "AT_TARGET", "BUBBLING_PHASE"]) {
-          const existing = Object.getOwnPropertyDescriptor(prototype, name);
-          if (existing !== undefined) snapshot[name] = existing;
-        }
-      }
-      nativeEventMembers.set(prototype, snapshot);
-    };
+    // same, so every Event interface of the realm gets the forwarding (or only
+    // core UI subclasses eagerly when `lazyEvents` is opted into).
     forwardMembers(
       eventPrototype,
       "Event",
       new Set(["preventDefault", "returnValue", "defaultPrevented"]),
     );
-    // The window is still pristine here, so every Event subclass on it is one
-    // of the browser's own. Cache the list of constructor names across mounts
-    // in the same host window so subsequent mounts avoid scanning all globals.
-    const emptySkip = new Set<string>();
-    const cachedNames = cachedEventConstructorNames.get(hostWindow);
-    const discovered = cachedNames === undefined ? ([] as string[]) : undefined;
-    for (const name of cachedNames ?? Object.getOwnPropertyNames(window)) {
-      const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
-      const prototype =
-        typeof member === "function" ? (member.prototype as unknown) : null;
-      if (
-        typeof prototype === "object" &&
-        prototype !== null &&
-        prototype !== eventPrototype &&
-        eventPrototype.isPrototypeOf(prototype)
-      ) {
-        discovered?.push(name);
-        forwardMembers(prototype, name, emptySkip);
+    if (lazyEvents) {
+      for (const name of CORE_EVENT_CONSTRUCTOR_NAMES) {
+        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
+        const prototype =
+          typeof member === "function" ? (member.prototype as unknown) : null;
+        if (
+          typeof prototype === "object" &&
+          prototype !== null &&
+          prototype !== eventPrototype &&
+          eventPrototype.isPrototypeOf(prototype)
+        ) {
+          forwardMembers(prototype, name, emptyEventSkip);
+        }
       }
-    }
-    if (discovered !== undefined) {
-      cachedEventConstructorNames.set(hostWindow, discovered);
-    }
-    // A host event may expose an interface that the mirrored event does not.
-    // Its native members also require the original receiver; snapshotting per
-    // mount lets later mounts see new host subclasses while properties added
-    // after mount still receive the logical event proxy.
-    nativeEventMembers.set(
-      hostEventPrototype,
-      Object.getOwnPropertyDescriptors(hostEventPrototype),
-    );
-    for (const name of Object.getOwnPropertyNames(hostWindow)) {
-      const member: unknown = Object.getOwnPropertyDescriptor(hostWindow, name)?.value;
-      const prototype = typeof member === "function" ? member.prototype : null;
-      if (
-        typeof prototype === "object" &&
-        prototype !== null &&
-        hostEventPrototype.isPrototypeOf(prototype)
-      ) {
-        nativeEventMembers.set(prototype, Object.getOwnPropertyDescriptors(prototype));
+      nativeEventMembers.set(
+        hostEventPrototype,
+        Object.getOwnPropertyDescriptors(hostEventPrototype),
+      );
+    } else {
+      // The window is still pristine here, so every Event subclass on it is one
+      // of the browser's own. Cache the list of constructor names across mounts
+      // in the same host window so subsequent mounts avoid scanning all globals.
+      const cachedNames = cachedEventConstructorNames.get(hostWindow);
+      const discovered = cachedNames === undefined ? ([] as string[]) : undefined;
+      for (const name of cachedNames ?? Object.getOwnPropertyNames(window)) {
+        const member: unknown = Object.getOwnPropertyDescriptor(window, name)?.value;
+        const prototype =
+          typeof member === "function" ? (member.prototype as unknown) : null;
+        if (
+          typeof prototype === "object" &&
+          prototype !== null &&
+          prototype !== eventPrototype &&
+          eventPrototype.isPrototypeOf(prototype)
+        ) {
+          discovered?.push(name);
+          forwardMembers(prototype, name, emptyEventSkip);
+        }
+      }
+      if (discovered !== undefined) {
+        cachedEventConstructorNames.set(hostWindow, discovered);
+      }
+      // A host event may expose an interface that the mirrored event does not.
+      // Its native members also require the original receiver; snapshotting per
+      // mount lets later mounts see new host subclasses while properties added
+      // after mount still receive the logical event proxy.
+      nativeEventMembers.set(
+        hostEventPrototype,
+        Object.getOwnPropertyDescriptors(hostEventPrototype),
+      );
+      for (const name of Object.getOwnPropertyNames(hostWindow)) {
+        const member: unknown = Object.getOwnPropertyDescriptor(hostWindow, name)?.value;
+        const prototype = typeof member === "function" ? member.prototype : null;
+        if (
+          typeof prototype === "object" &&
+          prototype !== null &&
+          hostEventPrototype.isPrototypeOf(prototype)
+        ) {
+          nativeEventMembers.set(prototype, Object.getOwnPropertyDescriptors(prototype));
+        }
       }
     }
     patch(eventTargetPrototype, "addEventListener", {

@@ -3,6 +3,68 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0 - 2026-11-27
+
+### Added
+
+- Five opt-in Tier C performance modes on `<v-frame>` (100% backwards-compatible;
+  default `0.6.0` behavior is unchanged when omitted):
+  - **Deferred SSR activation (`adopt="visible" | "idle" | "interaction"`,
+    `frame.adoptMode`, `frame.activate()`):** Keeps Declarative Shadow DOM
+    previews painted with zero iframe creation, zero JS boot, and zero entry
+    fetches until intersecting the viewport (`IntersectionObserver`), browser
+    idle (`requestIdleCallback` with `setTimeout` fallback), first user
+    interaction on the preview (preserving typed form drafts and blocking
+    accidental host link/form navigation while activating), or an imperative
+    `frame.activate()` call. Boolean `frame.adopt` and eager `<v-frame adopt>`
+    remain unchanged.
+  - **Lazy `Attr` node identity (`lazy-attributes` / `frame.lazyAttributes`):**
+    Skips eager `NamedNodeMap`/`Attr` materialization during initial marking,
+    subtree walks, and `setAttribute`/`setAttributeNS` writes. Guest `Attr`
+    APIs (`getAttributeNode`, `getAttributeNodeNS`, `attributes`,
+    `removeAttributeNode`, and live `NamedNodeMap`s once observed) mark on
+    demand, and `Attr.prototype` (`ownerDocument`, `baseURI`, `getRootNode`)
+    checks `ownerElement` with WebIDL brand validation.
+  - **Lazy exotic `Event` subclass patching (`lazy-events` / `frame.lazyEvents`):**
+    Eagerly forwards `Event.prototype` plus 24 core DOM/UI Event interfaces and
+    lazily forwards exotic native guest/host `Event` subclasses on first
+    delivery (restoring lazily patched prototypes cleanly on disposal).
+  - **Blocking script preloading (`preload-scripts` / `frame.preloadScripts`):**
+    Boolean `preload-scripts` concurrently preloads discovered blocking classic
+    external scripts via `<link rel="preload" as="script">` while preserving
+    strict document execution order; space-separated URLs or a string array
+    (`preload-scripts="/a.js /b.js"`) also emit host `<link rel="preload">`
+    hints immediately in parallel with entry HTML fetch and realm boot,
+    cleaning them up on load or abort.
+  - **Offscreen rendering optimization (`content-visibility="auto"` or CSS
+    selector / `frame.contentVisibility`):** Injects a zero-specificity
+    `:where(...){content-visibility:auto;contain-intrinsic-block-size:auto 300px}`
+    rule into the frame's internal stylesheet (skipping metadata, top-layer
+    `<dialog>`/`[popover]`, and single app-root wrappers in `"auto"` mode),
+    validated via `rewriteCSSOMSelectorText` + `matches()` + single-rule
+    `insertRule` and updatable live without reloading the guest.
+- Exported `VFrameAdoptMode` and `VFramePreloadScripts` types from
+  `@mewhhaha/v-frame`.
+
+### Changed
+
+- Expanded `pnpm bench` (`bench/mark-virtual-node.ts`) with a Tier C opt-in
+  comparison table reporting post-mount, pre-enumeration collected JS heap
+  alongside activation, through-geometry, insertion, and hot-path timings:
+  - **Chromium 153 (AMD Ryzen 7 7800X3D):** `lazy-events` reduced 1k cold mount
+    from `36.0 → 27.8 ms` (`-23%`) and pre-enumeration JS heap from
+    `3,840 → 1,628 KB` (`-58%`). At 50k elements, `lazy-attributes` +
+    `lazy-events` cut activation from `273.6 → 225.0 ms` (`-18%`), 1k insertion
+    from `8.7 → 7.1 ms` (`-18%`), and pre-enumeration JS heap from
+    `8,119 → 3,708 KB` (`-54%`). Adding `content-visibility="auto"` reduced 50k
+    activation through geometry to **`96.5 ms`** (`-65%`, faster than 50k plain
+    host DOM geometry at `141.7 ms`).
+  - **Firefox 155:** At 50k elements, `lazy-attributes` + `lazy-events` reduced
+    1k insertion to **`15.0 ms`**, and adding `content-visibility="auto"`
+    reduced 50k activation through geometry to **`173.0 ms`** (faster than 50k
+    plain host DOM geometry at `189.0 ms`).
+  - Bundle size: `78.6 KB` gzipped (`98%` of the `80 KB` budget).
+
 ## 0.6.0 - 2026-11-27
 
 ### Changed

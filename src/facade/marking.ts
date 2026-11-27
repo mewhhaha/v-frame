@@ -65,6 +65,7 @@ export function installNodeMarking(
     nativeRemoveAttribute,
     nativeAttributes,
     nativeHasAttributes,
+    nativeHasAttribute,
     nativeQuerySelector,
     nativeQuerySelectorAll,
     NativeMutationObserver,
@@ -86,6 +87,7 @@ export function installNodeMarking(
   const onShadowRoot = options.onShadowRoot;
   const initialFlags = options.initialFlags ?? 0xff;
   const hasInitialInlineEvents = (initialFlags & MARKUP_FLAG_INLINE_EVENTS) !== 0;
+  const lazyAttributes = options.lazyAttributes === true;
   let realmMayHaveTemplates = (initialFlags & MARKUP_FLAG_TEMPLATES) !== 0;
   let realmHasShadowRoots = false;
   let opaqueGeneration = 0;
@@ -281,22 +283,37 @@ export function installNodeMarking(
       let eventAttrs: Array<[string, string, string]> | undefined;
       let attrCount = 0;
       if (nativeHasAttributes.call(element)) {
-        const attrs =
-          nativeAttributesGetter !== undefined
-            ? (nativeAttributesGetter.call(element) as NamedNodeMap)
-            : element.attributes;
-        attrCount = attrs.length;
-        if (!newlyVirtual && !hasURLCapability && scan === undefined) {
-          for (let index = 0; index < attrCount; index += 1) {
-            markVirtualAttribute(attrs[index]!);
+        if (!newlyVirtual && !hasURLCapability) {
+          if (
+            scan !== undefined &&
+            nativeHasAttribute.call(element, FRAGMENT_TARGET_ATTRIBUTE)
+          ) {
+            scan.hasTarget = true;
+          }
+          if (!lazyAttributes) {
+            const attrs =
+              nativeAttributesGetter !== undefined
+                ? (nativeAttributesGetter.call(element) as NamedNodeMap)
+                : element.attributes;
+            attrCount = attrs.length;
+            for (let index = 0; index < attrCount; index += 1) {
+              markVirtualAttribute(attrs[index]!);
+            }
           }
         } else {
+          const attrs =
+            nativeAttributesGetter !== undefined
+              ? (nativeAttributesGetter.call(element) as NamedNodeMap)
+              : element.attributes;
+          attrCount = attrs.length;
           let authoredURLs = hasURLCapability
             ? options.authoredURLAttributes.get(element)
             : undefined;
           for (let index = 0; index < attrCount; index += 1) {
             const attribute = attrs[index]!;
-            markVirtualAttribute(attribute);
+            if (!lazyAttributes) {
+              markVirtualAttribute(attribute);
+            }
             const attrName = attribute.name;
             if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
               scan.hasTarget = true;
@@ -635,6 +652,17 @@ export function installNodeMarking(
   // markShell runs before Element.prototype.attributes is patched, so direct
   // element.attributes access is native and guarding with hasAttributes() avoids
   // allocating a NamedNodeMap wrapper for every attribute-less element.
+  const markInitialOwnershipLazyAttrs = (element: Element): void => {
+    virtualNodes.add(element);
+    for (let child = element.firstChild; child !== null; child = child.nextSibling) {
+      if (child.nodeType === 1) {
+        markInitialOwnershipLazyAttrs(child as Element);
+      } else {
+        virtualNodes.add(child);
+      }
+    }
+  };
+
   const markInitialOwnershipFast = (element: Element): void => {
     virtualNodes.add(element);
     if (element.hasAttributes()) {
@@ -659,7 +687,9 @@ export function installNodeMarking(
       let eventAttrs: Array<[string, string, string]> | undefined;
       for (let index = 0, len = attrs.length; index < len; index += 1) {
         const attribute = attrs[index]!;
-        virtualNodes.add(attribute);
+        if (!lazyAttributes) {
+          virtualNodes.add(attribute);
+        }
         eventAttrs = collectInlineEventAttr(
           element,
           attribute,
@@ -690,6 +720,8 @@ export function installNodeMarking(
     ) {
       if (hasInitialInlineEvents) {
         markInitialOwnershipWithEvents(options.html);
+      } else if (lazyAttributes) {
+        markInitialOwnershipLazyAttrs(options.html);
       } else {
         markInitialOwnershipFast(options.html);
       }

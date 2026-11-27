@@ -87,6 +87,10 @@ export interface CreateRealmOptions {
   preserveScroll: boolean;
   restoreScroll: boolean;
   credentials: VFrameCredentials;
+  lazyAttributes?: boolean;
+  lazyEvents?: boolean;
+  preloadBlockingScripts?: boolean;
+  contentVisibility?: string;
   signal: AbortSignal;
   getNonce(): string;
   fetchStylesheet: PrepareMarkupOptions["fetchStylesheet"];
@@ -114,6 +118,7 @@ export interface VFrameRealm {
   readonly navigation: NavigationControls;
   readonly shadowRoot: ShadowRoot;
   executeInitialScripts(): Promise<void>;
+  setContentVisibility(selector: string): void;
   reveal(): void;
   dispose(): void;
 }
@@ -202,7 +207,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         : null;
     if (staged) disposers.push(staged.dispose);
     const renderRoot = staged?.root ?? options.shadowRoot;
-    const internalStyles = installInternalStyles(options.shadowRoot, renderRoot);
+    const internalStyles = installInternalStyles(
+      options.shadowRoot,
+      renderRoot,
+      options.contentVisibility,
+    );
     disposers.push(internalStyles.dispose);
     disposers.push(() => {
       removeRenderedNode(preparedMarkup.html, hostView);
@@ -383,6 +392,8 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       initialFlags: markup.flags,
       initialScripts: markup.scripts,
       initialLinks: markup.links,
+      lazyAttributes: options.lazyAttributes === true,
+      lazyEvents: options.lazyEvents === true,
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
@@ -539,6 +550,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       native: facade.native,
       facade,
       scripts: markup.scripts,
+      preloadBlockingScripts: options.preloadBlockingScripts === true,
       signal: options.signal,
       credentials: options.credentials,
       executionOrigin: options.host.ownerDocument.location.origin,
@@ -694,6 +706,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         staged?.refreshParts();
         await scriptRunner?.executeInitial();
         await adoptionState?.settle(options.signal);
+      },
+      setContentVisibility(selector: string) {
+        if (!disposed) {
+          internalStyles.setContentVisibility(selector);
+        }
       },
       reveal() {
         if (disposed || options.signal.aborted) {

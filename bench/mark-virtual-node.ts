@@ -388,10 +388,17 @@ function heapDelta(after: number | null, before: number | null): number | null {
   return after === null || before === null ? null : after - before;
 }
 
-function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap">> {
+function measureFrame(
+  page: Page,
+  guestURL: string,
+  frameAttrs: Record<string, string> = {},
+): Promise<Omit<Sample, "heap">> {
   return page.evaluate(
     async (options) => {
       const frame = document.createElement("v-frame") as BenchFrame;
+      for (const [name, value] of Object.entries(options.frameAttrs)) {
+        frame.setAttribute(name, value);
+      }
       const loaded = new Promise<void>((settled) => {
         frame.addEventListener("v-frame-load", () => settled(), { once: true });
       });
@@ -417,7 +424,7 @@ function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap"
         move: guest.benchMove(options.moves),
       };
     },
-    { guestURL, count: INSERTION_COUNT, moves: MOVE_COUNT },
+    { guestURL, count: INSERTION_COUNT, moves: MOVE_COUNT, frameAttrs },
   );
 }
 
@@ -457,13 +464,14 @@ async function sampleFrame(
   browser: Browser,
   origin: string,
   size: number,
+  frameAttrs: Record<string, string> = {},
 ): Promise<Sample> {
   const page = await browser.newPage();
   const cdp = await openHeapSession(page, engine);
   try {
     await installBundle(page, origin);
     const before = await heapUsage(cdp);
-    const timings = await measureFrame(page, `${origin}${guestPath(size)}`);
+    const timings = await measureFrame(page, `${origin}${guestPath(size)}`, frameAttrs);
     return { ...timings, heap: heapDelta(await heapUsage(cdp), before) };
   } finally {
     await page.close();
@@ -492,20 +500,30 @@ async function sampleHost(
  * The churn measurement reads the heap between mounting and churning, and the heap
  * reading comes from node over CDP, so mounting cannot be part of the same evaluate.
  */
-function mountBenchFrame(page: Page, guestURL: string): Promise<void> {
-  return page.evaluate(async (url) => {
-    const frame = document.createElement("v-frame") as BenchFrame;
-    const loaded = new Promise<void>((settled) => {
-      frame.addEventListener("v-frame-load", () => settled(), { once: true });
-    });
-    const host = document.querySelector("#host");
-    if (host === null) throw new Error("host container is missing");
+function mountBenchFrame(
+  page: Page,
+  guestURL: string,
+  frameAttrs: Record<string, string> = {},
+): Promise<void> {
+  return page.evaluate(
+    async ({ url, attrs }) => {
+      const frame = document.createElement("v-frame") as BenchFrame;
+      for (const [name, value] of Object.entries(attrs)) {
+        frame.setAttribute(name, value);
+      }
+      const loaded = new Promise<void>((settled) => {
+        frame.addEventListener("v-frame-load", () => settled(), { once: true });
+      });
+      const host = document.querySelector("#host");
+      if (host === null) throw new Error("host container is missing");
 
-    frame.src = url;
-    host.append(frame);
-    await loaded;
-    (window as BenchHost).benchGuest = frame.contentWindow;
-  }, guestURL);
+      frame.src = url;
+      host.append(frame);
+      await loaded;
+      (window as BenchHost).benchGuest = frame.contentWindow;
+    },
+    { url: guestURL, attrs: frameAttrs },
+  );
 }
 
 function adoptBenchGuest(page: Page, guestURL: string): Promise<void> {
@@ -578,14 +596,131 @@ function medianHeap(samples: Sample[]): number | null {
   return median(readings);
 }
 
+interface TierCSample {
+  activation: number;
+  activationGeometry: number;
+  insertion: number;
+  heapPreEnum: number | null;
+}
+
+async function sampleTierCFrame(
+  engine: BrowserType,
+  browser: Browser,
+  origin: string,
+  size: number,
+  frameAttrs: Record<string, string> = {},
+): Promise<TierCSample> {
+  const page = await browser.newPage();
+  const cdp = await openHeapSession(page, engine);
+  try {
+    await installBundle(page, origin);
+    const before = await heapUsage(cdp);
+    const mounted = await page.evaluate(
+      async (options) => {
+        const frame = document.createElement("v-frame") as BenchFrame;
+        for (const [name, value] of Object.entries(options.frameAttrs)) {
+          frame.setAttribute(name, value);
+        }
+        const loaded = new Promise<void>((settled) => {
+          frame.addEventListener("v-frame-load", () => settled(), { once: true });
+        });
+        const host = document.querySelector("#host");
+        if (host === null) throw new Error("host container is missing");
+        const start = performance.now();
+        frame.src = options.guestURL;
+        host.append(frame);
+        await loaded;
+        const activation = performance.now() - start;
+        const guest = frame.contentWindow;
+        if (guest === null) throw new Error("the settled frame has no realm window");
+        void guest.document.body.getBoundingClientRect().height;
+        const activationGeometry = performance.now() - start;
+        (window as BenchHost).benchGuest = guest;
+        return { activation, activationGeometry };
+      },
+      { guestURL: `${origin}${guestPath(size)}`, frameAttrs },
+    );
+    const heapPreEnum = heapDelta(await heapUsage(cdp), before);
+    const insertion = await page.evaluate((count) => {
+      const guest = (window as BenchHost).benchGuest;
+      if (guest === undefined || guest === null) {
+        throw new Error("the settled frame has no realm window");
+      }
+      return guest.benchInsert(count);
+    }, INSERTION_COUNT);
+    return { ...mounted, insertion, heapPreEnum };
+  } finally {
+    await page.close();
+  }
+}
+
+async function sampleTierCHost(
+  engine: BrowserType,
+  browser: Browser,
+  origin: string,
+  size: number,
+): Promise<TierCSample> {
+  const page = await browser.newPage();
+  const cdp = await openHeapSession(page, engine);
+  try {
+    await page.goto(`${origin}/baseline`);
+    const before = await heapUsage(cdp);
+    const mounted = await page.evaluate(
+      async (guestURL) => {
+        const host = document.querySelector("#host");
+        if (host === null) throw new Error("host container is missing");
+        const start = performance.now();
+        const source = await (await fetch(guestURL)).text();
+        const parsed = new DOMParser().parseFromString(source, "text/html");
+        host.append(document.adoptNode(parsed.body));
+        const activation = performance.now() - start;
+        void host.getBoundingClientRect().height;
+        const activationGeometry = performance.now() - start;
+        return { activation, activationGeometry };
+      },
+      `${origin}${guestPath(size)}`,
+    );
+    const heapPreEnum = heapDelta(await heapUsage(cdp), before);
+    const insertion = await page.evaluate(
+      (count) => (window as unknown as BenchWindow).benchInsert(count),
+      INSERTION_COUNT,
+    );
+    return { ...mounted, insertion, heapPreEnum };
+  } finally {
+    await page.close();
+  }
+}
+
+async function repeatTierC(take: () => Promise<TierCSample>): Promise<TierCSample> {
+  const samples: TierCSample[] = [];
+  for (let run = 0; run < REPEATS; run += 1) {
+    samples.push(await take());
+  }
+  const heaps: number[] = [];
+  let heapPreEnum: number | null = null;
+  for (const s of samples) {
+    if (s.heapPreEnum !== null) heaps.push(s.heapPreEnum);
+  }
+  if (heaps.length === samples.length) {
+    heapPreEnum = median(heaps);
+  }
+  return {
+    activation: median(samples.map((s) => s.activation)),
+    activationGeometry: median(samples.map((s) => s.activationGeometry)),
+    insertion: median(samples.map((s) => s.insertion)),
+    heapPreEnum,
+  };
+}
+
 async function sampleFrameRealWorld(
   browser: Browser,
   origin: string,
+  frameAttrs: Record<string, string> = {},
 ): Promise<RealWorldTimings> {
   const page = await browser.newPage();
   try {
     await installBundle(page, origin);
-    await mountBenchFrame(page, `${origin}${guestPath(5_000)}`);
+    await mountBenchFrame(page, `${origin}${guestPath(5_000)}`, frameAttrs);
     return await page.evaluate(() => {
       const guest = (window as BenchHost).benchGuest;
       if (guest === undefined || guest === null) {
@@ -816,6 +951,132 @@ async function measureEngine(engine: BrowserType, origin: string): Promise<void>
       host: await repeatRealWorld(() => sampleHostRealWorld(browser, origin)),
     };
     report(measurements, realWorld);
+
+    const smallSize = measurements[0]!.size;
+    const largeSize = measurements[measurements.length - 1]!.size;
+    const lazyEventsAttrs = { "lazy-events": "" };
+    const lazyBothAttrs = { "lazy-attributes": "", "lazy-events": "" };
+    const tierCAllAttrs = {
+      "lazy-attributes": "",
+      "lazy-events": "",
+      "content-visibility": "auto",
+    };
+    const smallDefaultTC = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, smallSize),
+    );
+    const smallLazyEvents = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, smallSize, lazyEventsAttrs),
+    );
+    const smallLazyBoth = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, smallSize, lazyBothAttrs),
+    );
+    const largeDefaultTC = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, largeSize),
+    );
+    const largeLazyBoth = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, largeSize, lazyBothAttrs),
+    );
+    const largeTierCAll = await repeatTierC(() =>
+      sampleTierCFrame(engine, browser, origin, largeSize, tierCAllAttrs),
+    );
+    const largeHostTC = await repeatTierC(() =>
+      sampleTierCHost(engine, browser, origin, largeSize),
+    );
+    const realWorldLazy = await repeatRealWorld(() =>
+      sampleFrameRealWorld(browser, origin, lazyBothAttrs),
+    );
+
+    console.log(
+      "\nTier C opt-in modes — 1,000 & 50,000 elements (pre-enumeration collected heap)",
+    );
+    console.table([
+      {
+        mode: "1k default",
+        activation: milliseconds(smallDefaultTC.activation),
+        geom: milliseconds(smallDefaultTC.activationGeometry),
+        insertion: milliseconds(smallDefaultTC.insertion),
+        "heap (pre-enum)":
+          smallDefaultTC.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(smallDefaultTC.heapPreEnum),
+      },
+      {
+        mode: "1k lazy-events",
+        activation: milliseconds(smallLazyEvents.activation),
+        geom: milliseconds(smallLazyEvents.activationGeometry),
+        insertion: milliseconds(smallLazyEvents.insertion),
+        "heap (pre-enum)":
+          smallLazyEvents.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(smallLazyEvents.heapPreEnum),
+      },
+      {
+        mode: "1k lazy-attrs + lazy-events",
+        activation: milliseconds(smallLazyBoth.activation),
+        geom: milliseconds(smallLazyBoth.activationGeometry),
+        insertion: milliseconds(smallLazyBoth.insertion),
+        "heap (pre-enum)":
+          smallLazyBoth.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(smallLazyBoth.heapPreEnum),
+      },
+      {
+        mode: "50k default",
+        activation: milliseconds(largeDefaultTC.activation),
+        geom: milliseconds(largeDefaultTC.activationGeometry),
+        insertion: milliseconds(largeDefaultTC.insertion),
+        "heap (pre-enum)":
+          largeDefaultTC.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(largeDefaultTC.heapPreEnum),
+      },
+      {
+        mode: "50k lazy-attrs + lazy-events",
+        activation: milliseconds(largeLazyBoth.activation),
+        geom: milliseconds(largeLazyBoth.activationGeometry),
+        insertion: milliseconds(largeLazyBoth.insertion),
+        "heap (pre-enum)":
+          largeLazyBoth.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(largeLazyBoth.heapPreEnum),
+      },
+      {
+        mode: "50k lazy-attrs + lazy-events + cv=auto",
+        activation: milliseconds(largeTierCAll.activation),
+        geom: milliseconds(largeTierCAll.activationGeometry),
+        insertion: milliseconds(largeTierCAll.insertion),
+        "heap (pre-enum)":
+          largeTierCAll.heapPreEnum === null
+            ? "n/a"
+            : kilobytes(largeTierCAll.heapPreEnum),
+      },
+      {
+        mode: "50k host DOM",
+        activation: milliseconds(largeHostTC.activation),
+        geom: milliseconds(largeHostTC.activationGeometry),
+        insertion: milliseconds(largeHostTC.insertion),
+        "heap (pre-enum)":
+          largeHostTC.heapPreEnum === null ? "n/a" : kilobytes(largeHostTC.heapPreEnum),
+      },
+    ]);
+    console.log("\nTier C opt-in DOM hot paths — 5,000-element guest");
+    console.table([
+      {
+        operation: "setAttribute (50k) [lazy-attributes]",
+        default: milliseconds(realWorld.frame.setAttribute),
+        "opt-in": milliseconds(realWorldLazy.setAttribute),
+        "host DOM": milliseconds(realWorld.host.setAttribute),
+        overhead: ratio(realWorldLazy.setAttribute, realWorld.host.setAttribute),
+      },
+      {
+        operation: "events click dispatch (10k) [lazy-events]",
+        default: milliseconds(realWorld.frame.events),
+        "opt-in": milliseconds(realWorldLazy.events),
+        "host DOM": milliseconds(realWorld.host.events),
+        overhead: ratio(realWorldLazy.events, realWorld.host.events),
+      },
+    ]);
+
     // The churn measurement has no timing half — what it reports is retained heap —
     // so it is skipped entirely rather than reported empty.
     if (measuresHeap(engine)) {

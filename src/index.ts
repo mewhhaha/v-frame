@@ -4,6 +4,7 @@ export { defineVFrame } from "./define.js";
 export { VFrameElement };
 export { VFrameStatus } from "./types.js";
 export type {
+  VFrameAdoptMode,
   VFrameCredentials,
   VFrameErrorEventDetail,
   VFrameErrorPhase,
@@ -14,6 +15,7 @@ export type {
   VFrameNavigateOptions,
   VFrameNavigation,
   VFrameNavigationKind,
+  VFramePreloadScripts,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";

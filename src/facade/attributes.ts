@@ -143,6 +143,7 @@ export function installAttributeFacade(
     nativeSetAttributeNS,
     nativeRemoveAttribute,
     nativeRemoveAttributeNS,
+    nativeRemoveAttributeNode,
     nativeToggleAttribute,
     nativeOwnerDocument,
     nativeGetBoundingClientRect,
@@ -203,11 +204,21 @@ export function installAttributeFacade(
   // createAttribute and attaches with setAttributeNode, which stays unmarked
   // until something hands it back out through a marked element. All three hand
   // out a node the realm never sees.
+  const lazyAttributes = options.lazyAttributes === true;
+  const observedAttributeElements = new WeakSet<Element>();
+  const nativeAttrOwnerElement = Object.getOwnPropertyDescriptor(
+    window.Attr.prototype,
+    "ownerElement",
+  )?.get;
+  const hostAttrCtor = context.hostDocument.defaultView?.Attr;
   const markAttributeNodes = (
     element: Element,
     attributeNodes: NamedNodeMap,
   ): NamedNodeMap => {
     if (virtualNodes.has(element)) {
+      if (lazyAttributes) {
+        observedAttributeElements.add(element);
+      }
       for (let index = 0; index < attributeNodes.length; index += 1) {
         markAttributeNode(element, attributeNodes.item(index));
       }
@@ -299,12 +310,17 @@ export function installAttributeFacade(
     attributeName: string,
     value: string,
   ): void => {
+    const shouldMark = !lazyAttributes || observedAttributeElements.has(element);
     if (attributeName === "xlink:href") {
       nativeSetAttributeNS.call(element, XLINK_NAMESPACE, attributeName, value);
-      getVirtualAttributeNodeNS(element, XLINK_NAMESPACE, "href");
+      if (shouldMark) {
+        getVirtualAttributeNodeNS(element, XLINK_NAMESPACE, "href");
+      }
     } else {
       nativeSetAttribute.call(element, attributeName, value);
-      getVirtualAttributeNode(element, attributeName);
+      if (shouldMark) {
+        getVirtualAttributeNode(element, attributeName);
+      }
     }
     rememberPhysicalURLAttribute(element, attributeName, value);
   };
@@ -891,7 +907,7 @@ export function installAttributeFacade(
       }
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
-    if (virtual) {
+    if (virtual && (!lazyAttributes || observedAttributeElements.has(element))) {
       const attribute = nativeGetAttributeNode.call(element, qualifiedName);
       if (attribute !== null) {
         markVirtualAttribute!(attribute);
@@ -978,7 +994,10 @@ export function installAttributeFacade(
       return;
     }
     nativeSetAttributeNS.call(element, namespace, qualifiedName, authoredValue);
-    if (virtualNodes.has(element)) {
+    if (
+      virtualNodes.has(element) &&
+      (!lazyAttributes || observedAttributeElements.has(element))
+    ) {
       getVirtualAttributeNodeNS(element, namespace, localName);
     }
   }
@@ -1104,12 +1123,31 @@ export function installAttributeFacade(
         },
       });
     }
+    patch(elementPrototype, "removeAttributeNode", {
+      writable: true,
+      value(this: Element, attr: Attr): Attr {
+        const candidate: unknown = attr;
+        if (
+          virtualNodes.has(this) &&
+          (candidate instanceof window.Attr ||
+            (hostAttrCtor !== undefined && candidate instanceof hostAttrCtor)) &&
+          nativeAttrOwnerElement?.call(attr) === this
+        ) {
+          markVirtualAttribute!(attr);
+        }
+        return nativeRemoveAttributeNode.call(this, attr);
+      },
+    });
+    const isVirtualAttr = (attr: Attr): boolean => {
+      if (virtualNodes.has(attr)) {
+        return true;
+      }
+      const owner = nativeAttrOwnerElement?.call(attr) as Element | null | undefined;
+      return owner != null && virtualNodes.has(owner);
+    };
     patch(window.Attr.prototype, "ownerDocument", {
       get(this: Attr): Document | null {
-        if (
-          virtualNodes.has(this) ||
-          (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
-        ) {
+        if (isVirtualAttr(this)) {
           return document;
         }
         return nativeOwnerDocument?.get?.call(this) ?? null;
@@ -1119,10 +1157,7 @@ export function installAttributeFacade(
       const nativeBaseURIGetter = context.nativeBaseURI.get;
       patch(window.Attr.prototype, "baseURI", {
         get(this: Attr): string {
-          if (
-            virtualNodes.has(this) ||
-            (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
-          ) {
+          if (isVirtualAttr(this)) {
             return options.getBaseURL();
           }
           return nativeBaseURIGetter.call(this) as string;
@@ -1132,10 +1167,7 @@ export function installAttributeFacade(
     patch(window.Attr.prototype, "getRootNode", {
       writable: true,
       value(this: Attr, init?: GetRootNodeOptions): Node {
-        if (
-          virtualNodes.has(this) ||
-          (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
-        ) {
+        if (isVirtualAttr(this)) {
           return context.virtualGetRootNode(this, init);
         }
         return context.nativeGetRootNode.call(this, init);

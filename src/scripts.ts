@@ -45,6 +45,7 @@ export interface ScriptRunnerOptions {
   native: NativeDocumentHandles;
   facade: DocumentFacade;
   scripts: readonly HTMLScriptElement[];
+  preloadBlockingScripts?: boolean;
   signal: AbortSignal;
   credentials: VFrameCredentials;
   executionOrigin: string;
@@ -152,6 +153,7 @@ export class ScriptRunner {
   readonly #native: NativeDocumentHandles;
   readonly #facade: DocumentFacade;
   readonly #scripts: readonly HTMLScriptElement[];
+  readonly #preloadBlockingScripts: boolean;
   readonly #signal: AbortSignal;
   readonly #credentials: VFrameCredentials;
   readonly #executionOrigin: string;
@@ -183,6 +185,7 @@ export class ScriptRunner {
     this.#native = options.native;
     this.#facade = options.facade;
     this.#scripts = options.scripts;
+    this.#preloadBlockingScripts = options.preloadBlockingScripts === true;
     this.#signal = options.signal;
     this.#credentials = options.credentials;
     this.#executionOrigin = options.executionOrigin;
@@ -412,29 +415,61 @@ export class ScriptRunner {
   async executeInitial(): Promise<void> {
     const asyncScripts: Promise<void>[] = [];
     const deferredScripts: HTMLScriptElement[] = [];
+    const blockingPreloads: HTMLLinkElement[] = [];
 
-    for (const script of this.#scripts) {
-      const category = scriptCategory(script);
-      if (category === "inert") {
-        continue;
+    // Opt-in: preload blocking classic external scripts concurrently before the
+    // first blocking script executes, saving ~1 RTT per serial external script.
+    // Skip preloading the very first blocking script when nothing precedes it,
+    // since the loop below appends its companion <script> immediately.
+    if (this.#preloadBlockingScripts) {
+      let seenPrecedingWork = false;
+      for (const script of this.#scripts) {
+        const category = scriptCategory(script);
+        if (category === "inert") {
+          continue;
+        }
+        const external = hasExternalSource(script);
+        const asynchronous =
+          script.hasAttribute("async") && (external || category === "module");
+        const deferred =
+          category === "module" || (external && script.hasAttribute("defer"));
+        if (!asynchronous && !deferred) {
+          if (category === "classic" && external && seenPrecedingWork) {
+            blockingPreloads.push(...this.#preloadDeferred(script));
+          }
+          seenPrecedingWork = true;
+        }
       }
+    }
 
-      const external = hasExternalSource(script);
-      const asynchronous =
-        script.hasAttribute("async") && (external || category === "module");
-      if (asynchronous) {
-        asyncScripts.push(this.#execute(script, "async"));
-        continue;
+    try {
+      for (const script of this.#scripts) {
+        const category = scriptCategory(script);
+        if (category === "inert") {
+          continue;
+        }
+
+        const external = hasExternalSource(script);
+        const asynchronous =
+          script.hasAttribute("async") && (external || category === "module");
+        if (asynchronous) {
+          asyncScripts.push(this.#execute(script, "async"));
+          continue;
+        }
+
+        const deferred =
+          category === "module" || (external && script.hasAttribute("defer"));
+        if (deferred) {
+          deferredScripts.push(script);
+          continue;
+        }
+
+        await this.#execute(script, "ordered");
       }
-
-      const deferred =
-        category === "module" || (external && script.hasAttribute("defer"));
-      if (deferred) {
-        deferredScripts.push(script);
-        continue;
+    } finally {
+      for (const preload of blockingPreloads) {
+        preload.remove();
       }
-
-      await this.#execute(script, "ordered");
     }
 
     if (this.#signal.aborted) {

@@ -16,6 +16,7 @@ import { isHTMLDocumentResponse, readHTMLDocument } from "./html-response.js";
 import { AdoptionState } from "./realm/adoption-state.js";
 import { VFrameStatus } from "./types.js";
 import type {
+  VFrameAdoptMode,
   VFrameCredentials,
   VFrameErrorEventDetail,
   VFrameEventMap,
@@ -25,6 +26,7 @@ import type {
   VFrameNavigateOptions,
   VFrameNavigation,
   VFrameNavigationKind,
+  VFramePreloadScripts,
   VFrameTrustedTypesPolicy,
   VFrameTrustedTypesPolicyDefinition,
 } from "./types.js";
@@ -81,12 +83,73 @@ interface FrameLoad {
   source: string;
   request?: DocumentNavigationRequest;
   adoptedMarkup: AdoptedMarkup | null;
+  guardPreviewNavigation?: boolean;
   historySession: VirtualHistorySession | null;
   stageMarkup: boolean;
   preserveScroll: boolean;
   boundNavigation: boolean;
   /** The navigation that asked for this document, or null when the host set `src`. */
   navigationKind: VFrameNavigationKind | null;
+}
+
+type DeferredAdoptMode = "visible" | "idle" | "interaction";
+
+const PREVIEW_INTERACTION_EVENTS = [
+  "pointerdown",
+  "keydown",
+  "focusin",
+  "input",
+  "change",
+  "click",
+  "submit",
+] as const;
+
+function effectiveAdoptMode(value: string | null): VFrameAdoptMode | null {
+  if (value === null) {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "visible" || normalized === "idle" || normalized === "interaction") {
+    return normalized;
+  }
+  return "eager";
+}
+
+function parsePreloadScripts(value: string | null): boolean | string[] {
+  if (value === null) {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.toLowerCase() === "auto") {
+    return true;
+  }
+  const urls = trimmed.split(/\s+/).filter(Boolean);
+  return urls.length > 0 ? urls : true;
+}
+
+function effectiveContentVisibility(value: string | null): string {
+  return value?.trim() ?? "";
+}
+
+function isPreviewLinkClick(event: Event, preview: Element): boolean {
+  for (const node of event.composedPath()) {
+    if (node === preview) {
+      return false;
+    }
+    if (
+      typeof node === "object" &&
+      node !== null &&
+      "nodeType" in node &&
+      (node as Node).nodeType === 1
+    ) {
+      const element = node as Element;
+      const tag = element.localName;
+      if ((tag === "a" || tag === "area") && element.hasAttribute("href")) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function traversalSupersededError(): DOMException {
@@ -123,10 +186,15 @@ function allowlistedTrustedTypesPolicy(name: string): VFrameTrustedTypesPolicyDe
 export class VFrameElement extends HTMLElementBase {
   static readonly observedAttributes = [
     "src",
+    "adopt",
     "credentials",
     "navigation",
     "nonce",
     "trusted-types-policy",
+    "lazy-attributes",
+    "lazy-events",
+    "preload-scripts",
+    "content-visibility",
   ];
 
   /**
@@ -156,6 +224,7 @@ export class VFrameElement extends HTMLElementBase {
   #connected = false;
   #adoptionAvailable = false;
   #adoptionConsumed = false;
+  #deferredAdoption: { source: string; cleanup: () => void } | null = null;
   #nonce = "";
   #trustedTypesPolicy: VFrameTrustedTypesPolicyDefinition | null = null;
   #lastFatalError: unknown = null;
@@ -190,6 +259,86 @@ export class VFrameElement extends HTMLElementBase {
 
   set adopt(value: boolean) {
     this.toggleAttribute("adopt", Boolean(value));
+  }
+
+  get adoptMode(): VFrameAdoptMode | null {
+    return effectiveAdoptMode(this.getAttribute("adopt"));
+  }
+
+  set adoptMode(value: VFrameAdoptMode | null) {
+    if (value === null) {
+      this.removeAttribute("adopt");
+      return;
+    }
+    if (
+      value !== "eager" &&
+      value !== "visible" &&
+      value !== "idle" &&
+      value !== "interaction"
+    ) {
+      throw new TypeError(
+        `v-frame adoptMode must be "eager", "visible", "idle", "interaction", or null, received ${JSON.stringify(value)}`,
+      );
+    }
+    this.setAttribute("adopt", value);
+  }
+
+  get lazyAttributes(): boolean {
+    return this.hasAttribute("lazy-attributes");
+  }
+
+  set lazyAttributes(value: boolean) {
+    this.toggleAttribute("lazy-attributes", Boolean(value));
+  }
+
+  get lazyEvents(): boolean {
+    return this.hasAttribute("lazy-events");
+  }
+
+  set lazyEvents(value: boolean) {
+    this.toggleAttribute("lazy-events", Boolean(value));
+  }
+
+  get preloadScripts(): boolean | string[] {
+    return parsePreloadScripts(this.getAttribute("preload-scripts"));
+  }
+
+  set preloadScripts(value: VFramePreloadScripts) {
+    if (typeof value === "boolean") {
+      if (value) {
+        this.setAttribute("preload-scripts", "");
+      } else {
+        this.removeAttribute("preload-scripts");
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      const urls = value
+        .map((entry) => String(entry).trim().replace(/\s+/g, "%20"))
+        .filter((entry) => entry !== "");
+      if (urls.length === 0) {
+        this.removeAttribute("preload-scripts");
+      } else {
+        this.setAttribute("preload-scripts", urls.join(" "));
+      }
+      return;
+    }
+    throw new TypeError(
+      `v-frame preloadScripts must be a boolean or an array of script URLs, received ${String(value)}`,
+    );
+  }
+
+  get contentVisibility(): string {
+    return effectiveContentVisibility(this.getAttribute("content-visibility"));
+  }
+
+  set contentVisibility(value: string) {
+    const normalized = String(value ?? "").trim();
+    if (normalized === "") {
+      this.removeAttribute("content-visibility");
+    } else {
+      this.setAttribute("content-visibility", normalized);
+    }
   }
 
   get credentials(): VFrameCredentials {
@@ -319,6 +468,37 @@ export class VFrameElement extends HTMLElementBase {
     });
   }
 
+  /**
+   * Activates a deferred SSR adoption (`adopt="visible"`, `"idle"`, or
+   * `"interaction"`) immediately and resolves once the guest is ready.
+   */
+  activate(): Promise<void> {
+    if (!this.#connected) {
+      return Promise.reject(
+        new DOMException(
+          "v-frame cannot activate while disconnected",
+          "InvalidStateError",
+        ),
+      );
+    }
+    if (this.#deferredAdoption !== null) {
+      this.#activateDeferred();
+      return this.whenReady();
+    }
+    if (this.#status === VFrameStatus.Ready) {
+      return Promise.resolve();
+    }
+    if (this.#loadController !== null || this.#status === VFrameStatus.Error) {
+      return this.whenReady();
+    }
+    if (this.#loadSource() === null) {
+      return Promise.reject(
+        new DOMException("v-frame cannot activate without a src", "InvalidStateError"),
+      );
+    }
+    return this.whenReady();
+  }
+
   #settleReadyWaiters(error?: unknown): void {
     const waiters = this.#readyWaiters.splice(0);
     for (const waiter of waiters) {
@@ -413,13 +593,28 @@ export class VFrameElement extends HTMLElementBase {
 
   connectedCallback(): void {
     this.#upgradeProperty("adopt");
+    this.#upgradeProperty("adoptMode");
     this.#upgradeProperty("credentials");
     this.#upgradeProperty("navigation");
     this.#upgradeProperty("src");
     this.#upgradeProperty("trustedTypesPolicy");
+    this.#upgradeProperty("lazyAttributes");
+    this.#upgradeProperty("lazyEvents");
+    this.#upgradeProperty("preloadScripts");
+    this.#upgradeProperty("contentVisibility");
     this.#connected = true;
     const source = this.#loadSource();
     if (source === null) {
+      return;
+    }
+    const mode = this.adoptMode;
+    if (
+      (mode === "visible" || mode === "idle" || mode === "interaction") &&
+      this.#adoptionAvailable &&
+      !this.#adoptionConsumed &&
+      this.#previewRootElement() !== null
+    ) {
+      this.#scheduleDeferredAdoption(source, mode);
       return;
     }
     const adoptedMarkup = this.#consumeAdoptedMarkup();
@@ -439,7 +634,17 @@ export class VFrameElement extends HTMLElementBase {
   // Own properties assigned before upgrade shadow the prototype accessors;
   // re-applying them through the setters restores reflection and validation.
   #upgradeProperty(
-    property: "src" | "adopt" | "credentials" | "navigation" | "trustedTypesPolicy",
+    property:
+      | "src"
+      | "adopt"
+      | "adoptMode"
+      | "credentials"
+      | "navigation"
+      | "trustedTypesPolicy"
+      | "lazyAttributes"
+      | "lazyEvents"
+      | "preloadScripts"
+      | "contentVisibility",
   ): void {
     if (!Object.prototype.hasOwnProperty.call(this, property)) {
       return;
@@ -475,6 +680,53 @@ export class VFrameElement extends HTMLElementBase {
     }
     if (oldValue === newValue || !this.#connected) {
       return;
+    }
+    if (name === "content-visibility") {
+      if (effectiveContentVisibility(oldValue) === effectiveContentVisibility(newValue)) {
+        return;
+      }
+      const selector = effectiveContentVisibility(newValue);
+      this.#realm?.setContentVisibility(selector);
+      this.#loadingRealm?.setContentVisibility(selector);
+      return;
+    }
+    if (name === "preload-scripts") {
+      return;
+    }
+    if (name === "adopt") {
+      if (this.#deferredAdoption === null) {
+        return;
+      }
+      const nextMode = effectiveAdoptMode(newValue);
+      if (nextMode === "eager") {
+        this.#activateDeferred();
+      } else if (nextMode === null) {
+        const source = this.#deferredAdoption.source;
+        this.#cancelDeferredAdoption();
+        this.#adoptionConsumed = true;
+        this.#observeLoad(
+          this.#startLoad({
+            source,
+            adoptedMarkup: null,
+            historySession: null,
+            stageMarkup: false,
+            preserveScroll: false,
+            boundNavigation: this.navigation === "host",
+            navigationKind: null,
+          }),
+        );
+      } else if (effectiveAdoptMode(oldValue) !== nextMode) {
+        this.#scheduleDeferredAdoption(this.#deferredAdoption.source, nextMode);
+      }
+      return;
+    }
+    if (name === "lazy-attributes" || name === "lazy-events") {
+      if (
+        (oldValue !== null) === (newValue !== null) ||
+        this.#deferredAdoption !== null
+      ) {
+        return;
+      }
     }
     // The attribute falls back to a default for values it does not recognise, so two
     // different strings can mean the same configuration. Only a real change reloads.
@@ -561,6 +813,7 @@ export class VFrameElement extends HTMLElementBase {
   }
 
   #resetToIdle(): void {
+    this.#cancelDeferredAdoption();
     this.#generation += 1;
     this.#pendingGuestLoad = null;
     this.#lastFatalError = null;
@@ -669,6 +922,10 @@ export class VFrameElement extends HTMLElementBase {
   // Resolves true when this load committed its guest, false when it was superseded or
   // released first; it rejects when the load failed.
   #startLoad(load: FrameLoad): Promise<boolean> {
+    this.#cancelDeferredAdoption();
+    if (load.adoptedMarkup === null) {
+      this.#adoptionConsumed = true;
+    }
     // During reveal the realm still belongs to the load being aborted below.
     // It cannot be a rollback target until the handoff has finished.
     if (this.#loadController !== null && this.#loadController === this.#realmController) {
@@ -774,6 +1031,16 @@ export class VFrameElement extends HTMLElementBase {
           throw error;
         });
 
+    const cleanupHostPreloads = this.#installHostScriptPreloads(requestedURL);
+    const cleanupPreviewGuard =
+      load.guardPreviewNavigation === true && load.adoptedMarkup !== null
+        ? this.#installPreviewNavigationGuard(load.adoptedMarkup.previewNodes)
+        : null;
+    controller.signal.addEventListener("abort", cleanupHostPreloads, { once: true });
+    if (cleanupPreviewGuard !== null) {
+      controller.signal.addEventListener("abort", cleanupPreviewGuard, { once: true });
+    }
+
     try {
       let source: string;
       let connection: ConnectedRealmIframe;
@@ -870,6 +1137,10 @@ export class VFrameElement extends HTMLElementBase {
         preserveScroll: load.preserveScroll,
         restoreScroll: load.navigationKind === "traverse",
         credentials: this.credentials,
+        lazyAttributes: this.lazyAttributes,
+        lazyEvents: this.lazyEvents,
+        preloadBlockingScripts: this.preloadScripts !== false,
+        contentVisibility: this.contentVisibility,
         signal: controller.signal,
         getNonce: () => this.nonce,
         fetchStylesheet: (url, options) =>
@@ -953,6 +1224,13 @@ export class VFrameElement extends HTMLElementBase {
       };
       this.#finishFailedLoad(generation, controller, previous, failure);
       throw error;
+    } finally {
+      controller.signal.removeEventListener("abort", cleanupHostPreloads);
+      cleanupHostPreloads();
+      if (cleanupPreviewGuard !== null) {
+        controller.signal.removeEventListener("abort", cleanupPreviewGuard);
+        cleanupPreviewGuard();
+      }
     }
   }
 
@@ -1200,12 +1478,7 @@ export class VFrameElement extends HTMLElementBase {
     this.#internals.states.add(status);
   }
 
-  #consumeAdoptedMarkup(): AdoptedMarkup | null {
-    if (!this.adopt || !this.#adoptionAvailable || this.#adoptionConsumed) {
-      return null;
-    }
-    this.#adoptionConsumed = true;
-
+  #previewRootElement(): Element | null {
     const html = Array.from(this.#root.children).find(
       (element) => element.localName === "v-html",
     );
@@ -1214,6 +1487,209 @@ export class VFrameElement extends HTMLElementBase {
       html.querySelector(":scope > v-head") === null ||
       html.querySelector(":scope > v-body") === null
     ) {
+      return null;
+    }
+    return html;
+  }
+
+  #cancelDeferredAdoption(): void {
+    const deferred = this.#deferredAdoption;
+    if (deferred === null) {
+      return;
+    }
+    this.#deferredAdoption = null;
+    deferred.cleanup();
+  }
+
+  #activateDeferred(): void {
+    const deferred = this.#deferredAdoption;
+    if (deferred === null) {
+      return;
+    }
+    this.#deferredAdoption = null;
+    deferred.cleanup();
+    const adoptedMarkup = this.#consumeAdoptedMarkup();
+    this.#observeLoad(
+      this.#startLoad({
+        source: deferred.source,
+        adoptedMarkup,
+        guardPreviewNavigation: adoptedMarkup !== null,
+        historySession: null,
+        stageMarkup: adoptedMarkup !== null,
+        preserveScroll: false,
+        boundNavigation: this.navigation === "host",
+        navigationKind: null,
+      }),
+    );
+  }
+
+  #scheduleDeferredAdoption(source: string, mode: DeferredAdoptMode): void {
+    this.#cancelDeferredAdoption();
+    const preview = this.#previewRootElement();
+    if (preview === null) {
+      return;
+    }
+    const cleanups: Array<() => void> = [];
+    const entry = {
+      source,
+      cleanup: () => {
+        for (const dispose of cleanups.splice(0)) {
+          dispose();
+        }
+      },
+    };
+    this.#deferredAdoption = entry;
+    const trigger = () => {
+      if (this.#deferredAdoption === entry) {
+        this.#activateDeferred();
+      }
+    };
+    const interactionAbort = new AbortController();
+    cleanups.push(() => interactionAbort.abort());
+    const onInteraction = (event: Event) => {
+      if (this.#deferredAdoption !== entry) {
+        return;
+      }
+      if (
+        (event.type === "click" && isPreviewLinkClick(event, preview)) ||
+        event.type === "submit"
+      ) {
+        event.preventDefault();
+      }
+      trigger();
+    };
+    for (const type of PREVIEW_INTERACTION_EVENTS) {
+      this.#root.addEventListener(type, onInteraction, {
+        capture: true,
+        signal: interactionAbort.signal,
+      });
+    }
+    if (mode === "visible") {
+      const Observer =
+        this.ownerDocument.defaultView?.IntersectionObserver ??
+        globalThis.IntersectionObserver;
+      if (typeof Observer === "function") {
+        const observer = new Observer((entries) => {
+          if (
+            entries.some(
+              (record) => record.isIntersecting || record.intersectionRatio > 0,
+            )
+          ) {
+            trigger();
+          }
+        });
+        observer.observe(this);
+        cleanups.push(() => observer.disconnect());
+      } else {
+        queueMicrotask(trigger);
+      }
+    } else if (mode === "idle") {
+      const view = this.ownerDocument.defaultView as
+        | (Window & {
+            requestIdleCallback?: (callback: () => void) => number;
+            cancelIdleCallback?: (handle: number) => void;
+          })
+        | null;
+      if (typeof view?.requestIdleCallback === "function") {
+        const handle = view.requestIdleCallback(() => trigger());
+        cleanups.push(() => view.cancelIdleCallback?.(handle));
+      } else {
+        const timer = (view?.setTimeout ?? setTimeout)(() => trigger(), 1);
+        cleanups.push(() => (view?.clearTimeout ?? clearTimeout)(timer));
+      }
+    }
+  }
+
+  #installPreviewNavigationGuard(previewNodes: readonly Node[]): () => void {
+    const preview = previewNodes.find(
+      (node): node is Element =>
+        node.nodeType === 1 && (node as Element).localName === "v-html",
+    );
+    if (preview === undefined) {
+      return () => {};
+    }
+    const guardAbort = new AbortController();
+    const onPreviewNav = (event: Event) => {
+      if (!this.#root.contains(preview) || !event.composedPath().includes(preview)) {
+        return;
+      }
+      if (
+        event.type === "submit" ||
+        (event.type === "click" && isPreviewLinkClick(event, preview))
+      ) {
+        event.preventDefault();
+      }
+    };
+    this.#root.addEventListener("click", onPreviewNav, {
+      capture: true,
+      signal: guardAbort.signal,
+    });
+    this.#root.addEventListener("submit", onPreviewNav, {
+      capture: true,
+      signal: guardAbort.signal,
+    });
+    return () => guardAbort.abort();
+  }
+
+  #installHostScriptPreloads(requestedURL: URL): () => void {
+    const preload = this.preloadScripts;
+    if (!Array.isArray(preload) || preload.length === 0) {
+      return () => {};
+    }
+    const head = this.ownerDocument.head;
+    if (head === null) {
+      return () => {};
+    }
+    const hostOrigin = this.ownerDocument.location.origin;
+    const credentials = this.credentials;
+    const nonce = this.nonce;
+    const links: HTMLLinkElement[] = [];
+    for (const specifier of preload) {
+      const parsed = URL.parse(specifier, requestedURL.href);
+      if (
+        parsed === null ||
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      ) {
+        continue;
+      }
+      const link = this.ownerDocument.createElement("link");
+      link.rel = "preload";
+      link.as = "script";
+      const crossOrigin =
+        credentials === "include"
+          ? "use-credentials"
+          : credentials === "omit" || parsed.origin !== hostOrigin
+            ? "anonymous"
+            : null;
+      if (crossOrigin !== null) {
+        link.crossOrigin = crossOrigin;
+      }
+      if (nonce !== "") {
+        link.nonce = nonce;
+      }
+      link.href = parsed.href;
+      try {
+        head.append(link);
+        links.push(link);
+      } catch {
+        // Ignore host CSP or DOM rejection on optional preload hints.
+      }
+    }
+    return () => {
+      for (const link of links.splice(0)) {
+        link.remove();
+      }
+    };
+  }
+
+  #consumeAdoptedMarkup(): AdoptedMarkup | null {
+    if (!this.adopt || !this.#adoptionAvailable || this.#adoptionConsumed) {
+      return null;
+    }
+    this.#adoptionConsumed = true;
+
+    const html = this.#previewRootElement();
+    if (html === null) {
       return null;
     }
 

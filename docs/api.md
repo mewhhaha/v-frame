@@ -120,14 +120,18 @@ guest with a fresh network load, but only when the _effective_ value changes:
 and does not reload. Changing `nonce` applies to the next load instead of
 forcing one.
 
-| Attribute              | Property             | Default         | Purpose                                                                                                                     |
-| ---------------------- | -------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `src`                  | `src`                | `""`            | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle.                            |
-| `adopt`                | `adopt`              | `false`         | Activates the initial Declarative Shadow DOM instead of fetching `src`. Not observed — read once, see below.                |
-| `navigation`           | `navigation`         | `"guest"`       | `"host"` when the shell owns the guest's route.                                                                             |
-| `credentials`          | `credentials`        | `"same-origin"` | `"omit"`, `"same-origin"`, or `"include"`. See below.                                                                       |
-| `nonce`                | `nonce`              | `""`            | CSP nonce applied to executed scripts and generated styles.                                                                 |
-| `trusted-types-policy` | `trustedTypesPolicy` | none            | Name of a Trusted Types policy the host CSP allows (no sanitization), or a full policy definition set through the property. |
+| Attribute              | Property             | Default          | Purpose                                                                                                                                                 |
+| ---------------------- | -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src`                  | `src`                | `""`             | Same-origin `http:`/`https:` guest document URL. An empty or missing value keeps the frame idle.                                                        |
+| `adopt`                | `adopt`, `adoptMode` | `false` / `null` | Activates initial Declarative Shadow DOM instead of fetching `src`. Supports eager (`""`/`"eager"`) or deferred `"visible"`, `"idle"`, `"interaction"`. |
+| `navigation`           | `navigation`         | `"guest"`        | `"host"` when the shell owns the guest's route.                                                                                                         |
+| `credentials`          | `credentials`        | `"same-origin"`  | `"omit"`, `"same-origin"`, or `"include"`. See below.                                                                                                   |
+| `nonce`                | `nonce`              | `""`             | CSP nonce applied to executed scripts, preloads, and generated styles.                                                                                  |
+| `trusted-types-policy` | `trustedTypesPolicy` | none             | Name of a Trusted Types policy the host CSP allows (no sanitization), or a full policy definition set through the property.                             |
+| `lazy-attributes`      | `lazyAttributes`     | `false`          | Opt-in: skips eager `Attr` wrapper materialization and marks attribute nodes on demand when accessed through guest APIs.                                |
+| `lazy-events`          | `lazyEvents`         | `false`          | Opt-in: eagerly patches only `Event` plus 24 core DOM/UI event interfaces and forwards exotic native Event subclasses lazily on first delivery.         |
+| `preload-scripts`      | `preloadScripts`     | `false`          | Opt-in: preloads blocking classic scripts concurrently (boolean `""`/`"auto"`), or space-separated URLs / `string[]` to emit early host preloads.       |
+| `content-visibility`   | `contentVisibility`  | `""`             | Opt-in: injects a zero-specificity `content-visibility: auto` rule for `"auto"` or a custom CSS selector; updates live without reloading.               |
 
 Attributes and properties treat invalid values differently, on purpose. An
 attribute follows the HTML convention that an unrecognised value falls back to
@@ -141,12 +145,26 @@ Network loads require a complete HTTP 200 response with a `text/html` body. The 
 
 ### When `adopt` is read
 
-`adopt` is a reflecting property, but no attribute observer watches it. It is
-read once, when the element connects, and only the first connection of an
-element that arrived with a Declarative Shadow DOM tree can adopt it. After that
-the adoption has been spent: setting or removing `adopt` later changes the
-attribute and nothing else, and reconnecting the element fetches `src` like any
-other frame. See [SSR](./ssr.md).
+`adopt` is a boolean reflecting property (`hasAttribute("adopt")`), and
+`adoptMode` reflects the parsed mode (`"eager"`, `"visible"`, `"idle"`,
+`"interaction"`, or `null`). Only the first connection of an element that
+arrived with a Declarative Shadow DOM tree can adopt it.
+
+- **`adopt` / `adopt="eager"`:** Activates immediately on connect.
+- **`adopt="visible"`:** Keeps the SSR preview painted at `status === "idle"`
+  with zero iframe or JS boot until the element intersects the viewport (or is
+  interacted with, or `activate()` is called).
+- **`adopt="idle"`:** Defers activation until `requestIdleCallback` (falling
+  back to `setTimeout`), interaction, or `activate()`.
+- **`adopt="interaction"`:** Stays idle until the user interacts with the
+  preview (preserving typed input drafts and preventing accidental host link or
+  form navigation while activating) or the host calls `activate()`.
+
+While deferred, updating `adoptMode` switches the trigger (or activates
+immediately when set to `"eager"`). Once adoption begins, the preview is spent
+and changing `adopt` later does not reload the guest. If no valid Declarative
+Shadow DOM preview is present, deferred modes fall back immediately to a normal
+network load. See [SSR](./ssr.md).
 
 ### Moving the element
 
@@ -223,15 +241,16 @@ v-frame:state(error) {
 
 ## Element methods
 
-| Method                             | Effect                                                                             |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `whenReady()`                      | Resolves once the frame is `"ready"`, or rejects on fatal error/disconnect.        |
-| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.                             |
-| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved.                          |
-| `reload()`                         | Reloads the current guest document over the network.                               |
-| `VFrameElement.prewarm(document?)` | Opt-in: prewarms one hidden execution iframe via `moveBefore`; returns a disposer. |
+| Method                             | Effect                                                                                                           |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `whenReady()`                      | Resolves once the frame is `"ready"`, or rejects on fatal error/disconnect.                                      |
+| `activate()`                       | Immediately activates a deferred SSR preview (`adopt="visible"\|"idle"\|"interaction"`) and resolves when ready. |
+| `navigate(url, { replace })`       | Same-document navigation to another same-origin route.                                                           |
+| `back()`, `forward()`, `go(delta)` | Traverses the guest session, resolving once it has moved.                                                        |
+| `reload()`                         | Reloads the current guest document over the network.                                                             |
+| `VFrameElement.prewarm(document?)` | Opt-in: prewarms one hidden execution iframe via `moveBefore`; returns a disposer.                               |
 
-The six instance methods return a `Promise<void>`. `whenReady()` resolves immediately when
+The seven instance methods return a `Promise<void>`. `whenReady()` resolves immediately when
 `status === "ready"`, rejects immediately when `status === "error"`, and can be
 called before or after connecting the element to await initial readiness. The
 navigation methods are described in [Navigation](./navigation.md), including

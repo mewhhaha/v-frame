@@ -13,6 +13,10 @@ export type VFrameCredentials = "omit" | "same-origin" | "include";
 
 export type VFrameNavigation = "guest" | "host";
 
+export type VFrameAdoptMode = "eager" | "visible" | "idle" | "interaction";
+
+export type VFramePreloadScripts = boolean | readonly string[];
+
 export interface VFrameTrustedTypesPolicyDefinition {
   readonly name: string;
   createHTML(source: string): string;
