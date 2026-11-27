@@ -7,7 +7,7 @@
 // cloning and markup parsing all funnel back through it.
 
 import { canHaveURLAttributes, HTML_NAMESPACE } from "../asset-urls.js";
-import { EnumerableWeakMap } from "../enumerable-weak.js";
+import { EnumerableWeakMap, EnumerableWeakSet } from "../enumerable-weak.js";
 import {
   MARKUP_FLAG_INLINE_EVENTS,
   MARKUP_FLAG_LINKS,
@@ -22,11 +22,20 @@ import type { StyleFacade } from "./style.js";
 
 export interface NodeMarking {
   markVirtualNode(node: Node, scan?: SubtreeScan): boolean;
+  markVirtualSubtree(node: Node, scan?: SubtreeScan): void;
   markVirtualAttribute(attribute: Attr): void;
   /** Adopts a node the realm just created into the shell's document and marks it. */
   adoptAndMark<T extends Node>(node: T): T;
   /** adoptAndMark for an element, which also records scripts as guest-created. */
-  adoptCreatedElement<T extends Element>(element: T): T;
+  adoptCreatedElement<T extends Element>(element: T, isPlainBuiltinHTML?: boolean): T;
+  /** Marks a detached multi-node element as eligible for a clean-subtree watch on re-attach. */
+  noteDetachedCandidate(element: Element): void;
+  /** Arms a clean-subtree observer after a full walk found zero special elements. */
+  armDetachedWatchIfCandidate(element: Element): void;
+  /** Checks a clean-subtree watch; returns true only when zero mutations occurred since the last walk. */
+  consumeDetachedWatch(node: Node, keepAlive: boolean): boolean;
+  /** Marks that a template or guest shadow root exists, invalidating detached watches. */
+  noteOpaqueSubtree(): void;
   virtualDoctype: DocumentType;
   /** Marks the shell and gives it the parentage the guest's document implies. */
   markShell(): void;
@@ -55,7 +64,10 @@ export function installNodeMarking(
     nativeSetAttribute,
     nativeRemoveAttribute,
     nativeAttributes,
+    nativeHasAttributes,
+    nativeQuerySelector,
     nativeQuerySelectorAll,
+    NativeMutationObserver,
     isHTMLTemplateElement,
     isHTMLStyleElement,
     isHTMLLinkElement,
@@ -71,10 +83,12 @@ export function installNodeMarking(
     patch,
   } = context;
   const nativeAttributesGetter = nativeAttributes?.get;
-  const nativeHasAttributes = window.Element.prototype.hasAttributes;
   const onShadowRoot = options.onShadowRoot;
   const initialFlags = options.initialFlags ?? 0xff;
   const hasInitialInlineEvents = (initialFlags & MARKUP_FLAG_INLINE_EVENTS) !== 0;
+  let realmMayHaveTemplates = (initialFlags & MARKUP_FLAG_TEMPLATES) !== 0;
+  let realmHasShadowRoots = false;
+  let opaqueGeneration = 0;
   const { rememberAuthoredStyleAttribute, rememberAuthoredLinkRel } = style;
   const { eventAttributeName, compileEventAttribute } = events;
   const {
@@ -107,6 +121,27 @@ export function installNodeMarking(
     Node,
     Map<PropertyKey, PropertyDescriptor | undefined>
   >();
+  // Compact record for foreign nodes (especially Gecko's host-realm Attr and
+  // Text wrappers) whose ownerDocument/baseURI/getRootNode had no prior own
+  // descriptors: avoids allocating a Map, Reflect.ownKeys, and per-node closures.
+  const compactForeignNodes = new EnumerableWeakSet<Node>();
+  const foreignNodeDescriptors: PropertyDescriptorMap = {
+    ownerDocument: {
+      configurable: true,
+      get: () => document,
+    },
+    baseURI: {
+      configurable: true,
+      get: options.getBaseURL,
+    },
+    getRootNode: {
+      configurable: true,
+      writable: true,
+      value(this: Node, init?: GetRootNodeOptions) {
+        return virtualGetRootNode(this, init);
+      },
+    },
+  };
 
   const protectScript = (script: HTMLScriptElement): void => {
     if (protectedScriptAttributes.has(script)) {
@@ -131,6 +166,12 @@ export function installNodeMarking(
     let previousDescriptors = nodeFacadeDescriptors.get(node);
     if (previousDescriptors === undefined) {
       previousDescriptors = new Map();
+      if (compactForeignNodes.has(node)) {
+        compactForeignNodes.delete(node);
+        previousDescriptors.set("ownerDocument", undefined);
+        previousDescriptors.set("baseURI", undefined);
+        previousDescriptors.set("getRootNode", undefined);
+      }
       nodeFacadeDescriptors.set(node, previousDescriptors);
     }
     for (const property of Reflect.ownKeys(descriptors)) {
@@ -147,27 +188,21 @@ export function installNodeMarking(
   // ownerDocument, baseURI and getRootNode are answered by accessors on the
   // realm's Node.prototype, gated on the virtual-node set. A node that does not
   // inherit from those prototypes never reaches them and still needs its own —
-  // Gecko binds a ShadowRoot to its node document's global, so the shadow roots
-  // a guest attaches after adoption come from the host realm rather than this one.
+  // Gecko binds a ShadowRoot, Attr, or dynamic Text node to its node document's
+  // global, so those come from the host realm rather than this one.
   const installForeignNodeFacade = (node: Node): void => {
     try {
-      defineNodeFacade(node, {
-        ownerDocument: {
-          configurable: true,
-          get: () => document,
-        },
-        baseURI: {
-          configurable: true,
-          get: options.getBaseURL,
-        },
-        getRootNode: {
-          configurable: true,
-          writable: true,
-          value(init?: GetRootNodeOptions) {
-            return virtualGetRootNode(node, init);
-          },
-        },
-      });
+      if (
+        !nodeFacadeDescriptors.has(node) &&
+        !Object.hasOwn(node, "ownerDocument") &&
+        !Object.hasOwn(node, "baseURI") &&
+        !Object.hasOwn(node, "getRootNode")
+      ) {
+        compactForeignNodes.add(node);
+        Object.defineProperties(node, foreignNodeDescriptors);
+        return;
+      }
+      defineNodeFacade(node, foreignNodeDescriptors);
     } catch {
       // DOM internals still use the adopted host document; the facade remains usable without expandos.
     }
@@ -229,8 +264,12 @@ export function installNodeMarking(
       }
       if (onShadowRoot !== undefined) {
         if (nodeType === 11 && "host" in node) {
+          realmHasShadowRoots = true;
+          opaqueGeneration += 1;
           onShadowRoot(node as ShadowRoot);
         } else if (nodeType === 1 && (node as Element).shadowRoot) {
+          realmHasShadowRoots = true;
+          opaqueGeneration += 1;
           onShadowRoot((node as Element).shadowRoot!);
         }
       }
@@ -247,35 +286,46 @@ export function installNodeMarking(
             ? (nativeAttributesGetter.call(element) as NamedNodeMap)
             : element.attributes;
         attrCount = attrs.length;
-        let authoredURLs = hasURLCapability
-          ? options.authoredURLAttributes.get(element)
-          : undefined;
-        for (let index = 0; index < attrCount; index += 1) {
-          const attribute = attrs[index]!;
-          markVirtualAttribute(attribute);
-          const attrName = attribute.name;
-          if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
-            scan.hasTarget = true;
+        if (!newlyVirtual && !hasURLCapability && scan === undefined) {
+          for (let index = 0; index < attrCount; index += 1) {
+            markVirtualAttribute(attrs[index]!);
           }
-          if (hasURLCapability) {
-            const urlKey = urlAttributeKey(
-              element,
-              attribute.localName,
-              attribute.namespaceURI,
-            );
-            if (urlKey !== null) {
-              if (authoredURLs === undefined) {
-                authoredURLs = new Map();
-                options.authoredURLAttributes.set(element, authoredURLs);
-              }
-              if (!authoredURLs.has(urlKey)) {
-                authoredURLs.set(urlKey, attribute.value);
-              }
-              rememberPhysicalURLAttribute(element, urlKey, attribute.value);
+        } else {
+          let authoredURLs = hasURLCapability
+            ? options.authoredURLAttributes.get(element)
+            : undefined;
+          for (let index = 0; index < attrCount; index += 1) {
+            const attribute = attrs[index]!;
+            markVirtualAttribute(attribute);
+            const attrName = attribute.name;
+            if (scan !== undefined && attrName === FRAGMENT_TARGET_ATTRIBUTE) {
+              scan.hasTarget = true;
             }
-          }
-          if (newlyVirtual) {
-            eventAttrs = collectInlineEventAttr(element, attribute, attrName, eventAttrs);
+            if (hasURLCapability) {
+              const urlKey = urlAttributeKey(
+                element,
+                attribute.localName,
+                attribute.namespaceURI,
+              );
+              if (urlKey !== null) {
+                if (authoredURLs === undefined) {
+                  authoredURLs = new Map();
+                  options.authoredURLAttributes.set(element, authoredURLs);
+                }
+                if (!authoredURLs.has(urlKey)) {
+                  authoredURLs.set(urlKey, attribute.value);
+                }
+                rememberPhysicalURLAttribute(element, urlKey, attribute.value);
+              }
+            }
+            if (newlyVirtual) {
+              eventAttrs = collectInlineEventAttr(
+                element,
+                attribute,
+                attrName,
+                eventAttrs,
+              );
+            }
           }
         }
       }
@@ -297,7 +347,7 @@ export function installNodeMarking(
           markSVGURLProperty(element);
         }
       }
-      if (hasURLCapability) {
+      if (hasURLCapability && options.authoredURLAttributes.has(element)) {
         rebaseElementURLs(element);
       }
       if (scan !== undefined) {
@@ -314,11 +364,21 @@ export function installNodeMarking(
 
       for (let child = element.firstChild; child !== null;) {
         const next = child.nextSibling;
-        markVirtualSubtree(child, scan);
+        const childType = child.nodeType;
+        if (childType === 1 || childType === 11) {
+          markVirtualSubtree(child, scan);
+        } else if (!virtualNodes.has(child)) {
+          virtualNodes.add(child);
+          if (!nodeIdentityIsPrototypeWide || !(child instanceof window.Node)) {
+            installForeignNodeFacade(child);
+          }
+        }
         child = next;
       }
 
       if (isHTMLTemplateElement(element)) {
+        realmMayHaveTemplates = true;
+        opaqueGeneration += 1;
         markVirtualSubtree(element.content);
       }
       return;
@@ -327,7 +387,15 @@ export function installNodeMarking(
     if (nodeType === 11) {
       for (let child = node.firstChild; child !== null;) {
         const next = child.nextSibling;
-        markVirtualSubtree(child, scan);
+        const childType = child.nodeType;
+        if (childType === 1 || childType === 11) {
+          markVirtualSubtree(child, scan);
+        } else if (!virtualNodes.has(child)) {
+          virtualNodes.add(child);
+          if (!nodeIdentityIsPrototypeWide || !(child instanceof window.Node)) {
+            installForeignNodeFacade(child);
+          }
+        }
         child = next;
       }
     }
@@ -406,16 +474,133 @@ export function installNodeMarking(
     return node;
   };
 
-  const adoptCreatedElement = <T extends Element>(element: T): T => {
+  interface DetachedWatch {
+    observer: MutationObserver;
+    nonce: string;
+    baseURL: string;
+    opaqueGen: number;
+    dirty: boolean;
+  }
+  const DETACHED_WATCH_CAP = 16;
+  const detachedCandidates = new WeakSet<Element>();
+  const detachedWatches = new WeakMap<Element, DetachedWatch>();
+  const activeDetachedObservers = new Set<MutationObserver>();
+  const detachedWatchFinalizer = new FinalizationRegistry<MutationObserver>((obs) => {
+    obs.disconnect();
+    activeDetachedObservers.delete(obs);
+  });
+
+  const teardownDetachedWatch = (element: Element, watch: DetachedWatch): void => {
+    detachedWatches.delete(element);
+    watch.observer.disconnect();
+    activeDetachedObservers.delete(watch.observer);
+    detachedWatchFinalizer.unregister(element);
+  };
+
+  const noteDetachedCandidate = (element: Element): void => {
+    if (realmHasShadowRoots || detachedWatches.has(element)) {
+      return;
+    }
+    detachedCandidates.add(element);
+  };
+
+  // Armed only immediately after a full markVirtualSubtree() confirmed every
+  // node and attribute in `element` is marked and zero special elements exist.
+  // Watching all childList and attribute mutations continuously means any edit
+  // before or during a future detach invalidates the shortcut and falls back to
+  // the full walk, while clean re-attaches skip walking in O(1).
+  const armDetachedWatchIfCandidate = (element: Element): void => {
+    if (!detachedCandidates.delete(element)) {
+      return;
+    }
+    if (
+      realmHasShadowRoots ||
+      detachedWatches.has(element) ||
+      activeDetachedObservers.size >= DETACHED_WATCH_CAP
+    ) {
+      return;
+    }
+    if (
+      element.shadowRoot !== null ||
+      (realmMayHaveTemplates &&
+        (isHTMLTemplateElement(element) ||
+          nativeQuerySelector.call(element, "template") !== null))
+    ) {
+      return;
+    }
+    const watch: DetachedWatch = {
+      observer: null as unknown as MutationObserver,
+      nonce: options.getNonce(),
+      baseURL: options.getBaseURL(),
+      opaqueGen: opaqueGeneration,
+      dirty: false,
+    };
+    const observer = new NativeMutationObserver(() => {
+      // Any idle mutation disconnects immediately so long-lived elements never
+      // accumulate records or occupy a watch slot; re-attach takes the full walk.
+      watch.dirty = true;
+      observer.disconnect();
+      activeDetachedObservers.delete(observer);
+    });
+    watch.observer = observer;
+    observer.observe(element, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+    });
+    detachedWatches.set(element, watch);
+    activeDetachedObservers.add(observer);
+    detachedWatchFinalizer.register(element, observer, element);
+  };
+
+  const consumeDetachedWatch = (node: Node, keepAlive: boolean): boolean => {
+    if (node.nodeType !== 1) return false;
+    const element = node as Element;
+    const watch = detachedWatches.get(element);
+    if (watch === undefined) return false;
+    const records = watch.observer.takeRecords();
+    if (
+      watch.dirty ||
+      records.length > 0 ||
+      realmHasShadowRoots ||
+      watch.nonce !== options.getNonce() ||
+      watch.baseURL !== options.getBaseURL() ||
+      watch.opaqueGen !== opaqueGeneration ||
+      !virtualNodes.has(element)
+    ) {
+      teardownDetachedWatch(element, watch);
+      return false;
+    }
+    if (!keepAlive) {
+      teardownDetachedWatch(element, watch);
+    }
+    return true;
+  };
+
+  const adoptCreatedElement = <T extends Element>(
+    element: T,
+    isPlainBuiltinHTML = false,
+  ): T => {
     hostDocument.adoptNode(element);
-    const attrs =
-      nativeAttributesGetter !== undefined
-        ? (nativeAttributesGetter.call(element) as NamedNodeMap)
-        : element.attributes;
+    if (isPlainBuiltinHTML && nodeIdentityIsPrototypeWide && urlPropertiesPrototypeWide) {
+      virtualNodes.add(element);
+      const localName = element.localName;
+      if (localName === "script") {
+        protectScript(element as unknown as HTMLScriptElement);
+        createdScripts.add(element as unknown as HTMLScriptElement);
+      } else if (localName === "link") {
+        rememberAuthoredLinkRel(element as unknown as HTMLLinkElement);
+      } else if (localName === "template") {
+        realmMayHaveTemplates = true;
+        opaqueGeneration += 1;
+        markVirtualSubtree((element as unknown as HTMLTemplateElement).content);
+      }
+      return element;
+    }
     if (
       nodeIdentityIsPrototypeWide &&
       element.namespaceURI === HTML_NAMESPACE &&
-      attrs.length === 0 &&
+      !nativeHasAttributes.call(element) &&
       element.firstChild === null &&
       element.shadowRoot === null &&
       element instanceof window.Element
@@ -428,9 +613,11 @@ export function installNodeMarking(
       } else if (localName === "link") {
         rememberAuthoredLinkRel(element as unknown as HTMLLinkElement);
       } else if (localName === "template") {
+        realmMayHaveTemplates = true;
+        opaqueGeneration += 1;
         markVirtualSubtree((element as unknown as HTMLTemplateElement).content);
       }
-      if (canHaveURLAttributes(element)) {
+      if (!urlPropertiesPrototypeWide && canHaveURLAttributes(element)) {
         markURLProperties(element);
       }
       return element;
@@ -512,7 +699,11 @@ export function installNodeMarking(
         }
         if (onShadowRoot !== undefined) {
           for (const nested of query("v-frame")) {
-            if (nested.shadowRoot !== null) onShadowRoot(nested.shadowRoot);
+            if (nested.shadowRoot !== null) {
+              realmHasShadowRoots = true;
+              opaqueGeneration += 1;
+              onShadowRoot(nested.shadowRoot);
+            }
           }
         }
       }
@@ -520,7 +711,7 @@ export function installNodeMarking(
         rememberAuthoredStyleAttribute(element);
       }
       if (initialFlags & MARKUP_FLAG_LINKS) {
-        for (const link of query("link")) {
+        for (const link of options.initialLinks ?? query("link")) {
           if (isHTMLLinkElement(link)) rememberAuthoredLinkRel(link);
         }
       }
@@ -600,7 +791,17 @@ export function installNodeMarking(
   };
 
   const dispose = (): void => {
-    for (const [node, descriptors] of nodeFacadeDescriptors) {
+    for (const observer of activeDetachedObservers) {
+      observer.disconnect();
+    }
+    activeDetachedObservers.clear();
+    compactForeignNodes.drain((node) => {
+      const record = node as unknown as Record<PropertyKey, unknown>;
+      delete record.ownerDocument;
+      delete record.baseURI;
+      delete record.getRootNode;
+    });
+    nodeFacadeDescriptors.drain((node, descriptors) => {
       for (const [property, descriptor] of descriptors) {
         if (descriptor === undefined) {
           delete (node as unknown as Record<PropertyKey, unknown>)[property];
@@ -608,19 +809,22 @@ export function installNodeMarking(
           Object.defineProperty(node, property, descriptor);
         }
       }
-    }
-    // A node the guest still holds outlives the facade, and clearing drops its
-    // finalization registration with it — for a large guest that would otherwise
-    // be one dead cell per marked node, held for as long as the host keeps the
-    // disposed element around.
-    nodeFacadeDescriptors.clear();
+    });
   };
 
   return {
     markVirtualNode,
+    markVirtualSubtree,
     markVirtualAttribute,
     adoptAndMark,
     adoptCreatedElement,
+    noteDetachedCandidate,
+    armDetachedWatchIfCandidate,
+    consumeDetachedWatch,
+    noteOpaqueSubtree() {
+      realmHasShadowRoots = true;
+      opaqueGeneration += 1;
+    },
     virtualDoctype,
     markShell,
     installIdentityPatches,

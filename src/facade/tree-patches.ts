@@ -5,6 +5,7 @@
 import type { NodeCloning } from "./clone.js";
 import type { FacadeContext } from "./context.js";
 import type { NodeInsertion } from "./insertion.js";
+import type { NodeMarking } from "./marking.js";
 import type { NodeArguments } from "./node-arguments.js";
 import type { ScriptExecution } from "./script-execution.js";
 
@@ -14,6 +15,7 @@ export interface TreePatches {
 
 export function createTreePatches(
   context: FacadeContext,
+  marking: NodeMarking,
   insertion: NodeInsertion,
   cloning: NodeCloning,
   scripts: ScriptExecution,
@@ -27,8 +29,6 @@ export function createTreePatches(
     nodePrototype,
     elementPrototype,
     documentFragmentPrototype,
-    nativeAppendChild,
-    nativeInsertBefore,
     nativeReplaceChild,
     nativeRemoveChild,
     nativeCloneNode,
@@ -40,7 +40,7 @@ export function createTreePatches(
     patch,
   } = context;
   const {
-    insert,
+    insertDirect,
     prepareInsertion,
     insertedNodes,
     finishInsertion,
@@ -53,27 +53,33 @@ export function createTreePatches(
   const { executeConnectedScript } = scripts;
   const { requireNode, toNodes } = nodeArguments;
 
+  const maybeNoteDetached = (node: Node): void => {
+    if (node.nodeType !== 1 || !isInVirtualDocumentTree(node)) {
+      return;
+    }
+    const element = node as Element;
+    const firstChildEl = element.firstElementChild;
+    // Skip tiny shallow branches where watching costs more than walking on re-attach.
+    if (
+      firstChildEl === null ||
+      (element.childElementCount < 4 && firstChildEl.firstElementChild === null)
+    ) {
+      return;
+    }
+    marking.noteDetachedCandidate(element);
+  };
+
   const installPatches = (): void => {
     patch(nodePrototype, "appendChild", {
       writable: true,
       value<T extends Node>(this: Node, node: T): T {
-        return insert(
-          this,
-          node,
-          "appendChild",
-          () => nativeAppendChild.call(this, node) as T,
-        );
+        return insertDirect(this, node, "appendChild");
       },
     });
     patch(nodePrototype, "insertBefore", {
       writable: true,
       value<T extends Node>(this: Node, node: T, child: Node | null): T {
-        return insert(
-          this,
-          node,
-          "insertBefore",
-          () => nativeInsertBefore.call(this, node, child) as T,
-        );
+        return insertDirect(this, node, "insertBefore", child);
       },
     });
     patch(nodePrototype, "replaceChild", {
@@ -109,9 +115,20 @@ export function createTreePatches(
         if (!virtualNodes.has(this)) {
           return nativeRemoveChild.call(this, child) as T;
         }
-        const baseElementChanged = this.isConnected && subtreeHasBaseElement(child);
+        const removingConnected = this.isConnected && child.parentNode === this;
+        if (removingConnected) {
+          maybeNoteDetached(child);
+        }
+        const hasSpecial = removingConnected
+          ? options.settledSubtreeHas?.(child, false)
+          : undefined;
+        const baseElementChanged =
+          this.isConnected &&
+          (options.settledSubtreeHas?.(child, true) ?? subtreeHasBaseElement(child));
         const result = nativeRemoveChild.call(this, child) as T;
-        options.onDisconnectedNodes([child]);
+        if (hasSpecial !== false) {
+          options.onDisconnectedNodes([child]);
+        }
         styleElementChanged(this);
         if (baseElementChanged) {
           options.onBaseElementChange();
@@ -123,10 +140,17 @@ export function createTreePatches(
       writable: true,
       value(this: Element): void {
         const virtual = virtualNodes.has(this);
+        const inVirtualTree = this.parentNode !== null && isInVirtualDocumentTree(this);
+        if (virtual && inVirtualTree) {
+          maybeNoteDetached(this);
+        }
+        const hasSpecial =
+          virtual && inVirtualTree ? options.settledSubtreeHas?.(this, false) : undefined;
         const baseElementChanged =
-          isInVirtualDocumentTree(this) && subtreeHasBaseElement(this);
+          inVirtualTree &&
+          (options.settledSubtreeHas?.(this, true) ?? subtreeHasBaseElement(this));
         nativeElementRemove.call(this);
-        if (virtual) {
+        if (virtual && hasSpecial !== false) {
           options.onDisconnectedNodes([this]);
         }
         if (baseElementChanged) {

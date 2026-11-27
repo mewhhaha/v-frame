@@ -53,9 +53,22 @@ const CHURN_CYCLES = 4;
 /** Each configuration is sampled this many times and reported as a median. */
 const REPEATS = 3;
 
+interface RealWorldTimings {
+  innerHTMLSet: number;
+  innerHTMLGet: number;
+  querySelector: number;
+  querySelectorAll: number;
+  sheetRead: number;
+  events: number;
+  detachedReattach: number;
+  getAttribute: number;
+  setAttribute: number;
+}
+
 interface BenchWindow extends Window {
   benchInsert(count: number): number;
   benchMove(count: number): number;
+  benchRealWorld(): RealWorldTimings;
   benchChurn(rows: number, cycles: number): void;
   benchCountObjects(): number;
 }
@@ -73,6 +86,8 @@ interface BenchHost extends Window {
 interface Sample {
   /** Milliseconds from assigning `src` to `v-frame-load`, network and parse included. */
   activation: number;
+  /** Milliseconds from assigning `src` through first forced geometry read (layout included). */
+  activationGeometry: number;
   /** Milliseconds to append `INSERTION_COUNT` elements into the settled tree. */
   insertion: number;
   /** Milliseconds to re-parent an already-settled subtree `MOVE_COUNT` times. */
@@ -90,6 +105,11 @@ interface Measurement {
   size: number;
   frame: Sample;
   host: Sample;
+}
+
+interface RealWorldMeasurement {
+  frame: RealWorldTimings;
+  host: RealWorldTimings;
 }
 
 /**
@@ -170,6 +190,105 @@ window.benchCountObjects = () => {
     }
   }
   return total;
+};
+
+// Real-world DOM operations exercised on a 5,000-element guest.
+window.benchRealWorld = () => {
+  const root = document.querySelector("#bench-root");
+  if (root === null) throw new Error("bench root is missing");
+  const firstRow = root.querySelector(".row");
+  const firstSection = root.querySelector("section");
+  if (firstRow === null || firstSection === null) {
+    throw new Error("bench guest is missing expected nodes");
+  }
+
+  const box = document.createElement("div");
+  root.append(box);
+  const chunk = '<div class="item"><span>a</span><b>b</b><em>c</em></div>';
+  let t0 = performance.now();
+  for (let i = 0; i < 500; i += 1) {
+    box.innerHTML = chunk;
+  }
+  const innerHTMLSet = performance.now() - t0;
+
+  let len = 0;
+  t0 = performance.now();
+  for (let i = 0; i < 500; i += 1) {
+    len += box.innerHTML.length;
+  }
+  const innerHTMLGet = performance.now() - t0;
+  box.remove();
+
+  let found = 0;
+  t0 = performance.now();
+  for (let i = 0; i < 2_000; i += 1) {
+    if (document.querySelector("body .row") !== null) found += 1;
+  }
+  const querySelector = performance.now() - t0;
+
+  t0 = performance.now();
+  for (let i = 0; i < 100; i += 1) {
+    found += document.querySelectorAll("body .row").length;
+  }
+  const querySelectorAll = performance.now() - t0;
+
+  const styleEl = document.createElement("style");
+  let rulesText = "";
+  for (let i = 0; i < 500; i += 1) {
+    rulesText += ".r" + i + "{color:red}";
+  }
+  styleEl.textContent = rulesText;
+  document.head.append(styleEl);
+  t0 = performance.now();
+  for (let i = 0; i < 200; i += 1) {
+    found += styleEl.sheet ? styleEl.sheet.cssRules.length : 0;
+  }
+  const sheetRead = performance.now() - t0;
+  styleEl.remove();
+
+  let clicks = 0;
+  const onClick = () => {
+    clicks += 1;
+  };
+  firstRow.addEventListener("click", onClick);
+  t0 = performance.now();
+  for (let i = 0; i < 10_000; i += 1) {
+    firstRow.dispatchEvent(new Event("click", { bubbles: true }));
+  }
+  const events = performance.now() - t0;
+  firstRow.removeEventListener("click", onClick);
+
+  t0 = performance.now();
+  for (let i = 0; i < 200; i += 1) {
+    firstSection.remove();
+    root.append(firstSection);
+  }
+  const detachedReattach = performance.now() - t0;
+
+  t0 = performance.now();
+  for (let i = 0; i < 50_000; i += 1) {
+    if (firstRow.getAttribute("data-index") !== null) found += 1;
+  }
+  const getAttribute = performance.now() - t0;
+
+  t0 = performance.now();
+  for (let i = 0; i < 50_000; i += 1) {
+    firstRow.setAttribute("data-index", "1");
+  }
+  const setAttribute = performance.now() - t0;
+
+  if (len < 0 || found < 0 || clicks < 0) throw new Error("unreachable");
+  return {
+    innerHTMLSet,
+    innerHTMLGet,
+    querySelector,
+    querySelectorAll,
+    sheetRead,
+    events,
+    detachedReattach,
+    getAttribute,
+    setAttribute,
+  };
 };
 `;
 
@@ -287,9 +406,12 @@ function measureFrame(page: Page, guestURL: string): Promise<Omit<Sample, "heap"
 
       const guest = frame.contentWindow;
       if (guest === null) throw new Error("the settled frame has no realm window");
+      void guest.document.body.getBoundingClientRect().height;
+      const activationGeometry = performance.now() - start;
       const objects = guest.benchCountObjects();
       return {
         activation,
+        activationGeometry,
         objects,
         insertion: guest.benchInsert(options.count),
         move: guest.benchMove(options.moves),
@@ -314,10 +436,13 @@ function measureHost(page: Page, guestURL: string): Promise<Omit<Sample, "heap">
       const parsed = new DOMParser().parseFromString(source, "text/html");
       host.append(document.adoptNode(parsed.body));
       const activation = performance.now() - start;
+      void host.getBoundingClientRect().height;
+      const activationGeometry = performance.now() - start;
 
       const bench = window as unknown as BenchWindow;
       return {
         activation,
+        activationGeometry,
         objects: bench.benchCountObjects(),
         insertion: bench.benchInsert(options.count),
         move: bench.benchMove(options.moves),
@@ -453,14 +578,73 @@ function medianHeap(samples: Sample[]): number | null {
   return median(readings);
 }
 
+async function sampleFrameRealWorld(
+  browser: Browser,
+  origin: string,
+): Promise<RealWorldTimings> {
+  const page = await browser.newPage();
+  try {
+    await installBundle(page, origin);
+    await mountBenchFrame(page, `${origin}${guestPath(5_000)}`);
+    return await page.evaluate(() => {
+      const guest = (window as BenchHost).benchGuest;
+      if (guest === undefined || guest === null) {
+        throw new Error("the settled frame has no realm window");
+      }
+      return guest.benchRealWorld();
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function sampleHostRealWorld(
+  browser: Browser,
+  origin: string,
+): Promise<RealWorldTimings> {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${origin}/baseline`);
+    await adoptBenchGuest(page, `${origin}${guestPath(5_000)}`);
+    return await page.evaluate(() => (window as unknown as BenchWindow).benchRealWorld());
+  } finally {
+    await page.close();
+  }
+}
+
 function medianSample(samples: Sample[]): Sample {
   return {
     activation: median(samples.map((sample) => sample.activation)),
+    activationGeometry: median(samples.map((sample) => sample.activationGeometry)),
     insertion: median(samples.map((sample) => sample.insertion)),
     move: median(samples.map((sample) => sample.move)),
     heap: medianHeap(samples),
     objects: median(samples.map((sample) => sample.objects)),
   };
+}
+
+function medianRealWorld(samples: RealWorldTimings[]): RealWorldTimings {
+  return {
+    innerHTMLSet: median(samples.map((sample) => sample.innerHTMLSet)),
+    innerHTMLGet: median(samples.map((sample) => sample.innerHTMLGet)),
+    querySelector: median(samples.map((sample) => sample.querySelector)),
+    querySelectorAll: median(samples.map((sample) => sample.querySelectorAll)),
+    sheetRead: median(samples.map((sample) => sample.sheetRead)),
+    events: median(samples.map((sample) => sample.events)),
+    detachedReattach: median(samples.map((sample) => sample.detachedReattach)),
+    getAttribute: median(samples.map((sample) => sample.getAttribute)),
+    setAttribute: median(samples.map((sample) => sample.setAttribute)),
+  };
+}
+
+async function repeatRealWorld(
+  take: () => Promise<RealWorldTimings>,
+): Promise<RealWorldTimings> {
+  const samples: RealWorldTimings[] = [];
+  for (let run = 0; run < REPEATS; run += 1) {
+    samples.push(await take());
+  }
+  return medianRealWorld(samples);
 }
 
 async function repeat(take: () => Promise<Sample>): Promise<Sample> {
@@ -528,7 +712,7 @@ function reportHeap(measurements: Measurement[]): void {
   console.table(rows);
 }
 
-function report(measurements: Measurement[]): void {
+function report(measurements: Measurement[], realWorld: RealWorldMeasurement): void {
   console.log("\nactivation — fetch, parse and insert the whole guest");
   console.table(
     measurements.map((measurement) => ({
@@ -536,6 +720,12 @@ function report(measurements: Measurement[]): void {
       "v-frame": milliseconds(measurement.frame.activation),
       "host DOM": milliseconds(measurement.host.activation),
       overhead: ratio(measurement.frame.activation, measurement.host.activation),
+      "v-frame (geom)": milliseconds(measurement.frame.activationGeometry),
+      "host (geom)": milliseconds(measurement.host.activationGeometry),
+      "geom overhead": ratio(
+        measurement.frame.activationGeometry,
+        measurement.host.activationGeometry,
+      ),
     })),
   );
 
@@ -556,6 +746,27 @@ function report(measurements: Measurement[]): void {
       "v-frame": milliseconds(measurement.frame.move),
       "host DOM": milliseconds(measurement.host.move),
       overhead: ratio(measurement.frame.move, measurement.host.move),
+    })),
+  );
+
+  const realWorldRows: Array<readonly [string, keyof RealWorldTimings]> = [
+    ["innerHTML = (500x)", "innerHTMLSet"],
+    ["innerHTML get (500x)", "innerHTMLGet"],
+    ['querySelector("body .row") (2k)', "querySelector"],
+    ['querySelectorAll("body .row") (100x)', "querySelectorAll"],
+    [".sheet 500-rule read (200x)", "sheetRead"],
+    ["events click dispatch (10k)", "events"],
+    ["detached 100-node re-attach (200x)", "detachedReattach"],
+    ["getAttribute (50k)", "getAttribute"],
+    ["setAttribute (50k)", "setAttribute"],
+  ];
+  console.log("\nreal-world DOM operations — 5,000-element guest");
+  console.table(
+    realWorldRows.map(([operation, key]) => ({
+      operation,
+      "v-frame": milliseconds(realWorld.frame[key]),
+      "host DOM": milliseconds(realWorld.host[key]),
+      overhead: ratio(realWorld.frame[key], realWorld.host[key]),
     })),
   );
 
@@ -600,7 +811,11 @@ async function measureEngine(engine: BrowserType, origin: string): Promise<void>
         host: await repeat(() => sampleHost(engine, browser, origin, size)),
       });
     }
-    report(measurements);
+    const realWorld: RealWorldMeasurement = {
+      frame: await repeatRealWorld(() => sampleFrameRealWorld(browser, origin)),
+      host: await repeatRealWorld(() => sampleHostRealWorld(browser, origin)),
+    };
+    report(measurements, realWorld);
     // The churn measurement has no timing half — what it reports is retained heap —
     // so it is skipped entirely rather than reported empty.
     if (measuresHeap(engine)) {

@@ -51,6 +51,7 @@ export function createNodePatches(
       value(this: Element, init: ShadowRootInit): ShadowRoot {
         const shadowRoot = nativeAttachShadow.call(this, init);
         if (virtualNodes.has(this)) {
+          marking.noteOpaqueSubtree();
           context.guestShadowRoots.add(shadowRoot);
           markVirtualNode(shadowRoot);
         }
@@ -96,6 +97,23 @@ export function createNodePatches(
         },
       });
     }
+    const nodeIdentityIsPrototypeWide =
+      context.nativeOwnerDocument?.get !== undefined &&
+      context.nativeBaseURI?.get !== undefined;
+    const markFirstChildAfterTextWrite = (node: Node): void => {
+      const child = node.firstChild;
+      if (child !== null) {
+        if (
+          nodeIdentityIsPrototypeWide &&
+          child.nodeType === 3 &&
+          child instanceof window.Node
+        ) {
+          virtualNodes.add(child);
+        } else {
+          markVirtualNode(child);
+        }
+      }
+    };
     if (nativeTextContent?.get !== undefined && nativeTextContent.set !== undefined) {
       patch(nodePrototype, "textContent", {
         get: nativeTextContent.get,
@@ -103,23 +121,27 @@ export function createNodePatches(
           const virtual = virtualNodes.has(this);
           const hadChildren = this.firstChild !== null;
           const connected = this.isConnected;
+          if (
+            !connected &&
+            !hadChildren &&
+            (typeof value === "string" || value === null)
+          ) {
+            nativeTextContent.set?.call(this, value);
+            if (virtual) {
+              markFirstChildAfterTextWrite(this);
+            }
+            return;
+          }
           const removedNodes =
             virtual && hadChildren ? Array.from(this.childNodes) : null;
           const baseElementChanged =
             hadChildren &&
             connected &&
             isInVirtualDocumentTree(this) &&
-            subtreeHasBaseElement(this);
+            (options.settledSubtreeHas?.(this, true) ?? subtreeHasBaseElement(this));
           nativeTextContent.set?.call(this, value);
           if (virtual) {
-            const child = this.firstChild;
-            if (child !== null) {
-              if (child.nodeType === 3 && child instanceof window.Node) {
-                virtualNodes.add(child);
-              } else {
-                markVirtualNode(child);
-              }
-            }
+            markFirstChildAfterTextWrite(this);
           }
           if (removedNodes !== null && removedNodes.length > 0) {
             options.onDisconnectedNodes(removedNodes);

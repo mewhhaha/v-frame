@@ -8,8 +8,10 @@
 // aside, URLs are absolutized), so serializing it as it stands would not give
 // back what the guest authored.
 
+import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 import type { AttributeFacade } from "./attributes.js";
-import type { FacadeContext } from "./context.js";
+import { HTML_NAMESPACE, type FacadeContext } from "./context.js";
+import type { NodeInsertion } from "./insertion.js";
 import type { NodeMarking } from "./marking.js";
 import type { NodeArguments } from "./node-arguments.js";
 import { toDOMString } from "./webidl.js";
@@ -21,6 +23,7 @@ export interface MarkupFacade {
 export function installMarkupFacade(
   context: FacadeContext,
   marking: NodeMarking,
+  insertion: NodeInsertion,
   nodeArguments: NodeArguments,
   attributes: AttributeFacade,
 ): MarkupFacade {
@@ -28,23 +31,34 @@ export function installMarkupFacade(
   const {
     window,
     document,
+    hostDocument,
     elementPrototype,
     nativeCreateElement,
+    nativeCreateDocumentFragment,
     nativeAppendChild,
     nativeReplaceChild,
     nativeImportNode,
     nativeSetAttributeNS,
+    nativeHasAttribute,
     nativeInnerHTML,
     nativeOuterHTML,
     nativeSetAttribute,
+    nativeFirstChild,
+    nativeLocalName,
+    nativeNamespaceURI,
+    getInertDocument,
     isElementNode,
     isHTMLTemplateElement,
     virtualNodes,
     fragmentNodes,
+    protectedScriptAttributes,
+    eventAttributeValues,
+    authoredLinkRelValues,
     patch,
     nativeFragmentQuerySelectorAll,
   } = context;
   const { markVirtualNode, adoptAndMark } = marking;
+  const { insertDirect, replaceElementChildren, replaceNodeWith } = insertion;
   const { isNodeValue } = nodeArguments;
   const { getVirtualAttribute, getVirtualAttributeNames } = attributes;
 
@@ -57,22 +71,31 @@ export function installMarkupFacade(
     }
   };
 
-  // Parse in an inert document, but use the destination's context: a template
-  // alone loses table insertion modes, foreign namespaces and raw-text parsing.
-  const fragmentDocument = new window.DOMParser().parseFromString(
-    options.createHTML("<!doctype html><html><body></body></html>"),
-    "text/html",
-  );
   const nativeSetHTMLUnsafe = (
     elementPrototype as {
       setHTMLUnsafe?: (this: Element, html: string) => void;
     }
   ).setHTMLUnsafe;
+  const readFirstChild = (node: Node): ChildNode | null =>
+    nativeFirstChild !== undefined
+      ? (nativeFirstChild.call(node) as ChildNode | null)
+      : node.firstChild;
+  const readLocalName = (element: Element): string =>
+    nativeLocalName !== undefined
+      ? (nativeLocalName.call(element) as string)
+      : element.localName;
+  const readNamespaceURI = (element: Element): string | null =>
+    nativeNamespaceURI !== undefined
+      ? (nativeNamespaceURI.call(element) as string | null)
+      : element.namespaceURI;
+
   const parseFragment = (
     markup: string,
     destination: Element | null,
     unsafe = false,
+    markImmediately = true,
   ): DocumentFragment => {
+    const fragmentDocument = getInertDocument();
     const shellName =
       destination === options.html
         ? "html"
@@ -81,56 +104,150 @@ export function installMarkupFacade(
           : destination === options.body
             ? "body"
             : null;
-    const parserContext =
-      destination === null || shellName !== null
-        ? fragmentDocument.createElement(shellName ?? "body")
-        : (nativeImportNode.call(fragmentDocument, destination, false) as Element);
+    let parserContext: Element;
+    if (destination === null || shellName !== null) {
+      parserContext = nativeCreateElement.call(fragmentDocument, shellName ?? "body");
+    } else {
+      const destLocalName = readLocalName(destination);
+      if (
+        readNamespaceURI(destination) === HTML_NAMESPACE &&
+        !destLocalName.includes("-") &&
+        destLocalName === destLocalName.toLowerCase()
+      ) {
+        parserContext = nativeCreateElement.call(fragmentDocument, destLocalName);
+      } else {
+        parserContext = nativeImportNode.call(
+          fragmentDocument,
+          destination,
+          false,
+        ) as Element;
+      }
+    }
     if (unsafe && nativeSetHTMLUnsafe !== undefined) {
       nativeSetHTMLUnsafe.call(parserContext, markup);
     } else {
       nativeInnerHTML.set?.call(parserContext, markup);
     }
-    const fragment = fragmentDocument.createDocumentFragment();
+    const fragment = nativeCreateDocumentFragment.call(fragmentDocument);
     const parsedRoot = isHTMLTemplateElement(parserContext)
       ? parserContext.content
       : parserContext;
-    while (parsedRoot.firstChild !== null) {
-      nativeAppendChild.call(fragment, parsedRoot.firstChild);
+    for (
+      let child = readFirstChild(parsedRoot);
+      child !== null;
+      child = readFirstChild(parsedRoot)
+    ) {
+      nativeAppendChild.call(fragment, child);
     }
-    const parsedElements = Array.from(
-      nativeFragmentQuerySelectorAll.call(fragment, "*"),
-    ).reverse();
-    for (const parsedElement of parsedElements) {
-      const customizedName = parsedElement.getAttribute("is");
-      const customName =
-        customizedName !== null && window.customElements.get(customizedName) !== undefined
-          ? customizedName
-          : parsedElement.localName;
-      if (window.customElements.get(customName) === undefined) {
-        continue;
+    // Single pass marks fragment provenance and collects custom-element upgrades
+    // only for tags with a hyphen or an `is` attribute (spec requirement).
+    let customCandidates: Element[] | undefined;
+    const scanFragment = (root: Node, inTemplate: boolean): void => {
+      for (let child = readFirstChild(root); child !== null; child = child.nextSibling) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        fragmentNodes.add(element);
+        if (
+          !inTemplate &&
+          readNamespaceURI(element) === HTML_NAMESPACE &&
+          (readLocalName(element).includes("-") || nativeHasAttribute.call(element, "is"))
+        ) {
+          (customCandidates ??= []).push(element);
+        }
+        if (readFirstChild(element) !== null) {
+          scanFragment(element, inTemplate);
+        }
+        if (isHTMLTemplateElement(element)) {
+          scanFragment(element.content, true);
+        }
       }
-      const creationOptions =
-        customName === customizedName ? { is: customName } : undefined;
-      const customElement = nativeCreateElement.call(
-        document,
-        parsedElement.localName,
-        creationOptions,
-      );
-      for (const attribute of Array.from(parsedElement.attributes)) {
-        nativeSetAttributeNS.call(
-          customElement,
-          attribute.namespaceURI,
-          attribute.name,
-          attribute.value,
+    };
+    scanFragment(fragment, false);
+    let upgradedCustom = false;
+    if (customCandidates !== undefined) {
+      for (let i = customCandidates.length - 1; i >= 0; i -= 1) {
+        const parsedElement = customCandidates[i]!;
+        const parsedLocalName = readLocalName(parsedElement);
+        const customizedName = parsedElement.getAttribute("is");
+        const customName =
+          customizedName !== null &&
+          window.customElements.get(customizedName) !== undefined
+            ? customizedName
+            : parsedLocalName;
+        if (window.customElements.get(customName) === undefined) {
+          continue;
+        }
+        upgradedCustom = true;
+        const creationOptions =
+          customName === customizedName ? { is: customName } : undefined;
+        const customElement = nativeCreateElement.call(
+          document,
+          parsedLocalName,
+          creationOptions,
         );
+        fragmentNodes.add(customElement);
+        for (const attribute of Array.from(parsedElement.attributes)) {
+          nativeSetAttributeNS.call(
+            customElement,
+            attribute.namespaceURI,
+            attribute.name,
+            attribute.value,
+          );
+        }
+        for (
+          let child = readFirstChild(parsedElement);
+          child !== null;
+          child = readFirstChild(parsedElement)
+        ) {
+          nativeAppendChild.call(customElement, child);
+        }
+        nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
       }
-      while (parsedElement.firstChild !== null) {
-        nativeAppendChild.call(customElement, parsedElement.firstChild);
-      }
-      nativeReplaceChild.call(parsedElement.parentNode, customElement, parsedElement);
     }
-    markFragmentElements(fragment);
-    return adoptAndMark(fragment);
+    if (markImmediately || upgradedCustom) {
+      return adoptAndMark(fragment);
+    }
+    hostDocument.adoptNode(fragment);
+    return fragment;
+  };
+
+  const elementHasVirtualOverride = (element: Element): boolean =>
+    element === options.html ||
+    element === options.head ||
+    element === options.body ||
+    (virtualNodes.has(element) &&
+      (options.authoredURLAttributes.has(element) ||
+        options.authoredStyleAttributes.has(element) ||
+        protectedScriptAttributes.has(element as HTMLScriptElement) ||
+        eventAttributeValues.has(element) ||
+        authoredLinkRelValues.has(element as HTMLLinkElement) ||
+        nativeHasAttribute.call(element, "style") ||
+        nativeHasAttribute.call(element, FRAGMENT_TARGET_ATTRIBUTE) ||
+        nativeHasAttribute.call(element, options.inlineStyleSelectorAttribute)));
+
+  const subtreeNeedsAuthoredCopy = (root: Node, includeSelf: boolean): boolean => {
+    const stack: Node[] = [];
+    if (includeSelf && root.nodeType === 1) {
+      const el = root as Element;
+      if (elementHasVirtualOverride(el)) return true;
+      if (isHTMLTemplateElement(el)) stack.push(el.content);
+    }
+    stack.push(root);
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      for (
+        let child = readFirstChild(current);
+        child !== null;
+        child = child.nextSibling
+      ) {
+        if (child.nodeType !== 1) continue;
+        const el = child as Element;
+        if (elementHasVirtualOverride(el)) return true;
+        if (readFirstChild(el) !== null) stack.push(el);
+        if (isHTMLTemplateElement(el)) stack.push(el.content);
+      }
+    }
+    return false;
   };
 
   // An element's attributes as the guest authored them, written onto a copy of
@@ -174,6 +291,7 @@ export function installMarkupFacade(
   function authoredCopy(source: Element): Element;
   function authoredCopy(source: Node): Node;
   function authoredCopy(source: Node): Node {
+    const fragmentDocument = getInertDocument();
     // Documents and shadow roots cannot be imported. Build a serializable root
     // from their visible children instead; the guest document's children are
     // its doctype and shell, not the hidden execution document's physical tree.
@@ -274,23 +392,66 @@ export function installMarkupFacade(
           );
         }
         const destination = outside ? this.parentElement : this;
+        const initialParent = outside ? this.parentNode : this;
+        const initialParentVirtual =
+          initialParent !== null && virtualNodes.has(initialParent);
         const fragment = parseFragment(
           markup,
           destination === options.html ? null : destination,
+          false,
+          !initialParentVirtual,
         );
+        // Custom element constructors during parseFragment may relocate `this`,
+        // so re-read parentNode afterwards just like the native algorithm.
         switch (where) {
-          case "beforebegin":
-            this.parentNode?.insertBefore(fragment, this);
+          case "beforebegin": {
+            const parent = this.parentNode;
+            if (parent !== null) {
+              insertDirect(
+                parent,
+                fragment,
+                "insertBefore",
+                this,
+                virtualNodes.has(parent),
+                true,
+              );
+            }
             return;
+          }
           case "afterbegin":
-            this.insertBefore(fragment, this.firstChild);
+            insertDirect(
+              this,
+              fragment,
+              "insertBefore",
+              this.firstChild,
+              virtualNodes.has(this),
+              true,
+            );
             return;
           case "beforeend":
-            this.appendChild(fragment);
+            insertDirect(
+              this,
+              fragment,
+              "appendChild",
+              undefined,
+              virtualNodes.has(this),
+              true,
+            );
             return;
-          case "afterend":
-            this.parentNode?.insertBefore(fragment, this.nextSibling);
+          case "afterend": {
+            const parent = this.parentNode;
+            if (parent !== null) {
+              insertDirect(
+                parent,
+                fragment,
+                "insertBefore",
+                this.nextSibling,
+                virtualNodes.has(parent),
+                true,
+              );
+            }
             return;
+          }
         }
       },
     });
@@ -365,7 +526,10 @@ export function installMarkupFacade(
             markVirtualNode(this.content);
             return;
           }
-          this.replaceChildren(parseFragment(markup, this, true));
+          replaceElementChildren(
+            this,
+            markup === "" ? null : parseFragment(markup, this, true, false),
+          );
         },
       });
     }
@@ -395,7 +559,17 @@ export function installMarkupFacade(
         if (getter === undefined) {
           return "";
         }
-        return getter.call(virtualNodes.has(this) ? authoredCopy(this) : this) as string;
+        if (!virtualNodes.has(this)) {
+          return getter.call(this) as string;
+        }
+        const root: ParentNode = isHTMLTemplateElement(this) ? this.content : this;
+        if (root.firstChild === null) {
+          return "";
+        }
+        if (root.firstElementChild === null || !subtreeNeedsAuthoredCopy(root, false)) {
+          return getter.call(this) as string;
+        }
+        return getter.call(authoredCopy(this)) as string;
       },
       set(this: Element, value: string | null) {
         // [LegacyNullToEmptyString]: null clears, and must not reach
@@ -411,17 +585,20 @@ export function installMarkupFacade(
           markVirtualNode(this.content);
           return;
         }
-        const fragment = parseFragment(markup, this);
-        this.replaceChildren(fragment);
+        replaceElementChildren(
+          this,
+          markup === "" ? null : parseFragment(markup, this, false, false),
+        );
       },
     });
 
     if (nativeOuterHTML?.get !== undefined && nativeOuterHTML.set !== undefined) {
       patch(elementPrototype, "outerHTML", {
         get(this: Element) {
-          return nativeOuterHTML.get!.call(
-            virtualNodes.has(this) ? authoredCopy(this) : this,
-          ) as string;
+          if (!virtualNodes.has(this) || !subtreeNeedsAuthoredCopy(this, true)) {
+            return nativeOuterHTML.get!.call(this) as string;
+          }
+          return nativeOuterHTML.get!.call(authoredCopy(this)) as string;
         },
         set(this: Element, value: string | null) {
           const markup = options.createGuestHTML(value, true);
@@ -440,7 +617,11 @@ export function installMarkupFacade(
             );
           }
           // One replacement, as natively: observers see a single record.
-          parent.replaceChild(parseFragment(markup, this.parentElement), this);
+          replaceNodeWith(
+            parent,
+            parseFragment(markup, this.parentElement, false, false),
+            this,
+          );
         },
       });
     }

@@ -91,12 +91,19 @@ export function installDocumentFacade(options: DocumentFacadeOptions): DocumentF
   const cloning = createNodeCloning(context, style, events, marking, insertion, scripts);
   const treePatches = createTreePatches(
     context,
+    marking,
     insertion,
     cloning,
     scripts,
     nodeArguments,
   );
-  const markup = installMarkupFacade(context, marking, nodeArguments, attributes);
+  const markup = installMarkupFacade(
+    context,
+    marking,
+    insertion,
+    nodeArguments,
+    attributes,
+  );
   const nodePatches = createNodePatches(context, marking, insertion, scripts);
 
   events.installHandlerProperties();

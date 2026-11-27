@@ -519,6 +519,114 @@ Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
   2,000-row churn retention is `1,267 KB` (`649 B/row`), and `dist/index.js` is
   `71.7 KB` gzipped.
 
+## Round 6 — real-world DOM paths, Firefox foreign descriptors, and geometry-anchored activation (`0.6.0`)
+
+Rounds 1–5 brought activation, insertion, and settled re-parenting down sharply,
+leaving two very different stories in profiles of `0.5.0`:
+
+1. **Large-tree activation includes rendering.** On the 50,000-element guest,
+   `v-frame`'s `v-frame-load` waits for the guest's external script fetch while
+   the browser computes style and layout for the inserted 50k tree; the host DOM
+   baseline stops right after `host.append(...)`, before layout runs. Measuring
+   both sides through a forced geometry read (`getBoundingClientRect().height`)
+   shows the true end-to-end activation overhead is **`1.9x`** in Chromium and
+   **`1.8x`** in Firefox.
+2. **Real-world steady-state DOM operations still carried avoidable overhead:**
+   shell-translated queries (`querySelector("body .row")`), `.sheet` reads on
+   large stylesheets, `innerHTML` get/set, repeated detached-subtree
+   re-attachment, `getAttribute`, cold Event/handler installation, and Gecko's
+   per-node foreign descriptor maps.
+
+### What changed
+
+- **Native selector union & CSSOM/CSS fast paths (`src/facade/collections.ts`,
+  `src/realm/dynamic-styles.ts`, `src/css.ts`):** Combine `${selectors}, ${translated}`
+  into one native query/match/closest call whenever `canCombineSelector` confirms
+  comma-safety (avoiding duplicate engine walks and returning a real `NodeList`),
+  skip `Array.from` on empty nested `CSSStyleRule.cssRules` during `.sheet`
+  reads, and cache import-free stylesheet rewrites in a bounded LRU cache keyed
+  by base URL.
+- **Markup & attribute fusion (`src/facade/markup.ts`, `src/facade/attributes.ts`,
+  `src/facade/insertion.ts`, `src/facade/node-patches.ts`):** Share one lazy
+  inert HTML document across `parseFragment` and `style.ts` probes, parse and
+  insert `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`setHTMLUnsafe` fragments
+  in one marking pass, skip `authoredCopy` cloning when a serialized subtree has
+  no virtual attribute overrides, fast-reject non-managed attribute names before
+  URL checks, and fast-path built-in `createElement`, plain marked leaf
+  elements, and primitive empty-node `textContent` writes.
+- **Cold setup, teardown, SSR & Gecko foreign descriptors (`src/facade/events.ts`,
+  `src/facade/context.ts`, `src/facade/document.ts`, `src/facade/marking.ts`,
+  `src/markup.ts`, `src/realm/index.ts`, `src/realm/window-patches.ts`,
+  `src/realm/adoption-state.ts`, `src/enumerable-weak.ts`, `src/network.ts`):**
+  Cache Event member and handler plans per host window, share one
+  `boundaryRelay`, lazily insert the top-layer popover stylesheet in its
+  original cascade slot, narrow initial URL scans and reuse initial
+  `<style>`/`<link>`/`<base>` lists (clearing them right after bootstrap so
+  removed nodes remain GC-able), memoize ancestor clip rects during SSR
+  lazy-image visibility checks, drain weak collections in one pass on disposal,
+  and store Gecko/WebKit foreign nodes without per-node descriptor Maps/closures
+  via `compactForeignNodes`.
+- **Observer indexing & clean detached-subtree watching
+  (`src/realm/mutation-observer.ts`, `src/facade/marking.ts`,
+  `src/facade/tree-patches.ts`):** Track connected `<base>` count in O(1) with
+  synchronous pre-read flushing, retire clean facade additions and transient
+  remove+reconnect pairs inline, recover from special-index overflow after
+  removals, skip `onDisconnectedNodes` scans on special-free removals, and arm a
+  capped GC-safe `MutationObserver` after a clean full walk of a detached
+  multi-node branch so subsequent unchanged re-attachments skip walking in O(1)
+  while any mutation falls back to the full walk.
+
+### Numbers
+
+Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
+2026-11-27 (`pnpm bench`):
+
+|                   |          | 1,000   | 5,000   | 20,000   | 50,000   |
+| ----------------- | -------- | ------- | ------- | -------- | -------- |
+| activation (load) | Chromium | 37.0 ms | 59.4 ms | 129.3 ms | 280.4 ms |
+|                   | Host Cr  | 1.8 ms  | 4.2 ms  | 12.4 ms  | 30.0 ms  |
+|                   | Firefox  | 31.0 ms | 51.0 ms | 127.0 ms | 299.0 ms |
+|                   | Host FF  | 2.0 ms  | 5.0 ms  | 16.0 ms  | 38.0 ms  |
+| activation (geom) | Chromium | 37.0 ms | 59.4 ms | 129.4 ms | 280.4 ms |
+|                   | Host Cr  | 4.6 ms  | 17.4 ms | 60.0 ms  | 149.0 ms |
+|                   | Firefox  | 31.0 ms | 51.0 ms | 127.0 ms | 299.0 ms |
+|                   | Host FF  | 5.0 ms  | 18.0 ms | 67.0 ms  | 168.0 ms |
+| insertion (1k)    | Chromium | 7.9 ms  | 8.6 ms  | 7.7 ms   | 8.4 ms   |
+|                   | Host Cr  | 1.4 ms  | 1.4 ms  | 1.2 ms   | 1.4 ms   |
+|                   | Firefox  | 19.0 ms | 19.0 ms | 18.0 ms  | 18.0 ms  |
+|                   | Host FF  | 2.0 ms  | 2.0 ms  | 2.0 ms   | 2.0 ms   |
+| re-parent (1k)    | Chromium | 12.4 ms | 13.5 ms | 17.2 ms  | 28.6 ms  |
+|                   | Host Cr  | 4.7 ms  | 6.0 ms  | 8.2 ms   | 16.0 ms  |
+|                   | Firefox  | 11.0 ms | 12.0 ms | 16.0 ms  | 25.0 ms  |
+|                   | Host FF  | 4.0 ms  | 6.0 ms  | 10.0 ms  | 18.0 ms  |
+
+Real-world DOM operations on the 5,000-element guest (`0.5.0` → `0.6.0`):
+
+| Operation                              | Chromium `0.5.0` → `0.6.0` (host) | Firefox `0.5.0` → `0.6.0` (host) |
+| -------------------------------------- | --------------------------------- | -------------------------------- |
+| `innerHTML =` (500×)                   | `39.0 → 10.8 ms` (`2.6 ms`)       | `55 → 23.0 ms` (`2.0 ms`)        |
+| `innerHTML` get (500×)                 | `5.9 → 1.5 ms` (`0.1 ms`)         | `18 → 1.0 ms` (`<1 ms`)          |
+| `querySelector("body .row")` (2k×)     | `23.8 → 1.3 ms` (`0.1 ms`)        | `127 → 2.0 ms` (`<1 ms`)         |
+| `querySelectorAll("body .row")` (100×) | `76 → 24.5 ms` (`1.7 ms`)         | `66 → 25.0 ms` (`15.0 ms`)       |
+| `.sheet` 500-rule read (200×)          | `37.1 → 0.5 ms` (`0.1 ms`)        | `21 → 1.0 ms` (`<1 ms`)          |
+| `events` click dispatch (10k×)         | `36.1 → 37.9 ms` (`10.3 ms`)      | `62 → 60.0 ms` (`17.0 ms`)       |
+| `detached 100-node re-attach` (200×)   | `7.9 → 6.4 ms` (`0.8 ms`)         | `27 → 5.0 ms` (`<1 ms`)          |
+| `getAttribute` (50k×)                  | `12.0 → 6.6 ms` (`1.5 ms`)        | `10 → 7.0 ms` (`1.0 ms`)         |
+| `setAttribute` (50k×)                  | `19.5 → 19.1 ms` (`3.2 ms`)       | `33 → 27.0 ms` (`5.0 ms`)        |
+
+- **Marginal activation cost** dropped under 5 µs/element in Chromium to
+  **`4.97 µs/element`** (`8.6x` raw load; **`1.9x`** through first geometry read
+  at 50k elements: `280.4 ms` vs `149.0 ms`) and dropped to
+  **`5.47 µs/element`** in Firefox (`7.4x` raw load; **`1.8x`** through geometry
+  at 50k elements: `299.0 ms` vs `168.0 ms`).
+- **Insertion** dropped to **`7.7–8.6 ms`** in Chromium (`5.6–6.4x`) and
+  **`18–19 ms`** in Firefox (`9.0–9.5x`, `-28%`).
+- **Re-parenting** dropped to **`12.4–28.6 ms`** (`1.8–2.6x`) in Chromium and
+  **`11–25 ms`** (`1.4–2.8x`, `-32%` at 50k) in Firefox.
+- **Bundle size** is `76.1 KB` gzipped (`95%` of the `80 KB` budget); retained
+  JS heap at 50k elements is `10,052 KB` (`69 B/object`, varying ~8.5–10 MB
+  across GC sweeps) and 2,000-row churn retention is `1,379 KB` (`706 B/row`).
+
 ## What this does not answer
 
 - The heap readings are chromium only. Firefox has no equivalent CDP heap reading, and
@@ -531,8 +639,10 @@ Idle Chromium 153.0.8010.12 and Firefox 155.0 on AMD Ryzen 7 7800X3D,
   neither timed nor measured for heap here.
 - Activation includes fetch, parse, CSS rewriting, realm boot and guest script execution.
   The slope isolates the per-element part; the absolute numbers do not.
-- Detached subtrees are still walked in full every time they are inserted, and a guest that
-  detaches a container, edits it and re-attaches it pays the old price. Standard guest writes
+- Detached subtrees are walked in full on their first re-attachment or whenever any
+  mutation occurs before or during detachment; unchanged multi-node branches that are
+  repeatedly detached and re-attached (such as toggled panels or cached sections) skip
+  re-walking via a capped, GC-safe clean-subtree observer. Standard guest writes
   (`textContent`, `insertAdjacentText`, `setHTMLUnsafe`, `innerHTML`, `outerHTML`,
-  `insertAdjacentHTML`) now mark newly created nodes synchronously; only direct writes via
+  `insertAdjacentHTML`) mark newly created nodes synchronously; only direct writes via
   unpatched host-realm prototypes defer to the mutation observer microtask.

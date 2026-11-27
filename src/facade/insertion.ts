@@ -28,6 +28,16 @@ export interface NodeInsertion {
     alreadyFlushed?: boolean,
   ): void;
   insert<T extends Node>(parent: Node, node: T, method: string, operation: () => T): T;
+  insertDirect<T extends Node>(
+    parent: Node,
+    node: T,
+    method: string,
+    reference?: Node | null,
+    parentVerifiedVirtual?: boolean,
+    nodeVerified?: boolean,
+  ): T;
+  replaceElementChildren(parent: Element, fragment: DocumentFragment | null): void;
+  replaceNodeWith<T extends Node>(parent: Node, node: Node, child: T): T;
   styleElementChanged(node: Node): void;
   performStyleMutationBatch(parent: Node, mutation: () => void): void;
   appendValues(parent: Node, values: Array<Node | string>, prepend: boolean): void;
@@ -52,6 +62,8 @@ export function createNodeInsertion(
     isHTMLStyleElement,
     isHTMLLinkElement,
     isHTMLScriptElement,
+    isBaseElement,
+    isHTMLTemplateElement,
     isInVirtualDocumentTree,
     subtreeHasBaseElement,
     virtualNodes,
@@ -59,13 +71,21 @@ export function createNodeInsertion(
     document,
     nativeAppendChild,
     nativeInsertBefore,
+    nativeReplaceChild,
+    nativeElementReplaceChildren,
+    nativeHasAttributes,
     nativeHasAttribute,
     nativeQuerySelector,
     nativeQuerySelectorAll,
     nativeFragmentQuerySelector,
     nativeFragmentQuerySelectorAll,
   } = context;
-  const { markVirtualNode } = marking;
+  const {
+    markVirtualNode,
+    markVirtualSubtree,
+    armDetachedWatchIfCandidate,
+    consumeDetachedWatch,
+  } = marking;
   const { executeConnectedScript } = scripts;
   const { isNodeValue, requireNode, toNodes } = nodeArguments;
 
@@ -132,23 +152,53 @@ export function createNodeInsertion(
     return false;
   };
 
+  const isPlainMarkedLeafElement = (element: Element): boolean => {
+    if (
+      !virtualNodes.has(element) ||
+      nativeHasAttributes.call(element) ||
+      options.authoredURLAttributes.has(element) ||
+      isHTMLStyleElement(element) ||
+      isHTMLLinkElement(element) ||
+      isHTMLScriptElement(element) ||
+      isBaseElement(element) ||
+      isHTMLTemplateElement(element)
+    ) {
+      return false;
+    }
+    const first = element.firstChild;
+    return (
+      first === null ||
+      (first.nextSibling === null && first.nodeType === 3 && virtualNodes.has(first))
+    );
+  };
+
   const prepareInsertion = (
     node: Node,
     scan?: SubtreeScan,
     collectScan = true,
   ): SubtreeScan | undefined => {
-    if (!isElementNode(node) && !isDocumentFragmentNode(node)) {
+    const nodeType = node.nodeType;
+    if (nodeType !== 1 && nodeType !== 11) {
       markVirtualNode(node);
       return scan ?? emptyScan;
     }
-    if (scan === undefined && virtualNodes.has(node) && isInVirtualDocumentTree(node)) {
-      return undefined;
+    const alreadyVirtual = virtualNodes.has(node);
+    if (alreadyVirtual && isInVirtualDocumentTree(node)) {
+      return scan === undefined ? undefined : undefined;
+    }
+    if (nodeType === 1 && alreadyVirtual && isPlainMarkedLeafElement(node as Element)) {
+      return scan ?? emptyScan;
+    }
+    if (
+      nodeType === 1 &&
+      alreadyVirtual &&
+      consumeDetachedWatch(node, collectScan && scan === undefined)
+    ) {
+      return scan ?? emptyScan;
     }
     const nonce = options.getNonce();
     if (!collectScan && scan === undefined && nonce === "") {
-      if (!markVirtualNode(node)) {
-        return undefined;
-      }
+      markVirtualSubtree(node);
       return emptyScan;
     }
     const useScratch = scan === undefined && !scratchInUse;
@@ -162,9 +212,7 @@ export function createNodeInsertion(
       scratchScan.hasTarget = false;
     }
     try {
-      if (!markVirtualNode(node, targetScan)) {
-        return undefined;
-      }
+      markVirtualSubtree(node, targetScan);
 
       if (nonce !== "" && targetScan.styles.length > 0) {
         for (const element of targetScan.styles) {
@@ -183,6 +231,9 @@ export function createNodeInsertion(
         !scratchScan.hasBase &&
         !scratchScan.hasTarget
       ) {
+        if (collectScan && nodeType === 1) {
+          armDetachedWatchIfCandidate(node as Element);
+        }
         return emptyScan;
       }
       return {
@@ -272,6 +323,80 @@ export function createNodeInsertion(
         : isSettledMovePostCandidate(node);
   };
 
+  const finishDirectInsertion = (
+    parent: Node,
+    nodes: readonly Node[],
+    scan: SubtreeScan | undefined,
+    skippedScan: boolean,
+    baseElementChanged: boolean,
+  ): void => {
+    if (skippedScan) {
+      finishInsertion(nodes, nodes.some(subtreeHasBaseElement), undefined);
+    } else if (scan === undefined) {
+      const flushed = options.flushSettledMove?.(nodes) === true;
+      const resolvedScan = nodes.some((n) => settledNodeHas(n, false))
+        ? undefined
+        : emptyScan;
+      finishInsertion(nodes, baseElementChanged, resolvedScan, flushed);
+    } else {
+      finishInsertion(nodes, baseElementChanged, scan);
+    }
+    if (isElementNode(parent) && isHTMLScriptElement(parent)) {
+      executeConnectedScript(parent);
+    }
+  };
+
+  const insertDirect = <T extends Node>(
+    parent: Node,
+    node: T,
+    method: string,
+    reference?: Node | null,
+    parentVerifiedVirtual = false,
+    nodeVerified = false,
+  ): T => {
+    if (!parentVerifiedVirtual && !virtualNodes.has(parent)) {
+      return (
+        reference === undefined
+          ? nativeAppendChild.call(parent, node)
+          : nativeInsertBefore.call(parent, node, reference)
+      ) as T;
+    }
+    if (!nodeVerified) {
+      requireNode(node, method, 1);
+    }
+    const wasConnected = parent.isConnected;
+    const scan = prepareInsertion(node, undefined, wasConnected);
+    const isFragment = node.nodeType === 11;
+    // Fragments empty their childNodes during insertion so must be snapshotted
+    // beforehand; single nodes into a disconnected parent need no array unless
+    // a custom-element callback connects the parent during insertion.
+    const nodes =
+      isFragment || wasConnected || scan === undefined ? insertedNodes(node) : null;
+    const skippedScan = !wasConnected && scan === emptyScan;
+    let baseElementChanged = false;
+    if (scan === undefined) {
+      options.flushSettledMove?.();
+      baseElementChanged = nodes!.some((n) => settledNodeHas(n, true));
+    } else if (!skippedScan) {
+      baseElementChanged = scan.hasBase;
+    }
+    const result = (
+      reference === undefined
+        ? nativeAppendChild.call(parent, node)
+        : nativeInsertBefore.call(parent, node, reference)
+    ) as T;
+    if (parent.isConnected) {
+      finishDirectInsertion(
+        parent,
+        nodes ?? [node],
+        scan,
+        skippedScan,
+        baseElementChanged,
+      );
+    }
+    return result;
+  };
+
   const insert = <T extends Node>(
     parent: Node,
     node: T,
@@ -284,33 +409,101 @@ export function createNodeInsertion(
     requireNode(node, method, 1);
     const wasConnected = parent.isConnected;
     const scan = prepareInsertion(node, undefined, wasConnected);
-    const nodes = insertedNodes(node);
+    const nodes =
+      node.nodeType === 11 || wasConnected || scan === undefined
+        ? insertedNodes(node)
+        : null;
     const skippedScan = !wasConnected && scan === emptyScan;
     let baseElementChanged = false;
     if (scan === undefined) {
       options.flushSettledMove?.();
-      baseElementChanged = nodes.some((n) => settledNodeHas(n, true));
+      baseElementChanged = nodes!.some((n) => settledNodeHas(n, true));
     } else if (!skippedScan) {
       baseElementChanged = scan.hasBase;
     }
     const result = operation();
     if (parent.isConnected) {
-      if (skippedScan) {
-        finishInsertion(nodes, nodes.some(subtreeHasBaseElement), undefined);
-      } else if (scan === undefined) {
-        const flushed = options.flushSettledMove?.(nodes) === true;
-        const resolvedScan = nodes.some((n) => settledNodeHas(n, false))
-          ? undefined
-          : emptyScan;
-        finishInsertion(nodes, baseElementChanged, resolvedScan, flushed);
-      } else {
-        finishInsertion(nodes, baseElementChanged, scan);
-      }
+      finishDirectInsertion(
+        parent,
+        nodes ?? [node],
+        scan,
+        skippedScan,
+        baseElementChanged,
+      );
+    }
+    return result;
+  };
+
+  const replaceNodeWith = <T extends Node>(parent: Node, node: Node, child: T): T => {
+    const scan = prepareInsertion(node, undefined, parent.isConnected);
+    const nodes = insertedNodes(node);
+    const parentConnected = parent.isConnected;
+    const childHasBase =
+      parentConnected &&
+      (options.settledSubtreeHas?.(child, true) ?? subtreeHasBaseElement(child));
+    const baseElementChanged =
+      childHasBase ||
+      (scan !== undefined ? scan.hasBase : nodes.some(subtreeHasBaseElement));
+    const result = nativeReplaceChild.call(parent, node, child) as T;
+    if (node !== child) {
+      options.onDisconnectedNodes([child]);
+    }
+    if (parent.isConnected) {
+      finishInsertion(nodes, baseElementChanged, scan);
       if (isElementNode(parent) && isHTMLScriptElement(parent)) {
         executeConnectedScript(parent);
       }
     }
     return result;
+  };
+
+  const replaceElementChildren = (
+    parent: Element,
+    fragment: DocumentFragment | null,
+  ): void => {
+    const hadChildren = parent.firstChild !== null;
+    if (fragment === null && !hadChildren) {
+      return;
+    }
+    const wasConnected = parent.isConnected;
+    const removed = hadChildren ? Array.from(parent.childNodes) : null;
+    const removedHasBase =
+      wasConnected &&
+      removed !== null &&
+      options.settledSubtreeHas?.(parent, true) !== false &&
+      removed.some(subtreeHasBaseElement);
+    if (fragment === null) {
+      performStyleMutationBatch(parent, () => {
+        nativeElementReplaceChildren.call(parent);
+        if (removed !== null) {
+          options.onDisconnectedNodes(removed);
+        }
+        if (removedHasBase) {
+          options.onBaseElementChange();
+        }
+      });
+      return;
+    }
+    const scan = prepareInsertion(fragment, undefined, wasConnected);
+    const inserted = insertedNodes(fragment);
+    const baseElementChanged =
+      wasConnected &&
+      (removedHasBase ||
+        (scan !== undefined ? scan.hasBase : inserted.some(subtreeHasBaseElement)));
+    performStyleMutationBatch(parent, () => {
+      nativeElementReplaceChildren.call(parent, fragment);
+      if (removed !== null) {
+        options.onDisconnectedNodes(removed);
+      }
+      if (parent.isConnected) {
+        finishInsertion(inserted, baseElementChanged, scan);
+        if (isHTMLScriptElement(parent)) {
+          executeConnectedScript(parent);
+        }
+      } else if (baseElementChanged) {
+        options.onBaseElementChange();
+      }
+    });
   };
 
   // One batch per style element: however many nodes a method inserts, the
@@ -360,10 +553,13 @@ export function createNodeInsertion(
       !(isElementNode(parent) && isHTMLStyleElement(parent))
     ) {
       const node = values[0];
-      insert(parent, node, prepend ? "prepend" : "append", () =>
-        prepend
-          ? nativeInsertBefore.call(parent, node, parent.firstChild)
-          : nativeAppendChild.call(parent, node),
+      insertDirect(
+        parent,
+        node,
+        prepend ? "prepend" : "append",
+        prepend ? parent.firstChild : undefined,
+        true,
+        true,
       );
       return;
     }
@@ -414,6 +610,9 @@ export function createNodeInsertion(
     insertedNodes,
     finishInsertion,
     insert,
+    insertDirect,
+    replaceElementChildren,
+    replaceNodeWith,
     styleElementChanged,
     performStyleMutationBatch,
     appendValues,

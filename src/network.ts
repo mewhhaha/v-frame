@@ -722,10 +722,9 @@ export function installNetworkPatches(options: NetworkPatchOptions): () => void 
     }
   };
   const disposeConnections = () => {
-    for (const [, disposeConnection] of activeConnections) {
+    activeConnections.drain((_connection, disposeConnection) => {
       disposeConnection();
-    }
-    activeConnections.clear();
+    });
   };
   const disposeNetwork = () => {
     disposed = true;

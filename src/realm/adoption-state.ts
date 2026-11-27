@@ -447,36 +447,62 @@ export class AdoptionState {
       "parentNode",
     )!.get!;
     const frame = bounds.call(this.#root.host);
-    const visible = (image: HTMLImageElement) => {
-      let left = Math.max(0, frame.left);
-      let right = Math.min(view.innerWidth, frame.right);
-      let top = Math.max(0, frame.top);
-      let bottom = Math.min(view.innerHeight, frame.bottom);
-      let node: Node | null = parent.call(image) as Node | null;
-      while (node && node !== this.#root) {
-        if (node.nodeType === 1) {
+    interface ClipRect {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    }
+    const rootClip: ClipRect = {
+      left: Math.max(0, frame.left),
+      right: Math.min(view.innerWidth, frame.right),
+      top: Math.max(0, frame.top),
+      bottom: Math.min(view.innerHeight, frame.bottom),
+    };
+    // Memoize ancestor clip geometry within this synchronous read-only visibility
+    // pass so lazy galleries do not recompute getComputedStyle/getBoundingClientRect
+    // for shared containers on every image.
+    const clipCache = new Map<Node, ClipRect>();
+    const ancestorClip = (node: Node | null): ClipRect => {
+      if (node === null || node === this.#root) return rootClip;
+      const cached = clipCache.get(node);
+      if (cached !== undefined) return cached;
+      const nextParent =
+        (parent.call(node) as Node | null) ??
+        ("host" in node ? (node as ShadowRoot).host : null);
+      let clip = ancestorClip(nextParent);
+      if (node.nodeType === 1) {
+        const style = view.getComputedStyle(node as Element);
+        const clipX = style.overflowX !== "visible";
+        const clipY = style.overflowY !== "visible";
+        if (clipX || clipY) {
           const box = bounds.call(node as Element);
-          const style = view.getComputedStyle(node as Element);
-          if (style.overflowX !== "visible") {
-            left = Math.max(left, box.left);
-            right = Math.min(right, box.right);
-          }
-          if (style.overflowY !== "visible") {
-            top = Math.max(top, box.top);
-            bottom = Math.min(bottom, box.bottom);
-          }
+          clip = {
+            left: clipX ? Math.max(clip.left, box.left) : clip.left,
+            right: clipX ? Math.min(clip.right, box.right) : clip.right,
+            top: clipY ? Math.max(clip.top, box.top) : clip.top,
+            bottom: clipY ? Math.min(clip.bottom, box.bottom) : clip.bottom,
+          };
         }
-        node =
-          (parent.call(node) as Node | null) ??
-          ("host" in node ? (node as ShadowRoot).host : null);
       }
+      clipCache.set(node, clip);
+      return clip;
+    };
+    const visible = (image: HTMLImageElement) => {
+      const clip = ancestorClip(parent.call(image) as Node | null);
       const box = bounds.call(image);
-      return box.right > left && box.left < right && box.bottom > top && box.top < bottom;
+      return (
+        box.right > clip.left &&
+        box.left < clip.right &&
+        box.bottom > clip.top &&
+        box.top < clip.bottom
+      );
     };
     const images = Array.from(this.#live?.querySelectorAll("img") ?? []).filter(
       (image) =>
         image.loading !== "lazy" || image.complete || image.currentSrc || visible(image),
     );
+    clipCache.clear();
     const lazy = images
       .filter((image) => image.loading === "lazy" && !image.complete)
       .map((image) => {

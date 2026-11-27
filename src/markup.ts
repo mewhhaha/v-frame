@@ -79,6 +79,9 @@ export interface PreparedMarkup {
   body: HTMLElement;
   baseURL: string;
   scripts: HTMLScriptElement[];
+  styles: HTMLStyleElement[];
+  links: HTMLLinkElement[];
+  bases: HTMLElement[];
   flags: number;
   authoredURLAttributes: EnumerableWeakMap<Element, Map<string, string>>;
   authoredStyleAttributes: EnumerableWeakMap<Element, string>;
@@ -607,21 +610,64 @@ function resolveMarkupBaseURL(
 }
 
 const URL_CANDIDATE_PATTERN = /href|src|action|formaction|poster|cite|<object/;
+const URL_ELEMENT_TAGS = [
+  "a",
+  "area",
+  "audio",
+  "base",
+  "blockquote",
+  "button",
+  "del",
+  "embed",
+  "form",
+  "iframe",
+  "img",
+  "input",
+  "ins",
+  "link",
+  "object",
+  "q",
+  "script",
+  "source",
+  "track",
+  "video",
+  "feImage",
+  "image",
+  "use",
+] as const;
 
 function collectAndAbsolutizeURLAttributes(
   root: Element,
   lowerSource: string,
-  restoredAttributes: boolean,
+  restoredURLs: boolean,
   pageURL: string,
   baseURL: string,
   createScriptURL: PrepareMarkupOptions["createScriptURL"],
 ): EnumerableWeakMap<Element, Map<string, string>> {
   const authoredURLAttributes = new EnumerableWeakMap<Element, Map<string, string>>();
-  if (!restoredAttributes && !URL_CANDIDATE_PATTERN.test(lowerSource)) {
+  if (!restoredURLs && !URL_CANDIDATE_PATTERN.test(lowerSource)) {
     return authoredURLAttributes;
   }
 
-  for (const element of root.querySelectorAll(URL_ELEMENT_SELECTOR)) {
+  let selector = URL_ELEMENT_SELECTOR;
+  if (!restoredURLs) {
+    const present: string[] = [];
+    for (const tag of URL_ELEMENT_TAGS) {
+      const lowerTag = tag === "feImage" ? "feimage" : tag;
+      if (
+        lowerSource.includes(`<${lowerTag}`) ||
+        (tag === "img" && lowerSource.includes("<image"))
+      ) {
+        present.push(tag);
+      }
+    }
+    if (present.length === 0) {
+      return authoredURLAttributes;
+    }
+    selector = present.join(",");
+  }
+
+  for (const element of root.querySelectorAll(selector)) {
     if (!canHaveURLAttributes(element)) continue;
     const attrs = element.attributes;
     const attrCount = attrs.length;
@@ -806,6 +852,9 @@ function neutralizeNoscriptContent(root: Element, lowerSource: string): void {
 }
 
 const INLINE_EVENT_CANDIDATE_PATTERN = /[\t\n\f\r /"']on[a-z]/;
+const RESTORED_EVENT = 1;
+const RESTORED_STYLE = 2;
+const RESTORED_URL = 4;
 
 interface MarkupParts {
   html: HTMLElement;
@@ -813,7 +862,7 @@ interface MarkupParts {
   body: HTMLElement;
   baseURL: string;
   lowerSource: string;
-  restoredAttributes: boolean;
+  restoredFlags: number;
   authoredStyleAttributes: EnumerableWeakMap<Element, string>;
   rewriteInlineStyles: boolean;
   hasPhysicalStyleAttributes: boolean;
@@ -831,7 +880,7 @@ async function finishMarkup(
     body,
     baseURL,
     lowerSource,
-    restoredAttributes,
+    restoredFlags,
     authoredStyleAttributes,
   } = parts;
   const inlineStyleSelectorAttribute = findUnusedAttributeName(
@@ -847,7 +896,7 @@ async function finishMarkup(
   const authoredURLAttributes = collectAndAbsolutizeURLAttributes(
     html,
     lowerSource,
-    restoredAttributes,
+    (restoredFlags & RESTORED_URL) !== 0,
     options.pageURL,
     baseURL,
     options.createScriptURL,
@@ -865,53 +914,81 @@ async function finishMarkup(
   const mayHaveStyles =
     parts.hasRestoredStyles === true || lowerSource.includes("<style");
   const mayHaveLinks = lowerSource.includes("<link");
+  const authoredStyles = mayHaveStyles ? Array.from(html.querySelectorAll("style")) : [];
 
-  if (mayHaveStyles) {
-    for (const style of html.querySelectorAll("style")) {
-      // A server vouches for the styles it materialized; every other guest style
-      // (all of them, in a fetched document) still resolves against the host
-      // page until rewritten here. A linked preview is prepared with its link.
-      const materialized = style.hasAttribute(SSR_STYLE);
-      style.removeAttribute(SSR_STYLE);
-      if (
-        !parts.rewriteInlineStyles &&
-        (materialized || style.hasAttribute(SSR_LINK_STYLE))
-      ) {
-        continue;
-      }
-      stylesheetJobs.push(
-        prepareInlineStyle(
-          style,
-          baseURL,
-          options.nonce,
-          stylesheetContext,
-          options.onError,
-        ),
-      );
+  for (const style of authoredStyles) {
+    // A server vouches for the styles it materialized; every other guest style
+    // (all of them, in a fetched document) still resolves against the host
+    // page until rewritten here. A linked preview is prepared with its link.
+    const materialized = style.hasAttribute(SSR_STYLE);
+    style.removeAttribute(SSR_STYLE);
+    if (
+      !parts.rewriteInlineStyles &&
+      (materialized || style.hasAttribute(SSR_LINK_STYLE))
+    ) {
+      continue;
     }
+    stylesheetJobs.push(
+      prepareInlineStyle(
+        style,
+        baseURL,
+        options.nonce,
+        stylesheetContext,
+        options.onError,
+      ),
+    );
   }
 
+  const links = mayHaveLinks
+    ? Array.from(html.querySelectorAll<HTMLLinkElement>("link"))
+    : [];
   let hasLinkedStyles = false;
-  if (mayHaveLinks) {
-    for (const link of html.querySelectorAll<HTMLLinkElement>(
-      'link[rel~="stylesheet" i][href]',
-    )) {
-      if (link.namespaceURI !== HTML_NAMESPACE) continue;
-      hasLinkedStyles = true;
-      stylesheetJobs.push(
-        prepareLinkedStyle(
-          link,
-          options.nonce,
-          stylesheetContext,
-          options.document,
-          linkedStyles,
-          options.onError,
-        ),
-      );
+  for (const link of links) {
+    if (
+      link.namespaceURI !== HTML_NAMESPACE ||
+      !link.hasAttribute("href") ||
+      !(link.getAttribute("rel") ?? "")
+        .split(/[\t\n\f\r ]+/)
+        .some((token) => token.toLowerCase() === "stylesheet")
+    ) {
+      continue;
     }
+    hasLinkedStyles = true;
+    stylesheetJobs.push(
+      prepareLinkedStyle(
+        link,
+        options.nonce,
+        stylesheetContext,
+        options.document,
+        linkedStyles,
+        options.onError,
+      ),
+    );
   }
 
   await Promise.all(stylesheetJobs);
+
+  let styles = authoredStyles;
+  if (hasLinkedStyles) {
+    const collected = new Set<HTMLStyleElement>();
+    for (const style of authoredStyles) {
+      if (html.contains(style)) collected.add(style);
+    }
+    for (const link of links) {
+      const linked = linkedStyles.get(link);
+      if (linked !== undefined && html.contains(linked.style)) {
+        collected.add(linked.style);
+      }
+    }
+    styles = [...collected];
+  }
+
+  const hasBase = lowerSource.includes("<base");
+  const bases = hasBase
+    ? Array.from(html.querySelectorAll<HTMLElement>("base")).filter(
+        (base) => base.namespaceURI === HTML_NAMESPACE,
+      )
+    : [];
 
   return {
     html,
@@ -921,16 +998,20 @@ async function finishMarkup(
     scripts: lowerSource.includes("<script")
       ? Array.from(html.querySelectorAll("script"))
       : [],
+    styles,
+    links,
+    bases,
     flags:
-      (mayHaveStyles || hasLinkedStyles ? MARKUP_FLAG_STYLES : 0) |
-      (mayHaveLinks ? MARKUP_FLAG_LINKS : 0) |
+      (styles.length > 0 ? MARKUP_FLAG_STYLES : 0) |
+      (links.length > 0 ? MARKUP_FLAG_LINKS : 0) |
       (lowerSource.includes("<svg") ? MARKUP_FLAG_SVG : 0) |
       (lowerSource.includes("<template") ? MARKUP_FLAG_TEMPLATES : 0) |
       (lowerSource.includes(FRAGMENT_TARGET_ATTRIBUTE) ? MARKUP_FLAG_TARGET : 0) |
-      (restoredAttributes || INLINE_EVENT_CANDIDATE_PATTERN.test(lowerSource)
+      ((restoredFlags & RESTORED_EVENT) !== 0 ||
+      INLINE_EVENT_CANDIDATE_PATTERN.test(lowerSource)
         ? MARKUP_FLAG_INLINE_EVENTS
         : 0) |
-      (lowerSource.includes("<base") ? MARKUP_FLAG_BASE : 0),
+      (bases.length > 0 ? MARKUP_FLAG_BASE : 0),
     authoredURLAttributes,
     authoredStyleAttributes,
     inlineStyleSelectorAttribute,
@@ -1010,7 +1091,7 @@ export async function prepareMarkup(
     body,
     baseURL,
     lowerSource,
-    restoredAttributes: false,
+    restoredFlags: 0,
     authoredStyleAttributes,
     rewriteInlineStyles: true,
     hasPhysicalStyleAttributes: false,
@@ -1047,17 +1128,17 @@ function canRestoreAuthoredAttribute(
   );
 }
 
-function restoreAuthoredAttributes(element: Element, marker: string): void {
+function restoreAuthoredAttributes(element: Element, marker: string): number {
   const provenance = element.getAttribute(marker);
-  if (provenance === null) return;
+  if (provenance === null) return 0;
   element.removeAttribute(marker);
   let authored: unknown;
   try {
     authored = JSON.parse(provenance);
   } catch {
-    return;
+    return 0;
   }
-  if (authored === null || typeof authored !== "object") return;
+  if (authored === null || typeof authored !== "object") return 0;
   // Older materializers put values in the JSON marker itself. New ones let the
   // HTML parser decode the values as ordinary attributes before restoring them.
   let attributes: [string, string | null][];
@@ -1073,6 +1154,7 @@ function restoreAuthoredAttributes(element: Element, marker: string): void {
   } else {
     attributes = Object.entries(authored as Record<string, string | null>);
   }
+  let restoredFlags = 0;
   for (const [name, value] of attributes) {
     if (!canRestoreAuthoredAttribute(element, marker, name)) continue;
     try {
@@ -1081,11 +1163,16 @@ function restoreAuthoredAttributes(element: Element, marker: string): void {
         if (name.startsWith("xlink:"))
           element.setAttributeNS(XLINK_NAMESPACE, name, value);
         else element.setAttribute(name, value);
+        const lower = name.toLowerCase();
+        if (lower.startsWith("on")) restoredFlags |= RESTORED_EVENT;
+        else if (lower === "style") restoredFlags |= RESTORED_STYLE;
+        else restoredFlags |= RESTORED_URL;
       }
     } catch {
       // Ignore malformed attribute names in provenance metadata.
     }
   }
+  return restoredFlags;
 }
 
 function transferNestedFrameStyles(
@@ -1170,11 +1257,10 @@ export async function prepareAdoptedMarkup(
     );
   }
   html.remove();
-  let restoredAttributes = false;
+  let restoredFlags = 0;
   const ssrSelector = `[${SSR_ATTRIBUTES}],[${SSR_LINK_REL}]`;
   const restoreSsrElement = (element: Element): void => {
-    restoredAttributes = true;
-    restoreAuthoredAttributes(element, SSR_ATTRIBUTES);
+    restoredFlags |= restoreAuthoredAttributes(element, SSR_ATTRIBUTES);
     const rel = element.getAttribute(SSR_LINK_REL);
     if (element.localName === "link" && rel !== null) {
       element.setAttribute("rel", rel);
@@ -1195,9 +1281,8 @@ export async function prepareAdoptedMarkup(
       `[${SSR_PREVIEW_ATTRIBUTES}]`,
       hasTemplates,
     );
-    if (previewTargets.length > 0) restoredAttributes = true;
     for (const element of previewTargets) {
-      restoreAuthoredAttributes(element, SSR_PREVIEW_ATTRIBUTES);
+      restoredFlags |= restoreAuthoredAttributes(element, SSR_PREVIEW_ATTRIBUTES);
     }
   }
 
@@ -1222,7 +1307,7 @@ export async function prepareAdoptedMarkup(
   neutralizeNoscriptContent(html, lowerSource);
   const baseURL = resolveMarkupBaseURL(html, options.pageURL, lowerSource);
   const authoredStyleAttributes = new EnumerableWeakMap<Element, string>();
-  if (restoredAttributes || lowerSource.includes("style")) {
+  if ((restoredFlags & RESTORED_STYLE) !== 0 || lowerSource.includes("style")) {
     const rootStyle = html.getAttribute("style");
     if (rootStyle !== null) {
       authoredStyleAttributes.set(html, rootStyle);
@@ -1240,7 +1325,7 @@ export async function prepareAdoptedMarkup(
     body,
     baseURL,
     lowerSource,
-    restoredAttributes,
+    restoredFlags,
     authoredStyleAttributes,
     // Server-materialized style elements arrive already rebased and marked;
     // those it could not materialize are rewritten like a fetched document's.

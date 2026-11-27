@@ -19,6 +19,19 @@ import type { StyleFacade } from "./style.js";
 import { toDOMString, toNullableDOMString, toUSVString } from "./webidl.js";
 import { FRAGMENT_TARGET_ATTRIBUTE } from "../wire-format.js";
 
+const POTENTIAL_URL_ATTRIBUTE_NAMES = new Set([
+  "href",
+  "src",
+  "srcset",
+  "imagesrcset",
+  "action",
+  "formaction",
+  "poster",
+  "cite",
+  "data",
+  "xlink:href",
+]);
+
 const URL_PROPERTY_NAMES = [
   "href",
   "src",
@@ -700,32 +713,30 @@ export function installAttributeFacade(
     },
   ];
 
-  // HTML attribute names are ASCII case-insensitive; other namespaces compare
-  // exactly, which is why the style and rel entries see the name as authored.
-  const normalizeAttributeName = (element: Element, qualifiedName: string): string =>
-    element.namespaceURI === HTML_NAMESPACE ? qualifiedName.toLowerCase() : qualifiedName;
-
   const managedAttributeFor = (
     element: Element,
     name: string,
     access: "read" | "write",
+    isHTML: boolean,
   ): ManagedAttribute | undefined => {
-    if (!virtualNodes.has(element)) {
-      return undefined;
-    }
     const c0 = name.charCodeAt(0);
     const c1 = name.charCodeAt(1);
     // Fast-reject ordinary unmanaged attributes (class, id, data-*, aria-*, title, etc.)
-    // without walking the managed-attribute table on every get/set/has/remove call.
+    // by name before consulting URL element capability or walking the matcher table.
+    const couldBeURL = isHTML
+      ? POTENTIAL_URL_ATTRIBUTE_NAMES.has(name)
+      : element.namespaceURI === SVG_NAMESPACE &&
+        (name === "href" ||
+          (name.length === 4 && name.toLowerCase() === "href") ||
+          (name.length === 10 && name.toLowerCase() === "xlink:href"));
     if (
+      !couldBeURL &&
       name !== "style" &&
       name !== "rel" &&
-      name !== "src" &&
       name !== "type" &&
       name !== options.inlineStyleSelectorAttribute &&
       name !== FRAGMENT_TARGET_ATTRIBUTE &&
-      !(name.length > 2 && (c0 === 111 || c0 === 79) && (c1 === 110 || c1 === 78)) &&
-      !canHaveURLAttributes(element)
+      !(name.length > 2 && (c0 === 111 || c0 === 79) && (c1 === 110 || c1 === 78))
     ) {
       return undefined;
     }
@@ -739,8 +750,12 @@ export function installAttributeFacade(
     element: Element,
     qualifiedName: string,
   ): string | null | undefined => {
-    const name = normalizeAttributeName(element, qualifiedName);
-    return managedAttributeFor(element, name, "read")?.get(element, name);
+    if (!virtualNodes.has(element)) {
+      return undefined;
+    }
+    const isHTML = element.namespaceURI === HTML_NAMESPACE;
+    const name = isHTML ? qualifiedName.toLowerCase() : qualifiedName;
+    return managedAttributeFor(element, name, "read", isHTML)?.get(element, name);
   };
 
   function getVirtualAttribute(element: Element, qualifiedName: string): string | null {
@@ -865,25 +880,35 @@ export function installAttributeFacade(
   ): void {
     qualifiedName = toDOMString(qualifiedName);
     const nextValue = toDOMString(value);
-    const name = normalizeAttributeName(element, qualifiedName);
-    const managed = managedAttributeFor(element, name, "write");
-    if (managed !== undefined) {
-      managed.set(element, name, nextValue);
-      return;
+    const virtual = virtualNodes.has(element);
+    if (virtual) {
+      const isHTML = element.namespaceURI === HTML_NAMESPACE;
+      const name = isHTML ? qualifiedName.toLowerCase() : qualifiedName;
+      const managed = managedAttributeFor(element, name, "write", isHTML);
+      if (managed !== undefined) {
+        managed.set(element, name, nextValue);
+        return;
+      }
     }
     nativeSetAttribute.call(element, qualifiedName, nextValue);
-    if (virtualNodes.has(element)) {
-      getVirtualAttributeNode(element, qualifiedName);
+    if (virtual) {
+      const attribute = nativeGetAttributeNode.call(element, qualifiedName);
+      if (attribute !== null) {
+        markVirtualAttribute!(attribute);
+      }
     }
   }
 
   function removeVirtualAttribute(element: Element, qualifiedName: string): void {
     qualifiedName = toDOMString(qualifiedName);
-    const name = normalizeAttributeName(element, qualifiedName);
-    const managed = managedAttributeFor(element, name, "write");
-    if (managed !== undefined) {
-      managed.remove(element, name);
-      return;
+    if (virtualNodes.has(element)) {
+      const isHTML = element.namespaceURI === HTML_NAMESPACE;
+      const name = isHTML ? qualifiedName.toLowerCase() : qualifiedName;
+      const managed = managedAttributeFor(element, name, "write", isHTML);
+      if (managed !== undefined) {
+        managed.remove(element, name);
+        return;
+      }
     }
     nativeRemoveAttribute.call(element, qualifiedName);
   }
@@ -1088,6 +1113,32 @@ export function installAttributeFacade(
           return document;
         }
         return nativeOwnerDocument?.get?.call(this) ?? null;
+      },
+    });
+    if (context.nativeBaseURI?.get !== undefined) {
+      const nativeBaseURIGetter = context.nativeBaseURI.get;
+      patch(window.Attr.prototype, "baseURI", {
+        get(this: Attr): string {
+          if (
+            virtualNodes.has(this) ||
+            (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
+          ) {
+            return options.getBaseURL();
+          }
+          return nativeBaseURIGetter.call(this) as string;
+        },
+      });
+    }
+    patch(window.Attr.prototype, "getRootNode", {
+      writable: true,
+      value(this: Attr, init?: GetRootNodeOptions): Node {
+        if (
+          virtualNodes.has(this) ||
+          (this.ownerElement !== null && virtualNodes.has(this.ownerElement))
+        ) {
+          return context.virtualGetRootNode(this, init);
+        }
+        return context.nativeGetRootNode.call(this, init);
       },
     });
     for (const [

@@ -31,6 +31,7 @@ interface RealmMutationObserverOptions {
 
 export interface RealmMutationObserver {
   observeMutations(): void;
+  hasBootstrapMutations(): boolean;
   flushIndex(selfMovedNodes?: readonly Node[]): boolean;
   recordConnected(nodes: readonly Node[], scan?: SubtreeScan): void;
   trackElement(element: Element): void;
@@ -57,7 +58,9 @@ export function observeRealmMutations(
   const nativeContains = window.Node.prototype.contains;
 
   const tracked = new Set<Element>();
+  let trackedBases = 0;
   let overflowed = false;
+  let removalsSinceOverflow = 0;
 
   const isHTMLBase = (element: Element): boolean =>
     element.localName === "base" && element.namespaceURI === HTML_NAMESPACE;
@@ -81,9 +84,14 @@ export function observeRealmMutations(
       (node as ParentNode).firstElementChild !== null &&
       nativeDOM.querySelectorAll(node as ParentNode, "base").some(isHTMLBase));
 
+  const untrackElement = (element: Element): void => {
+    if (tracked.delete(element) && isHTMLBase(element)) {
+      trackedBases -= 1;
+    }
+  };
   const pruneDisconnected = (): void => {
     for (const element of tracked) {
-      if (!options.isConnectedToRealm(element)) tracked.delete(element);
+      if (!options.isConnectedToRealm(element)) untrackElement(element);
     }
   };
   const trackElement = (element: Element): void => {
@@ -98,11 +106,34 @@ export function observeRealmMutations(
       pruneDisconnected();
       if (tracked.size >= SPECIAL_TRACKING_CAP) {
         overflowed = true;
+        removalsSinceOverflow = 0;
         tracked.clear();
+        trackedBases = 0;
         return;
       }
     }
     tracked.add(element);
+    if (isHTMLBase(element)) trackedBases += 1;
+  };
+  const maybeRecoverFromOverflow = (): void => {
+    if (!overflowed || removalsSinceOverflow < 8) return;
+    removalsSinceOverflow = 0;
+    const candidates = nativeDOM.querySelectorAll(options.root, SPECIAL_SELECTOR);
+    const rebuilt: Element[] = [];
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i]!;
+      if (!isTrackable(candidate)) continue;
+      if (rebuilt.length >= SPECIAL_TRACKING_CAP) return;
+      rebuilt.push(candidate);
+    }
+    overflowed = false;
+    tracked.clear();
+    trackedBases = 0;
+    for (let i = 0; i < rebuilt.length; i += 1) {
+      const element = rebuilt[i]!;
+      tracked.add(element);
+      if (isHTMLBase(element)) trackedBases += 1;
+    }
   };
   const trackSubtree = (node: Node): void => {
     if (overflowed || !options.isConnectedToRealm(node)) return;
@@ -118,10 +149,12 @@ export function observeRealmMutations(
         trackElement(element);
     }
   };
-  const subtreeHas = (node: Node, baseOnly: boolean): boolean | undefined => {
+  const subtreeHasTracked = (node: Node, baseOnly: boolean): boolean | undefined => {
     // Only answer for nodes inside the observed light tree; guest shadow roots
     // and detached subtrees are outside `options.root` and fall back to scanning.
     if (overflowed || !options.isConnectedToRealm(node)) return undefined;
+    if (baseOnly && trackedBases === 0) return false;
+    if (!baseOnly && tracked.size === 0) return false;
     for (const element of tracked) {
       if (
         baseOnly
@@ -132,12 +165,16 @@ export function observeRealmMutations(
         continue;
       }
       if (!options.isConnectedToRealm(element)) {
-        tracked.delete(element);
+        untrackElement(element);
         continue;
       }
       if (nativeContains.call(node, element)) return true;
     }
     return false;
+  };
+  const subtreeHas = (node: Node, baseOnly: boolean): boolean | undefined => {
+    if (!overflowed) flushIndex();
+    return subtreeHasTracked(node, baseOnly);
   };
 
   // Single MutationObserver with passive synchronous indexing and deferred
@@ -148,12 +185,27 @@ export function observeRealmMutations(
   const indexRecords = (records: MutationRecord[]): void => {
     if (overflowed) return;
     let sawRemoval = false;
+    const canSkipFacade =
+      facadeConnectedCounts !== undefined && deferredRecords.length === 0;
+    let seenFacadeCounts: Map<Node, number> | undefined;
     for (let i = 0; i < records.length; i += 1) {
       const record = records[i]!;
       if (record.type === "childList") {
         const added = record.addedNodes;
         for (let j = 0; j < added.length; j += 1) {
-          trackSubtree(added[j]!);
+          const addedNode = added[j]!;
+          // Nodes added synchronously through the facade already ran recordConnected().
+          if (canSkipFacade) {
+            const quota = facadeConnectedCounts.get(addedNode);
+            if (quota !== undefined && quota > 0) {
+              const seen = (seenFacadeCounts?.get(addedNode) ?? 0) + 1;
+              if (seen <= quota) {
+                (seenFacadeCounts ??= new Map()).set(addedNode, seen);
+                continue;
+              }
+            }
+          }
+          trackSubtree(addedNode);
         }
         if (record.removedNodes.length > 0) sawRemoval = true;
       } else if (
@@ -165,7 +217,7 @@ export function observeRealmMutations(
         if (nativeDOM.hasAttribute(target, FRAGMENT_TARGET_ATTRIBUTE)) {
           trackElement(target);
         } else if (!isTrackable(target)) {
-          tracked.delete(target);
+          untrackElement(target);
         }
       }
     }
@@ -173,6 +225,7 @@ export function observeRealmMutations(
   };
 
   let mainObserving = false;
+  let sawBootstrapMutation = false;
   let deferredRecords: MutationRecord[] = [];
   // Private detached Text node observed by the same MutationObserver so
   // draining records via takeRecords() can re-arm the observer's existing
@@ -225,7 +278,8 @@ export function observeRealmMutations(
           if (options.isConnectedToRealm(node)) {
             if (!baseElementsChanged && !checkedRemovedBase.has(node)) {
               checkedRemovedBase.add(node);
-              baseElementsChanged = subtreeHas(node, true) ?? subtreeHasBaseElement(node);
+              baseElementsChanged =
+                subtreeHasTracked(node, true) ?? subtreeHasBaseElement(node);
             }
             continue;
           }
@@ -256,7 +310,7 @@ export function observeRealmMutations(
           if (nativeDOM.hasAttribute(record.target, FRAGMENT_TARGET_ATTRIBUTE)) {
             trackElement(record.target);
           } else if (!isTrackable(record.target)) {
-            tracked.delete(record.target);
+            untrackElement(record.target);
           }
           continue;
         }
@@ -278,7 +332,14 @@ export function observeRealmMutations(
         }
       }
     }
-    if (sawDisconnectedRemoval) pruneDisconnected();
+    if (sawDisconnectedRemoval) {
+      if (overflowed) {
+        removalsSinceOverflow += 1;
+        maybeRecoverFromOverflow();
+      } else {
+        pruneDisconnected();
+      }
+    }
     if (baseElementsChanged) {
       options.onBaseElementChange();
     }
@@ -311,6 +372,7 @@ export function observeRealmMutations(
 
   const observer = new globalThis.MutationObserver((records) => {
     if (!mainObserving) {
+      if (records.length > 0) sawBootstrapMutation = true;
       indexRecords(records);
       return;
     }
@@ -371,17 +433,40 @@ export function observeRealmMutations(
     for (const element of initialElements) trackElement(element);
   }
 
+  const isPureFacadeAdditionRecord = (r: MutationRecord): boolean => {
+    if (
+      r.type !== "childList" ||
+      r.removedNodes.length !== 0 ||
+      facadeConnectedCounts === undefined ||
+      (r.target.nodeType === 1 &&
+        (r.target as Element).localName === "style" &&
+        (r.target as Element).namespaceURI === HTML_NAMESPACE)
+    ) {
+      return false;
+    }
+    const added = r.addedNodes;
+    if (added.length === 0) return false;
+    for (let j = 0; j < added.length; j += 1) {
+      const remaining = facadeConnectedCounts.get(added[j]!);
+      if (remaining === undefined || remaining <= 0) return false;
+    }
+    return true;
+  };
+
   const flushIndex = (selfMovedNodes?: readonly Node[]): boolean => {
     const records = observer.takeRecords();
     if (records.length === 0) {
       armDelivery();
-      return true;
+      return selfMovedNodes !== undefined || deferredRecords.length === 0;
+    }
+    if (!mainObserving) {
+      sawBootstrapMutation = true;
     }
     if (
       selfMovedNodes?.length === 1 &&
       !overflowed &&
       options.isConnectedToRealm(selfMovedNodes[0]!) &&
-      subtreeHas(selfMovedNodes[0]!, true) === false
+      subtreeHasTracked(selfMovedNodes[0]!, true) === false
     ) {
       const moved = selfMovedNodes[0]!;
       let pure = true;
@@ -407,6 +492,70 @@ export function observeRealmMutations(
         return true;
       }
     }
+    // Pre-move / pre-detach flush: records consisting solely of already-handled
+    // synchronous facade additions (and transient removals of clean nodes that
+    // have already been reconnected) can be retired inline without rescanning
+    // or deferring them into processRecords().
+    if (
+      selfMovedNodes === undefined &&
+      mainObserving &&
+      deferredRecords.length === 0 &&
+      facadeConnectedCounts !== undefined
+    ) {
+      let allRetirable = true;
+      let seenCounts: Map<Node, number> | undefined;
+      for (let i = 0; i < records.length; i += 1) {
+        const r = records[i]!;
+        if (r.target === deliveryTrigger) continue;
+        if (
+          !overflowed &&
+          r.type === "childList" &&
+          r.addedNodes.length === 0 &&
+          r.removedNodes.length === 1 &&
+          !(
+            r.target.nodeType === 1 &&
+            (r.target as Element).localName === "style" &&
+            (r.target as Element).namespaceURI === HTML_NAMESPACE
+          )
+        ) {
+          const removed = r.removedNodes[0]!;
+          if (
+            options.isConnectedToRealm(removed) &&
+            subtreeHasTracked(removed, true) === false &&
+            subtreeHasTracked(removed, false) === false
+          ) {
+            continue;
+          }
+        }
+        if (!isPureFacadeAdditionRecord(r)) {
+          allRetirable = false;
+          break;
+        }
+        const added = r.addedNodes;
+        for (let j = 0; j < added.length; j += 1) {
+          const addedNode = added[j]!;
+          const remaining = facadeConnectedCounts.get(addedNode) ?? 0;
+          const used = (seenCounts?.get(addedNode) ?? 0) + 1;
+          if (used > remaining) {
+            allRetirable = false;
+            break;
+          }
+          (seenCounts ??= new Map()).set(addedNode, used);
+        }
+        if (!allRetirable) break;
+      }
+      if (allRetirable) {
+        if (seenCounts !== undefined) {
+          for (const [addedNode, used] of seenCounts) {
+            const remaining = (facadeConnectedCounts.get(addedNode) ?? 0) - used;
+            if (remaining <= 0) facadeConnectedCounts.delete(addedNode);
+            else facadeConnectedCounts.set(addedNode, remaining);
+          }
+        }
+        armDelivery();
+        return true;
+      }
+    }
     indexRecords(records);
     deferRecords(records);
     return false;
@@ -416,9 +565,15 @@ export function observeRealmMutations(
     observeMutations() {
       if (mainObserving) return;
       const bootstrapRecords = observer.takeRecords();
-      if (bootstrapRecords.length > 0) indexRecords(bootstrapRecords);
+      if (bootstrapRecords.length > 0) {
+        sawBootstrapMutation = true;
+        indexRecords(bootstrapRecords);
+      }
       deferredRecords.length = 0;
       mainObserving = true;
+    },
+    hasBootstrapMutations() {
+      return sawBootstrapMutation;
     },
     flushIndex,
     recordConnected(nodes, scan) {
@@ -437,6 +592,9 @@ export function observeRealmMutations(
       observer.disconnect();
       deferredRecords.length = 0;
       tracked.clear();
+      trackedBases = 0;
+      overflowed = false;
+      removalsSinceOverflow = 0;
     },
   };
 }

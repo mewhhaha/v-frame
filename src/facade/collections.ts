@@ -22,6 +22,47 @@ const MAX_SELECTOR_CACHE_ENTRIES = 512;
 const translatedSelectorCache = new Map<string, string>();
 const targetSelectorCache = new Map<string, string>();
 
+/**
+ * Checks whether `selector` can be safely combined into `selector, translated`
+ * without altering tokenization across the comma (comments, unclosed quotes,
+ * unbalanced delimiters, or a trailing backslash).
+ */
+function canCombineSelector(selector: string): boolean {
+  let quote = 0;
+  let parens = 0;
+  let brackets = 0;
+  for (let i = 0, len = selector.length; i < len; i += 1) {
+    const c = selector.charCodeAt(i);
+    if (c === 0x5c) {
+      if (i + 1 >= len) return false;
+      i += 1;
+      continue;
+    }
+    if (quote !== 0) {
+      if (c === quote) quote = 0;
+      else if (c === 0x0a || c === 0x0d || c === 0x0c) return false;
+      continue;
+    }
+    if (c === 0x2f && selector.charCodeAt(i + 1) === 0x2a) {
+      return false;
+    }
+    if (c === 0x22 || c === 0x27) {
+      quote = c;
+    } else if (c === 0x28) {
+      parens += 1;
+    } else if (c === 0x29) {
+      if (parens === 0) return false;
+      parens -= 1;
+    } else if (c === 0x5b) {
+      brackets += 1;
+    } else if (c === 0x5d) {
+      if (brackets === 0) return false;
+      brackets -= 1;
+    }
+  }
+  return quote === 0 && parens === 0 && brackets === 0;
+}
+
 function cacheSelector(cache: Map<string, string>, key: string, value: string): string {
   if (cache.size >= MAX_SELECTOR_CACHE_ENTRIES) {
     cache.clear();
@@ -97,6 +138,7 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     window,
     elementPrototype,
     nativeGetAttribute,
+    nativeContains,
     nativeMatches,
     nativeClosest,
     nativeQuerySelector,
@@ -165,17 +207,20 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     });
 
   // The browser's own list is returned whenever no selector translation was
-  // needed; only a merged result has to be built, and it is a NodeList too.
-  const querySelectorAllWithShell = (
+  // needed, or when the original and shell-translated selectors can be queried
+  // together as a single native union in tree order.
+  const querySelectorAllPrepared = (
     root: Element,
     selectors: string,
+    translated: string,
   ): NodeListOf<Element> => {
-    selectors = targetSelector(toDOMString(selectors));
-    const translated = translateSelector(selectors);
-    const nativeList = nativeQuerySelectorAll.call(root, selectors);
     if (translated === selectors) {
-      return nativeList;
+      return nativeQuerySelectorAll.call(root, selectors);
     }
+    if (canCombineSelector(selectors)) {
+      return nativeQuerySelectorAll.call(root, `${selectors}, ${translated}`);
+    }
+    const nativeList = nativeQuerySelectorAll.call(root, selectors);
     const matches = Array.from(nativeList);
     const seen = new Set(matches);
     for (const match of Array.from(nativeQuerySelectorAll.call(root, translated))) {
@@ -187,13 +232,26 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     return staticNodeList(sortElementsInDocumentOrder(matches));
   };
 
-  const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
-    selectors = targetSelector(toDOMString(selectors));
-    const match = nativeQuerySelector.call(root, selectors);
-    const translated = translateSelector(selectors);
+  const querySelectorAllWithShell = (
+    root: Element,
+    selectors: string,
+  ): NodeListOf<Element> => {
+    const normalized = targetSelector(toDOMString(selectors));
+    return querySelectorAllPrepared(root, normalized, translateSelector(normalized));
+  };
+
+  const querySelectorPrepared = (
+    root: Element,
+    selectors: string,
+    translated: string,
+  ): Element | null => {
     if (translated === selectors) {
-      return match;
+      return nativeQuerySelector.call(root, selectors);
     }
+    if (canCombineSelector(selectors)) {
+      return nativeQuerySelector.call(root, `${selectors}, ${translated}`);
+    }
+    const match = nativeQuerySelector.call(root, selectors);
     const shellMatch = nativeQuerySelector.call(root, translated);
     if (match === null || shellMatch === null || match === shellMatch) {
       return match ?? shellMatch;
@@ -204,25 +262,40 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
       : shellMatch;
   };
 
+  const querySelectorWithShell = (root: Element, selectors: string): Element | null => {
+    const normalized = targetSelector(toDOMString(selectors));
+    return querySelectorPrepared(root, normalized, translateSelector(normalized));
+  };
+
+  const matchesPrepared = (
+    element: Element,
+    selectors: string,
+    translated: string,
+  ): boolean => {
+    if (translated === selectors) {
+      return nativeMatches.call(element, selectors);
+    }
+    if (canCombineSelector(selectors)) {
+      return nativeMatches.call(element, `${selectors}, ${translated}`);
+    }
+    return (
+      nativeMatches.call(element, selectors) || nativeMatches.call(element, translated)
+    );
+  };
+
   const querySelector = (selectors: string): Element | null => {
-    selectors = targetSelector(toDOMString(selectors));
-    const translated = translateSelector(selectors);
-    if (
-      nativeMatches.call(options.html, selectors) ||
-      nativeMatches.call(options.html, translated)
-    ) {
+    const normalized = targetSelector(toDOMString(selectors));
+    const translated = translateSelector(normalized);
+    if (matchesPrepared(options.html, normalized, translated)) {
       return options.html;
     }
-    return querySelectorWithShell(options.html, selectors);
+    return querySelectorPrepared(options.html, normalized, translated);
   };
   const querySelectorAll = (selectors: string): NodeListOf<Element> => {
-    selectors = targetSelector(toDOMString(selectors));
-    const translated = translateSelector(selectors);
-    const matches = querySelectorAllWithShell(options.html, selectors);
-    if (
-      nativeMatches.call(options.html, selectors) ||
-      nativeMatches.call(options.html, translated)
-    ) {
+    const normalized = targetSelector(toDOMString(selectors));
+    const translated = translateSelector(normalized);
+    const matches = querySelectorAllPrepared(options.html, normalized, translated);
+    if (matchesPrepared(options.html, normalized, translated)) {
       return staticNodeList([options.html, ...Array.from(matches)]);
     }
     return matches;
@@ -475,32 +548,39 @@ export function installCollectionFacade(context: FacadeContext): CollectionFacad
     patch(elementPrototype, "matches", {
       writable: true,
       value(this: Element, selectors: string): boolean {
+        const normalized = toDOMString(selectors);
         if (!isInVirtualDocumentTree(this)) {
           return nativeMatches.call(
             this,
-            virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+            virtualNodes.has(this) ? targetSelector(normalized) : normalized,
           );
         }
-        selectors = targetSelector(selectors);
-        return (
-          nativeMatches.call(this, selectors) ||
-          nativeMatches.call(this, translateSelector(selectors))
-        );
+        const targeted = targetSelector(normalized);
+        return matchesPrepared(this, targeted, translateSelector(targeted));
       },
     });
     patch(elementPrototype, "closest", {
       writable: true,
       value(this: Element, selectors: string): Element | null {
+        const normalized = toDOMString(selectors);
         if (!isInVirtualDocumentTree(this)) {
           return nativeClosest.call(
             this,
-            virtualNodes.has(this) ? targetSelector(selectors) : selectors,
+            virtualNodes.has(this) ? targetSelector(normalized) : normalized,
           );
         }
-        selectors = targetSelector(selectors);
-        const translated = translateSelector(selectors);
+        const targeted = targetSelector(normalized);
+        const translated = translateSelector(targeted);
+        if (translated === targeted) {
+          const hit = nativeClosest.call(this, targeted);
+          return hit !== null && nativeContains.call(options.html, hit) ? hit : null;
+        }
+        if (canCombineSelector(targeted)) {
+          const hit = nativeClosest.call(this, `${targeted}, ${translated}`);
+          return hit !== null && nativeContains.call(options.html, hit) ? hit : null;
+        }
         const matchesSelector = (candidate: Element): boolean =>
-          nativeMatches.call(candidate, selectors) ||
+          nativeMatches.call(candidate, targeted) ||
           nativeMatches.call(candidate, translated);
         if (matchesSelector(this)) {
           return this;

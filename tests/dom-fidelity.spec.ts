@@ -963,3 +963,375 @@ test("matches foreign tag names case-sensitively and keeps unknown on-attributes
     inlineHandlerRan: "yes",
   });
 });
+
+test("preserves selector union edge cases, detached native edits, and inert template custom elements", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(async () => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow!;
+    const virtualDocument = child.document;
+    const root = virtualDocument.querySelector("#dom-root")!;
+
+    // 1. Selector union edge cases: comments, quoted commas, unclosed brackets, SyntaxError, closest/matches.
+    const item = virtualDocument.createElement("div");
+    item.className = "union-item";
+    item.setAttribute("data-comma", "a,b");
+    root.append(item);
+
+    let syntaxError = false;
+    try {
+      virtualDocument.querySelector("body, ..invalid");
+    } catch (error) {
+      syntaxError = error instanceof child.DOMException && error.name === "SyntaxError";
+    }
+    const unclosedBracketMatches =
+      virtualDocument.querySelector("body [data-comma") === item;
+    let commentQueryOk = false;
+    try {
+      commentQueryOk = virtualDocument.querySelector("body /* , */ .union-item") === item;
+    } catch {
+      commentQueryOk = false;
+    }
+    const quotedQueryOk =
+      virtualDocument.querySelector('body [data-comma="a,b"]') === item;
+    const closestBody = item.closest("body") === virtualDocument.body;
+    const closestHtml = item.closest("html") === virtualDocument.documentElement;
+    const matchesBodyDescendant = item.matches("body .union-item");
+    const matchesRootDescendant = item.matches(":root .union-item");
+
+    // 2. Detached-subtree watcher: native edits while detached, removed script not executed, base change rebases.
+    const section = virtualDocument.createElement("section");
+    const anchor = virtualDocument.createElement("a");
+    anchor.setAttribute("href", "rel/before.html");
+    const childDiv = virtualDocument.createElement("div");
+    childDiv.append(virtualDocument.createElement("i"));
+    section.append(
+      anchor,
+      childDiv,
+      virtualDocument.createElement("p"),
+      virtualDocument.createElement("p"),
+    );
+    root.append(section);
+
+    // Invalid removeChild must throw without stranding a detached watch.
+    let notFoundThrew = false;
+    try {
+      childDiv.removeChild(anchor);
+    } catch (error) {
+      notFoundThrew =
+        error instanceof child.DOMException && error.name === "NotFoundError";
+    }
+
+    // Detach, apply native host mutations synchronously, and re-attach.
+    // Repeat twice so both the initial full-walk path and the armed clean-watch
+    // invalidation path are exercised.
+    section.remove();
+    const nativeNode = document.createElement("span");
+    nativeNode.textContent = "native-added";
+    Node.prototype.appendChild.call(childDiv, nativeNode);
+    Element.prototype.setAttribute.call(childDiv, "data-native", "ok");
+    const transientScript = virtualDocument.createElement("script");
+    transientScript.textContent = "window.__transientRan = true;";
+    section.append(transientScript);
+    transientScript.remove();
+
+    root.append(section);
+
+    const nativeNodeOwner = nativeNode.ownerDocument === virtualDocument;
+    const nativeAttrOwner =
+      childDiv.getAttributeNode("data-native")?.ownerDocument === virtualDocument;
+    const transientScriptRan =
+      (child as unknown as { __transientRan?: boolean }).__transientRan === true;
+
+    // Second detach (now armed with clean-subtree watch): native node + attribute edits
+    // invalidate the watch and repair synchronously on re-attach.
+    section.remove();
+    const secondNativeNode = document.createElement("em");
+    Node.prototype.appendChild.call(childDiv, secondNativeNode);
+    Element.prototype.setAttribute.call(childDiv, "data-native-2", "ok2");
+    root.append(section);
+    const secondNativeNodeOwner = secondNativeNode.ownerDocument === virtualDocument;
+    const secondNativeAttrOwner =
+      childDiv.getAttributeNode("data-native-2")?.ownerDocument === virtualDocument;
+
+    // Detach, change <base>, and re-attach without mutating section directly.
+    section.remove();
+    const base = virtualDocument.createElement("base");
+    base.setAttribute("href", "/rebased/sub/");
+    virtualDocument.head.append(base);
+    root.append(section);
+    const rebasedPhysicalHref = Element.prototype.getAttribute.call(anchor, "href");
+    base.remove();
+
+    // 3. innerHTML with custom element inside <template> vs live markup.
+    let upgradedCount = 0;
+    class TestWidget extends child.HTMLElement {
+      constructor() {
+        super();
+        upgradedCount += 1;
+      }
+    }
+    child.customElements.define("x-test-widget", TestWidget);
+    const hostBox = virtualDocument.createElement("div");
+    root.append(hostBox);
+    hostBox.innerHTML =
+      "<x-test-widget></x-test-widget><template><x-test-widget></x-test-widget></template>";
+    const templateHtml = (hostBox.querySelector("template") as HTMLTemplateElement)
+      .innerHTML;
+
+    // 4. CSSOM .sheet with nested rules (wait for async dynamic style rewrite to commit).
+    const styleEl = virtualDocument.createElement("style");
+    styleEl.textContent =
+      "body { color: rgb(1, 2, 3); .nested-child { color: rgb(4, 5, 6); } }";
+    virtualDocument.head.append(styleEl);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((styleEl.sheet?.cssRules.length ?? 0) > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const ruleCount = styleEl.sheet?.cssRules.length ?? 0;
+
+    return {
+      syntaxError,
+      unclosedBracketMatches,
+      commentQueryOk,
+      quotedQueryOk,
+      closestBody,
+      closestHtml,
+      matchesBodyDescendant,
+      matchesRootDescendant,
+      notFoundThrew,
+      nativeNodeOwner,
+      nativeAttrOwner,
+      secondNativeNodeOwner,
+      secondNativeAttrOwner,
+      transientScriptRan,
+      rebasedPhysicalHref,
+      upgradedCount,
+      templateHtml,
+      ruleCount,
+    };
+  });
+
+  expect(result).toEqual({
+    syntaxError: true,
+    unclosedBracketMatches: true,
+    commentQueryOk: true,
+    quotedQueryOk: true,
+    closestBody: true,
+    closestHtml: true,
+    matchesBodyDescendant: true,
+    matchesRootDescendant: true,
+    notFoundThrew: true,
+    nativeNodeOwner: true,
+    nativeAttrOwner: true,
+    secondNativeNodeOwner: true,
+    secondNativeAttrOwner: true,
+    transientScriptRan: false,
+    rebasedPhysicalHref: `${fixture.origin}/rebased/sub/rel/before.html`,
+    upgradedCount: 1,
+    templateHtml: "<x-test-widget></x-test-widget>",
+    ruleCount: 1,
+  });
+});
+
+test("handles shadowed form.contains, physical base removals, raw style serialization, and Event method shapes", async ({
+  page,
+}) => {
+  await mountFidelityFrame(page);
+
+  const result = await page.evaluate(async () => {
+    const frame = document.querySelector("#fidelity-frame") as HTMLElement & {
+      contentWindow: (Window & typeof globalThis) | null;
+    };
+    const child = frame.contentWindow!;
+    const d = child.document;
+    const root = d.body;
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+    // 1. Form with <input name="contains"> under detached watch.
+    const form = d.createElement("form");
+    form.innerHTML = '<input name="contains"><p>1</p><p>2</p><p>3</p><p>4</p>';
+    root.append(form);
+    await tick();
+    form.remove();
+    const addedChild = d.createElement("span");
+    form.append(addedChild);
+    root.append(form);
+    const formReconnected = form.isConnected;
+    form.remove();
+
+    // 2. Shadowed documentElement.contains must not break closest().
+    const b = d.createElement("b");
+    root.append(b);
+    (d.documentElement as unknown as { contains: () => boolean }).contains = () => false;
+    const closestSurvived = b.closest("b") === b;
+    delete (d.documentElement as unknown as { contains?: unknown }).contains;
+    b.remove();
+
+    // 3. Synchronous removal of a natively appended <base> rebases URLs immediately.
+    const hostDiv = d.createElement("div");
+    const rawBase = d.createElement("base");
+    const link = d.createElement("a");
+    link.setAttribute("href", "zzz");
+    root.append(hostDiv, link);
+    Node.prototype.appendChild.call(hostDiv, rawBase);
+    rawBase.setAttribute("href", "/elsewhere/");
+    const hrefWithBase = Element.prototype.getAttribute.call(link, "href");
+    hostDiv.textContent = "";
+    const hrefAfterTextClear = Element.prototype.getAttribute.call(link, "href");
+    hostDiv.remove();
+    link.remove();
+
+    // 4. Raw physical style attr hidden from authored innerHTML/outerHTML.
+    const rawBox = d.createElement("div");
+    const rawSpan = d.createElement("span");
+    root.append(rawBox);
+    rawBox.append(rawSpan);
+    Element.prototype.setAttribute.call(rawSpan, "style", "color:red");
+    const rawSerialized = [
+      rawSpan.getAttribute("style"),
+      rawBox.innerHTML,
+      rawSpan.outerHTML,
+    ];
+    rawBox.remove();
+
+    // 5. Detached leaf with authored URL whose physical attribute was removed natively.
+    const leafAnchor = d.createElement("a");
+    leafAnchor.setAttribute("href", "leaf.html");
+    Element.prototype.removeAttribute.call(leafAnchor, "href");
+    root.append(leafAnchor);
+    const leafRebased = Element.prototype.getAttribute.call(leafAnchor, "href");
+    leafAnchor.remove();
+
+    // 6. Custom element constructor relocating target during insertAdjacentHTML.
+    const p = d.createElement("div");
+    const q = d.createElement("div");
+    const target = d.createElement("b");
+    p.append(target);
+    root.append(p, q);
+    child.customElements.define(
+      "x-relocate-audit",
+      class extends child.HTMLElement {
+        constructor() {
+          super();
+          q.append(target);
+        }
+      },
+    );
+    target.insertAdjacentHTML("afterend", "<x-relocate-audit></x-relocate-audit>");
+    const relocatedHTML = [p.innerHTML, q.innerHTML];
+    p.remove();
+    q.remove();
+
+    // 7. Non-constructible Event.prototype method shape.
+    const eventMethodHasPrototype = Object.hasOwn(
+      child.Event.prototype.stopImmediatePropagation,
+      "prototype",
+    );
+
+    // 8. Popover translate cascade order: guest adoptedStyleSheets override internal top-layer sheet.
+    const pop = d.createElement("div");
+    pop.setAttribute("popover", "manual");
+    root.append(pop);
+    const guestSheet = new child.CSSStyleSheet();
+    guestSheet.replaceSync(":where([popover]){translate:97px 101px}");
+    d.adoptedStyleSheets = [guestSheet];
+    pop.showPopover();
+    await tick();
+    const popoverTranslate = child.getComputedStyle(pop).translate;
+    pop.hidePopover();
+    pop.remove();
+    d.adoptedStyleSheets = [];
+
+    // 9. Form with <input name="localName"> inside innerHTML parse & replace.
+    const formBox = d.createElement("div");
+    formBox.innerHTML = '<form><input name="localName"></form>';
+    const formParseHTML = formBox.innerHTML;
+    const namedForm = formBox.firstElementChild as HTMLFormElement;
+    namedForm.innerHTML = "<b></b>";
+    const formReplaceHTML = namedForm.innerHTML;
+
+    // 10. Uppercase HTML-namespace element keeps case-sensitive parser context (non-rawtext).
+    const upperStyle = d.createElementNS("http://www.w3.org/1999/xhtml", "STYLE");
+    upperStyle.innerHTML = "<b>ok</b>";
+    const upperStyleChild = upperStyle.firstChild?.nodeName ?? null;
+
+    // 11. Reentrant Node.prototype.textContent.set toString() connecting a script still executes it.
+    const reentrantScript = d.createElement("script");
+    Object.getOwnPropertyDescriptor(child.Node.prototype, "textContent")!.set!.call(
+      reentrantScript,
+      {
+        toString() {
+          root.append(reentrantScript);
+          return "window.__reentrantTextRan = 42;";
+        },
+      },
+    );
+    await tick();
+    const reentrantTextRan =
+      (child as unknown as { __reentrantTextRan?: number }).__reentrantTextRan ?? null;
+    reentrantScript.remove();
+
+    // 12. Retained NamedNodeMap + IDL property write across 1st and 2nd detach preserves Attr identity.
+    const watchBox = d.createElement("div");
+    watchBox.innerHTML = "<b><i></i></b><p></p><p></p><p></p>";
+    root.append(watchBox);
+    await tick();
+    const watchChild = watchBox.firstElementChild as HTMLElement;
+    const namedAttrs = watchChild.attributes;
+    watchChild.title = "first";
+    watchBox.remove();
+    root.append(watchBox);
+    const firstDetachedAttr = namedAttrs.removeNamedItem("title");
+    const firstAttrOk =
+      firstDetachedAttr.ownerDocument === d && firstDetachedAttr.baseURI === d.baseURI;
+    watchChild.title = "second";
+    watchBox.remove();
+    root.append(watchBox);
+    const secondDetachedAttr = namedAttrs.removeNamedItem("title");
+    const secondAttrOk =
+      secondDetachedAttr.ownerDocument === d && secondDetachedAttr.baseURI === d.baseURI;
+    watchBox.remove();
+
+    return {
+      formReconnected,
+      closestSurvived,
+      hrefWithBase,
+      hrefAfterTextClear,
+      rawSerialized,
+      leafRebased,
+      relocatedHTML,
+      eventMethodHasPrototype,
+      popoverTranslate,
+      formParseHTML,
+      formReplaceHTML,
+      upperStyleChild,
+      reentrantTextRan,
+      firstAttrOk,
+      secondAttrOk,
+    };
+  });
+
+  expect(result).toEqual({
+    formReconnected: true,
+    closestSurvived: true,
+    hrefWithBase: `${fixture.origin}/elsewhere/zzz`,
+    hrefAfterTextClear: `${fixture.origin}/documents/zzz`,
+    rawSerialized: [null, "<span></span>", "<span></span>"],
+    leafRebased: `${fixture.origin}/documents/leaf.html`,
+    relocatedHTML: ["", "<b></b><x-relocate-audit></x-relocate-audit>"],
+    eventMethodHasPrototype: false,
+    popoverTranslate: "97px 101px",
+    formParseHTML: '<form><input name="localName"></form>',
+    formReplaceHTML: "<b></b>",
+    upperStyleChild: "B",
+    reentrantTextRan: 42,
+    firstAttrOk: true,
+    secondAttrOk: true,
+  });
+});

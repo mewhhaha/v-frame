@@ -117,9 +117,12 @@ export interface EventFacade {
   dispose(): void;
 }
 
-// Per-host-window cache of browser Event constructor names on a pristine realm
-// window so later mounts avoid scanning every global property.
+// Per-host-window caches for pristine realm event metadata so later mounts
+// skip full prototype/global scans while still reading each realm's descriptors.
 const cachedEventConstructorNames = new WeakMap<Window, string[]>();
+const cachedEventMemberNames = new WeakMap<Window, Map<string, string[]>>();
+const cachedElementHandlerNames = new WeakMap<Window, Map<string, string[]>>();
+const cachedDocumentHandlerNames = new WeakMap<Window, string[]>();
 const MIRRORED_EVENT_NAMES = [
   "PointerEvent",
   "WheelEvent",
@@ -131,6 +134,21 @@ const MIRRORED_EVENT_NAMES = [
   "FocusEvent",
   "CustomEvent",
 ] as const;
+
+export function cachedDocumentEventHandlerNames(
+  window: Window,
+  hostWindow: Window,
+  eventTargetPrototype: object,
+): readonly string[] {
+  let names = cachedDocumentHandlerNames.get(hostWindow);
+  if (names === undefined) {
+    const documentPrototype = (window as unknown as { Document: { prototype: object } })
+      .Document.prototype;
+    names = eventHandlerNames([documentPrototype], eventTargetPrototype);
+    cachedDocumentHandlerNames.set(hostWindow, names);
+  }
+  return names;
+}
 
 export function installEventFacade(
   context: FacadeContext,
@@ -199,10 +217,11 @@ export function installEventFacade(
       owner !== null;
       owner = Object.getPrototypeOf(owner) as object | null
     ) {
-      const descriptor = Object.getOwnPropertyDescriptor(owner, property);
-      if (descriptor === undefined) continue;
+      if (!Object.hasOwn(owner, property)) continue;
       const native = nativeEventMembers.get(owner)?.[property];
-      return native !== undefined &&
+      if (native === undefined) return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+      return descriptor !== undefined &&
         native.value === descriptor.value &&
         native.get === descriptor.get
         ? native
@@ -337,16 +356,16 @@ export function installEventFacade(
       return existing;
     }
     const mirrored = event instanceof window.Event ? event : createMirroredEvent(source);
+    const sameSource = mirrored === source;
     // Members the proxy hands out are created once per proxy: a native method
     // is the same function on every read, and the guest compares them.
     let ownMethods: Map<string, Function> | undefined;
-    const ownMethod = (name: string, implementation: () => void): Function => {
-      ownMethods ??= new Map();
-      let method = ownMethods.get(name);
+    const ownMethod = (name: string, create: () => () => unknown): Function => {
+      let method = ownMethods?.get(name);
       if (method === undefined) {
-        method = implementation;
+        method = create();
         Object.defineProperty(method, "name", { value: name });
-        ownMethods.set(name, method);
+        (ownMethods ??= new Map()).set(name, method);
       }
       return method;
     };
@@ -376,13 +395,16 @@ export function installEventFacade(
     };
     const listenerEvent: Event = new Proxy(mirrored, {
       get(target, property) {
-        const fromSource = !(property in target) && property in source;
+        if (property === "isTrusted") {
+          // isTrusted is the browser's unforgeable instance accessor; trust belongs to source.
+          return source.isTrusted;
+        }
+        const fromSource = !sameSource && !(property in target) && property in source;
         const receiver = fromSource ? source : target;
         const nativeMember = nativeEventMember(receiver, property);
         // Guest fields, getters and class methods keep their identity and see
-        // the logical event as `this`. Only browser members need a raw receiver;
-        // isTrusted is the browser's own unforgeable instance accessor.
-        if (property !== "isTrusted" && nativeMember === undefined) {
+        // the logical event as `this`. Only browser members need a raw receiver.
+        if (nativeMember === undefined) {
           return Reflect.get(receiver, property, listenerEvent);
         }
         switch (property) {
@@ -409,9 +431,6 @@ export function installEventFacade(
               : source.cancelBubble;
           case "returnValue":
             return !wasEventDefaultPrevented(source);
-          case "isTrusted":
-            // The mirrored event is synthetic; trust belongs to the source.
-            return source.isTrusted;
           case "timeStamp":
             return source.timeStamp;
           case "relatedTarget": {
@@ -425,9 +444,9 @@ export function installEventFacade(
             return related === null || isGuestVisibleTarget(related) ? related : null;
           }
           case "composedPath":
-            return ownMethod("composedPath", () => logicalComposedPath(source));
+            return ownMethod("composedPath", () => () => logicalComposedPath(source));
           case "preventDefault":
-            return ownMethod("preventDefault", () => {
+            return ownMethod("preventDefault", () => () => {
               if (passiveListeners.has(source) && source.currentTarget !== null) {
                 return;
               }
@@ -439,13 +458,13 @@ export function installEventFacade(
               target.preventDefault();
             });
           case "stopPropagation":
-            return ownMethod("stopPropagation", () => {
+            return ownMethod("stopPropagation", () => () => {
               virtualPropagationStopped.add(source);
               source.stopPropagation();
               target.stopPropagation();
             });
           case "stopImmediatePropagation":
-            return ownMethod("stopImmediatePropagation", () => {
+            return ownMethod("stopImmediatePropagation", () => () => {
               virtualPropagationStopped.add(source);
               immediatePropagationStopped.add(source);
               source.stopImmediatePropagation();
@@ -676,7 +695,7 @@ export function installEventFacade(
     bubble: EventListener;
   }
   const rootEventRelays = new Map<string, RootEventRelay>();
-  const boundaryEventRelays = new Map<string, EventListener>();
+  const boundaryEventRelayTypes = new Set<string>();
   const outsideEventRelays = new Map<string, EventListener>();
   const outsideEventTypes = new Set([
     "pointerdown",
@@ -715,18 +734,20 @@ export function installEventFacade(
     hostDocument.addEventListener(type, relay, true);
   };
 
+  // One shared boundary listener serves every relayed event type.
+  const boundaryRelay: EventListener = (event) => {
+    if (event.composedPath().includes(options.html)) {
+      boundaryPropagationStopped.add(listenerEventSource(event));
+      event.stopPropagation();
+    }
+  };
+
   const ensureBoundaryEventRelay = (type: string): void => {
-    if (boundaryEventRelays.has(type)) {
+    if (boundaryEventRelayTypes.has(type)) {
       return;
     }
-    const relay: EventListener = (event) => {
-      if (event.composedPath().includes(options.html)) {
-        boundaryPropagationStopped.add(listenerEventSource(event));
-        event.stopPropagation();
-      }
-    };
-    boundaryEventRelays.set(type, relay);
-    options.shadowRoot.addEventListener(type, relay);
+    boundaryEventRelayTypes.add(type);
+    options.shadowRoot.addEventListener(type, boundaryRelay);
   };
 
   const listenerCanContinue = (event: Event): boolean =>
@@ -831,57 +852,92 @@ export function installEventFacade(
         },
       });
     }
-    const patchedEventHandlerProperties = new WeakMap<object, Set<string>>();
+    const patchHandlerOnPrototype = (
+      prototype: object,
+      propertyName: string,
+      descriptor: PropertyDescriptor,
+    ): void => {
+      const eventName = propertyName.slice(2);
+      discoveredHandlerTypes.add(eventName);
+      patch(
+        prototype,
+        propertyName,
+        {
+          get(this: Element) {
+            if (!virtualNodes.has(this)) {
+              return descriptor.get?.call(this) ?? null;
+            }
+            if (handlerOnWindow(this, eventName)) {
+              return windowHandlers[`on${eventName}`] ?? null;
+            }
+            return elementHandlerValues.get(this)?.get(eventName) ?? null;
+          },
+          set(this: Element, value: EventListener | null) {
+            if (!virtualNodes.has(this)) {
+              descriptor.set?.call(this, value);
+              return;
+            }
+            setElementHandler(
+              this,
+              eventName,
+              typeof value === "function" ? value : null,
+            );
+          },
+        },
+        descriptor,
+      );
+    };
+    const cachedPlan = cachedElementHandlerNames.get(hostWindow);
+    const planToStore = cachedPlan === undefined ? new Map<string, string[]>() : null;
+    const patchedPrototypes = new Set<object>();
     for (const startingPrototype of [
       window.HTMLElement.prototype,
       window.SVGElement.prototype,
     ]) {
       let prototype: object | null = startingPrototype;
       while (prototype !== null && prototype !== eventTargetPrototype) {
-        let names = patchedEventHandlerProperties.get(prototype);
-        for (const propertyName of Object.getOwnPropertyNames(prototype)) {
-          if (!propertyName.startsWith("on")) {
-            continue;
-          }
-          const descriptor = Object.getOwnPropertyDescriptor(prototype, propertyName);
-          if (descriptor?.get === undefined || descriptor.set === undefined) {
-            continue;
-          }
-          if (names === undefined) {
-            names = new Set();
-            patchedEventHandlerProperties.set(prototype, names);
-          }
-          if (names.has(propertyName)) {
-            continue;
-          }
-          names.add(propertyName);
-          const eventName = propertyName.slice(2);
-          discoveredHandlerTypes.add(eventName);
-          patch(prototype, propertyName, {
-            get(this: Element) {
-              if (!virtualNodes.has(this)) {
-                return descriptor.get?.call(this) ?? null;
+        if (!patchedPrototypes.has(prototype)) {
+          patchedPrototypes.add(prototype);
+          const ctorName =
+            typeof (prototype as { constructor?: { name?: string } }).constructor
+              ?.name === "string"
+              ? (prototype as { constructor: { name: string } }).constructor.name
+              : "";
+          const cachedNames =
+            cachedPlan !== undefined && ctorName !== ""
+              ? cachedPlan.get(ctorName)
+              : undefined;
+          if (cachedNames !== undefined) {
+            for (let index = 0; index < cachedNames.length; index += 1) {
+              const propertyName = cachedNames[index]!;
+              const descriptor = Object.getOwnPropertyDescriptor(prototype, propertyName);
+              if (descriptor?.get !== undefined && descriptor.set !== undefined) {
+                patchHandlerOnPrototype(prototype, propertyName, descriptor);
               }
-              if (handlerOnWindow(this, eventName)) {
-                return windowHandlers[`on${eventName}`] ?? null;
+            }
+          } else {
+            const found: string[] = [];
+            for (const propertyName of Object.getOwnPropertyNames(prototype)) {
+              if (!propertyName.startsWith("on")) {
+                continue;
               }
-              return elementHandlerValues.get(this)?.get(eventName) ?? null;
-            },
-            set(this: Element, value: EventListener | null) {
-              if (!virtualNodes.has(this)) {
-                descriptor.set?.call(this, value);
-                return;
+              const descriptor = Object.getOwnPropertyDescriptor(prototype, propertyName);
+              if (descriptor?.get === undefined || descriptor.set === undefined) {
+                continue;
               }
-              setElementHandler(
-                this,
-                eventName,
-                typeof value === "function" ? value : null,
-              );
-            },
-          });
+              found.push(propertyName);
+              patchHandlerOnPrototype(prototype, propertyName, descriptor);
+            }
+            if (planToStore !== null && ctorName !== "") {
+              planToStore.set(ctorName, found);
+            }
+          }
         }
         prototype = Object.getPrototypeOf(prototype) as object | null;
       }
+    }
+    if (planToStore !== null) {
+      cachedElementHandlerNames.set(hostWindow, planToStore);
     }
   };
 
@@ -893,8 +949,9 @@ export function installEventFacade(
     for (const eventType of discoveredHandlerTypes) {
       ensureBoundaryEventRelay(eventType);
     }
-    for (const eventType of eventHandlerNames(
-      [window.Document.prototype],
+    for (const eventType of cachedDocumentEventHandlerNames(
+      window,
+      hostWindow,
       eventTargetPrototype,
     )) {
       ensureBoundaryEventRelay(eventType);
@@ -937,26 +994,85 @@ export function installEventFacade(
     // answer with the logical target, phase and path. The subclasses' own
     // accessors (MouseEvent.clientX, KeyboardEvent.key) refuse the proxy just the
     // same, so every Event interface of the realm gets the forwarding.
-    const forwardMembers = (prototype: object, skip: ReadonlySet<string>): void => {
-      for (const name of Object.getOwnPropertyNames(prototype)) {
+    let memberNameCache = cachedEventMemberNames.get(hostWindow);
+    if (memberNameCache === undefined) {
+      memberNameCache = new Map();
+      cachedEventMemberNames.set(hostWindow, memberNameCache);
+    }
+    const makeMethodForwarder = (
+      name: string,
+      nativeMethod: (...args: unknown[]) => unknown,
+    ) => {
+      const arity = nativeMethod.length;
+      if (arity === 0) {
+        return {
+          value(this: Event) {
+            return listenerEventSources.has(this)
+              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+              : Reflect.apply(nativeMethod, this, arguments);
+          },
+        }.value;
+      }
+      if (arity === 1) {
+        return {
+          value(this: Event, _a: unknown) {
+            return listenerEventSources.has(this)
+              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+              : Reflect.apply(nativeMethod, this, arguments);
+          },
+        }.value;
+      }
+      if (arity === 2) {
+        return {
+          value(this: Event, _a: unknown, _b: unknown) {
+            return listenerEventSources.has(this)
+              ? Reflect.apply((this as never)[name] as () => unknown, this, arguments)
+              : Reflect.apply(nativeMethod, this, arguments);
+          },
+        }.value;
+      }
+      return {
+        value(this: Event, ...args: unknown[]) {
+          return listenerEventSources.has(this)
+            ? Reflect.apply((this as never)[name] as () => unknown, this, args)
+            : Reflect.apply(nativeMethod, this, args);
+        },
+      }.value;
+    };
+    const forwardMembers = (
+      prototype: object,
+      cacheKey: string,
+      skip: ReadonlySet<string>,
+    ): void => {
+      const snapshot: PropertyDescriptorMap = Object.create(null);
+      const cachedMembers = memberNameCache.get(cacheKey);
+      const names = cachedMembers ?? Object.getOwnPropertyNames(prototype);
+      const discoveredMembers = cachedMembers === undefined ? ([] as string[]) : null;
+      for (let index = 0; index < names.length; index += 1) {
+        const name = names[index]!;
         if (name === "constructor" || skip.has(name)) {
+          const existing = Object.getOwnPropertyDescriptor(prototype, name);
+          if (existing !== undefined) snapshot[name] = existing;
           continue;
         }
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, name)!;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+        if (descriptor === undefined) continue;
         if (typeof descriptor.value === "function") {
+          discoveredMembers?.push(name);
           const nativeMethod = descriptor.value as (...args: unknown[]) => unknown;
-          patch(prototype, name, {
+          const patched: PropertyDescriptor = {
+            configurable: true,
             writable: true,
-            value(this: Event, ...args: unknown[]) {
-              return listenerEventSources.has(this)
-                ? Reflect.apply((this as never)[name] as () => unknown, this, args)
-                : Reflect.apply(nativeMethod, this, args);
-            },
-          });
+            value: makeMethodForwarder(name, nativeMethod),
+          };
+          patch(prototype, name, patched, descriptor);
+          snapshot[name] = patched;
         } else if (descriptor.get !== undefined) {
+          discoveredMembers?.push(name);
           const nativeGet = descriptor.get;
           const nativeSet = descriptor.set;
-          patch(prototype, name, {
+          const patched: PropertyDescriptor = {
+            configurable: true,
             get(this: Event) {
               return listenerEventSources.has(this)
                 ? (this as never)[name]
@@ -973,13 +1089,34 @@ export function installEventFacade(
                     }
                   },
                 }),
-          });
+          };
+          patch(prototype, name, patched, descriptor);
+          snapshot[name] = patched;
+        } else {
+          snapshot[name] = descriptor;
         }
       }
-      nativeEventMembers.set(prototype, Object.getOwnPropertyDescriptors(prototype));
+      if (discoveredMembers !== null) {
+        for (const skipped of skip) {
+          if (Object.hasOwn(prototype, skipped)) discoveredMembers.push(skipped);
+        }
+        if (Object.hasOwn(prototype, "constructor")) {
+          discoveredMembers.push("constructor");
+        }
+        memberNameCache.set(cacheKey, discoveredMembers);
+      } else {
+        // Non-callable own constants (e.g. Event.CAPTURING_PHASE) are not in the
+        // member patch plan; keep Event.prototype's snapshot complete via skip/consts.
+        for (const name of ["NONE", "CAPTURING_PHASE", "AT_TARGET", "BUBBLING_PHASE"]) {
+          const existing = Object.getOwnPropertyDescriptor(prototype, name);
+          if (existing !== undefined) snapshot[name] = existing;
+        }
+      }
+      nativeEventMembers.set(prototype, snapshot);
     };
     forwardMembers(
       eventPrototype,
+      "Event",
       new Set(["preventDefault", "returnValue", "defaultPrevented"]),
     );
     // The window is still pristine here, so every Event subclass on it is one
@@ -999,7 +1136,7 @@ export function installEventFacade(
         eventPrototype.isPrototypeOf(prototype)
       ) {
         discovered?.push(name);
-        forwardMembers(prototype, emptySkip);
+        forwardMembers(prototype, name, emptySkip);
       }
     }
     if (discovered !== undefined) {
@@ -1096,23 +1233,25 @@ export function installEventFacade(
       nativeRemoveEventListener.call(options.html, type, relay.bubble, false);
     }
     rootEventRelays.clear();
-    for (const [type, relay] of boundaryEventRelays) {
-      options.shadowRoot.removeEventListener(type, relay);
+    for (const type of boundaryEventRelayTypes) {
+      options.shadowRoot.removeEventListener(type, boundaryRelay);
     }
-    boundaryEventRelays.clear();
+    boundaryEventRelayTypes.clear();
     for (const [type, relay] of outsideEventRelays) {
       hostDocument.removeEventListener(type, relay, true);
     }
     outsideEventRelays.clear();
-    for (const target of virtualListenerTargets) {
+    virtualListenerTargets.drain((target) => {
       virtualListeners.get(target)?.dispose();
-    }
-    virtualListenerTargets.clear();
-    for (const element of elementHandlerTargets) {
-      for (const eventName of [...(elementHandlerWrappers.get(element)?.keys() ?? [])]) {
-        removeElementHandler(element, eventName);
+    });
+    elementHandlerTargets.drain((element) => {
+      const wrappers = elementHandlerWrappers.get(element);
+      if (wrappers === undefined) return;
+      for (const [eventName, wrapper] of wrappers) {
+        nativeRemoveEventListener.call(element, eventName, wrapper);
       }
-    }
+      wrappers.clear();
+    });
   };
 
   const suppressEventDefault = (event: Event): void => {

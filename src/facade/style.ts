@@ -136,10 +136,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
     window.HTMLElement.prototype,
     "title",
   );
-  const styleDeclarationDocument = new window.DOMParser().parseFromString(
-    options.createHTML("<!doctype html><html><body></body></html>"),
-    "text/html",
-  );
+  const { getInertDocument } = context;
 
   let nextStyleSelectorValue = 0;
   const initialStyleSelectorValues = new Set<string>();
@@ -169,10 +166,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
       return existing;
     }
 
-    const scratch = nativeCreateElement.call(
-      styleDeclarationDocument,
-      "span",
-    ) as HTMLElement;
+    const scratch = nativeCreateElement.call(getInertDocument(), "span") as HTMLElement;
     const declaration = nativeHTMLElementStyle?.get?.call(scratch) as
       | CSSStyleDeclaration
       | undefined;
@@ -333,10 +327,7 @@ export function installStyleFacade(context: FacadeContext): StyleFacade {
   let probeDeclaration: CSSStyleDeclaration | undefined;
   const probeStyleDeclaration = (): CSSStyleDeclaration | undefined => {
     if (probeDeclaration === undefined) {
-      const scratch = nativeCreateElement.call(
-        styleDeclarationDocument,
-        "span",
-      ) as HTMLElement;
+      const scratch = nativeCreateElement.call(getInertDocument(), "span") as HTMLElement;
       probeDeclaration = nativeHTMLElementStyle?.get?.call(scratch) as
         | CSSStyleDeclaration
         | undefined;

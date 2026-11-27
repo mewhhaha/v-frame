@@ -1515,6 +1515,7 @@ async function transformStylesheet(
   stylesheetURL: string,
   context: StylesheetContext,
   ancestors: ReadonlySet<string>,
+  state?: { hasImport: boolean },
 ): Promise<string> {
   const tokens = tokenizeCSS(source);
   const statements = splitBlockStatements(tokens, 0, tokens.length, false);
@@ -1535,6 +1536,7 @@ async function transformStylesheet(
       const name = first.value.toLowerCase();
       if (name === "import" && !stmt.hasBlock && importsAllowed) {
         foundImport = true;
+        if (state !== undefined) state.hasImport = true;
         const importSpec = parseImportStatement(
           tokens,
           stmt.start,
@@ -1684,12 +1686,65 @@ async function transformStylesheet(
   return (await Promise.all(parts)).join("");
 }
 
+const MAX_CSS_CACHE_ENTRIES = 128;
+const MAX_CSS_CACHE_ENTRY_CHARS = 65_536;
+const MAX_CSS_CACHE_TOTAL_CHARS = 524_288;
+const rewrittenCSSCache = new Map<string, string>();
+let rewrittenCSSCacheChars = 0;
+
+function readRewrittenCSSCache(key: string): string | undefined {
+  const hit = rewrittenCSSCache.get(key);
+  if (hit !== undefined) {
+    rewrittenCSSCache.delete(key);
+    rewrittenCSSCache.set(key, hit);
+  }
+  return hit;
+}
+
+function writeRewrittenCSSCache(key: string, value: string): void {
+  const entryChars = key.length + value.length;
+  if (entryChars > MAX_CSS_CACHE_ENTRY_CHARS) return;
+  const previous = rewrittenCSSCache.get(key);
+  if (previous !== undefined) {
+    rewrittenCSSCacheChars -= key.length + previous.length;
+    rewrittenCSSCache.delete(key);
+  }
+  while (
+    rewrittenCSSCache.size >= MAX_CSS_CACHE_ENTRIES ||
+    rewrittenCSSCacheChars + entryChars > MAX_CSS_CACHE_TOTAL_CHARS
+  ) {
+    const oldest = rewrittenCSSCache.entries().next().value;
+    if (oldest === undefined) break;
+    rewrittenCSSCache.delete(oldest[0]);
+    rewrittenCSSCacheChars -= oldest[0].length + oldest[1].length;
+  }
+  rewrittenCSSCache.set(key, value);
+  rewrittenCSSCacheChars += entryChars;
+}
+
 export async function rewriteStylesheet(
   source: string,
   stylesheetURL: string,
   context: StylesheetContext,
 ): Promise<string> {
-  return transformStylesheet(source, stylesheetURL, context, new Set([stylesheetURL]));
+  const cacheable = source.length <= MAX_CSS_CACHE_ENTRY_CHARS;
+  const cacheKey = cacheable ? `s\0${stylesheetURL}\0${source}` : null;
+  if (cacheKey !== null) {
+    const cached = readRewrittenCSSCache(cacheKey);
+    if (cached !== undefined) return cached;
+  }
+  const state = cacheKey !== null ? { hasImport: false } : undefined;
+  const result = await transformStylesheet(
+    source,
+    stylesheetURL,
+    context,
+    new Set([stylesheetURL]),
+    state,
+  );
+  if (cacheKey !== null && !state!.hasImport) {
+    writeRewrittenCSSCache(cacheKey, result);
+  }
+  return result;
 }
 
 function extractFontFacesFromBlock(
@@ -1734,8 +1789,18 @@ export function rewriteStyleAttribute(source: string, baseURL: string): string {
 }
 
 export function rewriteConstructedStylesheet(source: string, baseURL: string): string {
+  const cacheKey =
+    source.length <= MAX_CSS_CACHE_ENTRY_CHARS ? `c\0${baseURL}\0${source}` : null;
+  if (cacheKey !== null) {
+    const cached = readRewrittenCSSCache(cacheKey);
+    if (cached !== undefined) return cached;
+  }
   const tokens = tokenizeCSS(source);
-  return rewriteBlockSync(tokens, 0, tokens.length, baseURL, false, false, false);
+  const result = rewriteBlockSync(tokens, 0, tokens.length, baseURL, false, false, false);
+  if (cacheKey !== null) {
+    writeRewrittenCSSCache(cacheKey, result);
+  }
+  return result;
 }
 
 export function rewriteCSSOMInsertRule(source: string, baseURL: string): string {

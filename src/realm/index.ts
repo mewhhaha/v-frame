@@ -19,8 +19,6 @@ import {
 } from "../history.js";
 import {
   MARKUP_FLAG_BASE,
-  MARKUP_FLAG_LINKS,
-  MARKUP_FLAG_STYLES,
   MARKUP_FLAG_TARGET,
   prepareAdoptedMarkup,
   prepareMarkup,
@@ -337,13 +335,11 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     });
 
     const initialStyleSources = new Map<HTMLStyleElement, string>();
-    if (markup.flags & MARKUP_FLAG_STYLES) {
-      for (const style of markup.html.querySelectorAll("style")) {
-        const source = style.textContent ?? "";
-        initialStyleSources.set(style, source);
-        styles.recordProcessedStyle(style, source);
-        style.textContent = "";
-      }
+    for (const style of markup.styles) {
+      const source = style.textContent ?? "";
+      initialStyleSources.set(style, source);
+      styles.recordProcessedStyle(style, source);
+      style.textContent = "";
     }
 
     const liveMarkup = markup.html;
@@ -386,6 +382,7 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       constructedSheetBaseURLs,
       initialFlags: markup.flags,
       initialScripts: markup.scripts,
+      initialLinks: markup.links,
       createHTML: options.trustedTypes.createHTML,
       createGuestHTML: options.trustedTypes.createGuestHTML,
       createScript: options.trustedTypes.createScript,
@@ -464,6 +461,15 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
     // so host custom-element connectedCallbacks that append <base>/<style>/<link>/<script>
     // natively during bootstrap are indexed immediately without a full 50k scan when
     // only known scripts / fragment targets exist.
+    const initialTrackedElements: Element[] = [
+      ...markup.scripts,
+      ...markup.styles,
+      ...markup.links,
+      ...markup.bases,
+    ];
+    if (fragmentTargets.current !== null) {
+      initialTrackedElements.push(fragmentTargets.current);
+    }
     realmObserver = observeRealmMutations(
       {
         window,
@@ -472,20 +478,12 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         root: markup.html,
         styles,
         inlineStyleSheet: markup.inlineStyleSheet,
-        skipInitialScan:
-          (markup.flags &
-            (MARKUP_FLAG_STYLES |
-              MARKUP_FLAG_LINKS |
-              MARKUP_FLAG_TARGET |
-              MARKUP_FLAG_BASE)) ===
-          0,
+        skipInitialScan: (markup.flags & MARKUP_FLAG_TARGET) === 0,
         getFacade: () => facade,
         isConnectedToRealm,
         onBaseElementChange: updateDocumentBaseURL,
       },
-      fragmentTargets.current !== null
-        ? [...markup.scripts, fragmentTargets.current]
-        : markup.scripts,
+      initialTrackedElements,
     );
     disposers.push(() => {
       realmObserver?.dispose();
@@ -505,7 +503,14 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
         styles.applyNonce(style);
         style.textContent = source;
       }
-      const connectedLinks = styles.dynamicLinksFrom([liveMarkup]);
+      const connectedLinks = realmObserver.hasBootstrapMutations()
+        ? styles.dynamicLinksFrom([liveMarkup])
+        : markup.links.slice();
+      // Release bootstrap element arrays so removed initial <style>/<link>/<base>
+      // elements are never retained through the prepared markup record.
+      markup.styles.length = 0;
+      markup.links.length = 0;
+      markup.bases.length = 0;
       for (const link of connectedLinks) {
         const linked = markup.linkedStyles.get(link);
         if (linked !== undefined) {
@@ -518,6 +523,10 @@ export async function createRealm(options: CreateRealmOptions): Promise<VFrameRe
       if (!options.stageMarkup && !options.restoreScroll && new URL(currentURL).hash) {
         scrollFragment(currentURL);
       }
+    } else {
+      markup.styles.length = 0;
+      markup.links.length = 0;
+      markup.bases.length = 0;
     }
     initialStyleSources.clear();
     if (options.signal.aborted) {

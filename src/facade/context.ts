@@ -39,6 +39,7 @@ export interface DocumentFacadeOptions {
   constructedSheetBaseURLs?: WeakMap<CSSStyleSheet, string>;
   initialFlags?: number;
   initialScripts?: readonly HTMLScriptElement[];
+  initialLinks?: readonly HTMLLinkElement[];
   createHTML(source: string): string;
   createGuestHTML(value: unknown, legacyNull?: boolean): string;
   createScript(source: string): string;
@@ -65,7 +66,12 @@ export interface DocumentFacadeOptions {
 }
 
 export interface PatchRegistry {
-  patch(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void;
+  patch(
+    target: object,
+    key: PropertyKey,
+    descriptor: PropertyDescriptor,
+    knownOriginal?: PropertyDescriptor,
+  ): void;
   restorePatches(): void;
 }
 
@@ -82,12 +88,17 @@ function adoptNativeShape(
   if (fnName !== "" && fnName !== "value" && fnName !== "get" && fnName !== "set") {
     return;
   }
-  Object.defineProperty(replacement, "name", { value: name, configurable: true });
+  if (fnName !== name) {
+    Object.defineProperty(replacement, "name", { value: name, configurable: true });
+  }
   if (typeof original === "function") {
-    Object.defineProperty(replacement, "length", {
-      value: length ?? original.length,
-      configurable: true,
-    });
+    const targetLength = length ?? original.length;
+    if (replacement.length !== targetLength) {
+      Object.defineProperty(replacement, "length", {
+        value: targetLength,
+        configurable: true,
+      });
+    }
   }
 }
 
@@ -99,8 +110,16 @@ export function createPatchRegistry(): PatchRegistry {
   }> = [];
 
   return {
-    patch(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void {
-      const original = Object.getOwnPropertyDescriptor(target, key);
+    patch(
+      target: object,
+      key: PropertyKey,
+      descriptor: PropertyDescriptor,
+      knownOriginal?: PropertyDescriptor,
+    ): void {
+      const original =
+        arguments.length >= 4
+          ? knownOriginal
+          : Object.getOwnPropertyDescriptor(target, key);
       patchedDescriptors.push({ target, key, descriptor: original });
       if (original !== undefined && typeof key === "string") {
         adoptNativeShape(descriptor.value, original.value, key);
@@ -161,7 +180,20 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeReplaceChild = nodePrototype.replaceChild;
   const nativeRemoveChild = nodePrototype.removeChild;
   const nativeCloneNode = nodePrototype.cloneNode;
+  const nativeContains = nodePrototype.contains;
   const nativeGetRootNode = nodePrototype.getRootNode;
+  const nativeFirstChild = Object.getOwnPropertyDescriptor(
+    nodePrototype,
+    "firstChild",
+  )?.get;
+  const nativeLocalName = Object.getOwnPropertyDescriptor(
+    elementPrototype,
+    "localName",
+  )?.get;
+  const nativeNamespaceURI = Object.getOwnPropertyDescriptor(
+    elementPrototype,
+    "namespaceURI",
+  )?.get;
   const nativeOwnerDocument = Object.getOwnPropertyDescriptor(
     nodePrototype,
     "ownerDocument",
@@ -189,6 +221,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     "attributes",
   );
   const nativeGetAttributeNames = elementPrototype.getAttributeNames;
+  const nativeHasAttributes = elementPrototype.hasAttributes;
   const nativeHasAttribute = elementPrototype.hasAttribute;
   const nativeHasAttributeNS = elementPrototype.hasAttributeNS;
   const nativeSetAttribute = elementPrototype.setAttribute;
@@ -196,6 +229,12 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
   const nativeRemoveAttribute = elementPrototype.removeAttribute;
   const nativeRemoveAttributeNS = elementPrototype.removeAttributeNS;
   const nativeToggleAttribute = elementPrototype.toggleAttribute;
+  const nativeElementReplaceChildren = elementPrototype.replaceChildren;
+  const nativeCreateHTMLDocument = window.DOMImplementation.prototype.createHTMLDocument;
+  const nativeImplementation = document.implementation;
+  let inertDocument: Document | undefined;
+  const getInertDocument = (): Document =>
+    (inertDocument ??= nativeCreateHTMLDocument.call(nativeImplementation, ""));
   const nativeMatches = elementPrototype.matches;
   const nativeClosest = elementPrototype.closest;
   const nativeQuerySelector = elementPrototype.querySelector;
@@ -458,7 +497,11 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeReplaceChild,
     nativeRemoveChild,
     nativeCloneNode,
+    nativeContains,
     nativeGetRootNode,
+    nativeFirstChild,
+    nativeLocalName,
+    nativeNamespaceURI,
     nativeOwnerDocument,
     nativeBaseURI,
     nativeTextContent,
@@ -477,6 +520,7 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeGetAttributeNodeNS,
     nativeAttributes,
     nativeGetAttributeNames,
+    nativeHasAttributes,
     nativeHasAttribute,
     nativeHasAttributeNS,
     nativeSetAttribute,
@@ -484,6 +528,8 @@ export function createFacadeContext(options: DocumentFacadeOptions) {
     nativeRemoveAttribute,
     nativeRemoveAttributeNS,
     nativeToggleAttribute,
+    nativeElementReplaceChildren,
+    getInertDocument,
     nativeMatches,
     nativeClosest,
     nativeQuerySelector,

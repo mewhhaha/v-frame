@@ -48,11 +48,29 @@ export class EnumerableWeakSet<T extends object> {
   }
 
   clear(): void {
-    for (const member of this) {
-      this.#referencesByMember.delete(member);
-      this.#collected.unregister(member);
+    for (const reference of this.#references) {
+      const member = reference.deref();
+      if (member !== undefined) {
+        this.#referencesByMember.delete(member);
+        this.#collected.unregister(member);
+      }
     }
     this.#references.clear();
+  }
+
+  /** Unregisters and visits every surviving member in a single pass. */
+  drain(visit: (member: T) => void): void {
+    if (this.#references.size === 0) return;
+    const references = [...this.#references];
+    this.#references.clear();
+    for (let index = 0; index < references.length; index += 1) {
+      const member = references[index]!.deref();
+      if (member !== undefined) {
+        this.#referencesByMember.delete(member);
+        this.#collected.unregister(member);
+        visit(member);
+      }
+    }
   }
 
   // Iteration walks a snapshot: every caller here removes members while it goes.
@@ -89,10 +107,20 @@ export class EnumerableWeakMap<K extends object, V> {
   }
 
   clear(): void {
-    for (const key of this.#keys) {
+    this.#keys.drain((key) => {
       this.#values.delete(key);
-    }
-    this.#keys.clear();
+    });
+  }
+
+  /** Releases and visits every surviving entry in a single pass. */
+  drain(visit: (key: K, value: V) => void): void {
+    this.#keys.drain((key) => {
+      const value = this.#values.get(key);
+      this.#values.delete(key);
+      if (value !== undefined) {
+        visit(key, value);
+      }
+    });
   }
 
   keys(): IterableIterator<K> {

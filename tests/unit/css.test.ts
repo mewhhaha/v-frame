@@ -563,3 +563,41 @@ test("rewriteStylesheet enforces maxImportDepth and reports deep imports", async
   assert.equal(failures.length, 1);
   assert.ok(failures[0]!.error instanceof RangeError);
 });
+
+test("rewriteStylesheet caches import-free stylesheets per base URL without caching imports", async () => {
+  const sheet = "@media screen { body { background: url(img/bg.png); } }";
+  const harnessA = stylesheetHarness();
+  const first = await rewriteStylesheet(sheet, MAIN, harnessA.context);
+  const second = await rewriteStylesheet(sheet, MAIN, harnessA.context);
+  const otherBase = await rewriteStylesheet(
+    sheet,
+    "https://host.test/other/page.html",
+    harnessA.context,
+  );
+  assert.equal(first, second);
+  assert.ok(first.includes("https://host.test/app/img/bg.png"));
+  assert.ok(otherBase.includes("https://host.test/other/img/bg.png"));
+
+  let version = 1;
+  const fetchDynamic = async () => `body { content: "v${version}"; }`;
+  const firstImport = await rewriteStylesheet(
+    '@import "dyn.css";',
+    MAIN,
+    createStylesheetContext(fetchDynamic),
+  );
+  version = 2;
+  const secondImport = await rewriteStylesheet(
+    '@import "dyn.css";',
+    MAIN,
+    createStylesheetContext(fetchDynamic),
+  );
+  version = 3;
+  const escapedImport = await rewriteStylesheet(
+    '@\\69mport "dyn.css";',
+    MAIN,
+    createStylesheetContext(fetchDynamic),
+  );
+  assert.equal(firstImport, 'v-body{content:"v1"}');
+  assert.equal(secondImport, 'v-body{content:"v2"}');
+  assert.equal(escapedImport, 'v-body{content:"v3"}');
+});

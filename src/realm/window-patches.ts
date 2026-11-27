@@ -62,6 +62,12 @@ interface InternalStyles {
   dispose(): void;
 }
 
+interface CachedWindowHandlers {
+  entries: Array<readonly [string, boolean]>;
+  names: Set<string>;
+}
+const cachedWindowHandlerNames = new WeakMap<Window, CachedWindowHandlers>();
+
 export function installInternalStyles(
   frameRoot: ShadowRoot,
   renderRoot: ShadowRoot,
@@ -69,22 +75,23 @@ export function installInternalStyles(
   // Without these rules v-html/v-body are inline and v-head is visible, so a
   // guest would render wrongly with no error. Constructable stylesheets are a
   // documented requirement.
-  const view = frameRoot.ownerDocument.defaultView;
+  const hostDocument = frameRoot.ownerDocument;
+  const view = hostDocument.defaultView;
   if (view === null || typeof view.CSSStyleSheet !== "function") {
     throw new Error("v-frame requires constructable stylesheet support");
   }
 
-  let guestCSS = GUEST_CSS;
   let hostSheet: CSSStyleSheet | null = null;
+  const sheet = new view.CSSStyleSheet();
   if (frameRoot === renderRoot) {
-    guestCSS = HOST_CSS + GUEST_CSS;
+    sheet.replaceSync(HOST_CSS + GUEST_CSS);
   } else {
     hostSheet = new view.CSSStyleSheet();
     hostSheet.replaceSync(HOST_CSS);
     frameRoot.adoptedStyleSheets = [...frameRoot.adoptedStyleSheets, hostSheet];
+    sheet.replaceSync(GUEST_CSS);
   }
-  const sheet = new view.CSSStyleSheet();
-  sheet.replaceSync(guestCSS);
+  let topLayerSheet: CSSStyleSheet | null = null;
   let topLayerRule: CSSStyleRule | null = null;
   renderRoot.adoptedStyleSheets = [...renderRoot.adoptedStyleSheets, sheet];
   return {
@@ -96,18 +103,31 @@ export function installInternalStyles(
         return;
       }
       if (topLayerRule === null) {
-        const index = sheet.insertRule(
+        topLayerSheet = new view.CSSStyleSheet();
+        const index = topLayerSheet.insertRule(
           `:where([popover]:popover-open){translate:${x}px ${y}px}`,
-          sheet.cssRules.length,
+          0,
         );
-        topLayerRule = sheet.cssRules[index] as CSSStyleRule;
+        topLayerRule = topLayerSheet.cssRules[index] as CSSStyleRule;
+        // Insert immediately after the internal sheet so guest adoptedStyleSheets
+        // always follow in cascade order, matching eager allocation.
+        const sheets = renderRoot.adoptedStyleSheets;
+        const sheetIndex = sheets.indexOf(sheet);
+        renderRoot.adoptedStyleSheets =
+          sheetIndex === -1
+            ? [topLayerSheet, ...sheets]
+            : [
+                ...sheets.slice(0, sheetIndex + 1),
+                topLayerSheet,
+                ...sheets.slice(sheetIndex + 1),
+              ];
       } else {
         topLayerRule.style.setProperty("translate", `${x}px ${y}px`);
       }
     },
     dispose() {
       renderRoot.adoptedStyleSheets = renderRoot.adoptedStyleSheets.filter(
-        (candidate) => candidate !== sheet,
+        (candidate) => candidate !== sheet && candidate !== topLayerSheet,
       );
       if (hostSheet) {
         frameRoot.adoptedStyleSheets = frameRoot.adoptedStyleSheets.filter(
@@ -581,29 +601,66 @@ export function installWindowEventBridge(
     },
   });
 
-  const discoveredHandlerProperties = new Map<string, PropertyDescriptor>();
-  let prototype: object | null = window;
-  while (prototype !== null) {
-    for (const name of Object.getOwnPropertyNames(prototype)) {
-      if (
-        discoveredHandlerProperties.has(name) ||
-        !name.startsWith("on") ||
-        NATIVE_WINDOW_EVENT_HANDLER_TYPES.has(name.slice(2))
-      ) {
-        continue;
+  const hostWindow = virtualEventTarget.ownerDocument.defaultView;
+  let cachedHandlers =
+    hostWindow !== null ? cachedWindowHandlerNames.get(hostWindow) : undefined;
+  let handlerPlan: Array<readonly [string, boolean]>;
+  if (cachedHandlers === undefined) {
+    const discoveredHandlerProperties = new Map<string, boolean>();
+    let prototype: object | null = window;
+    while (prototype !== null) {
+      for (const name of Object.getOwnPropertyNames(prototype)) {
+        if (
+          discoveredHandlerProperties.has(name) ||
+          !name.startsWith("on") ||
+          NATIVE_WINDOW_EVENT_HANDLER_TYPES.has(name.slice(2))
+        ) {
+          continue;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+        if (descriptor?.get !== undefined && descriptor.set !== undefined) {
+          discoveredHandlerProperties.set(name, descriptor.enumerable ?? false);
+        }
       }
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-      if (descriptor?.get !== undefined && descriptor.set !== undefined) {
-        discoveredHandlerProperties.set(name, descriptor);
-      }
+      prototype = Object.getPrototypeOf(prototype);
     }
-    prototype = Object.getPrototypeOf(prototype);
+    const entries = [...discoveredHandlerProperties.entries()];
+    cachedHandlers = { entries, names: new Set(discoveredHandlerProperties.keys()) };
+    if (hostWindow !== null) {
+      cachedWindowHandlerNames.set(hostWindow, cachedHandlers);
+    }
+    handlerPlan = entries;
+  } else {
+    handlerPlan = cachedHandlers.entries;
+    let extraHandlers: Map<string, boolean> | undefined;
+    let prototype: object | null = window;
+    while (prototype !== null) {
+      for (const name of Object.getOwnPropertyNames(prototype)) {
+        if (
+          cachedHandlers.names.has(name) ||
+          extraHandlers?.has(name) === true ||
+          !name.startsWith("on") ||
+          NATIVE_WINDOW_EVENT_HANDLER_TYPES.has(name.slice(2))
+        ) {
+          continue;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+        if (descriptor?.get !== undefined && descriptor.set !== undefined) {
+          (extraHandlers ??= new Map()).set(name, descriptor.enumerable ?? false);
+        }
+      }
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    if (extraHandlers !== undefined) {
+      handlerPlan = [...handlerPlan, ...extraHandlers.entries()];
+    }
   }
 
-  for (const [name, nativeDescriptor] of discoveredHandlerProperties) {
+  for (let index = 0; index < handlerPlan.length; index += 1) {
+    const [name, enumerable] = handlerPlan[index]!;
     const eventType = name.slice(2);
     patch(name, {
-      enumerable: nativeDescriptor.enumerable ?? false,
+      enumerable,
       get: () => eventHandlers.get(eventType)?.listener ?? null,
       set(value: unknown) {
         const previous = eventHandlers.get(eventType);

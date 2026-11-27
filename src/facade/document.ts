@@ -9,7 +9,7 @@
 import { rewriteConstructedStylesheet } from "../css.js";
 import type { CollectionFacade } from "./collections.js";
 import { type FacadeContext, HTML_NAMESPACE } from "./context.js";
-import { eventHandlerNames, type EventFacade } from "./events.js";
+import { cachedDocumentEventHandlerNames, type EventFacade } from "./events.js";
 import type { NodeCloning } from "./clone.js";
 import type { NodeMarking } from "./marking.js";
 import type { SelectionFacadeInstallation } from "./selection.js";
@@ -28,16 +28,59 @@ function releasableDescriptor(descriptor: PropertyDescriptor) {
     typeof descriptor.value === "function"
       ? (descriptor.value as (...args: unknown[]) => unknown)
       : undefined;
-  const method = value
-    ? function (this: unknown, ...args: unknown[]) {
-        return value?.apply(this, args);
-      }
-    : undefined;
-  if (method && value)
-    Object.defineProperties(method, {
-      name: { value: value.name },
-      length: { value: value.length },
-    });
+  let method: ((...args: unknown[]) => unknown) | undefined;
+  if (value !== undefined) {
+    const arity = value.length;
+    if (arity === 0) {
+      method = {
+        value(this: unknown) {
+          if (value === undefined) return undefined;
+          return arguments.length === 0
+            ? value.call(this)
+            : Reflect.apply(value, this, arguments);
+        },
+      }.value;
+    } else if (arity === 1) {
+      method = {
+        value(this: unknown, a: unknown) {
+          if (value === undefined) return undefined;
+          return arguments.length === 1
+            ? value.call(this, a)
+            : Reflect.apply(value, this, arguments);
+        },
+      }.value;
+    } else if (arity === 2) {
+      method = {
+        value(this: unknown, a: unknown, b: unknown) {
+          if (value === undefined) return undefined;
+          return arguments.length === 2
+            ? value.call(this, a, b)
+            : Reflect.apply(value, this, arguments);
+        },
+      }.value;
+    } else if (arity === 3) {
+      method = {
+        value(this: unknown, a: unknown, b: unknown, c: unknown) {
+          if (value === undefined) return undefined;
+          return arguments.length === 3
+            ? value.call(this, a, b, c)
+            : Reflect.apply(value, this, arguments);
+        },
+      }.value;
+    } else {
+      method = {
+        value(this: unknown, ...args: unknown[]) {
+          return value?.apply(this, args);
+        },
+      }.value;
+    }
+    if (method.name !== value.name) {
+      Object.defineProperty(method, "name", { value: value.name, configurable: true });
+    }
+    if (method.length !== arity) {
+      Object.defineProperty(method, "length", { value: arity, configurable: true });
+    }
+  }
   return {
     descriptor: {
       ...descriptor,
@@ -581,9 +624,16 @@ export function installDocumentProperties(
             localName,
             creationOptions,
           ) as HTMLElementTagNameMap[K],
+          creationOptions === undefined && !localName.includes("-"),
         );
-        if (localName.toLowerCase() === "style" && options.getNonce() !== "") {
-          nativeSetAttribute.call(element, "nonce", options.getNonce());
+        if (
+          localName === "style" ||
+          (localName.length === 5 && localName.toLowerCase() === "style")
+        ) {
+          const nonce = options.getNonce();
+          if (nonce !== "") {
+            nativeSetAttribute.call(element, "nonce", nonce);
+          }
         }
         return element;
       },
@@ -792,8 +842,9 @@ export function installDocumentProperties(
     string,
     { listener: EventListener; wrapper: EventListener }
   >();
-  for (const eventName of eventHandlerNames(
-    [window.Document.prototype],
+  for (const eventName of cachedDocumentEventHandlerNames(
+    window,
+    hostWindow!,
     context.eventTargetPrototype,
   )) {
     patchDocument(`on${eventName}`, {

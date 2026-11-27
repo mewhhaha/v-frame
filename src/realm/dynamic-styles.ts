@@ -203,20 +203,38 @@ export function createDynamicStyles(options: DynamicStyleOptions): DynamicStyles
     }
 
     const nested = rule as CSSRule & Partial<RuleContainer>;
-    if (nested.cssRules !== undefined) {
+    const nestedRules = nested.cssRules;
+    if (nestedRules !== undefined) {
       if (newlyRegistered && typeof nested.insertRule === "function") {
         installInsertRule(sheet, nested as RuleContainer);
       }
-      for (const child of Array.from(nested.cssRules)) {
-        installRule(sheet, child);
+      const nestedCount = nestedRules.length;
+      if (nestedCount === 1) {
+        const onlyRule = nestedRules[0];
+        if (onlyRule !== undefined) {
+          installRule(sheet, onlyRule);
+        }
+      } else if (nestedCount > 1) {
+        for (const childRule of Array.from(nestedRules)) {
+          installRule(sheet, childRule);
+        }
       }
     }
   };
   // Registers every rule of a sheet: for a sheet that is being registered, or one
   // whose rules changed in ways this module did not observe.
   const installCSSOMRules = (sheet: CSSStyleSheet): void => {
-    for (const rule of Array.from(sheet.cssRules)) {
-      installRule(sheet, rule);
+    const rules = sheet.cssRules;
+    const count = rules.length;
+    if (count === 1) {
+      const onlyRule = rules[0];
+      if (onlyRule !== undefined) {
+        installRule(sheet, onlyRule);
+      }
+    } else if (count > 1) {
+      for (const rule of Array.from(rules)) {
+        installRule(sheet, rule);
+      }
     }
   };
   // A script-driven insert adds exactly one rule, so walking the whole sheet each

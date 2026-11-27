@@ -3,6 +3,80 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 - 2026-11-27
+
+### Changed
+
+- Optimized real-world DOM queries, CSSOM reads, markup parsing/serialization,
+  cold facade setup, Firefox foreign-node identity, mutation-observer indexing,
+  and repeated detached-subtree re-attachment (Round 6):
+  - **Selectors & CSSOM (`src/facade/collections.ts`, `src/realm/dynamic-styles.ts`,
+    `src/css.ts`):** Combined shell-translated selectors into a single native
+    `${selectors}, ${translated}` query when syntax-safe (`canCombineSelector`)
+    so `querySelector`, `querySelectorAll`, `matches`, and `closest` return
+    native results in one engine pass (also aligning `closest(":scope")` and
+    returned `NodeList` brand checks with native DOM); guarded empty nested
+    `CSSRuleList` walks on `.sheet` reads; and added a bounded LRU cache for
+    import-free stylesheet and constructed-sheet rewrites keyed by base URL.
+  - **Markup, attributes & insertions (`src/facade/markup.ts`,
+    `src/facade/attributes.ts`, `src/facade/insertion.ts`,
+    `src/facade/marking.ts`, `src/facade/node-patches.ts`):** Reused a shared
+    lazy inert HTML document across markup parsing and style probes, fused
+    `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`setHTMLUnsafe` fragment
+    parsing with insertion into a single walk, skipped `authoredCopy` cloning
+    when a serialized subtree has no virtual attribute overrides, fast-rejected
+    ordinary attribute names before URL-capability lookups, fast-pathed freshly
+    created built-in HTML elements, plain marked leaf elements, and primitive
+    empty-node `textContent` writes, and added `Attr.prototype.baseURI` and
+    `Attr.prototype.getRootNode` owner-element fallbacks.
+  - **Cold boot, teardown, SSR & Firefox (`src/facade/events.ts`,
+    `src/facade/context.ts`, `src/facade/document.ts`, `src/markup.ts`,
+    `src/realm/index.ts`, `src/realm/window-patches.ts`,
+    `src/realm/adoption-state.ts`, `src/enumerable-weak.ts`, `src/network.ts`):**
+    Cached per-host-window Event member and handler plans, shared one
+    `boundaryRelay`, lazily allocated the top-layer popover stylesheet in its
+    original cascade slot, skipped redundant `adoptNativeShape` and
+    `getOwnPropertyDescriptor` calls, narrowed initial URL-attribute scans and
+    reused collected initial `<style>`/`<link>`/`<base>` elements (clearing
+    bootstrap arrays after mount so removed nodes collect cleanly), memoized
+    ancestor clip bounds in SSR lazy-image visibility checks, switched teardown
+    to one-pass `EnumerableWeakSet`/`EnumerableWeakMap.drain()`, and replaced
+    per-node foreign descriptor Maps/closures with a shared `compactForeignNodes`
+    fast path for Gecko/WebKit foreign wrappers.
+  - **Observer indexing & clean detached-subtree watching
+    (`src/realm/mutation-observer.ts`, `src/facade/marking.ts`,
+    `src/facade/tree-patches.ts`):** Added an O(1) `<base>` counter with
+    synchronous pre-read flushing, inline retirement of clean facade additions
+    and transient remove+reconnect pairs, automatic special-index overflow
+    recovery, `onDisconnectedNodes` skipping on special-free removals, and a
+    capped GC-safe clean-subtree `MutationObserver` armed after a clean full
+    walk so unchanged multi-node branches skip re-walking in O(1) while any
+    mutation falls back to the full walk.
+  - **Expanded `pnpm bench` (`bench/mark-virtual-node.ts`):** Added
+    through-geometry activation measurements (forcing layout on both `v-frame`
+    and host DOM) plus a 9-operation real-world DOM micro-benchmark suite on the
+    5,000-element guest.
+  - In idle `pnpm bench` runs on an AMD Ryzen 7 7800X3D:
+    - **Chromium 153:** marginal activation fell below 5 µs/element to
+      **`4.97 µs/element`** (`280.4 ms` at 50k; **`1.9x`** host DOM through
+      first geometry read), 1,000-row insertion fell to **`7.7–8.6 ms`**
+      (`-20%`), 1,000 re-parents fell to **`12.4–28.6 ms`** (`1.8–2.6x` host),
+      `querySelector("body .row")` sped up **18x** (`23.8 → 1.3 ms`),
+      `.sheet` 500-rule reads sped up **74x** (`37.1 → 0.5 ms`), `innerHTML =`
+      sped up **3.6x** (`39.0 → 10.8 ms`), `innerHTML` get sped up **3.9x**
+      (`5.9 → 1.5 ms`), `querySelectorAll("body .row")` sped up **3.1x**
+      (`76 → 24.5 ms`), and `getAttribute` sped up **1.8x** (`12.0 → 6.6 ms`).
+    - **Firefox 155:** 50k activation dropped below 300 ms to **`299.0 ms`**
+      (`5.47 µs/element`, **`1.8x`** host DOM through geometry), 1,000-row
+      insertion fell to **`18–19 ms`** (`-28%`), 1,000 re-parents fell to
+      **`11–25 ms`** (`1.4–2.8x` host, `-32%` at 50k),
+      `querySelector("body .row")` sped up **63x** (`127 → 2.0 ms`),
+      `innerHTML` get sped up **18x** (`18 → 1.0 ms`), `.sheet` reads sped up
+      **21x** (`21 → 1.0 ms`), detached 100-node re-attach sped up **5.4x**
+      (`27 → 5.0 ms`), `querySelectorAll("body .row")` sped up **2.6x**
+      (`66 → 25.0 ms`, `1.7x` host), and `innerHTML =` sped up **2.4x**
+      (`55 → 23.0 ms`).
+
 ## 0.5.0 - 2026-11-26
 
 ### Added
