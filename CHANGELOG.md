@@ -3,6 +3,16 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.11.2 - 2026-11-27
+
+### Fixed
+
+- **Intercepted `NamedNodeMap` mutators (`src/facade/attributes.ts`):** Patched
+  `setNamedItem`, `setNamedItemNS`, `removeNamedItem`, and `removeNamedItemNS`
+  (including host-realm maps in Gecko) to route managed attributes (`on*`,
+  `style`, `rel`, URL/srcset attributes, and protected script attributes)
+  through the virtual attribute facade.
+
 ## 0.11.1 - 2026-11-27
 
 ### Security

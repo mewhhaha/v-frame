@@ -206,25 +206,34 @@ export function installAttributeFacade(
   // The observer sits on the hot mutation path and would have paid per write
   // rather than per read, and it delivers a microtask late, so an attribute read
   // back in the same task would still have answered wrong. What it does not
-  // cover: an Attr reached through the host realm's own accessors; a
+  // cover: an Attr reached through the host realm's own accessors, or a
   // NamedNodeMap held across a write from outside the facade, since indexed
-  // access on the map cannot be intercepted; and an Attr the guest builds with
-  // createAttribute and attaches with setAttributeNode, which stays unmarked
-  // until something hands it back out through a marked element. All three hand
-  // out a node the realm never sees.
+  // access on the map cannot be intercepted. Both hand out a node the realm
+  // never sees.
   const lazyAttributes = options.lazyAttributes === true;
   const observedAttributeElements = new WeakSet<Element>();
   let hasObservedAttributeElements = false;
+  const namedNodeMapOwners = new WeakMap<NamedNodeMap, Element>();
+  const patchedForeignNamedNodeMaps = new WeakSet<NamedNodeMap>();
   const nativeAttrOwnerElement = Object.getOwnPropertyDescriptor(
     window.Attr.prototype,
     "ownerElement",
   )?.get;
   const hostAttrCtor = context.hostDocument.defaultView?.Attr;
+  let attachForeignNamedNodeMapMethods: ((map: NamedNodeMap) => void) | undefined;
   const markAttributeNodes = (
     element: Element,
     attributeNodes: NamedNodeMap,
   ): NamedNodeMap => {
     if (virtualNodes.has(element)) {
+      namedNodeMapOwners.set(attributeNodes, element);
+      if (
+        !(attributeNodes instanceof window.NamedNodeMap) &&
+        !patchedForeignNamedNodeMaps.has(attributeNodes)
+      ) {
+        patchedForeignNamedNodeMaps.add(attributeNodes);
+        attachForeignNamedNodeMapMethods?.(attributeNodes);
+      }
       if (lazyAttributes) {
         hasObservedAttributeElements = true;
         observedAttributeElements.add(element);
@@ -1306,36 +1315,154 @@ export function installAttributeFacade(
         return setVirtualAttributeNode(this, attr, true);
       },
     });
+    const removeVirtualAttributeNode = (element: Element, attr: Attr): Attr => {
+      const candidate: unknown = attr;
+      const isOwnedVirtual =
+        virtualNodes.has(element) &&
+        (candidate instanceof window.Attr ||
+          (hostAttrCtor !== undefined && candidate instanceof hostAttrCtor)) &&
+        nativeAttrOwnerElement?.call(attr) === element;
+      if (isOwnedVirtual) {
+        markVirtualAttribute!(attr);
+      }
+      const removed = nativeRemoveAttributeNode.call(element, attr);
+      if (isOwnedVirtual) {
+        const rawNamespace = attr.namespaceURI;
+        const ns = rawNamespace === "" ? null : rawNamespace;
+        const localName = attr.localName;
+        if (ns === null && localName === "rel" && isHTMLLinkElement(element)) {
+          removeLogicalLinkRel(element);
+        } else {
+          const urlKey = urlAttributeKey(element, localName, ns);
+          if (urlKey !== null) {
+            removeAuthoredURLAttribute(element, urlKey);
+            connectedBaseElementChanged(element);
+          }
+        }
+      }
+      return removed;
+    };
     patch(elementPrototype, "removeAttributeNode", {
       writable: true,
       value(this: Element, attr: Attr): Attr {
-        const candidate: unknown = attr;
-        const isOwnedVirtual =
-          virtualNodes.has(this) &&
-          (candidate instanceof window.Attr ||
-            (hostAttrCtor !== undefined && candidate instanceof hostAttrCtor)) &&
-          nativeAttrOwnerElement?.call(attr) === this;
-        if (isOwnedVirtual) {
-          markVirtualAttribute!(attr);
-        }
-        const removed = nativeRemoveAttributeNode.call(this, attr);
-        if (isOwnedVirtual) {
-          const rawNamespace = attr.namespaceURI;
-          const ns = rawNamespace === "" ? null : rawNamespace;
-          const localName = attr.localName;
-          if (ns === null && localName === "rel" && isHTMLLinkElement(this)) {
-            removeLogicalLinkRel(this);
-          } else {
-            const urlKey = urlAttributeKey(this, localName, ns);
-            if (urlKey !== null) {
-              removeAuthoredURLAttribute(this, urlKey);
-              connectedBaseElementChanged(this);
-            }
-          }
-        }
-        return removed;
+        return removeVirtualAttributeNode(this, attr);
       },
     });
+    const namedNodeMapPrototype = window.NamedNodeMap?.prototype;
+    if (namedNodeMapPrototype !== undefined) {
+      const nativeSetNamedItem = namedNodeMapPrototype.setNamedItem;
+      const nativeSetNamedItemNS = namedNodeMapPrototype.setNamedItemNS;
+      const nativeRemoveNamedItem = namedNodeMapPrototype.removeNamedItem;
+      const nativeRemoveNamedItemNS = namedNodeMapPrototype.removeNamedItemNS;
+      const setNamedItemImpl = function setNamedItem(
+        this: NamedNodeMap,
+        attr: Attr,
+      ): Attr | null {
+        const owner = namedNodeMapOwners.get(this);
+        return owner !== undefined
+          ? setVirtualAttributeNode(owner, attr, false)
+          : nativeSetNamedItem.call(this, attr);
+      };
+      const setNamedItemNSImpl = function setNamedItemNS(
+        this: NamedNodeMap,
+        attr: Attr,
+      ): Attr | null {
+        const owner = namedNodeMapOwners.get(this);
+        return owner !== undefined
+          ? setVirtualAttributeNode(owner, attr, true)
+          : nativeSetNamedItemNS.call(this, attr);
+      };
+      const removeNamedItemImpl = function removeNamedItem(
+        this: NamedNodeMap,
+        qualifiedName: string,
+      ): Attr {
+        const owner = namedNodeMapOwners.get(this);
+        if (owner !== undefined && virtualNodes.has(owner)) {
+          const name = toDOMString(qualifiedName);
+          const existing = nativeGetAttributeNode.call(owner, name);
+          if (existing !== null) {
+            return removeVirtualAttributeNode(owner, existing);
+          }
+          if (hasVirtualAttribute(owner, name)) {
+            const previousValue = getVirtualAttribute(owner, name) ?? "";
+            removeVirtualAttribute(owner, name);
+            const snapshot = context.nativeCreateAttribute.call(
+              document,
+              owner.namespaceURI === HTML_NAMESPACE ? name.toLowerCase() : name,
+            );
+            snapshot.value = previousValue;
+            markVirtualAttribute!(snapshot);
+            return snapshot;
+          }
+        }
+        return nativeRemoveNamedItem.call(this, qualifiedName);
+      };
+      const removeNamedItemNSImpl = function removeNamedItemNS(
+        this: NamedNodeMap,
+        namespaceURI: string | null,
+        localName: string,
+      ): Attr {
+        const owner = namedNodeMapOwners.get(this);
+        if (owner !== undefined && virtualNodes.has(owner)) {
+          const rawNamespace = toNullableDOMString(namespaceURI);
+          const ns = rawNamespace === "" ? null : rawNamespace;
+          const local = toDOMString(localName);
+          const existing = nativeGetAttributeNodeNS.call(owner, ns, local);
+          if (existing !== null) {
+            return removeVirtualAttributeNode(owner, existing);
+          }
+          if (hasVirtualAttributeNS(owner, ns, local)) {
+            const previousValue = getVirtualAttributeNS(owner, ns, local) ?? "";
+            removeVirtualAttributeNS(owner, ns, local);
+            const snapshot = context.nativeCreateAttributeNS.call(document, ns, local);
+            snapshot.value = previousValue;
+            markVirtualAttribute!(snapshot);
+            return snapshot;
+          }
+        }
+        return nativeRemoveNamedItemNS.call(this, namespaceURI, localName);
+      };
+      patch(namedNodeMapPrototype, "setNamedItem", {
+        writable: true,
+        value: setNamedItemImpl,
+      });
+      patch(namedNodeMapPrototype, "setNamedItemNS", {
+        writable: true,
+        value: setNamedItemNSImpl,
+      });
+      patch(namedNodeMapPrototype, "removeNamedItem", {
+        writable: true,
+        value: removeNamedItemImpl,
+      });
+      patch(namedNodeMapPrototype, "removeNamedItemNS", {
+        writable: true,
+        value: removeNamedItemNSImpl,
+      });
+      attachForeignNamedNodeMapMethods = (map) => {
+        try {
+          Object.defineProperties(map, {
+            setNamedItem: { configurable: true, writable: true, value: setNamedItemImpl },
+            setNamedItemNS: {
+              configurable: true,
+              writable: true,
+              value: setNamedItemNSImpl,
+            },
+            removeNamedItem: {
+              configurable: true,
+              writable: true,
+              value: removeNamedItemImpl,
+            },
+            removeNamedItemNS: {
+              configurable: true,
+              writable: true,
+              value: removeNamedItemNSImpl,
+            },
+          });
+        } catch {
+          // Non-extensible foreign map falls back to native behavior.
+        }
+      };
+    }
     const isVirtualAttr = (attr: Attr): boolean => {
       if (virtualNodes.has(attr)) {
         return true;

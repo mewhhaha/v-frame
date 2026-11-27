@@ -968,3 +968,61 @@ test("client style neutralization recognizes --!> comment closing under strict s
     ),
   ).toEqual([]);
 });
+
+test("NamedNodeMap setNamedItem/removeNamedItem route managed attributes through the virtual facade", async ({
+  page,
+}) => {
+  await page.goto(fixture.origin);
+  await expect
+    .poll(() => page.evaluate(() => Boolean(customElements.get("v-frame"))))
+    .toBe(true);
+
+  const frame = await mountFrame(page, {
+    src: `${fixture.origin}/documents/shadow-dom-csp.html`,
+    nonce,
+  });
+
+  const result = await childValue(frame, (win) => {
+    const a = win.document.createElement("a");
+    win.document.body.append(a);
+    const hrefAttr = win.document.createAttribute("href");
+    hrefAttr.value = "named/item.html";
+    a.attributes.setNamedItem(hrefAttr);
+    const authoredHref = a.getAttribute("href");
+    const resolvedHref = a.href;
+    const removedHref = a.attributes.removeNamedItem("href");
+    const afterRemoveHref = a.getAttribute("href");
+
+    const p = win.document.createElement("p");
+    p.id = "named-styled";
+    win.document.body.append(p);
+    const styleAttr = win.document.createAttributeNS(null, "style");
+    styleAttr.value = "color: rgb(77, 88, 99)";
+    p.attributes.setNamedItemNS(styleAttr);
+    const styledComputed = win.getComputedStyle(p).color;
+    const removedStyle = p.attributes.removeNamedItemNS(null, "style");
+    const afterRemoveStyle = p.getAttribute("style");
+
+    return {
+      authoredHref,
+      resolvedHref,
+      removedHrefName: removedHref.name,
+      afterRemoveHref,
+      styledComputed,
+      removedStyleName: removedStyle.name,
+      removedStyleValue: removedStyle.value,
+      afterRemoveStyle,
+    };
+  });
+
+  expect(result).toEqual({
+    authoredHref: "named/item.html",
+    resolvedHref: `${fixture.origin}/documents/named/item.html`,
+    removedHrefName: "href",
+    afterRemoveHref: null,
+    styledComputed: "rgb(77, 88, 99)",
+    removedStyleName: "style",
+    removedStyleValue: "color: rgb(77, 88, 99)",
+    afterRemoveStyle: null,
+  });
+});
